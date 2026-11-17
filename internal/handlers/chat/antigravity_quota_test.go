@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -290,11 +291,12 @@ func TestAntigravityWeeklyQuota_SessionBuckets(t *testing.T) {
 	}
 }
 
-// TestAntigravityQuota_Generic429NoStrike is the Go port of the
-// decolua/9router#4197 regression test: generic/content-triggered 429s must
-// not feed the strike-breaker while quota reads optimistic, while explicit
-// quota 429s still block on the third strike.
-func TestAntigravityQuota_Generic429NoStrike(t *testing.T) {
+// TestAntigravityQuota_StrikeBreaksOptimisticQuota pins the merged upstream
+// rule (antigravityQuota.js): every 409/429 whose quota reading is optimistic
+// or unavailable counts, whatever the error body says. Gating on markers left
+// the canonical quota 429 — "Resource has been exhausted (e.g. check quota).",
+// no marker field — unstruck, so an exhausted pair kept taking requests.
+func TestAntigravityQuota_StrikeBreaksOptimisticQuota(t *testing.T) {
 	const model = "test-strike-model"
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -307,51 +309,112 @@ func TestAntigravityQuota_Generic429NoStrike(t *testing.T) {
 	antigravityQuotaBaseURL = mockServer.URL
 	defer func() { antigravityQuotaBaseURL = oldBase }()
 
-	ctx := context.Background()
-	client := mockServer.Client()
-
-	// 1. Generic content-triggered 429s never strike, even repeated.
-	genericConn := "test-conn-generic-429"
-	ClearAntigravityQuotaCache()
-	ClearAntigravityStrikes(genericConn, model)
-	genericErr := `{"error":{"code":429,"message":"Request blocked for content reasons.","status":"RESOURCE_EXHAUSTED"}}`
-	for i := 0; i < 5; i++ {
-		if res := HandleAntigravityQuotaError(AntigravityQuotaError{
-			Ctx: ctx, Client: client, ConnectionID: genericConn,
-			Status: 429, Model: model, AccessToken: "token", ProjectID: "proj",
-			ErrorMessage: genericErr,
-		}); res != nil {
-			t.Fatalf("generic 429 #%d must not block, got %v", i+1, *res)
-		}
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			name:   "canonical quota 429",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`,
+		},
+		{
+			name:   "content-triggered 429",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":{"code":429,"message":"Request blocked for content reasons.","status":"RESOURCE_EXHAUSTED"}}`,
+		},
+		{
+			name:   "pool exhaustion 409",
+			status: http.StatusConflict,
+			body:   `{"error":{"code":409,"message":"Resource has been exhausted (e.g. check quota).","status":"ABORTED"}}`,
+		},
 	}
-	if IsAntigravityModelBlocked(genericConn, model) {
-		t.Errorf("generic 429s must not block the model while quota is optimistic")
-	}
 
-	// 2. Explicit quota 429s still strike: nil, nil, then block.
-	quotaConn := "test-conn-quota-429"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connID := "test-conn-strike-" + strconv.Itoa(tt.status)
+			ClearAntigravityQuotaCache()
+			ClearAntigravityStrikes(connID, model)
+			defer ClearAntigravityStrikes(connID, model)
+
+			for i := 0; i < 2; i++ {
+				if res := HandleAntigravityQuotaError(AntigravityQuotaError{
+					Ctx: context.Background(), Client: mockServer.Client(), ConnectionID: connID,
+					Status: tt.status, Model: model, AccessToken: "token", ProjectID: "proj",
+				}); res != nil {
+					t.Fatalf("strike #%d must not block yet, got %v", i+1, *res)
+				}
+			}
+			blocked := HandleAntigravityQuotaError(AntigravityQuotaError{
+				Ctx: context.Background(), Client: mockServer.Client(), ConnectionID: connID,
+				Status: tt.status, Model: model, AccessToken: "token", ProjectID: "proj",
+			})
+			if blocked == nil {
+				t.Fatalf("third strike must block the pair")
+			}
+			if left := time.Until(*blocked); left < 14*time.Minute || left > 16*time.Minute {
+				t.Errorf("block window = %v, want ~15m", left)
+			}
+			if !IsAntigravityModelBlocked(connID, model) {
+				t.Errorf("model must be blocked after 3 strikes")
+			}
+		})
+	}
+}
+
+// A quota API that refuses or fails says nothing about the pair's health, so it
+// counts as an optimistic reading and strikes (upstream: "quota reading is
+// either optimistic ... or unavailable").
+func TestAntigravityQuota_UnavailableQuotaStillStrikes(t *testing.T) {
+	const model = "test-strike-model"
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "quota access denied", http.StatusForbidden)
+	}))
+	defer mockServer.Close()
+
+	oldBase := antigravityQuotaBaseURL
+	antigravityQuotaBaseURL = mockServer.URL
+	defer func() { antigravityQuotaBaseURL = oldBase }()
+
+	connID := "test-conn-quota-unavailable"
 	ClearAntigravityQuotaCache()
-	ClearAntigravityStrikes(quotaConn, model)
-	quotaErr := `{"error":{"code":429,"message":"Individual quota reached. Please upgrade your subscription.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}}`
+	ClearAntigravityStrikes(connID, model)
+	defer ClearAntigravityStrikes(connID, model)
+
 	for i := 0; i < 2; i++ {
 		if res := HandleAntigravityQuotaError(AntigravityQuotaError{
-			Ctx: ctx, Client: client, ConnectionID: quotaConn,
-			Status: 429, Model: model, AccessToken: "token", ProjectID: "proj",
-			ErrorMessage: quotaErr,
+			Ctx: context.Background(), Client: mockServer.Client(), ConnectionID: connID,
+			Status: http.StatusTooManyRequests, Model: model, AccessToken: "token", ProjectID: "proj",
 		}); res != nil {
-			t.Fatalf("explicit quota 429 #%d must not block yet, got %v", i+1, *res)
+			t.Fatalf("strike #%d must not block yet, got %v", i+1, *res)
 		}
 	}
-	blocked := HandleAntigravityQuotaError(AntigravityQuotaError{
-		Ctx: ctx, Client: client, ConnectionID: quotaConn,
-		Status: 429, Model: model, AccessToken: "token", ProjectID: "proj",
-		ErrorMessage: quotaErr,
-	})
-	if blocked == nil {
-		t.Fatalf("explicit quota 429 #3 must trigger strike block")
+	if res := HandleAntigravityQuotaError(AntigravityQuotaError{
+		Ctx: context.Background(), Client: mockServer.Client(), ConnectionID: connID,
+		Status: http.StatusTooManyRequests, Model: model, AccessToken: "token", ProjectID: "proj",
+	}); res == nil {
+		t.Fatal("third strike with an unavailable quota reading must block the pair")
 	}
-	if !IsAntigravityModelBlocked(quotaConn, model) {
-		t.Errorf("model must be blocked after 3 explicit quota 429s")
+}
+
+// An exhausted family bucket governs the model even when its own entry reads
+// optimistic — the Argon case: the per-model reading can stay healthy while
+// gemini_argon_weekly is spent.
+func TestAntigravityQuota_FamilyBucketExhaustionWins(t *testing.T) {
+	future := time.Now().UTC().Add(time.Hour)
+	quotas := map[string]AntigravityModelQuota{
+		"gemini-4-argon-medium": {RemainingPercentage: 90, ResetAt: future},
+		"gemini_argon_weekly":   {RemainingPercentage: 0, ResetAt: future},
+	}
+
+	q, known := antigravityQuotaForModel(quotas, "gemini-4-argon-medium")
+	if !known {
+		t.Fatal("model must resolve to a quota")
+	}
+	if !quotaEntryExhausted(q, time.Now().UTC()) {
+		t.Errorf("exhausted family bucket must win over an optimistic model entry, got %+v", q)
 	}
 }
 

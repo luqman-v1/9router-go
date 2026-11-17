@@ -164,8 +164,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
-		// Always dump 400 INVALID_ARGUMENT payloads for post-mortem (covers
-		// "items.items: missing field." and other schema rejections).
+		// Dump 400 INVALID_ARGUMENT and 429 RESOURCE_EXHAUSTED payloads for diagnosis.
 		if resp.StatusCode == http.StatusBadRequest {
 			_ = os.WriteFile("/tmp/9router-gemini-400.json", sendBody, 0644)
 			preview := sendBody
@@ -173,6 +172,13 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 				preview = preview[:8000]
 			}
 			log.Warn("gemini", "dumped 400 request to /tmp/9router-gemini-400.json", "model", modelName, "bytes", len(sendBody), "error", string(errBody[:min(500, len(errBody))]), "preview", string(preview))
+		} else if resp.StatusCode == http.StatusTooManyRequests {
+			_ = os.WriteFile("/tmp/9router-ag-429.json", sendBody, 0644)
+			preview := sendBody
+			if len(preview) > 2000 {
+				preview = preview[:2000]
+			}
+			log.Warn("gemini", "antigravity 429 diagnostic dump", "model", modelName, "bytes", len(sendBody), "error", string(errBody[:min(500, len(errBody))]), "preview", string(preview))
 		}
 		if bytes.Contains(errBody, []byte("thought signature")) || bytes.Contains(errBody, []byte("Thought signature")) {
 			_ = os.WriteFile("/tmp/9router-ag-debug.json", sendBody, 0644)

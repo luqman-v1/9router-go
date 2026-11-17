@@ -209,14 +209,11 @@ func TestAntigravityQuota_StrikeReassert(t *testing.T) {
 	antigravityQuotaBaseURL = srv.URL
 	defer func() { antigravityQuotaBaseURL = oldURL }()
 
-	// 3 consecutive explicit-quota 429s with optimistic quota should trigger strike block
-	// NOTE: upstream #4197's tests use "RATE_LIMIT_EXHAUSTED" (typo) which
-	// matches no marker; the real marker is "RATE_LIMIT_EXCEEDED".
+	// 3 consecutive 429s with optimistic quota should trigger strike block.
 	for i := 0; i < 3; i++ {
 		res := HandleAntigravityQuotaError(AntigravityQuotaError{
 			Ctx: context.Background(), Client: srv.Client(), ConnectionID: connID,
 			Status: 429, Model: model, AccessToken: "token", ProjectID: "proj",
-			ErrorMessage: "RATE_LIMIT_EXCEEDED",
 		})
 		t.Logf("strike %d: res=%v", i+1, res)
 		if i < 2 && res != nil {

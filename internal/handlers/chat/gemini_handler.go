@@ -157,13 +157,15 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 				HandleAntigravityQuotaError(AntigravityQuotaError{
 					Ctx: ctx, Client: httpClient, ConnectionID: connectionID,
 					Status: uErr.StatusCode, Model: modelName, AccessToken: apiKey,
-					ProjectID: projectID, ErrorMessage: string(uErr.Body),
+					ProjectID: projectID,
 				})
 			}
 		}
 		return fmt.Errorf("ForwardGemini (%s/%s): %w", provider, modelName, err)
 	}
 	recordAntigravityOutcome(connectionID, resp.StatusCode, nil)
+	// "Consecutive" strikes: a served request clears the breaker for this pair.
+	ClearAntigravityStrikes(connectionID, modelName)
 
 	var bodyCloser io.Closer = resp.Body
 	defer func() {

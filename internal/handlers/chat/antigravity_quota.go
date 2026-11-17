@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // AntigravityModelQuota represents live quota information for a single model on an Antigravity connection.
@@ -60,18 +62,6 @@ var (
 	agStrikeWindow        = 60 * time.Second
 	agStrikeThreshold     = 3
 	agStrikeBlockDuration = 15 * time.Minute
-
-	// Explicit quota-error markers (parity with decolua/9router#4197): only
-	// 429s carrying one of these count toward the strike-breaker. Generic or
-	// content-triggered 429s must not synthesize 15m blocks while quota reads
-	// optimistic. NOTE: bare "RESOURCE_EXHAUSTED" is deliberately NOT a
-	// marker — both false-bucket and real-quota 429s carry it; real quota
-	// errors additionally carry QUOTA_EXHAUSTED / "Individual quota reached".
-	agQuotaErrorMarkers = []string{
-		quotaMarkerRateLimitExceeded,
-		quotaMarkerQuotaExhausted,
-		quotaMarkerIndividualQuota,
-	}
 )
 var (
 	agWeeklyMu    sync.RWMutex
@@ -182,12 +172,21 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 
 	agQuotaMu.RLock()
 	modelsMap, ok := agQuotaCache[connectionID]
-	if !ok || len(modelsMap) == 0 {
-		agQuotaMu.RUnlock()
-		return false
+	q, known := antigravityQuotaForModel(modelsMap, model)
+	agQuotaMu.RUnlock()
+	return ok && known && quotaEntryExhausted(q, time.Now().UTC())
+}
+
+// antigravityQuotaForModel resolves the quota that governs model: its own
+// entry and tier aliases first, then the shared family session/weekly buckets.
+// Any exhausted bucket wins over a healthy per-model reading; otherwise the
+// most constrained reading is returned (upstream getAntigravityModelQuota).
+// known is false when the map says nothing about the model.
+func antigravityQuotaForModel(quotas map[string]AntigravityModelQuota, model string) (AntigravityModelQuota, bool) {
+	if len(quotas) == 0 || model == "" {
+		return AntigravityModelQuota{}, false
 	}
 
-	// Resolve synonym if present
 	checkModels := []string{model}
 	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists && canonical != model {
 		checkModels = append(checkModels, canonical)
@@ -205,64 +204,60 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 		checkModels = append(checkModels, "claude-opus-5-5-high")
 	}
 
-	now := time.Now().UTC()
+	candidates := make([]AntigravityModelQuota, 0, len(checkModels)+2)
 	for _, m := range checkModels {
-		if q, exists := modelsMap[m]; exists {
-			if quotaEntryExhausted(q, now) {
-				agQuotaMu.RUnlock()
-				return true
-			}
+		if q, exists := quotas[m]; exists {
+			candidates = append(candidates, q)
 		}
 	}
+	for _, q := range antigravityFamilyQuotas(quotas, model) {
+		candidates = append(candidates, q)
+	}
+	if len(candidates) == 0 {
+		return AntigravityModelQuota{}, false
+	}
 
-	// Check family weekly + 5h-session quotas (parity with
-	// decolua/9router#4209: session exhaustion blocks the family even when
-	// weekly remains).
-	if strings.Contains(model, "argon") {
-		hasArgonSummary := false
-		for _, key := range []string{"gemini_argon_weekly", "argon_weekly", "gemini_argon_session", "argon_session"} {
-			if wq, exists := modelsMap[key]; exists {
-				hasArgonSummary = true
-				if quotaEntryExhausted(wq, now) {
-					agQuotaMu.RUnlock()
-					return true
-				}
-			}
+	now := time.Now().UTC()
+	best := candidates[0]
+	bestExhausted := quotaEntryExhausted(best, now)
+	for _, q := range candidates[1:] {
+		exhausted := quotaEntryExhausted(q, now)
+		// Any exhausted bucket wins; the latest reset keeps the lock honest.
+		if exhausted && (!bestExhausted || q.ResetAt.After(best.ResetAt)) {
+			best, bestExhausted = q, true
+			continue
 		}
-		// On Ultra plans where Argon shares the main Gemini bucket (no separate argon summary),
-		// fall back to the shared Gemini summary buckets (parity with upstream decolua/9router#8a833631).
+		if !exhausted && !bestExhausted && q.RemainingPercentage < best.RemainingPercentage {
+			best = q
+		}
+	}
+	return best, true
+}
+
+// antigravityFamilyQuotas returns the shared session/weekly buckets for the
+// model's family. Argon falls back to the Gemini buckets on Ultra plans, where
+// no separate Argon summary exists (upstream decolua/9router#8a833631).
+func antigravityFamilyQuotas(quotas map[string]AntigravityModelQuota, model string) []AntigravityModelQuota {
+	var keys []string
+	switch {
+	case strings.Contains(model, "argon"):
+		keys = []string{"gemini_argon_weekly", "argon_weekly", "gemini_argon_session", "argon_session"}
+		hasArgonSummary := lo.SomeBy(keys, func(k string) bool { _, ok := quotas[k]; return ok })
 		if !hasArgonSummary {
-			for _, key := range []string{"gemini_weekly", "gemini_session"} {
-				if wq, exists := modelsMap[key]; exists {
-					if quotaEntryExhausted(wq, now) {
-						agQuotaMu.RUnlock()
-						return true
-					}
-				}
-			}
+			keys = []string{"gemini_weekly", "gemini_session"}
 		}
-	} else if strings.HasPrefix(model, "gemini-") {
-		for _, key := range []string{"gemini_weekly", "gemini_session"} {
-			if wq, exists := modelsMap[key]; exists {
-				if quotaEntryExhausted(wq, now) {
-					agQuotaMu.RUnlock()
-					return true
-				}
-			}
-		}
-	} else if strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "gpt-") {
-		for _, key := range []string{"claude_gpt_weekly", "claude_gpt_session"} {
-			if wq, exists := modelsMap[key]; exists {
-				if quotaEntryExhausted(wq, now) {
-					agQuotaMu.RUnlock()
-					return true
-				}
-			}
+	case strings.HasPrefix(model, "gemini-"):
+		keys = []string{"gemini_weekly", "gemini_session"}
+	case strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "gpt-"):
+		keys = []string{"claude_gpt_weekly", "claude_gpt_session"}
+	}
+	out := make([]AntigravityModelQuota, 0, len(keys))
+	for _, k := range keys {
+		if q, ok := quotas[k]; ok {
+			out = append(out, q)
 		}
 	}
-	agQuotaMu.RUnlock()
-
-	return false
+	return out
 }
 
 // quotaEntryExhausted reports whether a cached quota entry means "do not route
@@ -429,16 +424,9 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 	return quotas, nil
 }
 
-// Quota-error marker constants backing agQuotaErrorMarkers.
-const (
-	quotaMarkerRateLimitExceeded = "RATE_LIMIT_EXCEEDED"
-	quotaMarkerQuotaExhausted    = "QUOTA_EXHAUSTED"
-	quotaMarkerIndividualQuota   = "Individual quota reached"
-)
-
 // AntigravityQuotaError bundles the inputs to HandleAntigravityQuotaError.
 // Kept as a struct: the handler takes 8 inputs and positional calls proved
-// error-prone to extend (see the #4197 port).
+// error-prone to extend.
 type AntigravityQuotaError struct {
 	Ctx          context.Context
 	Client       *http.Client
@@ -447,27 +435,17 @@ type AntigravityQuotaError struct {
 	Model        string
 	AccessToken  string
 	ProjectID    string
-	// ErrorMessage is the raw upstream error body/text: strikes require an
-	// explicit quota marker in it; generic/content-triggered 429s return nil
-	// without striking (#4197 parity).
-	ErrorMessage string
 }
 
-// isExplicitQuotaError reports whether an upstream error message explicitly
-// indicates quota/rate limiting (parity with decolua/9router#4197).
-func isExplicitQuotaError(errorMessage string) bool {
-	for _, marker := range agQuotaErrorMarkers {
-		if strings.Contains(errorMessage, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// HandleAntigravityQuotaError handles Antigravity 409/429 errors by refreshing live quota and returning model resetAt.
-// Inputs arrive as AntigravityQuotaError: 429s only feed the optimistic
-// strike-breaker when ErrorMessage carries an explicit quota marker;
-// generic/content-triggered 429s return nil without striking (#4197 parity).
+// HandleAntigravityQuotaError handles Antigravity 409/429 errors by refreshing
+// live quota and returning model resetAt.
+//
+// Strike breaker (upstream antigravityQuota.js): every 409/429 whose quota
+// reading is optimistic (remaining > 0) or unavailable (quota API error/403)
+// counts toward the pair's strikes. 3 strikes within the window block the
+// connection+model pair for 15m. A body's wording is never consulted: Google
+// answers a spent quota with "Resource has been exhausted (e.g. check quota)."
+// and no marker field, so marker-gating left real exhaustion unstruck.
 func HandleAntigravityQuotaError(p AntigravityQuotaError) *time.Time {
 	if p.Status != http.StatusConflict && p.Status != http.StatusTooManyRequests {
 		return nil
@@ -476,68 +454,67 @@ func HandleAntigravityQuotaError(p AntigravityQuotaError) *time.Time {
 	shortConn := shortConnID(p.ConnectionID)
 	log.Info("ag_quota", "refreshing quota on error", "connection", shortConn, "status", p.Status, "model", p.Model)
 
+	now := time.Now().UTC()
 	quotas, err := RefreshAntigravityQuota(p.Ctx, p.Client, p.ConnectionID, p.AccessToken, p.ProjectID)
-	if err != nil || len(quotas) == 0 {
+	if err != nil {
+		quotas = nil
+	}
+	q, known := antigravityQuotaForModel(quotas, p.Model)
+
+	if !known || q.RemainingPercentage > 0 {
+		return strikeAntigravityQuota(p.ConnectionID, p.Model, shortConn, p.Status, q, known, now)
+	}
+	if !quotaEntryExhausted(q, now) {
 		return nil
 	}
 
-	checkModels := []string{p.Model}
-	if canonical, exists := translator.AntigravityModelSynonyms[p.Model]; exists && canonical != p.Model {
-		checkModels = append(checkModels, canonical)
-	}
+	log.Warn("ag_quota", "quota exhausted; CACHE_BLOCK until reset", "connection", shortConn, "model", p.Model, "resetAt", q.ResetAt.Format(time.RFC3339))
+	res := q.ResetAt
+	return &res
+}
 
-	now := time.Now().UTC()
-	for _, m := range checkModels {
-		if q, ok := quotas[m]; ok {
-			if quotaEntryExhausted(q, now) {
-				log.Warn("ag_quota", "quota exhausted; CACHE_BLOCK until reset", "connection", shortConn, "model", m, "resetAt", q.ResetAt.Format(time.RFC3339))
-				res := q.ResetAt
-				return &res
-			}
-			// Optimistic quota strike-breaker (PR #3684, gated by #4197):
-			// remaining >0 but still 429. Generic/content-triggered 429s
-			// (no explicit quota marker) must not contribute strikes.
-			if p.Status == http.StatusTooManyRequests && !isExplicitQuotaError(p.ErrorMessage) && q.RemainingPercentage > 0 {
-				return nil
-			}
-			if q.RemainingPercentage > 0 && isExplicitQuotaError(p.ErrorMessage) {
-				key := p.ConnectionID + "|" + m
-				agStrikeMu.Lock()
-				// Prune strikes outside window
-				cutoff := now.Add(-agStrikeWindow)
-				strikes := agStrikes[key]
-				var kept []time.Time
-				for _, t := range strikes {
-					if t.After(cutoff) {
-						kept = append(kept, t)
-					}
-				}
-				kept = append(kept, now)
-				agStrikes[key] = kept
-				shouldBlock := len(kept) >= agStrikeThreshold
-				if shouldBlock {
-					blockUntil := now.Add(agStrikeBlockDuration)
-					agStrikeBlocks[key] = blockUntil
-					agStrikeMu.Unlock()
-					// Store blocked quota so IsAntigravityModelBlocked sees it even after optimistic refresh
-					agQuotaMu.Lock()
-					if _, ok := agQuotaCache[p.ConnectionID]; !ok {
-						agQuotaCache[p.ConnectionID] = make(map[string]AntigravityModelQuota)
-					}
-					agQuotaCache[p.ConnectionID][m] = AntigravityModelQuota{
-						RemainingPercentage: 0,
-						ResetAt:             blockUntil,
-					}
-					agQuotaMu.Unlock()
-					log.Warn("ag_quota", "optimistic quota strike-break: 3x429 within 60s while quota>0, CACHE_BLOCK 15m", "connection", shortConn, "model", m, "blockUntil", blockUntil.Format(time.RFC3339))
-					return &blockUntil
-				}
-				agStrikeMu.Unlock()
-			}
+// strikeAntigravityQuota records one strike for the connection+model pair and
+// returns the 15m block deadline once the threshold is reached.
+func strikeAntigravityQuota(connectionID, model, shortConn string, status int, q AntigravityModelQuota, known bool, now time.Time) *time.Time {
+	key := connectionID + "|" + model
+	agStrikeMu.Lock()
+	defer agStrikeMu.Unlock()
+
+	cutoff := now.Add(-agStrikeWindow)
+	strikes := agStrikes[key]
+	kept := make([]time.Time, 0, len(strikes)+1)
+	for _, t := range strikes {
+		if t.After(cutoff) {
+			kept = append(kept, t)
 		}
 	}
+	kept = append(kept, now)
+	agStrikes[key] = kept
+	if len(kept) < agStrikeThreshold {
+		return nil
+	}
 
-	return nil
+	blockUntil := now.Add(agStrikeBlockDuration)
+	agStrikeBlocks[key] = blockUntil
+	// Store blocked quota so IsAntigravityModelBlocked sees it even after an
+	// optimistic refresh resurrects the pair.
+	agQuotaMu.Lock()
+	if _, ok := agQuotaCache[connectionID]; !ok {
+		agQuotaCache[connectionID] = make(map[string]AntigravityModelQuota)
+	}
+	agQuotaCache[connectionID][model] = AntigravityModelQuota{
+		RemainingPercentage: 0,
+		ResetAt:             blockUntil,
+	}
+	agQuotaMu.Unlock()
+
+	reading := "unknown"
+	if known {
+		reading = fmt.Sprintf("%.0f%%", q.RemainingPercentage)
+	}
+	log.Warn("ag_quota", "optimistic quota strike-break: 3x error within 60s while quota optimistic, CACHE_BLOCK 15m",
+		"connection", shortConn, "model", model, "status", status, "quota", reading, "blockUntil", blockUntil.Format(time.RFC3339))
+	return &blockUntil
 }
 
 // ClearAntigravityStrikes clears strike history for a connection/model (called on success).
@@ -545,13 +522,34 @@ func ClearAntigravityStrikes(connectionID, model string) {
 	if connectionID == "" || model == "" {
 		return
 	}
+	keys := []string{model}
+	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists && canonical != model {
+		keys = append(keys, canonical)
+	}
+
 	agStrikeMu.Lock()
-	defer agStrikeMu.Unlock()
-	delete(agStrikes, connectionID+"|"+model)
-	delete(agStrikeBlocks, connectionID+"|"+model)
-	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists {
-		delete(agStrikes, connectionID+"|"+canonical)
-		delete(agStrikeBlocks, connectionID+"|"+canonical)
+	blocks := make(map[string]time.Time, len(keys))
+	for _, k := range keys {
+		if until, ok := agStrikeBlocks[connectionID+"|"+k]; ok {
+			blocks[k] = until
+		}
+		delete(agStrikes, connectionID+"|"+k)
+		delete(agStrikeBlocks, connectionID+"|"+k)
+	}
+	agStrikeMu.Unlock()
+
+	// Drop the synthesized 0% entry this breaker wrote: a real upstream 0%
+	// reading carries a different reset and must survive.
+	if len(blocks) == 0 {
+		return
+	}
+	agQuotaMu.Lock()
+	defer agQuotaMu.Unlock()
+	cached := agQuotaCache[connectionID]
+	for k, until := range blocks {
+		if q, ok := cached[k]; ok && q.RemainingPercentage <= 0 && q.ResetAt.Equal(until) {
+			delete(cached, k)
+		}
 	}
 }
 
