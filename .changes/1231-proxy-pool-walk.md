@@ -46,6 +46,14 @@ offer:
 - **The proxy is redacted before it reaches a log line.** A hundred-proxy pool
   carries a hundred passwords.
 
+- **The keyless no-auth lane walks too.** The OpenCode free tier is keyless, so
+  it takes the synthesized no-auth branch (`ConnectionID "default"`) rather than
+  the multi-connection loop. The walk was wired only into the latter, so that
+  lane called the forward once, classified the refusal, and returned — the
+  operator's pool was never walked. Both paths now run it;
+  `walkPoolOnFreeTierRefusalFor` takes the connection identity because this lane
+  has no stored row to pass.
+
 Not addressed here: a `429` that names a long reset (`retry_after_s=7200` in the
 report) is a per-egress window no walk can shorten. That is the per-provider proxy
 cooldown's job. This change makes the router *use the pool it was given*; that one
