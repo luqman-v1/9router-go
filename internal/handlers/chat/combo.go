@@ -1949,6 +1949,17 @@ func entryExcludes(excludeIDs, tried []string) []string {
 // combo models on the same account, and Google rate-limited it forever. The
 // connection is also appended to excludeIDs so the remaining combo models in
 // this request skip it instead of re-hitting the same quota bucket.
+// isLocalQueueRefusal reports a refusal our own admission control produced. It
+// says nothing about the account or the model, so cooling either on it parks a
+// healthy connection because our queue was busy.
+//
+// The verdict comes from UpstreamError.Local, which only admitAntigravity sets.
+// Reading it out of the body would let an upstream that echoes a queue_full
+// payload dodge its own cooldown.
+func isLocalQueueRefusal(ue *upstreamError) bool {
+	return ue != nil && ue.Local
+}
+
 func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
 	if handlerutil.IsProbeContext(ctx) {
 		*excludeIDs = append(*excludeIDs, connID)
@@ -1966,6 +1977,14 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 		*excludeIDs = append(*excludeIDs, connID)
 		log.Warn("combo", "opencode free-tier refusal, not locking the account",
 			"provider", provider, "model", model, "conn", connID, "status", ue.StatusCode)
+		return
+	}
+	// Our own queue was full: exclude the connection for this pass and try the
+	// next entry, but leave its cooldown and backoff alone.
+	if isLocalQueueRefusal(ue) {
+		*excludeIDs = append(*excludeIDs, connID)
+		log.Warn("combo", "local queue full, not locking the account",
+			"provider", provider, "model", model, "conn", connID)
 		return
 	}
 	currentLevel := h.Repo.GetConnectionBackoffLevel(connID)

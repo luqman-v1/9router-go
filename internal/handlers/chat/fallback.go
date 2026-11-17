@@ -319,6 +319,15 @@ func (h *ChatHandler) handleAccountFallback(
 				excludeIDs = append(excludeIDs, connObj.ID)
 				continue
 			}
+			// A local queue refusal is not an upstream verdict: the account never
+			// saw the request, so cooling it would park a healthy connection
+			// because our own admission queue was busy.
+			if isLocalQueueRefusal(ue) {
+				log.Warn("fallback", "local queue full, not locking the account",
+					"conn", connObj.ID, "provider", provider, "model", model)
+				excludeIDs = append(excludeIDs, connObj.ID)
+				continue
+			}
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
