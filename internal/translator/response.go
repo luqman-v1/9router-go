@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"9router/proxy/internal/log"
 	"bytes"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -1006,6 +1007,9 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 		flushDSML(state, &results)
 		for idx, toolInfo := range state.ToolCalls {
 			buffered := state.ToolArgBuffers[idx]
+			if buffered == "" {
+				log.Debug("translator", "tool call carries no arguments", "tool", toolInfo.Name, "id", toolInfo.ID)
+			}
 			sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
 			results = append(results, map[string]any{
 				"type":  "content_block_delta",
@@ -1096,6 +1100,9 @@ func EnsureStreamClosed(sessionKey string) []byte {
 
 	for idx, toolInfo := range state.ToolCalls {
 		buffered := state.ToolArgBuffers[idx]
+		if buffered == "" {
+			log.Debug("translator", "tool call carries no arguments", "tool", toolInfo.Name, "id", toolInfo.ID)
+		}
 		sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
 		results = append(results, map[string]any{
 			"type":  "content_block_delta",

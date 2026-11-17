@@ -393,6 +393,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	// SanitizeClaudePassthrough; a converted lane needs the same rule before the
 	// history is reshaped, or the model keeps reading its own bare call.
 	claudeBody = DropArgumentlessToolCalls(claudeBody)
+	claudeBody = applyInlineToolEdits(claudeBody)
 
 	var creq ClaudeRequest
 	if err := json.Unmarshal(claudeBody, &creq); err != nil {
@@ -1416,4 +1417,123 @@ func appendClaudeSystemText(req map[string]any, text string) {
 	default:
 		req["system"] = text
 	}
+}
+
+// applyInlineToolEdits replays a client's mid-conversation tool changes
+// (inline-tools: tool_addition / tool_removal blocks) into the outgoing tool
+// list, then removes those blocks from the history.
+//
+// A Chat-format upstream reads tools only from the `tools` field. Without this
+// replay a tool the client loaded later reaches the model as a bare name: it
+// answers with an empty call — {"command"} missing — and the client rejects the
+// turn ("The required parameter command is missing") and retries the same
+// request, so the loop costs a full prompt each round.
+func applyInlineToolEdits(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	msgs, ok := req["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return body
+	}
+	tools, _ := req["tools"].([]any)
+	added := make(map[string]map[string]any)
+	var addedOrder []string
+	removed := make(map[string]bool)
+	changed := false
+	kept := make([]any, 0, len(msgs))
+	for _, mRaw := range msgs {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		keptBlocks := make([]any, 0, len(blocks))
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				keptBlocks = append(keptBlocks, bRaw)
+				continue
+			}
+			switch bType, _ := block["type"].(string); bType {
+			case "tool_addition":
+				changed = true
+				def, _ := block["tool"].(map[string]any)
+				name, _ := def["name"].(string)
+				if name == "" {
+					continue
+				}
+				// Claude shape: the typed conversion that follows wraps these
+				// into the Chat `{type:"function",function:{…}}` form.
+				claudeTool := map[string]any{"name": name}
+				if desc, _ := def["description"].(string); desc != "" {
+					claudeTool["description"] = desc
+				}
+				params := def["input_schema"]
+				if params == nil {
+					params = map[string]any{"type": "object", "properties": map[string]any{}}
+				}
+				claudeTool["input_schema"] = params
+				if _, seen := added[name]; !seen {
+					addedOrder = append(addedOrder, name)
+				}
+				added[name] = claudeTool
+			case "tool_removal":
+				changed = true
+				if name, _ := block["name"].(string); name != "" {
+					removed[name] = true
+				}
+			default:
+				keptBlocks = append(keptBlocks, bRaw)
+			}
+		}
+		if len(keptBlocks) == 0 {
+			continue
+		}
+		msg["content"] = keptBlocks
+		kept = append(kept, msg)
+	}
+	if !changed {
+		return body
+	}
+	out := make([]any, 0, len(tools)+len(added))
+	for _, tRaw := range tools {
+		tool, ok := tRaw.(map[string]any)
+		if !ok {
+			out = append(out, tRaw)
+			continue
+		}
+		name, _ := tool["name"].(string)
+		if removed[name] {
+			continue
+		}
+		if repl, ok := added[name]; ok {
+			out = append(out, repl)
+			delete(added, name)
+			continue
+		}
+		out = append(out, tRaw)
+	}
+	for _, name := range addedOrder {
+		if repl, ok := added[name]; ok {
+			out = append(out, repl)
+		}
+	}
+	req["messages"] = kept
+	if len(out) > 0 {
+		req["tools"] = out
+	} else {
+		delete(req, "tools")
+	}
+	updated, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return updated
 }
