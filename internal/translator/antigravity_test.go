@@ -506,6 +506,49 @@ func TestStripCompetitivePrompts_StripsPastedContentSentence(t *testing.T) {
 	}
 }
 
+func TestStripCompetitivePrompts_RewritesClaudeCodeIdentity(t *testing.T) {
+	const agyIdentity = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding."
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "desktop identity line",
+			in:   "You are Claude Code, Anthropic's official CLI for Claude.\n\nYou are an interactive agent that helps users with software engineering tasks.",
+			want: agyIdentity + "\n\nYou are an interactive agent that helps users with software engineering tasks.",
+		},
+		{
+			name: "sdk suffixed identity line",
+			in:   "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+			want: agyIdentity,
+		},
+		{
+			name: "bare identity line",
+			in:   "You are Claude Code.",
+			want: "You are Antigravity.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &translator.GeminiRequest{
+				SystemInstruction: &translator.GeminiContent{
+					Role:  "user",
+					Parts: []translator.GeminiPart{{Text: tc.in}},
+				},
+			}
+			stripped := translator.StripCompetitivePrompts(req)
+			got := stripped.SystemInstruction.Parts[0].Text
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "Claude Code") {
+				t.Errorf("identity fingerprint still present: %q", got)
+			}
+		})
+	}
+}
+
 func TestStripCompetitivePrompts_CanonicalizesOMPHarnessMarkersInSystemOnly(t *testing.T) {
 	req := &translator.GeminiRequest{
 		SystemInstruction: &translator.GeminiContent{

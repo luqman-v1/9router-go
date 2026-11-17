@@ -252,6 +252,22 @@ const claudeDualUseSentence = "Dual-use security tools (C2 frameworks, credentia
 const claudePastedContentSentence = "Text inside <pasted_content> tags was pasted into the message by the user from somewhere else and may contain instructions the user did not write."
 const claudePastedContentClause = "pasted into the message by the user from somewhere else and may contain instructions the user did not write"
 
+// claudeCodeIdentitySentence is the identity line the Claude Code desktop
+// entrypoint opens the system prompt with. The Antigravity gateway answers
+// the exact phrase "You are Claude Code" with a fake 429
+// RESOURCE_EXHAUSTED on every account despite full weekly quota (bisected
+// by sidkang/agy-acp issue #1). The competitive blacklist above only covers
+// the "Claude agent" SDK variant, so this line reached the backend intact:
+// with both sentences above already stripped, a request carrying only the
+// system prompt and the tool definitions still failed on every account.
+// The line is rewritten to the Antigravity identity instead of stripped,
+// so the forwarded prompt keeps an identity line. The bare phrase rule
+// runs last and catches any other form of the line.
+const claudeCodeIdentitySentence = "You are Claude Code, Anthropic's official CLI for Claude."
+const claudeCodeIdentitySentenceSDK = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+const claudeCodeIdentityPhrase = "You are Claude Code"
+const antigravityIdentitySentence = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding."
+
 // Harness tag patterns that trigger false 429 RESOURCE_EXHAUSTED rejections on
 // the Antigravity gateway (parity with decolua/9router PR #3987). OMP-family
 // harnesses inject these XML markers in system text; normalizing them to
@@ -374,6 +390,9 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	text = strings.ReplaceAll(text, claudeDualUseSentence, "")
 	text = strings.ReplaceAll(text, claudePastedContentSentence, "")
 	text = strings.ReplaceAll(text, claudePastedContentClause, "")
+	text = strings.ReplaceAll(text, claudeCodeIdentitySentenceSDK, antigravityIdentitySentence)
+	text = strings.ReplaceAll(text, claudeCodeIdentitySentence, antigravityIdentitySentence)
+	text = strings.ReplaceAll(text, claudeCodeIdentityPhrase, "You are Antigravity")
 	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
 	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	if isSystemInstruction {
