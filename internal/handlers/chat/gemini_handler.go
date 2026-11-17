@@ -150,6 +150,12 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	if err != nil {
 		if uErr, ok := err.(*proxy.UpstreamError); ok {
 			recordAntigravityOutcome(connectionID, uErr.StatusCode, uErr.Body)
+			if uErr.StatusCode == http.StatusNotFound {
+				// The account does not serve this model. Park it: the discovery
+				// roster cannot say so (it also omits models the account does
+				// serve), so a real 404 is the only evidence worth caching.
+				NoteAntigravityModelNotFound(connectionID, modelName)
+			}
 			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
 				if dur, ok := extractResetDuration(uErr.Body); ok {
 					BlockAntigravityModelUntil(connectionID, modelName, time.Now().UTC().Add(dur))

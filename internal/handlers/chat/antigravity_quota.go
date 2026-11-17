@@ -43,11 +43,21 @@ var (
 	// served roster from fetchAvailableModels. Bundled catalog rows that
 	// the account does not serve must be blocked before routing, or every
 	// request to them 404s at Cloud Code.
-	agRosterMu      sync.RWMutex
-	agRosterCache   = make(map[string]map[string]struct{}) // connectionID -> served model id set
-	agLastRefreshAt = make(map[string]time.Time)           // connectionID -> last refresh timestamp
-	agInflightMu    sync.Mutex
-	agInflight      = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
+	agRosterMu    sync.RWMutex
+	agRosterCache = make(map[string]map[string]struct{}) // connectionID -> served model id set
+	// agRosterMissBlocked records (connection, model) pairs the upstream itself
+	// answered 404 for. The discovery roster is ADVISORY: a tiered account can
+	// serve a model the RPC never lists — gemini-4-carbon answered 200 on
+	// daily-cloudcode-pa for an account whose fetchAvailableModels omits it —
+	// and trusting the roster alone parked a working model until the process
+	// restarted. Absence from the roster now costs one request; only an actual
+	// 404 parks the pair.
+	agRosterMissMu       sync.RWMutex
+	agRosterMissBlocked  = make(map[string]time.Time) // connectionID|model -> blockUntil
+	agRosterMissBlockTTL = 6 * time.Hour
+	agLastRefreshAt      = make(map[string]time.Time) // connectionID -> last refresh timestamp
+	agInflightMu         sync.Mutex
+	agInflight           = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
 
 	// MinAntigravityQuotaRefreshInterval prevents hammering quota API during 429 bursts.
 	MinAntigravityQuotaRefreshInterval = 30 * time.Second
@@ -114,6 +124,9 @@ func ClearAntigravityQuotaCache() {
 	agRosterMu.Lock()
 	agRosterCache = make(map[string]map[string]struct{})
 	agRosterMu.Unlock()
+	agRosterMissMu.Lock()
+	agRosterMissBlocked = make(map[string]time.Time)
+	agRosterMissMu.Unlock()
 
 	agWeeklyMu.Lock()
 	agWeeklyCache = make(map[string]map[string]AntigravityWeeklyQuota)
@@ -171,12 +184,46 @@ func IsAntigravityModelServed(connectionID, model string) bool {
 	return false
 }
 
+// NoteAntigravityModelNotFound parks a (connection, model) pair the upstream
+// answered 404 for, which is the only evidence that the account truly does not
+// serve it. See agRosterMissBlocked for why the roster alone is not enough.
+func NoteAntigravityModelNotFound(connectionID, model string) {
+	if connectionID == "" || model == "" {
+		return
+	}
+	agRosterMissMu.Lock()
+	agRosterMissBlocked[connectionID+"|"+model] = time.Now().UTC().Add(agRosterMissBlockTTL)
+	agRosterMissMu.Unlock()
+	log.Warn("ag_quota", "upstream does not serve model", "connection", shortConnID(connectionID), "model", model)
+}
+
+// antigravityModelNotServed reports whether the upstream has already answered
+// 404 for this (connection, model) pair within the block window.
+func antigravityModelNotServed(connectionID, model string) bool {
+	agRosterMissMu.RLock()
+	until, ok := agRosterMissBlocked[connectionID+"|"+model]
+	agRosterMissMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if until.After(time.Now().UTC()) {
+		return true
+	}
+	agRosterMissMu.Lock()
+	delete(agRosterMissBlocked, connectionID+"|"+model)
+	agRosterMissMu.Unlock()
+	return false
+}
+
 // IsAntigravityModelBlocked reports whether connectionID has an exhausted quota for model until resetAt.
 func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if connectionID == "" || model == "" {
 		return false
 	}
-	if !IsAntigravityModelServed(connectionID, model) {
+	// A model the discovery RPC omits is not proof the account cannot serve it:
+	// the roster is advisory and the upstream 404 is the only verdict. Block
+	// only after one real attempt told us so.
+	if !IsAntigravityModelServed(connectionID, model) && antigravityModelNotServed(connectionID, model) {
 		return true
 	}
 
