@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"testing"
@@ -171,6 +172,55 @@ func TestRefusalsAreScopedPerPool(t *testing.T) {
 	if got == "" {
 		t.Error("a refusal in one pool must not exhaust another pool")
 	}
+}
+
+// A dead proxy socket is an egress failure, not an upstream one. The 429 path was
+// already walked; this covers the other shape, where the request never reached
+// the provider at all and the error carries no status code.
+//
+// The distinction matters because both look identical in the log ("Post ...:
+// <error>" with status 0), but one is fixed by rotating and the other is not.
+// proxyEgressIsDead tells them apart by dialling the proxy's own address: a
+// socket that refuses that would refuse any target.
+func TestProxyEgressIsDeadDistinguishesDeadSocketFromLiveProxy(t *testing.T) {
+	// A listen-then-close listener gives a port that is open at test time and
+	// closed afterwards, so the probe sees a refused connection without
+	// depending on any particular unroutable address.
+	closed := closedPort(t)
+
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "closed port is dead", url: "socks5://u:p@" + closed, want: true},
+		{name: "empty url is not a dead egress", url: "", want: false},
+		{name: "unparseable url is not a dead egress", url: "://nonsense", want: false},
+	}
+
+	h := &ChatHandler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := h.proxyEgressIsDead(&ConnectionData{ResolvedProxyURL: tt.url, ProxyPoolID: "p"})
+			if got != tt.want {
+				t.Errorf("proxyEgressIsDead(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// closedPort returns host:port that nothing is listening on.
+func closedPort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return addr
 }
 
 // Credentials must never reach a log line or a label.

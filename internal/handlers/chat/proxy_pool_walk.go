@@ -1,11 +1,20 @@
 package chat
 
 import (
+	"context"
 	"errors"
+	"net"
+	"net/url"
+	"time"
 
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 )
+
+// proxyEgressProbeTimeout bounds the reachability dial on the failure path. It
+// is short because the client is already waiting: a proxy that has not accepted
+// a TCP connection in this long is not going to serve the retry either.
+const proxyEgressProbeTimeout = 3 * time.Second
 
 // walkPoolOnFreeTierRefusal retries a refused OpenCode free-tier attempt against
 // the next proxy in the same pool, and returns the answer the caller should act
@@ -42,10 +51,6 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalFor(f forwardRequestParams, connI
 		return first
 	}
 	provider, model := f.Provider, f.Model
-	var ue *upstreamError
-	if !errors.As(first, &ue) || !isOpencodeFreeTierRefusal(provider, ue) {
-		return first
-	}
 
 	connData := f.ConnData
 	if connData.ProxyPoolID == "" {
@@ -53,6 +58,24 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalFor(f forwardRequestParams, connI
 	}
 	pool, poolErr := h.Repo.GetProxyPool(connData.ProxyPoolID)
 	if poolErr != nil || pool == nil || len(pool.URLs) == 0 {
+		return first
+	}
+
+	// Two failures belong to the egress and are worth walking past.
+	//
+	// The first is the gate saying "not this egress" with a classified body.
+	// The second has no body at all: the proxy socket itself refused the
+	// connection, so the request never reached opencode and the error is a bare
+	// transport failure. That one used to fall straight through to a 502 —
+	// three dead sockets in the operator's pool produced three instant 502s
+	// with the rest of the pool untried.
+	//
+	// A transport failure is only treated as egress-owned after the failing
+	// proxy itself is proven dead, which is what keeps a genuine upstream outage
+	// from walking the whole pool.
+	var ue *upstreamError
+	classified := errors.As(first, &ue) && isOpencodeFreeTierRefusal(provider, ue)
+	if !classified && !h.proxyEgressIsDead(connData) {
 		return first
 	}
 
@@ -85,10 +108,11 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalFor(f forwardRequestParams, connI
 			return nil
 		}
 		var next *upstreamError
-		if !errors.As(err, &next) || !isOpencodeFreeTierRefusal(provider, next) {
-			// A different failure on a different proxy is that proxy's own
-			// answer, and the existing machinery already knows what to do with
-			// it. Hand it back rather than walking the rest of the pool.
+		nextClassified := errors.As(err, &next) && isOpencodeFreeTierRefusal(provider, next)
+		// Same two cases as the entry test. A dead socket on the NEXT proxy ends
+		// the walk only if that proxy is itself proven dead — otherwise the
+		// failure is the upstream's and walking on would just burn the pool.
+		if !nextClassified && !h.proxyEgressIsDead(connData) {
 			return err
 		}
 	}
@@ -99,4 +123,49 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalFor(f forwardRequestParams, connI
 			"pool", connData.ProxyPoolID, "tried", walked, "poolSize", len(pool.URLs))
 	}
 	return err
+}
+
+// proxyEgressIsDead reports whether the proxy this request just used cannot be
+// dialled at all.
+//
+// It exists to tell two identical-looking transport failures apart. The log
+// line is the same for both — "Post ...: <error>" with status 0 — but one means
+// the egress is gone and the pool has better options, while the other means the
+// upstream is having a bad afternoon and no amount of rotation will help.
+//
+// The test is whether a TCP connection can be opened to the proxy's own
+// listen address. That is a fact about the proxy, not about opencode: a socket
+// that refuses the proxy dial would refuse any target. It costs one dial with a
+// short deadline, and only on the failure path, so the happy path never pays
+// for it (AGENTS.md §4.G: nothing new per successful request).
+//
+// A proxy that accepts the connection but fails later (TLS, CONNECT rejection,
+// the gate's own 5xx) is deliberately NOT reported dead: those are the
+// upstream's answers travelling through a working egress.
+func (h *ChatHandler) proxyEgressIsDead(connData *ConnectionData) bool {
+	if connData == nil || connData.ResolvedProxyURL == "" {
+		return false
+	}
+	parsed, err := url.Parse(connData.ResolvedProxyURL)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+
+	host := parsed.Host
+	if _, _, splitErr := net.SplitHostPort(host); splitErr != nil {
+		// Default the SOCKS port so a URL written without one still probes the
+		// address the transport would dial.
+		host = net.JoinHostPort(host, "1080")
+	}
+
+	dialer := &net.Dialer{Timeout: proxyEgressProbeTimeout}
+	conn, err := dialer.DialContext(context.Background(), "tcp", host)
+	if err != nil {
+		log.Warn("fallback", "proxy egress is unreachable, walking the pool",
+			"proxy", redactProxyURL(connData.ResolvedProxyURL),
+			"pool", connData.ProxyPoolID, "error", err)
+		return true
+	}
+	_ = conn.Close()
+	return false
 }

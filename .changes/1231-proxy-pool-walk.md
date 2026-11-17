@@ -54,6 +54,17 @@ offer:
   `walkPoolOnFreeTierRefusalFor` takes the connection identity because this lane
   has no stored row to pass.
 
+- **A dead proxy socket walks too.** The two failures look identical in the log —
+  `Post ...: <error>` with status 0 — but only one is fixed by rotating. A
+  transport failure is now treated as egress-owned after `proxyEgressIsDead`
+  proves it, by dialling the proxy's own listen address with a 3s deadline: a
+  socket that refuses that would refuse any target. Three dead sockets in a pool
+  used to produce three instant 502s with the rest of the pool untried. The
+  probe runs only on the failure path, so a successful request pays nothing, and
+  a proxy that accepts the connection then fails (TLS, a rejected CONNECT, or
+  the provider's own 5xx) is deliberately NOT reported dead — those are the
+  upstream's answers through a working egress.
+
 Not addressed here: a `429` that names a long reset (`retry_after_s=7200` in the
 report) is a per-egress window no walk can shorten. That is the per-provider proxy
 cooldown's job. This change makes the router *use the pool it was given*; that one
