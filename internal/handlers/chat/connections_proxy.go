@@ -67,6 +67,12 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 
 	var proxyURLStr string
 	var proxyType string
+	// noProxy is the pool's (or legacy connection's) bypass list. It used to be
+	// read only for edge relays, so a dialable pool's field was stored, shown in
+	// the dashboard, and ignored on the path that actually dials. An empty
+	// string means "never bypass", which is the behaviour for every caller that
+	// does not name a list.
+	var noProxy string
 	// The row's own flag, which the pool below may override. Seeding it here is
 	// what makes a legacy connection's strict setting mean anything: the
 	// declaration alone would leave it false for every connection that is not
@@ -103,6 +109,7 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		}
 		proxyType = pool.Type
 		strictProxy = pool.StrictProxy
+		noProxy = pool.NoProxy
 		// Name the pool for the log line. The lookup already happened, so this
 		// costs nothing, and "Vercel Relay" answers a question a UUID cannot.
 		connData.ResolvedProxyPool = pool.Name
@@ -138,12 +145,17 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 			if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
 				strictProxy = sp
 			}
+			if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
+				noProxy = np
+			}
 		}
 		if proxyEnabled || strings.TrimSpace(proxyURL) != "" {
 			proxyIntended = true
 		}
 		if proxyEnabled && proxyURL != "" {
 			proxyURLStr = proxyURL
+			// The scheme travels in the URL; the dial gate below reads it off the
+			// parsed URL, so this only labels the log line.
 			proxyType = "http"
 		}
 	}
@@ -179,6 +191,15 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
 			return nil, fmt.Errorf("%w: unparseable proxy url %q", internalproxy.ErrStrictProxyRequired, proxyURLStr)
 		}
+		return h.Client, nil
+	}
+
+	// noProxy names targets that must not travel through the proxy. It was read
+	// only for edge relays, so a dialable pool's bypass list was stored,
+	// displayed in the dashboard, and never applied: a target it named still
+	// went out through the proxy.
+	if target := connData.BaseURL; target != "" && internalproxy.ShouldBypassNoProxy(target, noProxy) {
+		log.Debug("proxy", "target matches noProxy, routing direct", "pool", connData.ProxyPoolID, "target", target)
 		return h.Client, nil
 	}
 

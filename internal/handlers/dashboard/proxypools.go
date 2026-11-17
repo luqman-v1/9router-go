@@ -14,6 +14,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // countProxyPoolBindings counts, per pool, what still points at it. A pool is
@@ -243,16 +244,12 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	proxyParsed, err := url.Parse(targetURL)
-	if err != nil {
-		h.writeProbeResult(w, id, false, 0, "invalid proxy URL format")
+	tr, probeErr := poolProbeTransport(targetURL)
+	if probeErr != "" {
+		h.writeProbeResult(w, id, false, 0, probeErr)
 		return
 	}
 
-	tr := &http.Transport{
-		Proxy:             http.ProxyURL(proxyParsed),
-		DisableKeepAlives: true,
-	}
 	defer tr.CloseIdleConnections()
 	client := &http.Client{
 		Transport: tr,
@@ -409,4 +406,29 @@ func (h *DashboardHandler) testRelayPool(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	finish(true, "")
+}
+
+// poolProbeTransport returns the transport the pool test endpoint probes
+// through, or a message for the operator when the URL cannot be dialled.
+//
+// It goes through proxy.NewSafeTransportForProxy rather than building its own
+// http.Transport: the shared constructor validates the scheme and applies the
+// SSRF dialer's proxy exemption, so a pool this reports as healthy is one
+// requests can actually dial. A hand-built transport accepted any scheme
+// url.Parse accepted and could report "passed" for a pool the request path
+// would refuse.
+func poolProbeTransport(targetURL string) (*http.Transport, string) {
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		return nil, "invalid proxy URL format"
+	}
+	if !proxy.ProxyURLDialable(targetURL) {
+		return nil, "unsupported proxy protocol in " + parsed.Scheme
+	}
+
+	tr := proxy.NewSafeTransportForProxy(targetURL)
+	// The probe opens one connection and discards it; keep-alives would leave
+	// the socket to the idle timeout instead of closing with the request.
+	tr.DisableKeepAlives = true
+	return tr, ""
 }
