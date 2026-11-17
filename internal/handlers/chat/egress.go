@@ -31,13 +31,32 @@ type Egress struct {
 // LogValue returns the short form for a log line: the pool's name when it has
 // one, else its id, else the target, else "direct". It lands on every usage row,
 // so it stays short.
+//
+// A pool that names a specific proxy appends it, because the pool name alone
+// cannot say which of its egresses served the turn — the question to ask when
+// one of them is refusing. Without it, twenty proxies behind one pool all
+// logged as the same string and rotation was invisible per request.
+//
+// Relays are excluded: a relay is one deployment already identified by the pool
+// name, so appending its host adds a second name for the same egress.
 func (e Egress) LogValue() string {
+	proxy := ""
+	if e.Kind == "http" {
+		proxy = logLabel(e.Target)
+	}
 	switch {
 	case e.PoolName != "":
+		if proxy != "" {
+			return logLabel(e.PoolName) + " (" + proxy + ")"
+		}
 		return logLabel(e.PoolName)
 	case e.PoolID != "":
+		if proxy != "" {
+			return logLabel(e.PoolID) + " (" + proxy + ")"
+		}
 		return e.PoolID
 	case e.Target != "":
+		// A relay with no connection row behind it: the host is all there is.
 		return logLabel(e.Target)
 	default:
 		return "direct"
@@ -67,16 +86,21 @@ func resolveEgress(connData *ConnectionData, cfg *providers.ProviderConfig) Egre
 	poolID, poolName := assignedPool(connData)
 
 	if cfg != nil && cfg.RelayURL != "" {
+		// A relay is one deployment, not a rotating set: the pool name or id
+		// already identifies the egress exactly, so no proxy is appended.
 		return Egress{Kind: "relay", PoolID: poolID, PoolName: poolName, Target: cfg.RelayURL}
 	}
 	if connData == nil {
 		return Egress{Kind: "direct"}
 	}
 	if poolID != "" {
-		return Egress{Kind: "http", PoolID: poolID, PoolName: poolName}
+		// Target carries the specific proxy URL rotation picked, redacted. The
+		// pool name alone cannot say which of a pool's proxies served the turn,
+		// which is the first question asked when one of them is refusing.
+		return Egress{Kind: "http", PoolID: poolID, PoolName: poolName, Target: redactProxyURL(connData.ResolvedProxyURL)}
 	}
 	if enabled, proxyURL := legacyProxyFields(connData); enabled {
-		return Egress{Kind: "http", PoolID: poolID, PoolName: poolName, Target: proxyURL}
+		return Egress{Kind: "http", PoolID: poolID, PoolName: poolName, Target: redactProxyURL(proxyURL)}
 	}
 	return Egress{Kind: "direct"}
 }

@@ -107,7 +107,7 @@ func (h *ChatHandler) handleAccountFallback(
 				return h.tryForwardWithConnection(forwardRequestParams{
 					Ctx: ctx, W: w, Provider: provider, Model: model,
 					ConnectionID: connID, ConnName: connName, ConnEmail: connEmail,
-					ConnData: &ConnectionData{APIKey: apiKey, ProxyPoolID: h.ResolveProviderProxyPoolID(provider)}, Body: body, Attempts: 1,
+					ConnData: &ConnectionData{APIKey: apiKey, Provider: provider, ProxyPoolID: h.ResolveProviderProxyPoolID(provider)}, Body: body, Attempts: 1,
 					IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 				})
 			} else {
@@ -122,7 +122,7 @@ func (h *ChatHandler) handleAccountFallback(
 			proxyPoolID := h.ResolveProviderProxyPoolID(provider)
 			if err := h.tryForwardWithConnection(forwardRequestParams{
 				Ctx: ctx, W: w, Provider: provider, Model: model,
-				ConnectionID: "default", ConnData: &ConnectionData{APIKey: apiKey, ProxyPoolID: proxyPoolID}, Body: body, Attempts: 1,
+				ConnectionID: "default", ConnData: &ConnectionData{APIKey: apiKey, Provider: provider, ProxyPoolID: proxyPoolID}, Body: body, Attempts: 1,
 				IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 			}); err != nil {
 				// Same contract as the multi-connection loop's return: a
@@ -308,6 +308,13 @@ func (h *ChatHandler) handleAccountFallback(
 			// Cooling the account down would mark it unhealthy over an egress
 			// verdict, so the cooldown stays untouched.
 			if isOpencodeFreeTierRefusal(provider, ue) {
+				// Park this specific egress for this provider before moving
+				// on. Excluding the pool below lasts only the turn, so the
+				// next request would walk back into the proxy that was just
+				// refused and spend another attempt learning the same thing.
+				// Keyed by (provider, proxy): the same proxy stays available
+				// to every other provider, which never received this verdict.
+				parkRefusedProxy(provider, connData, ue)
 				if poolID := connData.ProxyPoolID; poolID != "" {
 					log.Warn("fallback", "opencode free-tier refusal, rotating proxy pool",
 						"conn", connObj.ID, "provider", provider, "model", model, "pool", poolID)

@@ -408,7 +408,7 @@ func (h *ChatHandler) querySystemOneRouter(ctx context.Context, targetModel, sta
 			log.Warn("combo", "smart-router: no credentials for router provider", "provider", modelInfo.Provider)
 			return nil, fmt.Errorf("no router credentials")
 		}
-		connData = &ConnectionData{ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider)}
+		connData = &ConnectionData{Provider: modelInfo.Provider, ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider)}
 	}
 	apiKey := ExtractAPIKey(connData)
 	connID := ""

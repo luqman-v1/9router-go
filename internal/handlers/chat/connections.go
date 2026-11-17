@@ -321,7 +321,11 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				connData := &ConnectionData{
 					AccessToken: "public",
 				}
-				connData.ProxyPoolID = h.ResolveProviderProxyPoolID(provider, excludePools...)
+				// The same funnel the stored-connection path uses, so the
+				// provider is recorded here too. This is the shape the keyless
+				// OpenCode free lane takes, which is exactly the lane whose
+				// refusals the proxy cooldown has to attribute.
+				h.applyProviderProxyPool(connData, provider, excludePools...)
 				publicName := "Public"
 				conn := &models.ProviderConnection{
 					ID:       "noauth",
@@ -588,6 +592,11 @@ func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider 
 	if connData == nil {
 		return
 	}
+	// Recorded here because this is the one funnel every resolution path
+	// passes through with the provider already in hand. The proxy cooldown is
+	// keyed by (provider, proxy), so a refusal can only be attributed to an
+	// egress if the provider reached the client resolver.
+	connData.Provider = provider
 	excluded := excludedFrom(excludePools)
 	if connData.ProxyPoolID != "" {
 		if !excluded[connData.ProxyPoolID] {

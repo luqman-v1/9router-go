@@ -6,7 +6,9 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	internalproxy "9router/proxy/internal/proxy"
 )
@@ -96,7 +98,7 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 			log.Warn("proxy", "assigned pool is inactive", "pool", connData.ProxyPoolID)
 			return nil, fmt.Errorf("proxy pool %q is assigned but inactive", connData.ProxyPoolID)
 		}
-		proxyURLStr = pool.NextURL()
+		proxyURLStr = h.nextProxyURL(connData, pool)
 		if proxyURLStr == "" {
 			log.Warn("proxy", "assigned pool has no url", "pool", connData.ProxyPoolID)
 			return nil, fmt.Errorf("proxy pool %q is assigned but carries no url", connData.ProxyPoolID)
@@ -106,6 +108,10 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		// Name the pool for the log line. The lookup already happened, so this
 		// costs nothing, and "Vercel Relay" answers a question a UUID cannot.
 		connData.ResolvedProxyPool = pool.Name
+		// The specific URL rotation chose. A refusal has to name the egress that
+		// earned it, and with twenty proxies behind one pool the pool name says
+		// nothing about which one served the turn.
+		connData.ResolvedProxyURL = proxyURLStr
 
 		if pool.IsEdgeRelay() {
 			// A relay is an HTTPS endpoint that forwards on x-relay-target /
@@ -266,4 +272,36 @@ func (h *ChatHandler) relayClient(relayURL string) *http.Client {
 	clone.Transport = internalproxy.RelayTransport(relayURL, base.Transport)
 	proxyClients[cacheKey] = &clone
 	return &clone
+}
+
+// nextProxyURL picks the pool URL this request should dial, skipping any proxy
+// parked for this provider by a previous refusal.
+//
+// Round-robin alone cannot express "not that one": NextURL is a blind modular
+// counter. A pool whose egresses have been refused one by one would keep handing
+// back a proxy the gate has already closed, and each attempt would deepen the
+// refusal.
+//
+// Every URL cooling is not an error. The request still has to leave, and the
+// alternatives — failing the turn or falling back to the direct client — are
+// both worse than trying a parked proxy: the first refuses service the operator
+// asked for, and the second publishes the host's real IP. So the pool degrades
+// to its ordinary rotation and the refusal path decides again.
+func (h *ChatHandler) nextProxyURL(connData *ConnectionData, pool *db.ProxyPool) string {
+	provider := connData.Provider
+	if provider == "" || !hasProxyCooldownSupport(provider) {
+		return pool.NextURL()
+	}
+
+	now := time.Now()
+	// Bounded by the pool size, which is itself operator-supplied: a pool with
+	// thousands of URLs must not turn one request into thousands of lookups.
+	urls := pool.URLs
+	for i := 0; i < len(urls); i++ {
+		candidate := pool.NextURL()
+		if !proxyCoolingDown(provider, candidate, now) {
+			return candidate
+		}
+	}
+	return pool.NextURL()
 }
