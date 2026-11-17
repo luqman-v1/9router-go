@@ -293,3 +293,37 @@ func TestForwardGemini_Bare429RetryFails_ReturnsOriginal429(t *testing.T) {
 		t.Errorf("ForwardGemini() made %d requests, want 2 (original + retry)", hits.Load())
 	}
 }
+
+// TestForwardGemini_GeminiCLIDoesNotTriggerAntigravity429Retry verifies that
+// gemini-cli format connections skip the bare-429 retry path. The retry is
+// Antigravity-specific (WrapForAntigravity), so a gemini-cli connection must
+// return the 429 directly instead of attempting the moved-systemInstruction
+// retry.
+func TestForwardGemini_GeminiCLIDoesNotTriggerAntigravity429Retry(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}`)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/v1internal", Format: "gemini-cli"}
+	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
+
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
+	}
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("ForwardGemini() error type = %T, want *UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("ForwardGemini() status = %d, want 429", ue.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("ForwardGemini() made %d requests, want 1 (no retry for gemini-cli)", hits.Load())
+	}
+}

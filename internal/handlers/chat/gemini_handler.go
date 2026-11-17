@@ -47,7 +47,7 @@ func (h *ChatHandler) antigravityConnData(connectionID string) *shared.Connectio
 // decode responses (finishReason CONTINUATION with a continuationToken).
 // Hydrogen (Gemini 4) models can produce ~1M output tokens; each hop
 // continues from the last token until the response is complete or the
-// hop limit is reached (decolua/9router#5703).
+// hop limit is reached.
 const maxLongDecodeHops = 16
 
 // forwardGeminiNativeRequest handles forwarding for gemini-native providers (antigravity).
@@ -175,7 +175,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	// Long-decode continuation hops: when the model is Hydrogen and the
 	// response carries a finishReason CONTINUATION with a continuationToken,
 	// chain requests to continue the decode until the response is complete
-	// or the hop limit is reached (decolua/9router#5703). The response body
+	// or the hop limit is reached. The response body
 	// is consumed and a fresh one is obtained for each hop.
 	// Handle long-decode continuation hops
 	if isLongDecodeModel(modelName) && !isStream && projectID != "" {
@@ -611,7 +611,7 @@ func (h *ChatHandler) forceRefreshLocked(connectionID string) (oauthTokenResult,
 
 // isLongDecodeModel reports whether a model supports long-decode
 // continuation hops. Currently only Gemini 4 Hydrogen models have the
-// continuationToken mechanism (decolua/9router#5703).
+// continuationToken mechanism.
 func isLongDecodeModel(modelName string) bool {
 	return strings.Contains(strings.ToLower(modelName), "hydrogen")
 }
@@ -718,7 +718,7 @@ func (h *ChatHandler) followLongDecodeContinuation(
 // buildContinuationRequest injects the continuationToken into the request body
 // at the appropriate location. For Gemini native (non-Antigravity) requests
 // the token goes at the top level; for Antigravity requests it goes at
-// request.continuationToken (decolua/9router#5703).
+// request.continuationToken.
 func buildContinuationRequest(body []byte, token string) (string, error) {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {

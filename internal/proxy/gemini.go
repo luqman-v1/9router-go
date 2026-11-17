@@ -163,9 +163,8 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 	// RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED / RATE_LIMIT_EXCEEDED /
 	// "Individual quota reached" marker), the backend flagged the
 	// systemInstruction shape itself. Retry once with the
-	// systemInstruction folded into contents[0] (parity with
-	// decolua/9router#5703).
-	if resp.StatusCode == http.StatusTooManyRequests && projectID != "" {
+	// systemInstruction folded into contents[0].
+	if resp.StatusCode == http.StatusTooManyRequests && projectID != "" && cfg.Format != "gemini-cli" {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 		_ = resp.Body.Close()
 		if isBareResourceExhausted(errBody) {
@@ -292,7 +291,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 // RATE_LIMIT_EXCEEDED, "Individual quota reached"). Such a response means
 // the Antigravity backend flagged the request content itself — typically
 // the systemInstruction shape — and moving the systemInstruction into
-// contents[0] is the upstream fix (decolua/9router#5703).
+// contents[0] is the upstream fix.
 func isBareResourceExhausted(body []byte) bool {
 	s := string(body)
 	if !strings.Contains(s, "RESOURCE_EXHAUSTED") {

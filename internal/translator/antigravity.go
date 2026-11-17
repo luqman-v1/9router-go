@@ -23,7 +23,7 @@ const maxAntigravityOutputTokens = 65536
 // maxHydrogenOutputTokens is the lifted output-token ceiling for Gemini 4
 // Hydrogen models. Hydrogen supports ~1M unified context windows and can
 // produce completions well beyond the 64k Antigravity cap, so the cap is
-// raised to 256k for long-decode continuation hops (decolua/9router#5703).
+// raised to 256k for long-decode continuation hops.
 const maxHydrogenOutputTokens = 256000
 
 // thinkingHeadroomTokens is added on top of thinkingBudget when ensuring
@@ -292,7 +292,7 @@ var (
 	// antigravityOpenClawRegex matches the literal `openclaw` client
 	// identifier upstream rewrites in the system instruction. Upstream's rule
 	// is unbounded and case-insensitive, so `OpenClaw`, `OPENCLAW` and
-	// `openclaw-go` are rewritten too (parity with decolua/9router#5703).
+	// `openclaw-go` are rewritten too (parity with upstream).
 	antigravityOpenClawRegex = regexp.MustCompile(`(?i)openclaw`)
 )
 
@@ -350,8 +350,8 @@ func rewriteAntigravityBrand(text string) string {
 }
 
 // rewriteOpenClawBrand rewrites the literal `openclaw` client
-// identifier to `antigravity`, matching upstream's OpenClaw rewrite row
-// (decolua/9router#5703). Upstream's replacement preserves the
+// identifier to `antigravity`, matching upstream's OpenClaw rewrite row.
+// Upstream's replacement preserves the
 // three capitalisations it names and lowercases everything else.
 func rewriteOpenClawBrand(text string) string {
 	return antigravityOpenClawRegex.ReplaceAllStringFunc(text, func(m string) string {
@@ -387,7 +387,7 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 		// competing-client branding with a fake 429 Quota Exhausted. The
 		// conversation keeps the caller's vocabulary.
 		text = rewriteAntigravityBrand(text)
-		// OpenClaw rewrite row (decolua/9router#5703): competing-client
+		// OpenClaw rewrite row: competing-client
 		// branding in the system instruction.
 		text = rewriteOpenClawBrand(text)
 	}
@@ -767,8 +767,7 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 // isHydrogenModel reports whether modelName identifies a Gemini 4 Hydrogen
 // model. Hydrogen models have a 1M unified context window and can produce
 // completions well beyond the Antigravity cap, so they get a lifted
-// output-token ceiling and long-decode continuation hops
-// (decolua/9router#5703).
+// output-token ceiling and long-decode continuation hops.
 func isHydrogenModel(modelName string) bool {
 	return strings.Contains(strings.ToLower(modelName), "hydrogen")
 }
@@ -791,7 +790,7 @@ func antigravityCanonicalThinkingLevel(body []byte) []byte {
 // hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
 // rejects and caps maxOutputTokens at the model-specific limit. For Hydrogen
 // (Gemini 4) models the cap is lifted to maxHydrogenOutputTokens to prevent
-// truncation of long decode responses (decolua/9router#5703). For all other
+// truncation of long decode responses. For all other
 // models it caps at maxAntigravityOutputTokens. It leaves the request
 // byte-for-byte intact when nothing needs changing so thought signatures
 // on functionCall/thought parts are never re-encoded (which would corrupt them).
@@ -803,7 +802,7 @@ func hardenAntigravityRequest(geminiBody []byte, modelName string) []byte {
 
 	// Hydrogen (Gemini 4) supports output tokens well beyond 64k; lifting
 	// the Antigravity cap for Hydrogen models prevents truncation of long
-	// decode responses (decolua/9router#5703).
+	// decode responses.
 	maxCap := maxAntigravityOutputTokens
 	if isHydrogenModel(modelName) {
 		maxCap = maxHydrogenOutputTokens
@@ -1077,7 +1076,7 @@ func UnwrapAntigravityResponse(raw []byte) []byte {
 // Used by ForwardGemini as a 1-hop fallback retry: the Antigravity backend
 // answers a bare 429 RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED details) when
 // it rejects the systemInstruction shape itself, and moving it to
-// contents[0] is the upstream fix (decolua/9router#5703).
+// contents[0] is the upstream fix.
 func MoveSystemInstructionToContents(body []byte) ([]byte, bool) {
 	// jsontext.Value, not map[string]any: every member the rewrite does not
 	// touch keeps its original bytes, so a tool call's thought signature is

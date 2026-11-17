@@ -34,7 +34,9 @@ Models and behavior are aligned with Antigravity's live `fetchAvailableModels` c
 - `internal/proxy/gemini.go`: when the Antigravity backend answers a bare
   429 `RESOURCE_EXHAUSTED` (without `QUOTA_EXHAUSTED`, `RATE_LIMIT_EXCEEDED`, or
   `"Individual quota reached"` marker), `ForwardGemini` retries once with the
-  `systemInstruction` folded into `contents[0]` as a user-role turn. Explicit
+  `systemInstruction` folded into `contents[0]` as a user-role turn. The retry
+  is gated on `cfg.Format != "gemini-cli"` — `gemini-cli` connections skip it
+  because the retry is Antigravity-specific (`WrapForAntigravity`). Explicit
   quota errors are never retried. If the retry also fails, the original 429 is
   returned so the combo loop can rotate the connection.
 - `internal/translator/antigravity.go`: `MoveSystemInstructionToContents` implements
