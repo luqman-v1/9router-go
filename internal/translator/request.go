@@ -820,6 +820,13 @@ func dropClaudeIdentitySystemBlock(system any) any {
 	switch s := system.(type) {
 	case string:
 		if isClaudeIdentityBanner(s) {
+			// Cut the banner paragraph only. Returning "" here would also cut
+			// whatever was appended after it — a system turn lifted out of the
+			// middle of the history lands in this same string — and silently
+			// losing that reminder is the failure this lane exists to prevent.
+			if i := strings.Index(s, "\n"); i >= 0 {
+				return strings.TrimSpace(s[i+1:])
+			}
 			return ""
 		}
 		return system
