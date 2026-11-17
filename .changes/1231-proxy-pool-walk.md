@@ -65,6 +65,10 @@ offer:
   the provider's own 5xx) is deliberately NOT reported dead — those are the
   upstream's answers through a working egress.
 
+- **A 60s wall-clock budget bounds the walk**, so a pool of hundreds of dead
+  proxies cannot hold a client request for minutes; the last upstream answer is
+  returned when it expires.
+
 Not addressed here: a `429` that names a long reset (`retry_after_s=7200` in the
 report) is a per-egress window no walk can shorten. That is the per-provider proxy
 cooldown's job. This change makes the router *use the pool it was given*; that one

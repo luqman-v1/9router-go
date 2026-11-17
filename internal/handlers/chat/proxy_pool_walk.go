@@ -16,6 +16,12 @@ import (
 // a TCP connection in this long is not going to serve the retry either.
 const proxyEgressProbeTimeout = 3 * time.Second
 
+// proxyWalkBudget bounds the whole walk. A pool of hundreds of dead or
+// exhausted proxies cannot be allowed to hold one client request for minutes:
+// after this window the last upstream answer is returned, which is the same
+// answer the client would have got from a single attempt, just sooner.
+const proxyWalkBudget = 60 * time.Second
+
 // walkPoolOnFreeTierRefusal retries a refused OpenCode free-tier attempt against
 // the next proxy in the same pool, and returns the answer the caller should act
 // on.
@@ -81,11 +87,18 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalFor(f forwardRequestParams, connI
 
 	err := first
 	walked := 0
+	deadline := time.Now().Add(proxyWalkBudget)
 	for walked < len(pool.URLs) {
+		if time.Now().After(deadline) {
+			log.Warn("fallback", "proxy walk budget exhausted, reporting last refusal",
+				"conn", connID, "provider", provider, "model", model,
+				"pool", connData.ProxyPoolID, "tried", walked, "poolSize", len(pool.URLs))
+			break
+		}
 		// Record the proxy that just refused, then ask the pool for one it has
 		// not spent. "" means every URL is now spent.
 		refuseProxy(connData)
-		if nextProxyURL(connData, pool) == "" {
+		if h.selectProxyURL(connData, pool, true) == "" {
 			break
 		}
 		if f.Ctx.Err() != nil {

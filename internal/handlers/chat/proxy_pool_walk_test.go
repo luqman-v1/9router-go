@@ -104,7 +104,7 @@ func TestResolveReportsExhaustionWhenEveryProxyIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pool: %v", err)
 	}
-	if got := nextProxyURL(connData, pool); got != "" {
+	if got := h.nextProxyURL(connData, pool); got != "" {
 		t.Errorf("nextProxyURL() = %q, want \"\" once every proxy is spent", got)
 	}
 }
@@ -132,7 +132,7 @@ func TestResolveWithoutRefusalsIsPlainRotation(t *testing.T) {
 
 	seen := map[string]bool{}
 	for i := 0; i < 4; i++ {
-		got := nextProxyURL(connData, pool)
+		got := h.nextProxyURL(connData, pool)
 		if got == "" {
 			t.Fatal("nextProxyURL() = \"\" with no refusals recorded")
 		}
@@ -168,7 +168,7 @@ func TestRefusalsAreScopedPerPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pool: %v", err)
 	}
-	got := nextProxyURL(other, pool)
+	got := h.nextProxyURL(other, pool)
 	if got == "" {
 		t.Error("a refusal in one pool must not exhaust another pool")
 	}
