@@ -46,6 +46,46 @@ Some feature issues in this repo are not parity requests against `decolua/9route
 5. **Provider IDs are not portable verbatim.** OmniRoute has its own catalog. Map to `9router-go` provider IDs and obey §3 (strict provider isolation — no cross-provider aliasing or model hijacking).
 6. **Preserve upstream error semantics.** OmniRoute surfaces typed error classes with explicit status codes (e.g. `409 no_credit`); port that distinction rather than collapsing every upstream failure into one generic error.
 
+### Secondary Reference: magpie / magpie-community plugins (Qoder wire contract)
+
+For **Qoder (`qoder`, `qoder-cn`) work only**, `yetone/magpie` and its community
+plugin are a merged-only behavioral reference alongside `decolua/9router`:
+
+- **Core repository**: `https://github.com/yetone/magpie` (default branch `main`).
+  Its built-in Qoder sign-in/requests are retired; what remains is the account
+  migration (`internal/provider/migrate_qoder.go`) and the daily check-in caller
+  (`internal/provider/qoder_checkin.go`).
+- **Authoritative Qoder wire contract**:
+  `https://github.com/magpie-community/plugins/tree/main/packages/qoder` —
+  the `@magpie-community/opencode-qoder-auth` package (v0.2.71 at the reference
+  commit). `packages/qoder/index.mjs` is the request/SSE/queue/check-in
+  implementation; `packages/qoder/README.md` documents every URL, header, error
+  code, model-list rule and retry path. `packages/qoder/*.test.mjs` are the
+  upstream edge-case tests.
+- **Reference commits pinned by this repo**: magpie
+  `acc358f071bf64730eadc1704956f8686a9d7359`, plugins
+  `afe4c086436099db7fb53b7e80ab54d04b654015` (both on `main`, 2026-11-17).
+  Verify newer merges with `git log`/`git branch --contains` before porting.
+
+**magpie Qoder porting protocol**
+1. **Merged-only, same as §1.** Use only commits on the plugin's `main` branch
+   or a published npm release. Never port from an open PR or a discussion.
+2. **The plugin README + tests are the spec.** Read `packages/qoder/README.md`
+   and the relevant `*.test.mjs` first; do not guess Qoder's envelope, queue or
+   error codes from memory.
+3. **Port the contract, not the JavaScript.** Implement in idiomatic Go using
+   the streaming, pooling and typed-struct rules in §4. Do not transliterate
+   `index.mjs` into Go.
+4. **Strict provider isolation still applies.** Qoder and Qoder CN keep their
+   own hosts, credentials, models and account state; neither is ever aliased to
+   the other or to any sibling provider (§3). The ported check-in keeps both
+   sites separate (`internal/qodercheckin`).
+5. **§1 wins on conflict.** Where the plugin disagrees with `decolua/9router`,
+   keep the decolua behavior for the shared gateway contract and record the
+   deliberate divergence in the `.changes/` fragment (§7.6).
+6. **No new dependency.** The Qoder port uses only the standard library and
+   packages already in `go.mod` (§4.F).
+
 ---
 
 ## 2. Architecture & Codebase Mapping

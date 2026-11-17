@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/qodercheckin"
 	"9router/proxy/internal/schedule"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
@@ -116,6 +117,8 @@ func ProvideServer(p ServerParams) *http.Server {
 			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
+			// Claim Qoder daily credits on boot and every 30 minutes.
+			startQoderCheckin(shutdown.Context(), p.Repo, config.ResolveDataDir())
 			db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
 			// The Gemini Web session cookie is renewed by the site every few
 			// minutes, and the renewed value is what keeps a signed-in
@@ -257,6 +260,24 @@ func startUptimeHeartbeat(ctx context.Context, repo *db.Repo) {
 	)
 	go loop.Run(ctx)
 	log.Println("[uptime] heartbeat loop started")
+}
+
+// startQoderCheckin claims Qoder's daily credits on a 30-minute loop. The
+// setting is read on every tick, so toggling qoderCheckin in the dashboard
+// takes effect without a restart. Credentials come from the stored Qoder
+// connections and never leave this process except to that site's openapi host.
+func startQoderCheckin(ctx context.Context, repo *db.Repo, dataDir string) {
+	if repo == nil {
+		return
+	}
+	ledger := filepath.Join(dataDir, "qoder-checkin.json")
+	checker, err := qodercheckin.NewChecker(ledger, nil)
+	if err != nil {
+		log.Printf("[qoder-checkin] init failed: %v", err)
+		return
+	}
+	loop := qodercheckin.NewLoop(checker, qodercheckin.ConfigFromRepo(repo), qodercheckin.RepoAccounts(repo))
+	go loop.Run(ctx)
 }
 
 // startHeadroomOnBoot launches the local Headroom proxy sidecar if enabled in settings.
