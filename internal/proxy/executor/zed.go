@@ -119,8 +119,10 @@ func zedStripModelPrefix(model string) string {
 
 // BuildZedCompletionBody wraps an OpenAI chat-completions request in Zed's
 // envelope. threadID, when non-empty, is sent as the top-level thread_id so
-// Zed can group the turn with the rest of its session.
-func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID string) ([]byte, error) {
+// Zed can group the turn with the rest of its session. apiKeyID scopes the
+// Gemini thought-signature lookup on the google wire provider, so two keys on
+// one account never replay each other's signature.
+func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID string, apiKeyID ...string) ([]byte, error) {
 	trimmed := bytes.TrimSpace(openAIRequest)
 	if len(trimmed) == 0 {
 		return nil, fmt.Errorf("zed: empty request body")
@@ -137,7 +139,11 @@ func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID st
 	case "open_ai":
 		providerRequest, err = zedResponsesProviderRequest(trimmed, wire.Model)
 	case "google":
-		providerRequest, err = zedGoogleProviderRequest(trimmed, wire.Model)
+		key := ""
+		if len(apiKeyID) > 0 {
+			key = apiKeyID[0]
+		}
+		providerRequest, err = zedGoogleProviderRequest(trimmed, wire.Model, key)
 	default:
 		return nil, fmt.Errorf("zed: unsupported wire provider %q", wire.Provider)
 	}
@@ -407,9 +413,10 @@ func zedAggregateGeminiSSE(raw []byte) []byte {
 // zedGoogleProviderRequest builds the Google (Gemini) body nested in the
 // envelope. Zed's google provider speaks the Gemini dialect — "contents" with
 // "parts", and the generation settings under "generationConfig" — which the
-// repository's own OpenAI→Gemini converter already produces.
-func zedGoogleProviderRequest(openAIBody []byte, model string) (map[string]any, error) {
-	converted, err := translator.TranslateOpenAIToGemini(openAIBody)
+// repository's own OpenAI→Gemini converter already produces. apiKeyID scopes
+// the thought-signature lookup; Zed sends no session header of its own.
+func zedGoogleProviderRequest(openAIBody []byte, model string, apiKeyID string) (map[string]any, error) {
+	converted, err := translator.TranslateOpenAIToGeminiWithSession(openAIBody, "", apiKeyID)
 	if err != nil {
 		return nil, fmt.Errorf("zed: convert request to gemini: %w", err)
 	}
@@ -701,7 +708,7 @@ func ForwardZed(w http.ResponseWriter, req *Request) error {
 		return proxy.UpstreamFailure(http.StatusBadRequest, err.Error())
 	}
 
-	envelope, err := BuildZedCompletionBody(req.Body, wire, req.SessionID)
+	envelope, err := BuildZedCompletionBody(req.Body, wire, req.SessionID, req.APIKeyID)
 	if err != nil {
 		return proxy.UpstreamFailure(http.StatusBadRequest, err.Error())
 	}

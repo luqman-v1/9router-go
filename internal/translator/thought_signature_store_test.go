@@ -135,6 +135,34 @@ func TestThoughtSignatureStore_FamilyScoping(t *testing.T) {
 	}
 }
 
+// TestThoughtSignatureStore_CrossKeyIsolation pins that a signature stored
+// under one API key is invisible to another key on the same account. Both
+// requests carry no session header, so the bare tool-call id is all they
+// share: without key scoping the lookup would replay key A's signature for
+// key B's tool call and Gemini would reject the request as corrupted.
+func TestThoughtSignatureStore_CrossKeyIsolation(t *testing.T) {
+	ClearGeminiThoughtSignatures()
+	t.Cleanup(func() { SetThoughtSignaturePersistence(nil) })
+
+	const (
+		apiKeyA = "key-a"
+		apiKeyB = "key-b"
+		callID  = "call_shared_1"
+		sigA    = "SIG_FROM_KEY_A"
+		sigB    = "SIG_FROM_KEY_B"
+	)
+
+	StoreGeminiThoughtSignature(callID, sigA, "", "gemini-3.8-flash", apiKeyA)
+	StoreGeminiThoughtSignature(callID, sigB, "", "gemini-3.8-flash", apiKeyB)
+
+	if got := GetGeminiThoughtSignature(callID, "", "gemini-3.8-flash", apiKeyA); got != sigA {
+		t.Errorf("key A must read its own signature %q, got %q", sigA, got)
+	}
+	if got := GetGeminiThoughtSignature(callID, "", "gemini-3.8-flash", apiKeyB); got != sigB {
+		t.Errorf("key B must read its own signature %q, got %q", sigB, got)
+	}
+}
+
 func TestNormalizeGeminiThoughtSignature(t *testing.T) {
 	// Standard valid signature
 	if got := NormalizeGeminiThoughtSignature(DefaultThinkingSignature); got != DefaultThinkingSignature {

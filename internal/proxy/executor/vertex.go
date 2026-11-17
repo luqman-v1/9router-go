@@ -285,7 +285,7 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 		}
 		sendBody = req.Body
 	} else {
-		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(req.Body, req.SessionID)
+		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(req.Body, req.SessionID, req.APIKeyID)
 		if err != nil {
 			return fmt.Errorf("ForwardVertex: translate to Gemini: %w", err)
 		}
