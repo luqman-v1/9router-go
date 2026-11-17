@@ -210,9 +210,14 @@ func (p *PersistentLRUStore) InvalidateByModel(ctx context.Context, model string
 }
 
 // InvalidateByModelAndPrefix deletes matching entries in both memory and SQLite.
-// The model match is case-insensitive like the LRU filter; key prefix matches
-// any key whose stored key starts with the given prefix (keys are hex digests,
-// so no LIKE escaping is needed).
+// The in-memory LRU filter matches the model case-insensitively; the SQLite
+// delete matches it exactly (case-sensitive), so on a case-mismatched request
+// the in-memory entry and its disk row are removed by different predicates. The
+// prefix matches any key whose stored key starts with keyPrefix (keys are hex
+// digests, so no LIKE escaping is needed), and an empty prefix drops the key
+// predicate. An empty model leaves the SQL comparing the model to the empty
+// string, which matches no row: pass a real model or a prefix, never an empty
+// model alone.
 func (p *PersistentLRUStore) InvalidateByModelAndPrefix(ctx context.Context, model, keyPrefix string) int {
 	count := p.lru.InvalidateByModelAndPrefix(ctx, model, keyPrefix)
 	if p.db != nil {

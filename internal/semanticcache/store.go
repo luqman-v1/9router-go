@@ -165,9 +165,9 @@ func (s *LRUStore) InvalidateByModel(_ context.Context, model string) int {
 	return count
 }
 
-// InvalidateByModelAndPrefix removes all entries matching the given model name
-// whose key starts with keyPrefix. An empty model matches every model; an empty
-// prefix matches every key.
+// InvalidateByModelAndPrefix removes all entries matching the given model name,
+// compared case-insensitively, whose key starts with keyPrefix. An empty model
+// matches every model; an empty prefix matches every key.
 func (s *LRUStore) InvalidateByModelAndPrefix(_ context.Context, model, keyPrefix string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -258,9 +258,8 @@ func TestHandleGetCacheEntries_And_Delete(t *testing.T) {
 	}
 }
 
-// HandleInvalidateSemanticCache requires at least one filter and clears
-// entries matching both model (case-insensitive exact) and key prefix
-// (case-sensitive), ANDed.
+// HandleInvalidateSemanticCache requires at least one filter and reports the
+// number of entries it removed as `invalidated`, alongside `success`.
 func TestHandleInvalidateSemanticCache(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -299,12 +298,26 @@ func TestHandleInvalidateSemanticCache(t *testing.T) {
 		t.Fatalf("empty body status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// Model only (case-insensitive): matches both gpt-4o entries -> 2 deleted.
+	// Model only: both gpt-4o entries match (case-insensitively in memory) ->
+	// 2 reported invalidated, 1 left.
 	modelReq := httptest.NewRequest(http.MethodPost, "/api/cache/semantic/invalidate", strings.NewReader(`{"model":"gpt-4o"}`))
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, modelReq)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("model status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var inv struct {
+		Invalidated *int `json:"invalidated"`
+		Success     bool `json:"success"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &inv); err != nil {
+		t.Fatalf("decode invalidate response %q: %v", rec.Body.String(), err)
+	}
+	if inv.Invalidated == nil {
+		t.Fatalf("response %q missing \"invalidated\"", rec.Body.String())
+	}
+	if *inv.Invalidated != 2 || !inv.Success {
+		t.Errorf("response = %q, want invalidated=2 success=true", rec.Body.String())
 	}
 	if sc.Len() != 1 {
 		t.Fatalf("sc.Len = %d after gpt-4o invalidate, want 1", sc.Len())
