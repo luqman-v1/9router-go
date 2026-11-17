@@ -123,30 +123,71 @@ func (h *ChatHandler) rotatedActiveProxyPoolWithin(provider, strategy string, ex
 	if h.Repo == nil {
 		return "", nil
 	}
-	ids := h.Repo.ActivePoolIDs()
-	if len(ids) == 0 {
+	allIDs := h.Repo.ActivePoolIDs()
+	if len(allIDs) == 0 {
 		return "", nil
 	}
-	if len(excluded) > 0 {
-		usable := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if !excluded[id] {
-				usable = append(usable, id)
+
+	hasCooling := hasProxyCooldownSupport(provider)
+	now := time.Now()
+
+	if strings.ToLower(strings.TrimSpace(strategy)) == "random" {
+		usable := make([]string, 0, len(allIDs))
+		fresh := make([]string, 0, len(allIDs))
+		for _, id := range allIDs {
+			if excluded[id] {
+				continue
+			}
+			usable = append(usable, id)
+			if !hasCooling || !poolCoolingDown(provider, id, now) {
+				fresh = append(fresh, id)
 			}
 		}
 		if len(usable) == 0 {
 			return "", errNoUsablePool
 		}
-		ids = usable
+		if len(fresh) > 0 {
+			return fresh[rand.IntN(len(fresh))], nil
+		}
+		return usable[rand.IntN(len(usable))], nil
 	}
-	if strings.ToLower(strings.TrimSpace(strategy)) == "random" {
-		return ids[rand.IntN(len(ids))], nil
-	}
+
 	// Keyed on the resolved alias so `oc` and `opencode` share one cursor: they
 	// are the same provider and must advance together.
-	cursor, _ := poolRotationCursors.LoadOrStore(providers.ResolveAlias(provider), new(atomic.Uint64))
-	idx := cursor.(*atomic.Uint64).Add(1) - 1
-	return ids[idx%uint64(len(ids))], nil
+	//
+	// Scan forward over the stable allIDs list from the current cursor position
+	// rather than indexing into a pre-filtered slice: removing an excluded or
+	// cooled entry from a filtered slice shifts every subsequent index by -1
+	// while the cursor also advances by +1, skipping every second pool.
+	raw, _ := poolRotationCursors.LoadOrStore(providers.ResolveAlias(provider), new(atomic.Uint64))
+	cursor := raw.(*atomic.Uint64)
+	n := uint64(len(allIDs))
+	start := cursor.Load()
+
+	// Pass 1: pick the next unexcluded, non-cooling pool in exact 1-by-1 order.
+	if hasCooling {
+		for offset := uint64(0); offset < n; offset++ {
+			id := allIDs[(start+offset)%n]
+			if excluded[id] || poolCoolingDown(provider, id, now) {
+				continue
+			}
+			cursor.Store(start + offset + 1)
+			return id, nil
+		}
+	}
+
+	// Pass 2: either provider has no cooldown tracking or every unexcluded pool
+	// is currently cooling — pick the next unexcluded pool in 1-by-1 order.
+	for offset := uint64(0); offset < n; offset++ {
+		id := allIDs[(start+offset)%n]
+		if excluded[id] {
+			continue
+		}
+		cursor.Store(start + offset + 1)
+		return id, nil
+	}
+
+	return "", errNoUsablePool
 }
 
 // providerStrategyKeys lists the settings keys a provider's pool may be stored

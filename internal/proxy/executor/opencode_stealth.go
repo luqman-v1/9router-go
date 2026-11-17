@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -34,9 +36,11 @@ type opencodeStealthClient struct {
 	client tls_client.HttpClient
 }
 
+const maxOpencodeStealthClients = 128
+
 var (
 	opencodeClientMu sync.Mutex
-	opencodeClients  = make(map[string]*opencodeStealthClient)
+	opencodeClients  = make(map[string]*opencodeStealthClient, maxOpencodeStealthClients)
 )
 
 var opencodePseudoHeaderOrder = []string{":method", ":path", ":authority", ":scheme"}
@@ -164,6 +168,7 @@ func newOpencodeClientProfile() profiles.ClientProfile {
 func newOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, error) {
 	options := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(120),
+		tls_client.WithDialer(net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}),
 		tls_client.WithClientProfile(newOpencodeClientProfile()),
 		tls_client.WithNotFollowRedirects(),
 	}
@@ -188,23 +193,11 @@ func opencodeProxyFrom(reference *http.Client) string {
 	if reference == nil {
 		return ""
 	}
-	rt := reference.Transport
-	if fb, ok := rt.(*proxy.FallbackTransport); ok {
-		rt = fb.Base
-	}
-	transport, ok := rt.(*http.Transport)
-	if !ok || transport.Proxy == nil {
-		return ""
-	}
 	target, err := url.Parse("https://opencode.ai")
 	if err != nil {
 		return ""
 	}
-	proxyURL, err := transport.Proxy(&http.Request{URL: target})
-	if err != nil || proxyURL == nil {
-		return ""
-	}
-	return strings.TrimRight(proxyURL.String(), "/")
+	return strings.TrimRight(proxy.ProxyURLForTarget(reference, target), "/")
 }
 
 func getOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, error) {
@@ -217,6 +210,15 @@ func getOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, e
 	client, err := newOpencodeStealthClient(reference)
 	if err != nil {
 		return nil, err
+	}
+	if len(opencodeClients) >= maxOpencodeStealthClients {
+		for victimKey, victim := range opencodeClients {
+			if victim != nil && victim.client != nil {
+				victim.client.CloseIdleConnections()
+			}
+			delete(opencodeClients, victimKey)
+			break
+		}
 	}
 	opencodeClients[proxyURL] = client
 	return client, nil
@@ -262,7 +264,8 @@ func (s *opencodeStealthClient) forward(ctx context.Context, targetURL string, h
 		Body:       resp.Body,
 	}
 	for k, v := range resp.Header {
-		httpResp.Header[k] = v
+		ck := http.CanonicalHeaderKey(k)
+		httpResp.Header[ck] = append(httpResp.Header[ck], v...)
 	}
 	return httpResp, nil
 }

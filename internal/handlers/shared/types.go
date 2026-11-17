@@ -72,6 +72,14 @@ type ConnectionData struct {
 	// instead of printing a UUID nobody recognises. Set per request rather than
 	// persisted, so a rename shows up in the next log line.
 	ResolvedProxyPool string `json:"-"`
+
+	// Provider is the provider this connection is serving on this request.
+	//
+	// It travels on the struct rather than as a parameter because proxy state is
+	// keyed by (provider, proxy): a 429 is one provider's verdict on one egress,
+	// and the same proxy stays usable for every other provider. The client
+	// resolver is called from many sites, most with no provider in scope.
+	Provider string `json:"-"`
 }
 
 // IsMediaActive reports whether the connection data permits media routing for the service kind.

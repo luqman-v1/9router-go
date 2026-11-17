@@ -29,19 +29,11 @@ func proxiesViaAssignment(client *http.Client) bool {
 }
 
 func transportProxyIsAssigned(rt http.RoundTripper) bool {
-	switch t := rt.(type) {
-	case nil:
-		return false
-	case *http.Transport:
-		return proxyFuncIsAssigned(t.Proxy)
-	case *FallbackTransport:
-		// FallbackTransport owns a Base/Direct pair and already escapes an
-		// ambient proxy through its own Direct leg. Base is the path the caller
-		// chose, so that is the one to inspect.
-		return transportProxyIsAssigned(t.Base)
-	default:
+	tr := unwrapHTTPTransport(rt)
+	if tr == nil {
 		return false
 	}
+	return proxyFuncIsAssigned(tr.Proxy)
 }
 
 func proxyFuncIsAssigned(proxy func(*http.Request) (*url.URL, error)) bool {

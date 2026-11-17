@@ -326,39 +326,76 @@ func (h *ChatHandler) nextProxyURL(connData *ConnectionData, pool *db.ProxyPool)
 
 // selectProxyURL is nextProxyURL with the walk override.
 func (h *ChatHandler) selectProxyURL(connData *ConnectionData, pool *db.ProxyPool, refuseOnly bool) string {
-	_ = refuseOnly // no cooldown state exists on this branch
+	provider := connData.Provider
 	refused := connData.RefusedProxies[connData.ProxyPoolID]
 
 	// Nothing to skip: the plain rotation is exactly right and costs one call.
-	if len(refused) == 0 {
+	if len(refused) == 0 && (refuseOnly || provider == "" || !hasProxyCooldownSupport(provider) || !poolHasCoolingProxy(provider, pool)) {
 		return pool.NextURL()
 	}
 
 	now := time.Now()
-	// Bounded by the pool size, which is itself operator-supplied: a pool with
-	// thousands of URLs must not turn one request into thousands of lookups.
-	//
-	// One draw beyond the pool size, because NextURL advances its cursor BEFORE
-	// reading: a pool of N returns each URL once per N calls but starts
-	// mid-cycle, so a loop of exactly N can revisit a URL and never reach
-	// another — reporting the pool exhausted while untried proxies remained.
 	urls := pool.URLs
-	for i := 0; i <= len(urls); i++ {
-		candidate := pool.NextURL()
-		if refused[candidate] {
-			continue
+
+	// Pass 1: prefer a URL that is neither spent this turn nor cooling down.
+	if !refuseOnly && provider != "" && hasProxyCooldownSupport(provider) {
+		for i := 0; i <= len(urls); i++ {
+			candidate := pool.NextURL()
+			if refused[candidate] || proxyCoolingDown(provider, candidate, now) {
+				continue
+			}
+			return candidate
 		}
-		_ = now
-		return candidate
 	}
 
-	// This turn spent every proxy it was offered. Reporting "" lets the caller
-	// distinguish "this pool is exhausted for the turn" from "this request could
-	// not be routed", which a non-empty URL would blur.
+	// Pass 2: if every remaining URL is cooling (or refuseOnly is true), still
+	// return any unrefused URL rather than aborting with "".
+	for i := 0; i <= len(urls); i++ {
+		candidate := pool.NextURL()
+		if !refused[candidate] {
+			return candidate
+		}
+	}
+
+	// Every URL in this pool was refused during this turn.
 	if len(refused) > 0 {
 		return ""
 	}
 	return pool.NextURL()
+}
+
+// poolHasUnrefusedURL reports whether pool holds at least one URL not yet
+// refused during the current turn, without advancing pool's round-robin cursor.
+func poolHasUnrefusedURL(connData *ConnectionData, pool *db.ProxyPool) bool {
+	if pool == nil || !pool.IsActive || len(pool.URLs) == 0 {
+		return false
+	}
+	if connData == nil {
+		return true
+	}
+	refused := connData.RefusedProxies[connData.ProxyPoolID]
+	if len(refused) == 0 {
+		return true
+	}
+	for _, u := range pool.URLs {
+		if !refused[u] {
+			return true
+		}
+	}
+	return false
+}
+
+// poolHasCoolingProxy reports whether any proxy in the pool is currently parked
+// for provider. It lets the common case — no cooldowns at all — skip the
+// scanning loop entirely, so a healthy pool costs exactly what it did before.
+func poolHasCoolingProxy(provider string, pool *db.ProxyPool) bool {
+	now := time.Now()
+	for _, u := range pool.URLs {
+		if proxyCoolingDown(provider, u, now) {
+			return true
+		}
+	}
+	return false
 }
 
 // refuseProxy records that the turn's current proxy answered with a free-tier
@@ -385,23 +422,4 @@ func refuseProxy(connData *ConnectionData) {
 		connData.RefusedProxies[connData.ProxyPoolID] = set
 	}
 	set[connData.ResolvedProxyURL] = true
-}
-
-// redactProxyURL removes the userinfo from a proxy URL so it can be logged.
-// A pool of hundreds of proxies carries hundreds of passwords, and this value
-// lands in fallback log lines.
-func redactProxyURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	schemeEnd := strings.Index(raw, "://")
-	if schemeEnd < 0 {
-		return raw
-	}
-	at := strings.LastIndex(raw, "@")
-	if at < schemeEnd {
-		return raw
-	}
-	return raw[:schemeEnd+3] + "***" + raw[at:]
 }

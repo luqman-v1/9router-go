@@ -1081,6 +1081,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 					isKnownNoAuth = true
 					connData = &ConnectionData{
 						APIKey:      cfg.DefaultAPIKey,
+						Provider:    modelInfo.Provider,
 						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 					}
 				} else {
@@ -1165,14 +1166,18 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 					upstreamJSON = clampMimoFreeReasoning(upstreamJSON, modelInfo.Model)
 					fwdErr = h.MimoFreeChat(fwdCtx, targetWriter, upstreamJSON, isStream, comboMetrics)
 				} else {
-					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
+					comboParams := forwardRequestParams{
 						Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 						RequestedModel: comboName, ComboName: comboName, Attempts: attemptCount(ctx),
 						ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 						ConnData: connData, Body: upstreamJSON,
 						IsStream: isStream, TranslateResponse: translateResponse,
 						Endpoint: forwardEndpoint(ctx, "/v1/chat/completions"),
-					})
+					}
+					fwdErr = h.tryForwardWithConnection(comboParams)
+					if fwdErr != nil && (timeoutGate == nil || !timeoutGate.timedOut()) {
+						fwdErr = h.walkPoolOnFreeTierRefusalFor(comboParams, connID, connObjName(picked), connObjEmail(picked), fwdErr)
+					}
 				}
 				if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
 					fwdErr = context.DeadlineExceeded
@@ -1584,6 +1589,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 					isKnownNoAuth = true
 					connData = &ConnectionData{
 						APIKey:      cfg.DefaultAPIKey,
+						Provider:    modelInfo.Provider,
 						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 					}
 				} else {
@@ -1661,14 +1667,18 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				translateResp := !upstreamClaude && !translator.IsResponsesClient(ctx)
 
 				attemptStart := time.Now()
-				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
+				msgComboParams := forwardRequestParams{
 					Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 					RequestedModel: comboName, ComboName: comboName, Attempts: attemptCount(ctx),
 					ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 					ConnData: connData, Body: upstreamJSON,
 					IsStream: isStream, TranslateResponse: translateResp,
 					Endpoint: forwardEndpoint(ctx, "/v1/messages"),
-				})
+				}
+				fwdErr := h.tryForwardWithConnection(msgComboParams)
+				if fwdErr != nil && (timeoutGate == nil || !timeoutGate.timedOut()) {
+					fwdErr = h.walkPoolOnFreeTierRefusalFor(msgComboParams, connID, connObjName(picked), connObjEmail(picked), fwdErr)
+				}
 				if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
 					fwdErr = context.DeadlineExceeded
 				}

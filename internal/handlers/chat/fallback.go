@@ -80,12 +80,14 @@ func (h *ChatHandler) handleAccountFallback(
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
 		log.Debug("fallback", "pinned", "pinnedConn", pinnedConnectionID, "connObj", connObj.ID)
-		return h.tryForwardWithConnection(forwardRequestParams{
+		pinnedParams := forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
 			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
 			ConnData: connData, Body: body, Attempts: 1,
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-		})
+		}
+		err = h.tryForwardWithConnection(pinnedParams)
+		return opencodeClosureError(provider, model, h.walkPoolOnFreeTierRefusal(pinnedParams, connObj, err))
 	}
 
 	if !handlerutil.IsProbeContext(ctx) && !h.Repo.IsProviderAvailable(ctx, provider, model) {
@@ -104,12 +106,14 @@ func (h *ChatHandler) handleAccountFallback(
 		if provider == "opencode-go" {
 			if connID, connName, connEmail, apiKey, bErr := h.borrowZenKeyForGo(ctx, model); bErr == nil {
 				log.Warn("fallback", "opencode-go has no connection, borrowing opencode-zen key", "conn", connID)
-				return h.tryForwardWithConnection(forwardRequestParams{
+				borrowParams := forwardRequestParams{
 					Ctx: ctx, W: w, Provider: provider, Model: model,
 					ConnectionID: connID, ConnName: connName, ConnEmail: connEmail,
 					ConnData: &ConnectionData{APIKey: apiKey, ProxyPoolID: h.ResolveProviderProxyPoolID(provider)}, Body: body, Attempts: 1,
 					IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-				})
+				}
+				bFwdErr := h.tryForwardWithConnection(borrowParams)
+				return opencodeClosureError(provider, model, h.walkPoolOnFreeTierRefusalFor(borrowParams, connID, connName, connEmail, bFwdErr))
 			} else {
 				log.Debug("fallback", "no zen key to borrow for opencode-go", "error", bErr)
 			}
@@ -256,7 +260,7 @@ func (h *ChatHandler) handleAccountFallback(
 		// a different proxy and the refused one is skipped. The bound is the pool
 		// size: a hundred proxies is a hundred attempts, which is what the
 		// operator asked for by assigning a hundred.
-		err = h.walkPoolOnFreeTierRefusal(params, connObj, err)
+		err = h.walkPoolOnFreeTierRefusalWithExcluded(params, connObj.ID, connObjName(connObj), connObjEmail(connObj), excludedPools, err)
 		if err == nil {
 			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 200, nil, time.Since(attemptStart).Milliseconds())
 			if sessionID := handlerutil.GetSessionID(ctx); sessionID != "" && affinityEligible {

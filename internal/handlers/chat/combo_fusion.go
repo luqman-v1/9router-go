@@ -164,6 +164,7 @@ func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(c
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			connData = &ConnectionData{
 				APIKey:      cfg.DefaultAPIKey,
+				Provider:    modelInfo.Provider,
 				ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 			}
 		} else {
@@ -187,11 +188,15 @@ func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(c
 		}
 
 		rec := &responseBuffer{header: http.Header{}}
-		fwdErr := h.tryForwardWithConnection(forwardRequestParams{
+		fusionParams := forwardRequestParams{
 			Ctx: ctx, W: rec, Provider: modelInfo.Provider, Model: modelInfo.Model,
 			ConnectionID: connID, ConnData: connData, Body: upstreamJSON, Attempts: 1,
 			IsStream: false, TranslateResponse: false, Endpoint: "/v1/chat/completions",
-		})
+		}
+		fwdErr := h.tryForwardWithConnection(fusionParams)
+		if fwdErr != nil {
+			fwdErr = h.walkPoolOnFreeTierRefusalFor(fusionParams, connID, "", "", fwdErr)
+		}
 		if fwdErr != nil {
 			return &fusionResult{model: entry, err: fwdErr}
 		}
