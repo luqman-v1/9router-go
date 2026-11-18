@@ -414,8 +414,8 @@ func TestForwardZedTwoStageAuth(t *testing.T) {
 	if got := probe.completionSys; got != "sys_auth" {
 		t.Errorf("completion %s = %q, want sys_auth", providers.ZedSystemIDHeader, got)
 	}
-	if got := probe.completionAcc; got != "text/event-stream" {
-		t.Errorf("completion Accept = %q, want text/event-stream", got)
+	if got := probe.completionAcc; got != "application/x-ndjson, text/event-stream, */*" {
+		t.Errorf("completion Accept = %q, want upstream's ndjson/SSE Accept", got)
 	}
 
 	// The envelope: Zed's own shape around the Anthropic body.
@@ -736,5 +736,133 @@ data: {"type":"response.completed","response":{"id":"resp_2","model":"gpt-5.6-lu
 	}
 	if !strings.Contains(out, "hi") {
 		t.Errorf("client did not receive the text delta:\n%s", out)
+	}
+}
+
+// TestBuildZedCompletionBodyOpenAIToolsParity pins the strict Responses shape
+// Zed's open_ai lane requires for a gpt-* tool turn. The previous hand-rolled
+// builder dropped `store:false`, did not normalize an object schema without
+// `properties`, and did not clamp call ids — which is why gpt-5.6-luna tool
+// calls failed upstream.
+func TestBuildZedCompletionBodyOpenAIToolsParity(t *testing.T) {
+	request := `{"model":"gpt-5.6-luna",
+	 "messages":[{"role":"system","content":"be brief"},
+	             {"role":"user","content":"look it up"},
+	             {"role":"assistant","tool_calls":[{"id":"` + strings.Repeat("x", 80) + `","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},
+	             {"role":"tool","tool_call_id":"` + strings.Repeat("x", 80) + `","content":"42"}],
+	 "tools":[{"type":"function","function":{"name":"lookup","description":"d","parameters":{"type":"object"}}}]}`
+	body, err := BuildZedCompletionBody([]byte(request), ZedWireModel{Provider: "open_ai", Model: "gpt-5.6-luna"}, "")
+	if err != nil {
+		t.Fatalf("BuildZedCompletionBody: %v", err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	inner, ok := envelope["provider_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider_request missing: %T", envelope["provider_request"])
+	}
+	if inner["store"] != false {
+		t.Errorf("store = %v, want false", inner["store"])
+	}
+	if got := zedAsString(inner["instructions"]); got != "be brief" {
+		t.Errorf("instructions = %q, want be brief", got)
+	}
+	items, _ := inner["input"].([]any)
+	var sawCall, sawOutput bool
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		switch item["type"] {
+		case "function_call":
+			id, _ := item["call_id"].(string)
+			if len(id) > 64 || id == "" {
+				t.Errorf("function_call call_id len = %d, want <=64 and non-empty", len(id))
+			}
+			sawCall = true
+		case "function_call_output":
+			id, _ := item["call_id"].(string)
+			if len(id) > 64 || id == "" {
+				t.Errorf("function_call_output call_id len = %d, want <=64 and non-empty", len(id))
+			}
+			sawOutput = true
+		}
+	}
+	if !sawCall || !sawOutput {
+		t.Errorf("missing paired tool items: call=%v output=%v", sawCall, sawOutput)
+	}
+	tools, _ := inner["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %v, want one", tools)
+	}
+	tool, _ := tools[0].(map[string]any)
+	params, _ := tool["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Errorf("tool parameters type = %v, want object", params["type"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Errorf("tool parameters properties = %v, want empty object", params["properties"])
+	}
+}
+
+// TestBuildZedCompletionBodyXAI pins xAI as OpenAI-shaped on Zed's wire.
+func TestBuildZedCompletionBodyXAI(t *testing.T) {
+	body, err := BuildZedCompletionBody(
+		[]byte(`{"model":"grok-4","messages":[{"role":"user","content":"hi"}],"stream":false}`),
+		ZedWireModel{Provider: "x_ai", Model: "grok-4"}, "",
+	)
+	if err != nil {
+		t.Fatalf("BuildZedCompletionBody: %v", err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if envelope["provider"] != "x_ai" || envelope["model"] != "grok-4" {
+		t.Errorf("envelope provider/model = %v/%v", envelope["provider"], envelope["model"])
+	}
+	inner, _ := envelope["provider_request"].(map[string]any)
+	if inner["stream"] != true || inner["model"] != "grok-4" {
+		t.Errorf("x_ai provider_request = %v", inner)
+	}
+}
+
+// TestResolveZedWireModelCatalog verifies the live catalogue is authoritative:
+// a model whose id does not match its provider family must still get the right
+// wire dialect. This is the upstream resolveModel() contract.
+func TestResolveZedWireModelCatalog(t *testing.T) {
+	zedCatalogMu.Lock()
+	previous := zedCatalogCache
+	zedCatalogCache = make(map[string]zedCatalogEntry, zedCatalogCacheMax)
+	zedCatalogMu.Unlock()
+	t.Cleanup(func() {
+		zedCatalogMu.Lock()
+		zedCatalogCache = previous
+		zedCatalogMu.Unlock()
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case providers.ZedLLMTokensPath:
+			_, _ = w.Write([]byte(`{"token":"` + zedTestJWT(t, time.Now().Add(time.Hour).Unix()) + `"}`))
+		case providers.ZedModelsPath:
+			_, _ = w.Write([]byte(`{"models":[{"id":"mystery-model","provider":"x_ai","is_disabled":false}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	previousBase := providers.ZedCloudBaseURL()
+	providers.SetZedCloudBaseURL(srv.URL)
+	t.Cleanup(func() { providers.SetZedCloudBaseURL(previousBase) })
+
+	creds := providers.ZedCredentials{AccessToken: "cat-token", UserID: "cat-user", OrganizationID: "cat-org"}
+	wire := resolveZedWireModel(context.Background(), srv.Client(), srv.URL, creds, "mystery-model")
+	if wire.Provider != "x_ai" || wire.Model != "mystery-model" {
+		t.Errorf("catalog wire = %+v, want x_ai/mystery-model", wire)
+	}
+	// A second call must be answered from the bounded cache, not another fetch.
+	wire = resolveZedWireModel(context.Background(), srv.Client(), srv.URL, creds, "mystery-model")
+	if wire.Provider != "x_ai" {
+		t.Errorf("cached catalog wire = %+v, want x_ai", wire)
 	}
 }

@@ -50,6 +50,8 @@ func TestZedWireProvider(t *testing.T) {
 		{"gpt-5.6-luna", "open_ai"},
 		{"gpt-6.1-sol", "open_ai"},
 		{"o3-mini", "open_ai"},
+		{"grok-4", "x_ai"},
+		{"grok-4.7-fast", "x_ai"},
 		{"unknown-model", ""},
 	}
 	for _, tt := range tests {

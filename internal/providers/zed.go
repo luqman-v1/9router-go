@@ -354,17 +354,44 @@ func ZedFetchModels(ctx context.Context, client *http.Client, creds ZedCredentia
 
 // ZedWireProvider maps a model id to the provider name Zed's wire protocol
 // expects. The catalogue reports these names ("anthropic", "google",
-// "open_ai"), and they are also what the model id prefix implies.
+// "open_ai", "x_ai"), and they are also what the model id prefix implies.
 func ZedWireProvider(modelID string) string {
+	return NormalizeZedWireProvider(zedModelFamily(modelID))
+}
+
+// zedModelFamily infers a provider family from a model id. It is only the
+// fallback when the live catalogue cannot say which provider fronts a model.
+func zedModelFamily(modelID string) string {
 	id := strings.ToLower(strings.TrimSpace(modelID))
 	switch {
 	case strings.HasPrefix(id, "claude"):
 		return "anthropic"
 	case strings.HasPrefix(id, "gemini"):
 		return "google"
+	case strings.HasPrefix(id, "grok"), strings.Contains(id, "xai"):
+		return "x_ai"
 	case strings.HasPrefix(id, "gpt"), strings.HasPrefix(id, "o1"), strings.HasPrefix(id, "o3"),
 		strings.HasPrefix(id, "o4"):
 		return "open_ai"
+	}
+	return ""
+}
+
+// NormalizeZedWireProvider maps a catalogue `provider` value (or a family
+// inferred from the model id) onto the exact wire value cloud.zed.dev accepts.
+// The spellings come from Zed's own GET /models payload; an unrecognized value
+// fails the whole completion upstream, so normalization happens here.
+func NormalizeZedWireProvider(value string) string {
+	raw := strings.ToLower(strings.TrimSpace(value))
+	switch raw {
+	case "anthropic":
+		return "anthropic"
+	case "openai", "open_ai":
+		return "open_ai"
+	case "google", "gemini":
+		return "google"
+	case "xai", "x_ai", "x-ai":
+		return "x_ai"
 	}
 	return ""
 }
