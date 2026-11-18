@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"9router/proxy/internal/db"
@@ -72,6 +73,14 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalWithExcluded(
 		excludedPools = make(map[string]bool)
 	}
 
+	// Read the settings row and memoise pool rows for the whole walk. A
+	// bulk-imported pool is one row per proxy, so reading either per step is
+	// 1+N statements over a pool that can hold hundreds of entries
+	// (AGENTS.md §4.A). Both reads feed only selection, so one snapshot per
+	// request is also the more consistent view.
+	settings, _ := h.Repo.GetSettings()
+	poolCache := make(walkPoolCache, 8)
+
 	err := first
 	walked := 0
 	deadline := time.Now().Add(proxyWalkBudget)
@@ -93,7 +102,7 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalWithExcluded(
 		prevPoolID := connData.ProxyPoolID
 		prevProxy := redactProxyURL(connData.ResolvedProxyURL)
 
-		nextPool, ok := h.advanceWalkTarget(provider, connData, pool, excludedPools)
+		nextPool, ok := h.advanceWalkTarget(provider, connData, pool, excludedPools, settings, poolCache)
 		if !ok {
 			break
 		}
@@ -126,6 +135,24 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusalWithExcluded(
 	return err
 }
 
+// walkPoolCache memoises the proxy-pool rows one walk reads, so the number of
+// statements per request follows the pool count rather than the attempt count.
+// A pool binding is stable within a request; an empty entry means "read, and
+// there was nothing usable", which the walk treats the same as a miss.
+type walkPoolCache map[string]*db.ProxyPool
+
+func (c walkPoolCache) get(h *ChatHandler, poolID string) (*db.ProxyPool, error) {
+	if pool, ok := c[poolID]; ok {
+		return pool, nil
+	}
+	pool, err := h.Repo.GetProxyPool(poolID)
+	if err != nil {
+		return nil, err
+	}
+	c[poolID] = pool
+	return pool, nil
+}
+
 // advanceWalkTarget records the just-failed proxy URL and selects the next
 // egress: first any remaining unrefused URL in the current pool, and once the
 // current pool is exhausted (immediately true for single-URL "Imported ..."
@@ -135,6 +162,8 @@ func (h *ChatHandler) advanceWalkTarget(
 	connData *ConnectionData,
 	pool *db.ProxyPool,
 	excludedPools map[string]bool,
+	settings *db.SettingsData,
+	poolCache walkPoolCache,
 ) (*db.ProxyPool, bool) {
 	refuseProxy(connData)
 
@@ -148,11 +177,11 @@ func (h *ChatHandler) advanceWalkTarget(
 	}
 
 	for {
-		nextPoolID, rotErr := h.resolveProviderProxyPoolID(provider, excludedPools)
+		nextPoolID, rotErr := h.resolveProviderProxyPoolIDFrom(provider, excludedPools, settings)
 		if rotErr != nil || nextPoolID == "" || excludedPools[nextPoolID] {
 			return nil, false
 		}
-		nextPool, pErr := h.Repo.GetProxyPool(nextPoolID)
+		nextPool, pErr := poolCache.get(h, nextPoolID)
 		if pErr != nil || nextPool == nil || !nextPool.IsActive || len(nextPool.URLs) == 0 {
 			excludedPools[nextPoolID] = true
 			continue
@@ -197,7 +226,7 @@ func (h *ChatHandler) parkAndClassifyWalkableError(
 	if isClientCanceled(ctx, err) || connData == nil || connData.ResolvedProxyURL == "" {
 		return false
 	}
-	if isProxyTransportError(err) || h.proxyEgressIsDead(connData) {
+	if isProxyTransportError(err) || h.proxyEgressIsDead(ctx, connData) {
 		parkDeadProxyWithPool(provider, connData, pool)
 		return true
 	}
@@ -217,6 +246,20 @@ func isProxyTransportError(err error) bool {
 	if errors.As(err, &opErr) && opErr.Op == "dial" {
 		return true
 	}
+
+	// Typed verdicts first: a transport failure is a property the syscall
+	// reports, and matching it by text breaks whenever Go or a library rewords
+	// a message (AGENTS.md §4.E). These cover refused, reset, unreachable,
+	// timed out and closed-socket, which is the whole list the string table
+	// used to guess at.
+	if isTypedTransportFailure(err) {
+		return true
+	}
+
+	// A narrow text fallback survives for one reason: the SOCKS5 dialer and
+	// net/http's proxy CONNECT path report their failures as formatted strings
+	// with no exported sentinel or type to match, so these three have no typed
+	// equivalent to ask for. Anything added here must meet that same bar.
 	msg := strings.ToLower(err.Error())
 	for _, token := range []string{
 		"socks ",
@@ -224,18 +267,29 @@ func isProxyTransportError(err error) bool {
 		"proxyconnect",
 		"connect tunnel failed",
 		"proxy authentication required",
-		"connection refused",
-		"connection reset by peer",
-		"i/o timeout",
-		"operation timed out",
-		"no route to host",
-		"network is unreachable",
 	} {
 		if strings.Contains(msg, token) {
 			return true
 		}
 	}
 	return false
+}
+
+// isTypedTransportFailure reports whether err is a connection-level failure the
+// standard library names with a sentinel or a syscall error.
+func isTypedTransportFailure(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func writerCommitted(w http.ResponseWriter) bool {
@@ -248,7 +302,7 @@ func writerCommitted(w http.ResponseWriter) bool {
 
 // proxyEgressIsDead reports whether the proxy this request just used cannot be
 // dialled at all.
-func (h *ChatHandler) proxyEgressIsDead(connData *ConnectionData) bool {
+func (h *ChatHandler) proxyEgressIsDead(ctx context.Context, connData *ConnectionData) bool {
 	if connData == nil || connData.ResolvedProxyURL == "" {
 		return false
 	}
@@ -262,8 +316,15 @@ func (h *ChatHandler) proxyEgressIsDead(connData *ConnectionData) bool {
 		host = net.JoinHostPort(host, "1080")
 	}
 
+	// Dial on the caller's context, not context.Background(): a client that has
+	// already gone away must not have this request spend its probe timeout
+	// dialling a socket nobody is waiting for, and the walk's own budget is
+	// carried on that context.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	dialer := &net.Dialer{Timeout: proxyEgressProbeTimeout}
-	conn, err := dialer.DialContext(context.Background(), "tcp", host)
+	conn, err := dialer.DialContext(ctx, "tcp", host)
 	if err != nil {
 		log.Warn("fallback", "proxy egress is unreachable, walking the pool",
 			"proxy", redactProxyURL(connData.ResolvedProxyURL),
