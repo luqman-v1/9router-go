@@ -748,7 +748,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 			return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, transformedBody, req.IsStream)
 		}, func() (*http.Response, error) {
 			return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, transformedBody, req.IsStream)
-		}, rotateOpencodeStableSession(opencodeStableSessionKey(req, true), hint, func(session string) {
+		}, opencodeSessionRotation(req, true, hint, func(session string) {
 			cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, req.IsStream)
 		}))
 		if err != nil {
@@ -833,7 +833,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, body, true)
 	}, func() (*http.Response, error) {
 		return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, body, true)
-	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, true), hint, func(session string) {
+	}, opencodeSessionRotation(req, true, hint, func(session string) {
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, true)
 	}))
 	if err != nil {
@@ -1757,7 +1757,7 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		return forwardOpencodeRequest(ctx, req.Client, &cfg, "public", body, true)
 	}, func() (*http.Response, error) {
 		return forwardOpencodeRequestDirect(ctx, &cfg, "public", body, true)
-	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, true), hint, func(session string) {
+	}, opencodeSessionRotation(req, true, hint, func(session string) {
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, true)
 	}))
 	if err != nil {
@@ -1767,7 +1767,7 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 
 	if req.IsStream {

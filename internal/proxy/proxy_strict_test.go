@@ -191,3 +191,19 @@ func TestForbidDirectReplayLeavesLaxClientsAlone(t *testing.T) {
 		t.Errorf("the lax client transport type = %T, want the pooled *http.Transport", lax.Transport)
 	}
 }
+
+func TestProxyURLForTarget_UnwrapsStrictAndFallbackWrappers(t *testing.T) {
+	const socks = "socks5://user:pass@127.0.0.1:1080"
+	target, err := url.Parse("https://opencode.ai")
+	if err != nil {
+		t.Fatalf("parse target: %v", err)
+	}
+
+	strict := ForbidDirectReplay(poolClient(socks))
+	if got := ProxyURLForTarget(strict, target); got != socks {
+		t.Errorf("ProxyURLForTarget(strict) = %q, want %q", got, socks)
+	}
+	if !proxiesViaAssignment(strict) {
+		t.Error("strict-wrapped pool client must still report proxiesViaAssignment = true")
+	}
+}

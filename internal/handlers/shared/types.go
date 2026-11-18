@@ -42,12 +42,44 @@ type ConnectionData struct {
 	DisabledKinds          []string       `json:"disabledKinds,omitempty"`
 	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 
+	// RefusedProxies is the set of this pool's proxy URLs the current turn has
+	// already spent, keyed by pool id.
+	//
+	// A pool is many egresses behind ONE connection, but the fallback loop
+	// advances over connections. A provider with one connection and a hundred
+	// proxies therefore got one attempt per request: the loop had nowhere else
+	// to go, and the request failed while ninety-nine egresses had never been
+	// tried. Recording what a turn already refused lets the resolver skip to a
+	// proxy it has not tried.
+	//
+	// It lives on the per-request struct rather than in the pool so it cannot
+	// outlive the turn: a proxy that refused one request is not assumed broken
+	// for the next, which is the difference between walking a pool and quietly
+	// shrinking it.
+	RefusedProxies map[string]map[string]bool `json:"-"`
+
+	// ResolvedProxyURL is the pool URL this request actually dialled, after
+	// rotation. A refusal has to name the egress that earned it, and the pool
+	// name alone cannot say which of a hundred proxies served the turn.
+	//
+	// Never persisted and never forwarded — it carries proxy credentials, so it
+	// is redacted before it reaches a log line or the usage row.
+	ResolvedProxyURL string `json:"-"`
+
 	// ResolvedProxyPool is the egress label for this request's pool — the name an
 	// operator gave it in the dashboard ("Vercel Relay"). Filled in by the client
 	// resolver, which already looked the pool up, so a log line can name the pool
 	// instead of printing a UUID nobody recognises. Set per request rather than
 	// persisted, so a rename shows up in the next log line.
 	ResolvedProxyPool string `json:"-"`
+
+	// Provider is the provider this connection is serving on this request.
+	//
+	// It travels on the struct rather than as a parameter because proxy state is
+	// keyed by (provider, proxy): a 429 is one provider's verdict on one egress,
+	// and the same proxy stays usable for every other provider. The client
+	// resolver is called from many sites, most with no provider in scope.
+	Provider string `json:"-"`
 }
 
 // IsMediaActive reports whether the connection data permits media routing for the service kind.

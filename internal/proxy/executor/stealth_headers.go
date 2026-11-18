@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 
+	"9router/proxy/internal/proxy"
 	fhttp "github.com/bogdanfinn/fhttp"
 )
 
@@ -79,17 +80,9 @@ func stealthProxyFrom(reference *http.Client, target string) string {
 	if reference == nil {
 		return ""
 	}
-	transport, ok := reference.Transport.(*http.Transport)
-	if !ok || transport.Proxy == nil {
-		return ""
-	}
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return ""
 	}
-	proxyURL, err := transport.Proxy(&http.Request{URL: parsed})
-	if err != nil || proxyURL == nil {
-		return ""
-	}
-	return proxyURL.String()
+	return proxy.ProxyURLForTarget(reference, parsed)
 }

@@ -214,23 +214,50 @@ func replayInsecureTLS(ctx context.Context, proxyURL, method, url string, header
 	return send(InsecureClientFor(proxyURL), retryReq)
 }
 
-// proxyURLFor reports the proxy a client dials, or "" when it dials directly.
-func proxyURLFor(client *http.Client) string {
-	if client == nil {
+// unwrapHTTPTransport strips router transport wrappers (ForbidDirectReplay and
+// FallbackTransport) to recover the underlying *http.Transport. Without this,
+// a strict-proxy client's forbidDirectReplayTransport hid its Proxy func from
+// stealth TLS clients and insecure-TLS retries, causing strict pools to dial
+// direct instead of through the assigned proxy.
+func unwrapHTTPTransport(rt http.RoundTripper) *http.Transport {
+	for rt != nil {
+		switch t := rt.(type) {
+		case *http.Transport:
+			return t
+		case forbidDirectReplayTransport:
+			rt = t.base
+		case *FallbackTransport:
+			rt = t.Base
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// ProxyURLForTarget reports the proxy URL a client dials to reach target, or ""
+// when it dials directly. Unwraps router transport wrappers so strict-proxy and
+// fallback-wrapped clients preserve their assigned proxy across stealth stacks.
+func ProxyURLForTarget(client *http.Client, target *url.URL) string {
+	if client == nil || target == nil {
 		return ""
 	}
-	tr, ok := client.Transport.(*http.Transport)
-	if !ok || tr.Proxy == nil {
+	tr := unwrapHTTPTransport(client.Transport)
+	if tr == nil || tr.Proxy == nil {
 		return ""
 	}
-	// A fixed Proxy func is an *url.URL under the hood, so asking it about a
-	// throwaway URL reveals the destination without touching the network.
-	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "proxy-target.invalid"}}
-	u, err := tr.Proxy(req)
+	u, err := tr.Proxy(&http.Request{URL: target})
 	if err != nil || u == nil {
 		return ""
 	}
 	return u.String()
+}
+
+// proxyURLFor reports the proxy a client dials, or "" when it dials directly.
+func proxyURLFor(client *http.Client) string {
+	// A fixed Proxy func is an *url.URL under the hood, so asking it about a
+	// throwaway URL reveals the destination without touching the network.
+	return ProxyURLForTarget(client, &url.URL{Scheme: "https", Host: "proxy-target.invalid"})
 }
 
 // isCertificateFailure reports whether err is a TLS chain verification

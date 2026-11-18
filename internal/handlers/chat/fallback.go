@@ -80,12 +80,14 @@ func (h *ChatHandler) handleAccountFallback(
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
 		log.Debug("fallback", "pinned", "pinnedConn", pinnedConnectionID, "connObj", connObj.ID)
-		return h.tryForwardWithConnection(forwardRequestParams{
+		pinnedParams := forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
 			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
 			ConnData: connData, Body: body, Attempts: 1,
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-		})
+		}
+		err = h.tryForwardWithConnection(pinnedParams)
+		return opencodeClosureError(provider, model, h.walkPoolOnFreeTierRefusal(pinnedParams, connObj, err))
 	}
 
 	if !handlerutil.IsProbeContext(ctx) && !h.Repo.IsProviderAvailable(ctx, provider, model) {
@@ -104,12 +106,14 @@ func (h *ChatHandler) handleAccountFallback(
 		if provider == "opencode-go" {
 			if connID, connName, connEmail, apiKey, bErr := h.borrowZenKeyForGo(ctx, model); bErr == nil {
 				log.Warn("fallback", "opencode-go has no connection, borrowing opencode-zen key", "conn", connID)
-				return h.tryForwardWithConnection(forwardRequestParams{
+				borrowParams := forwardRequestParams{
 					Ctx: ctx, W: w, Provider: provider, Model: model,
 					ConnectionID: connID, ConnName: connName, ConnEmail: connEmail,
 					ConnData: &ConnectionData{APIKey: apiKey, ProxyPoolID: h.ResolveProviderProxyPoolID(provider)}, Body: body, Attempts: 1,
 					IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-				})
+				}
+				bFwdErr := h.tryForwardWithConnection(borrowParams)
+				return opencodeClosureError(provider, model, h.walkPoolOnFreeTierRefusalFor(borrowParams, connID, connName, connEmail, bFwdErr))
 			} else {
 				log.Debug("fallback", "no zen key to borrow for opencode-go", "error", bErr)
 			}
@@ -120,11 +124,19 @@ func (h *ChatHandler) handleAccountFallback(
 				apiKey = "public"
 			}
 			proxyPoolID := h.ResolveProviderProxyPoolID(provider)
-			if err := h.tryForwardWithConnection(forwardRequestParams{
+			noAuthParams := forwardRequestParams{
 				Ctx: ctx, W: w, Provider: provider, Model: model,
 				ConnectionID: "default", ConnData: &ConnectionData{APIKey: apiKey, ProxyPoolID: proxyPoolID}, Body: body, Attempts: 1,
 				IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-			}); err != nil {
+			}
+			err := h.tryForwardWithConnection(noAuthParams)
+			// The keyless free lane takes this branch, so the pool walk has to
+			// run here too. Without it the operator's pool was walked on the
+			// stored-connection path and silently abandoned on the one the
+			// OpenCode free tier actually uses: the log showed conn=default, a
+			// handful of proxies, then "free tier refused after retries".
+			err = h.walkPoolOnFreeTierRefusalFor(noAuthParams, "default", "", "", err)
+			if err != nil {
 				// Same contract as the multi-connection loop's return: a
 				// free-tier refusal leaves this path as the classified
 				// answer, not the upstream body verbatim.
@@ -232,12 +244,24 @@ func (h *ChatHandler) handleAccountFallback(
 		// and the exclusion below must all name the account that was dialled.
 		log.Debug("fallback", "connection", "conn", connObj.ID, "candidate", c.ID)
 		attemptStart := time.Now()
-		if err := h.tryForwardWithConnection(forwardRequestParams{
+		params := forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
 			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
 			ConnData: connData, Body: body, Attempts: attemptCount(ctx),
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-		}); err == nil {
+		}
+		err = h.tryForwardWithConnection(params)
+		// A pool is many egresses behind ONE connection, but this loop advances
+		// over connections. Without this walk a provider with one connection and
+		// a hundred proxies got exactly one attempt per request, and the turn
+		// failed while ninety-six egresses had never been tried.
+		//
+		// Each pass re-enters the forward, so the resolver's rotation hands back
+		// a different proxy and the refused one is skipped. The bound is the pool
+		// size: a hundred proxies is a hundred attempts, which is what the
+		// operator asked for by assigning a hundred.
+		err = h.walkPoolOnFreeTierRefusalWithExcluded(params, connObj.ID, connObjName(connObj), connObjEmail(connObj), excludedPools, err)
+		if err == nil {
 			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 200, nil, time.Since(attemptStart).Milliseconds())
 			if sessionID := handlerutil.GetSessionID(ctx); sessionID != "" && affinityEligible {
 				h.getSessionAffinity().Bind(provider, model, sessionID, connObj.ID)
