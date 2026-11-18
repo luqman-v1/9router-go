@@ -6,6 +6,7 @@
   //
   // Credentials and the blocked-key rule are shared with credential.ts
   // (issue #154).
+  import { onMount } from 'svelte'
   import { api, type ProviderConnection } from '../../api/client'
   import {
     credentialPlaceholder,
@@ -18,7 +19,8 @@
     formatEmailLabel,
     submittedConnectionName
   } from '../../lib/privacy'
-  import { getModelsByProviderId } from '../../lib/models'
+  import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
+  import { fetchProviderModelsData, isChatModel } from './types'
 
   export interface ConnectionUpdate {
     name?: string
@@ -106,15 +108,39 @@
   // requested model; this is the editor for that list. An empty list leaves the
   // account unrestricted.
   const isCodex = $derived(connection.provider === 'codex')
-  const codexCatalog = $derived(
-    isCodex ? getModelsByProviderId('codex').map((model) => model.id) : [],
-  )
   function seededCodexModels(): string[] {
     const raw = connection.providerSpecificData?.enabledModels
     return Array.isArray(raw) ? raw.filter((m): m is string => typeof m === 'string') : []
   }
-  let enabledModels = $state<string[]>(seededCodexModels())
+  // The built-in catalogue lags the provider: a model the user added by hand on
+  // the provider page (a customModels kv row) never appears in it, so the
+  // account editor could not grant it. Union the provider's own model list —
+  // catalogue, then custom models, then anything already saved on this account
+  // so a row that no longer exists anywhere can still be unchecked.
+  let providerModels = $state<string[]>([])
   const seededEnabledModels = seededCodexModels()
+  const codexCatalog = $derived(
+    isCodex
+      ? [
+          ...new Set([
+            ...getModelsByProviderId('codex').map((model) => model.id),
+            ...providerModels,
+            ...seededEnabledModels,
+          ]),
+        ]
+      : [],
+  )
+  let enabledModels = $state<string[]>(seededCodexModels())
+  onMount(async () => {
+    if (!isCodex) return
+    const alias = PROVIDER_ID_TO_ALIAS[connection.provider] || connection.provider
+    const { customModels } = await fetchProviderModelsData(connection.provider, alias)
+    providerModels = customModels
+      .filter(
+        (m) => (m.providerAlias === alias || m.providerAlias === connection.provider) && isChatModel(m),
+      )
+      .map((m) => m.id)
+  })
   function toggleCodexModel(id: string) {
     enabledModels = enabledModels.includes(id)
       ? enabledModels.filter((model) => model !== id)
