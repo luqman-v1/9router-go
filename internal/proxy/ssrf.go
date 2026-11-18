@@ -443,15 +443,42 @@ func NewDirectSafeTransport() *http.Transport {
 	return t
 }
 
+// DialableProxyScheme reports whether scheme names a proxy protocol the
+// standard transport can dial. Go's http.Transport speaks HTTP CONNECT
+// (http/https) and, natively, SOCKS5 (socks5/socks5h) — no external client and
+// no custom DialContext is involved.
+//
+// Callers use it to decide whether to install a proxy at all, so an
+// unrecognised scheme is refused where the URL is read rather than surfacing as
+// a dial-time failure after the connection has been committed to it.
+func DialableProxyScheme(scheme string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "http", "https", "socks5", "socks5h":
+		return true
+	}
+	return false
+}
+
+// ProxyURLDialable reports whether proxyURL names a scheme the standard
+// transport can dial.
+func ProxyURLDialable(proxyURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(proxyURL))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return DialableProxyScheme(u.Scheme)
+}
+
 // NewSafeTransportForProxy returns NewSafeTransport's transport for a caller
 // that installs its own proxy: the proxy is set on the transport and its
-// endpoint is exempted from the private-IP guard. An empty or unparseable
-// proxyURL falls back to the ambient path, so a malformed pool URL cannot
-// silently turn into a direct dial.
+// endpoint is exempted from the private-IP guard. An empty, unparseable, or
+// undialable proxyURL falls back to the ambient path, so a malformed pool URL
+// cannot silently turn into a direct dial, and a scheme the transport cannot
+// speak is refused here instead of failing at dial time.
 func NewSafeTransportForProxy(proxyURL string) *http.Transport {
 	t := constants.DefaultHTTPTransportConfig.NewTransport()
 	if proxyURL != "" {
-		if u, err := url.Parse(proxyURL); err == nil && u.Host != "" {
+		if u, err := url.Parse(proxyURL); err == nil && u.Host != "" && DialableProxyScheme(u.Scheme) {
 			t.Proxy = http.ProxyURL(u)
 			t.DialContext = newSafeDialerForProxy(newProxyAllowlist(u.Host)).DialContext
 			return t
