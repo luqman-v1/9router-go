@@ -248,6 +248,18 @@ func (c *Cache) InvalidateByModel(ctx context.Context, model string) int {
 	return c.store.InvalidateByModel(ctx, model)
 }
 
+// InvalidateByModelAndPrefix deletes all entries matching the given model whose
+// cache key starts with keyPrefix. It is the primitive POST /api/cache/semantic
+// invalidation needs: pass prefix = "" to drop the key filter. An empty model
+// does not drop the model filter — it matches no row in the persistent store —
+// so at least one real filter must be set by the caller.
+func (c *Cache) InvalidateByModelAndPrefix(ctx context.Context, model, keyPrefix string) int {
+	if c == nil || c.store == nil {
+		return 0
+	}
+	return c.store.InvalidateByModelAndPrefix(ctx, model, keyPrefix)
+}
+
 // InvalidateOlderThan deletes all entries older than the given duration.
 func (c *Cache) InvalidateOlderThan(ctx context.Context, d time.Duration) int {
 	if c == nil || c.store == nil {

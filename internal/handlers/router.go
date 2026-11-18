@@ -316,6 +316,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Delete("/api/cache", dashH.HandleDeleteCache)
 	r.Get("/api/cache/entries", dashH.HandleGetCacheEntries)
 	r.Delete("/api/cache/entries", dashH.HandleDeleteCacheEntry)
+	r.Post("/api/cache/semantic/invalidate", dashH.HandleInvalidateSemanticCache)
 
 	// Compression Analytics
 	r.Get("/api/analytics/compression", dashH.HandleGetCompressionAnalytics)

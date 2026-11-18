@@ -149,3 +149,67 @@ func TestPersistentLRUStore_Janitor(t *testing.T) {
 		t.Errorf("expected janitor to prune expired DB entries, got %d", store.DBLen())
 	}
 }
+
+func TestPersistentLRUStore_InvalidateByModelAndPrefix_PrefixOnlyRealDB(t *testing.T) {
+	db, cleanup := setupTestSQLite(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	store := NewPersistentStore(db, 10, 1*time.Hour)
+
+	entries := []Entry{
+		{Key: "prefixA-model1", Model: "model-1", ResponseBody: []byte(`{}`), ContentType: "application/json", StoredAt: time.Now()},
+		{Key: "prefixA-model2", Model: "model-2", ResponseBody: []byte(`{}`), ContentType: "application/json", StoredAt: time.Now()},
+		{Key: "prefixB-model1", Model: "model-1", ResponseBody: []byte(`{}`), ContentType: "application/json", StoredAt: time.Now()},
+	}
+	for _, e := range entries {
+		if err := store.Put(ctx, e.Key, e); err != nil {
+			t.Fatalf("put %q: %v", e.Key, err)
+		}
+	}
+
+	if got := store.DBLen(); got != 3 {
+		t.Fatalf("DBLen() = %d, want 3", got)
+	}
+
+	count := store.InvalidateByModelAndPrefix(ctx, "", "prefixA")
+	if count != 2 {
+		t.Errorf("invalidated = %d, want 2", count)
+	}
+
+	if got := store.Len(); got != 1 {
+		t.Errorf("memory Len() = %d, want 1", got)
+	}
+	if got := store.DBLen(); got != 1 {
+		t.Errorf("DBLen() = %d, want 1", got)
+	}
+
+	var dbKeys []string
+	rows, err := db.QueryContext(ctx, `SELECT key FROM semanticCacheEntries`)
+	if err != nil {
+		t.Fatalf("query remaining rows: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		dbKeys = append(dbKeys, k)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows iteration: %v", err)
+	}
+	if len(dbKeys) != 1 || dbKeys[0] != "prefixB-model1" {
+		t.Errorf("DB rows = %v, want [prefixB-model1]", dbKeys)
+	}
+
+	store2 := NewPersistentStore(db, 10, 1*time.Hour)
+	defer store2.Close()
+	if _, ok := store2.Get(ctx, "prefixA-model1"); ok {
+		t.Error("prefixA-model1 reappeared after hydration")
+	}
+	if _, ok := store2.Get(ctx, "prefixB-model1"); !ok {
+		t.Error("prefixB-model1 missing after hydration")
+	}
+}

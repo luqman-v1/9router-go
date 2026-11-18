@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Store is the storage interface for cache entries.
 type Store interface {
+	InvalidateByModelAndPrefix(ctx context.Context, model, keyPrefix string) int
 	Get(ctx context.Context, key string) (Entry, bool)
 	Put(ctx context.Context, key string, e Entry) error
 	Delete(ctx context.Context, key string) bool
@@ -155,6 +157,33 @@ func (s *LRUStore) InvalidateByModel(_ context.Context, model string) int {
 		if item.entry.Model == model {
 			toRemove = append(toRemove, elem)
 		}
+	}
+	for _, elem := range toRemove {
+		s.removeElement(elem)
+		count++
+	}
+	return count
+}
+
+// InvalidateByModelAndPrefix removes all entries matching the given model name,
+// compared case-insensitively, whose key starts with keyPrefix. An empty model
+// matches every model; an empty prefix matches every key.
+func (s *LRUStore) InvalidateByModelAndPrefix(_ context.Context, model, keyPrefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	modelLower := strings.ToLower(model)
+	var toRemove []*list.Element
+	for _, elem := range s.items {
+		item := elem.Value.(*lruItem)
+		if modelLower != "" && strings.ToLower(item.entry.Model) != modelLower {
+			continue
+		}
+		if keyPrefix != "" && !strings.HasPrefix(item.entry.Key, keyPrefix) {
+			continue
+		}
+		toRemove = append(toRemove, elem)
 	}
 	for _, elem := range toRemove {
 		s.removeElement(elem)
