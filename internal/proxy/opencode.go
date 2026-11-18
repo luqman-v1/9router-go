@@ -42,7 +42,6 @@ var OpenCodeSessionDescendingRegex = regexp.MustCompile(`^[0-9a-f]{9}f[c-f][0-9a
 // OpenCodeRequestRegex matches canonical OpenCode request IDs: msg_ + 12 hex + 14 Base62 (30 chars).
 var OpenCodeRequestRegex = regexp.MustCompile(`^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 
-
 func unstableRandomBase62(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

@@ -75,8 +75,8 @@ func TestAwaitOpenCodeFirstEvent(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name: "stream that ends before any frame fails",
-			body: readerBody(""),
+			name:    "stream that ends before any frame fails",
+			body:    readerBody(""),
 			wantErr: true,
 		},
 		{
@@ -85,8 +85,8 @@ func TestAwaitOpenCodeFirstEvent(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "leading keepalive blank lines are tolerated",
-			body:    readerBody("\n\ndata: {\"choices\":[]}\n\n"),
+			name:       "leading keepalive blank lines are tolerated",
+			body:       readerBody("\n\ndata: {\"choices\":[]}\n\n"),
 			wantPrefix: "\n\ndata: {\"choices\":[]}\n\n",
 		},
 	}
