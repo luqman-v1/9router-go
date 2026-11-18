@@ -68,7 +68,7 @@ func TestResolveWalksPastARefusedProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
-	firstURL := proxyURLOf(t, first)
+	firstURL := poolWalkProxyURLOf(t, first)
 	if firstURL == "" {
 		t.Fatal("first resolve dialled directly, want a proxy")
 	}
@@ -81,7 +81,7 @@ func TestResolveWalksPastARefusedProxy(t *testing.T) {
 	}
 	// NextURL pre-increments, so which URL comes first is not fixed; what
 	// matters is that the refused one is not handed back.
-	if got := proxyURLOf(t, second); got == firstURL {
+	if got := poolWalkProxyURLOf(t, second); got == firstURL {
 		t.Errorf("after one refusal the resolver dialled %q again, want a different proxy", got)
 	}
 }
@@ -207,7 +207,7 @@ func TestProxyEgressIsDeadDistinguishesDeadSocketFromLiveProxy(t *testing.T) {
 	h := &ChatHandler{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := h.proxyEgressIsDead(&ConnectionData{ResolvedProxyURL: tt.url, ProxyPoolID: "p"})
+			got := h.proxyEgressIsDead(context.Background(), &ConnectionData{ResolvedProxyURL: tt.url, ProxyPoolID: "p"})
 			if got != tt.want {
 				t.Errorf("proxyEgressIsDead(%q) = %v, want %v", tt.url, got, tt.want)
 			}
@@ -458,8 +458,14 @@ func TestWalkAcrossSeparateImportedPools_Until200OK(t *testing.T) {
 	}
 }
 
-// proxyURLOf resolves the proxy a client dials, or "" when it dials directly.
-func proxyURLOf(t *testing.T, client *http.Client) string {
+// poolWalkProxyURLOf resolves the proxy a client dials, or "" when it dials
+// directly.
+//
+// Named apart from the identical helper in noproxy_dial_test.go on purpose: two
+// PRs adding the same package-level test helper is a build collision, because
+// nothing in `go build` sees it and nothing in either PR's own CI can see the
+// other. Whichever lands second renames.
+func poolWalkProxyURLOf(t *testing.T, client *http.Client) string {
 	t.Helper()
 	tr, ok := client.Transport.(*http.Transport)
 	if !ok || tr.Proxy == nil {
