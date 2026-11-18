@@ -10,6 +10,8 @@
     updateComboStrategy,
     updateComboBudgetCalls,
     updateComboBudgetWindow,
+    updateComboContextWindowMode,
+    updateComboContextWindow,
     updateFirstTokenGrace,
     updateFirstTokenTimeout,
     updateJudgeModel,
@@ -306,6 +308,38 @@
       console.error('Failed to update combo budget window:', e)
     }
   }
+// The advertised context window mode rides beside the budget: min/max/min
+// fallback decide what /v1/models promises, and custom needs its own
+// explicit window written alongside it.
+async function handleSetContextWindowMode(
+  combo: Combo,
+  mode: 'min' | 'max' | 'custom' | null
+) {
+  const previous = comboStrategies
+  const updated = updateComboContextWindowMode(comboStrategies, combo.name, mode)
+  if (updated === previous) return
+  comboStrategies = updated
+  try {
+    await api.patchSettings({ comboStrategies: updated })
+    onRefresh()
+  } catch (e) {
+    if (comboStrategies === updated) comboStrategies = previous
+    console.error('Failed to update combo context window mode:', e)
+  }
+}
+async function handleSetContextWindow(combo: Combo, contextWindow: number) {
+  const previous = comboStrategies
+  const updated = updateComboContextWindow(comboStrategies, combo.name, contextWindow)
+  if (updated === previous) return
+  comboStrategies = updated
+  try {
+    await api.patchSettings({ comboStrategies: updated })
+    onRefresh()
+  } catch (e) {
+    if (comboStrategies === updated) comboStrategies = previous
+    console.error('Failed to update combo context window:', e)
+  }
+}
 
   async function handleSetJudge(comboName: string, judgeModel: string) {
     const updated = updateJudgeModel(comboStrategies, comboName, judgeModel)
@@ -695,6 +729,8 @@
             onToggleStoredOrder={handleToggleStoredOrder}
             onSetBudgetCalls={handleSetBudgetCalls}
             onSetBudgetWindow={handleSetBudgetWindow}
+            onSetContextWindowMode={handleSetContextWindowMode}
+            onSetContextWindow={handleSetContextWindow}
             onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
             onClearJudge={clearJudge}
             onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}

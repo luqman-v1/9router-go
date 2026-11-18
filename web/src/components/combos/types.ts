@@ -39,9 +39,27 @@ export interface ComboStrategyInfo {
    * Milliseconds the call ceiling spans. Absent means the backend default of
    * one hour; only meaningful alongside budgetCalls. A window longer than the
    * process uptime is never recycled within it.
-   */
+ */
   budgetWindowMs?: number
+  /**
+   * How the combo advertises its context window in /v1/models. `min`
+   * (default) promises only what every seat can serve; `max` advertises the
+   * widest seat window so a fallback chain that can fail past a small-window
+   * seat still advertises its full window; `custom` advertises the explicit
+   * contextWindow regardless of what the seats report.
+   */
+  contextWindowMode?: 'min' | 'max' | 'custom'
+  /**
+   * The explicit window advertised when contextWindowMode is "custom". Zero
+   * or absent means "not set" and the combo falls back to min.
+   */
+  contextWindow?: number
 }
+
+/** Valid context window modes a combo strategy row may hold. */
+export const COMBO_WINDOW_MODE_MIN = 'min'
+export const COMBO_WINDOW_MODE_MAX = 'max'
+export const COMBO_WINDOW_MODE_CUSTOM = 'custom'
 
 /**
  * Every strategy a combo card can render. A value the server sends that has
@@ -345,6 +363,46 @@ export function updateComboBudgetWindow(
     return updated
   }
   updated[comboName] = { ...current, budgetWindowMs: windowMs }
+  return updated
+}
+/** Set (or clear) the combo's advertised context window mode. `min` is the
+ * default and is cleared so the backend zero value applies. `custom`
+ * requires contextWindow to be set alongside it.
+ */
+export function updateComboContextWindowMode(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  mode: 'min' | 'max' | 'custom' | null
+): Record<string, ComboStrategyInfo> {
+  if (mode !== null && mode !== 'min' && mode !== 'max' && mode !== 'custom') return currentStrategies
+  const updated = { ...currentStrategies }
+  const current = { ...(updated[comboName] || {}) }
+  if (mode === null || mode === 'min') {
+    delete current.contextWindowMode
+  } else {
+    current.contextWindowMode = mode
+  }
+  if (Object.keys(current).length === 0) delete updated[comboName]
+  else updated[comboName] = current
+  return updated
+}
+
+/** Set (or clear, with 0) the explicit window advertised in custom mode. */
+export function updateComboContextWindow(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  contextWindow: number
+): Record<string, ComboStrategyInfo> {
+  if (!Number.isSafeInteger(contextWindow) || contextWindow < 0) return currentStrategies
+  const updated = { ...currentStrategies }
+  const current = { ...(updated[comboName] || {}) }
+  if (contextWindow === 0) {
+    delete current.contextWindow
+  } else {
+    current.contextWindow = contextWindow
+  }
+  if (Object.keys(current).length === 0) delete updated[comboName]
+  else updated[comboName] = current
   return updated
 }
 

@@ -57,6 +57,15 @@ type ComboStrategy struct {
 	// BudgetWindowMs is the window a BudgetCalls ceiling spans. Zero means
 	// DefaultBudgetWindowMs.
 	BudgetWindowMs int `json:"budgetWindowMs,omitempty"`
+	// ContextWindowMode selects how the combo advertises its context window
+	// in /v1/models: "min" narrows to the smallest seat window, "max"
+	// advertises the largest seat window, and "custom" advertises the
+	// explicit ContextWindow regardless of what the seats can serve. Absent
+	// defaults to min so a combo only promises what every seat agrees on.
+	ContextWindowMode string `json:"contextWindowMode,omitempty"`
+	// ContextWindow is the explicit window advertised when ContextWindowMode
+	// is "custom". Zero means "not set" and the combo falls back to min.
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 // BudgetCallsMax is the largest per-window ceiling the settings parser
@@ -68,8 +77,23 @@ type ComboStrategy struct {
 // what a stored budget means rather than the server silently normalizing it.
 const BudgetCallsMax = 1000000
 
-// DefaultFirstTokenGraceMs is the grace period applied after a model response
-// timeout when the combo does not set its own: five minutes.
+const (
+	// ComboWindowModeMin advertises the narrowest seat window: the combo can
+	// only promise what every seat can serve. The zero value (unset mode)
+	// resolves to this mode, so existing combos keep their current behaviour.
+	ComboWindowModeMin = "min"
+
+	// ComboWindowModeMax advertises the widest seat window: a fallback chain
+	// that fails past a small-window seat can still serve a long-prompt turn
+	// on a large-window seat, so advertising only the minimum undersells the
+	// chain.
+	ComboWindowModeMax = "max"
+
+	// ComboWindowModeCustom advertises the operator-declared ContextWindow
+	// regardless of what the seats report.
+	ComboWindowModeCustom = "custom"
+)
+
 const DefaultFirstTokenGraceMs = 5 * 60 * 1000
 
 // FirstTokenGrace resolves the effective grace period in milliseconds.

@@ -235,3 +235,88 @@ func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T)
 	wantLimit(t, "context_length", entry.ContextLength, 128000)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 16384)
 }
+
+// max mode advertises the widest seat window instead of the narrowest, so a
+// fallback chain that can fail past a small-window seat still advertises its
+// full window.
+func TestHandleModels_ComboMaxModeAdvertisesWidestWindow(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("max-combo", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeMax,
+	}); err != nil {
+		t.Fatalf("set combo strategy: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-max', 'max-combo', 'llm', '["anthropic/claude-sonnet-4-6","deepseek/deepseek-chat"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "max-combo")
+	// min would publish 131072 (deepseek/chadeepseek-chat's narrower window);
+	// max publishes 200000 from claude-sonnet-4-6.
+	wantLimit(t, "context_length", entry.ContextLength, 200000)
+}
+
+// custom mode advertises the operator-declared window regardless of what the
+// seats report.
+func TestHandleModels_ComboCustomModeAdvertisesDeclaredWindow(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("custom-combo", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeCustom,
+		ContextWindow:     1000000,
+	}); err != nil {
+		t.Fatalf("set combo strategy: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-custom', 'custom-combo', 'llm', '["deepseek/deepseek-chat","groq/llama-3-70b"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "custom-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 1000000)
+}
+
+// custom mode without a declared window falls back to min rather than
+// advertising a guess.
+func TestHandleModels_ComboCustomModeWithoutWindowFallsBackToMin(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("custom-combo", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeCustom,
+	}); err != nil {
+		t.Fatalf("set combo strategy: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-custom', 'custom-combo', 'llm', '["deepseek/deepseek-chat","groq/llama-3-70b"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "custom-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
+}
+
+// Invalid mode strings resolve to min instead of publishing a bogus window.
+func TestHandleModels_ComboInvalidModeResolvesToMin(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?)`,
+		`{"comboStrategies":{"bad-mode-combo":{"contextWindowMode":"bogus"}}}`); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-bad', 'bad-mode-combo', 'llm', '["deepseek/deepseek-chat"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "bad-mode-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 131072)
+}
