@@ -164,7 +164,7 @@ func TestForwardGemini_Bare429RetriesWithMovedSystemInstruction(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
 	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"hello"}]}`
 
-	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash")
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
 	if err != nil {
 		t.Fatalf("ForwardGemini() error = %v, want nil", err)
 	}
@@ -239,7 +239,7 @@ func TestForwardGemini_ExplicitQuota429DoesNotRetry(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
 	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
 
-	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash")
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
@@ -277,7 +277,7 @@ func TestForwardGemini_Bare429RetryFails_ReturnsOriginal429(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
 	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
 
-	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash")
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
@@ -311,7 +311,7 @@ func TestForwardGemini_GeminiCLIDoesNotTriggerAntigravity429Retry(t *testing.T) 
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/v1internal", Format: "gemini-cli"}
 	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
 
-	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash")
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
