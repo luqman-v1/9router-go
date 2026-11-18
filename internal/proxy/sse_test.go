@@ -517,3 +517,77 @@ func TestSSECopy_ResponsesCompletedIsTerminal(t *testing.T) {
 		t.Errorf("response.completed must be relayed, got %q", out)
 	}
 }
+
+// TestSSECopy_SingleDoneSentinel_Unterminated is the regression for #5592
+// (upstream decolua/9router@9ae6e147,
+// tests/unit/passthrough-done-sentinel.test.js): a stream that ends with
+// `data: [DONE]`, with or without a trailing newline, must leave exactly one
+// sentinel on the wire. The tail was relayed raw and the flush appended its
+// own frame, so strict SSE clients (OpenCode) read one glued event and failed.
+func TestSSECopy_SingleDoneSentinel_Unterminated(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream string
+	}{
+		{
+			name:   "unterminated sentinel",
+			stream: "data: [DONE]",
+		},
+		{
+			name:   "LF terminated sentinel",
+			stream: "data: [DONE]\n\n",
+		},
+		{
+			name:   "CRLF terminated sentinel",
+			stream: "data: [DONE]\r\n\r\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, chunked := range []bool{false, true} {
+				rec := &mockResponseWriter{}
+				var upstream io.Reader = strings.NewReader(tt.stream)
+				if chunked {
+					upstream = iotest.OneByteReader(upstream)
+				}
+				if err := SSECopy(rec, upstream, rec, nil); err != nil {
+					t.Fatalf("SSECopy failed: %v", err)
+				}
+				out := rec.String()
+				if got := strings.Count(out, "data: [DONE]"); got != 1 {
+					t.Errorf("expected exactly 1 sentinel, got %d in %q", got, out)
+				}
+				if strings.Contains(out, "[DONE]data:") || strings.Contains(out, "[DONE]\ndata:") {
+					t.Errorf("sentinel glued to another frame, got %q", out)
+				}
+				if !strings.HasSuffix(out, "data: [DONE]\n\n") {
+					t.Errorf("stream must end with the framed sentinel, got %q", out)
+				}
+			}
+		})
+	}
+}
+
+// TestSSECopy_SingleDoneSentinel_AfterContent covers the shape the upstream
+// test drives: content frames, then a sentinel with no trailing newline.
+func TestSSECopy_SingleDoneSentinel_AfterContent(t *testing.T) {
+	content := "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"m\"," +
+		"\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+	for _, tail := range []string{"data: [DONE]", "data: [DONE]\n\n", "data: [DONE]\r\n\r\n"} {
+		rec := &mockResponseWriter{}
+		if err := SSECopy(rec, strings.NewReader(content+tail), rec, nil); err != nil {
+			t.Fatalf("SSECopy failed: %v", err)
+		}
+		out := rec.String()
+		if !strings.Contains(out, `"content":"hi"`) {
+			t.Errorf("content must survive, got %q", out)
+		}
+		if got := strings.Count(out, "data: [DONE]"); got != 1 {
+			t.Errorf("expected exactly 1 sentinel for %q, got %d in %q", tail, got, out)
+		}
+		if !strings.HasSuffix(out, "data: [DONE]\n\n") {
+			t.Errorf("stream must end with the framed sentinel, got %q", out)
+		}
+	}
+}

@@ -182,7 +182,7 @@ func (c *sseCopier) writeEvents(complete []byte) error {
 			if err := c.writeRaw(complete[segStart:start]); err != nil {
 				return err
 			}
-			return c.writeDoneLine(line)
+			return c.writeDoneLine()
 		}
 		if c.swallowInbandError(line) {
 			if err := c.writeRaw(complete[segStart:start]); err != nil {
@@ -249,7 +249,11 @@ func (c *sseCopier) patchLine(line []byte) ([]byte, bool) {
 // writeDoneLine closes the stream on the [DONE] sentinel. An error-only
 // stream (provider error, no completion) closes with the gateway's own error
 // frame instead of a fabricated successful terminal.
-func (c *sseCopier) writeDoneLine(line []byte) error {
+// Exactly one sentinel reaches the client: the frame is the canonical
+// "data: [DONE]\n\n" (upstream sentinels arrive as `\r\n`, unterminated, or
+// without the space) and hasDone makes finish() skip the tail (upstream
+// 9ae6e147, #5592).
+func (c *sseCopier) writeDoneLine() error {
 	if c.seenInbandError && !c.hasTerminal {
 		return c.writeErrorClose()
 	}
@@ -262,7 +266,7 @@ func (c *sseCopier) writeDoneLine(line []byte) error {
 		}
 		c.hasTerminal = true
 	}
-	if err := c.writeRaw(line); err != nil {
+	if err := c.writeRaw([]byte(sseDoneFrame)); err != nil {
 		return err
 	}
 	c.hasDone = true
@@ -327,33 +331,28 @@ func (c *sseCopier) writeErrorClose() error {
 // same way the old EOF path did (PR #4079): blank-line separation, then
 // `finish_reason: "network_error"` unless a terminal frame was seen, then
 // [DONE]. A held `data: [DONE]` without trailing newline is a deliberate end
-// and gains the "stop" terminal instead.
+// and gains the "stop" terminal instead — but only when no sentinel has
+// already been written, so a stream carrying [DONE] never gains a second one
+// (upstream 9ae6e147, #5592).
 //
 // An error-only stream (provider error, no completion) closes with the
 // gateway's error frame and reports the failure, so the turn is locked out
 // of rotation instead of being logged as a served success.
 func (c *sseCopier) finish() error {
+	if c.hasDone {
+		return nil
+	}
 	if len(c.pending) > 0 {
 		frag := c.pending
 		c.pending = nil
 		if ssePayloadIsDone(frag) {
-			if c.seenInbandError && !c.hasTerminal {
-				return c.writeErrorClose()
-			}
-			if !c.hasTerminal {
-				_ = c.ensureBlank()
-				_ = c.writeRaw([]byte(sseStopTerminal))
-				c.hasTerminal = true
-			}
-			_ = c.writeRaw([]byte(sseDoneFrame))
-			c.hasDone = true
-			return nil
+			return c.writeDoneLine()
 		}
 		if !c.swallowInbandError(frag) {
 			_ = c.writeRaw(frag)
 		}
 	}
-	if c.seenSSE && !c.hasDone {
+	if c.seenSSE {
 		if c.seenInbandError && !c.hasTerminal {
 			return c.writeErrorClose()
 		}
