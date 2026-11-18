@@ -440,7 +440,13 @@ func classifyOpencodeFreeTierRefusal(provider string, body []byte) opencodeRefus
 		}
 
 	case strings.Contains(lower, "detect abuse traffic") ||
-		strings.Contains(lower, "abuse"):
+		strings.Contains(lower, "abuse") ||
+		// The gate also words the same verdict without the word "abuse": "free
+		// models aren't available ... from your current network". Both halves
+		// are required — each appears alone in benign prose — so the pair is
+		// matched conjunctively rather than by either phrase.
+		(strings.Contains(lower, "free models aren't available") &&
+			strings.Contains(lower, "from your current network")):
 		return opencodeRefusalDetail{
 			StatusCode: http.StatusServiceUnavailable,
 			ErrorType:  "free_tier_abuse_detected",

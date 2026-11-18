@@ -726,7 +726,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		// The free-tier gate fingerprints the lowercase tool quartet; capitalised
 		// variants from Claude Code CLI are renamed here and restored on the
 		// response (translator.ConcealFingerprintTools).
-		transformedBody, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(transformedBody, true, isOpenCodeAutoToolChoiceModel(cleanModel))
+		transformedBody, toolNameMap := shapeOpenCodeFreeBody(transformedBody, true, cleanModel)
 		transformedBody = translator.ApplyFingerprintSystemPrompt(transformedBody)
 		req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 		w = NewToolNameRestoringWriter(w, toolNameMap)
@@ -761,12 +761,18 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 		}
 
+		// First SSE frame before the 200 head, same as the chat lane: a
+		// refusal or a stall must still be able to fail over.
+		responsesBody, ferr := awaitOpenCodeFirstEvent(ctx, resp, 0)
+		if ferr != nil {
+			return ferr
+		}
 		if req.IsStream {
-			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-responses")
+			stallReader := proxy.NewStallReaderWithContext(ctx, responsesBody, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-responses")
 			defer stallReader.Close()
 			return handleCodexStream(w, req, stallReader)
 		}
-		return handleCodexStream(w, req, resp.Body)
+		return handleCodexStream(w, req, responsesBody)
 	}
 
 	body := InjectReasoningContent(req.Body, "opencode")
@@ -777,7 +783,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	// there (upstream quirks.reasoningAliasFields).
 	req.LiftReasoningAliases = true
 	// opencode Chat Completions path: same conceal + restore of tool names.
-	body, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel)
 	body = translator.ApplyFingerprintSystemPrompt(body)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
@@ -813,7 +819,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		// Deterministic marshaling keeps the serialized request prefix
 		// stable across turns, which DeepSeek's prefix prompt cache
 		// requires; json/v2 randomizes map member order by default.
-		if b, err := marshalStable(reqMap); err == nil {
+		if b, err := marshalOpenCodeFreeChatBody(reqMap); err == nil {
 			body = b
 		}
 	}
@@ -846,10 +852,19 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 
-	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+	// Read the first SSE frame before committing 200 OK. The free-tier gate can
+	// answer a refusal inside a 200 frame, or stall before its first one, and
+	// once the response head is on the wire no failover is possible — so this
+	// has to happen here rather than inside the stream writer.
+	streamBody, ferr := awaitOpenCodeFirstEvent(ctx, resp, 0)
+	if ferr != nil {
+		return ferr
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+
+	if req.IsStream {
+		return execSSEStream(w, streamBody, req)
+	}
+	data, err := io.ReadAll(io.LimitReader(streamBody, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read opencode response: %w", err)
 	}
@@ -1717,7 +1732,7 @@ func opencodeGoInferenceBase(base string) string {
 // Responses lane upstream), v2 fingerprint, public credentials.
 func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel string) error {
 	body := InjectReasoningContent(req.Body, "opencode-go")
-	body, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel)
 	body = translator.ApplyFingerprintSystemPrompt(body)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
@@ -1737,7 +1752,7 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		// the same keyless gate, so the same empty-answer failure applies.
 		clampOpenCodeOutputBudget(reqMap, "opencode-go", cleanModel)
 		includeStreamUsage(reqMap)
-		if b, err := marshalStable(reqMap); err == nil {
+		if b, err := marshalOpenCodeFreeChatBody(reqMap); err == nil {
 			body = b
 		}
 	}
@@ -1770,10 +1785,19 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 
-	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+	// Read the first SSE frame before committing 200 OK. The free-tier gate can
+	// answer a refusal inside a 200 frame, or stall before its first one, and
+	// once the response head is on the wire no failover is possible — so this
+	// has to happen here rather than inside the stream writer.
+	streamBody, ferr := awaitOpenCodeFirstEvent(ctx, resp, 0)
+	if ferr != nil {
+		return ferr
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+
+	if req.IsStream {
+		return execSSEStream(w, streamBody, req)
+	}
+	data, err := io.ReadAll(io.LimitReader(streamBody, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read opencode-go free response: %w", err)
 	}

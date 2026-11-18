@@ -70,6 +70,16 @@ var openCodeAbusePhrases = []string{
 	"abuse of traffic",
 }
 
+// openCodeNetworkAbusePair is the conjunctive wording the gate uses when the
+// refusal is a network-level flag rather than a request-shape verdict. Both
+// halves must appear: each occurs alone in benign prose (a model-unavailable
+// notice, a docs sentence), so matching either one would make ordinary errors
+// terminal and suppress a legitimate replay.
+var openCodeNetworkAbusePair = [2]string{
+	"free models aren't available",
+	"from your current network",
+}
+
 // isOpenCodeTerminalRefusal reports whether a gate refusal is the egress-level
 // abuse flag, which no client-side change can clear.
 func isOpenCodeTerminalRefusal(ue *proxy.UpstreamError) bool {
@@ -81,7 +91,8 @@ func isOpenCodeTerminalRefusal(ue *proxy.UpstreamError) bool {
 			return true
 		}
 	}
-	return false
+	return containsFoldASCII(ue.Body, openCodeNetworkAbusePair[0]) &&
+		containsFoldASCII(ue.Body, openCodeNetworkAbusePair[1])
 }
 
 // containsFoldASCII reports whether b contains s, comparing ASCII

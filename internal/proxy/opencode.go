@@ -42,6 +42,7 @@ var OpenCodeSessionDescendingRegex = regexp.MustCompile(`^[0-9a-f]{9}f[c-f][0-9a
 // OpenCodeRequestRegex matches canonical OpenCode request IDs: msg_ + 12 hex + 14 Base62 (30 chars).
 var OpenCodeRequestRegex = regexp.MustCompile(`^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 
+
 func unstableRandomBase62(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -175,12 +176,37 @@ func GenerateOpenCodeRequestID() string {
 	return "msg_" + hex.EncodeToString(timeBytes[:]) + unstableRandomBase62(14)
 }
 
+// opencodeBootNonce salts every derived session with a per-process random
+// value, so a gateway restart mints fresh upstream sessions instead of
+// resuming the risk buckets a previous process burned.
+//
+// It is a var so tests can pin it. A restart changing it is the intent, not a
+// side effect: the free tier accounts its quota per upstream session, and a
+// process that starts over should not inherit the previous one's spent budget.
+var opencodeBootNonce = func() [16]byte {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	return nonce
+}()
+
 // TranslateOpenCodeSessionID deterministically maps a downstream session id
 // onto one the upstream free tier accepts. A canonical id — ses_ shape plus
 // the descending time encoding the gate decodes — is forwarded verbatim;
 // anything else (a UUID, another gateway's session, a ses_ id carrying foreign
 // hex) is re-encoded into the descending layout with counter 1, so one
 // downstream conversation still maps to one stable upstream session.
+//
+// The time half is digest-derived, not wall-clock. That is deliberate and
+// matches GenerateOpenCodeSessionID's shape rather than contradicting it: the
+// 12-hex prefix carries 36 bits of milliseconds after the 12 counter bits are
+// reserved, and 2^36 ms tops out in 1972 — so no id in this layout, including
+// the one the official CLI mints from time.Now(), encodes a modern instant.
+// The gate decodes the layout (descending, counter 1–63) but cannot be reading
+// recency off a field that cannot express it. What the derivation must keep is
+// therefore determinism per conversation, which it does.
+//
+// opencodeBootNonce salts it so a restart derives different ids for the same
+// downstream session instead of resuming a burned quota bucket.
 func TranslateOpenCodeSessionID(sessionID, clientTool string) string {
 	trimmed := strings.TrimSpace(sessionID)
 	if IsCanonicalOpenCodeSession(trimmed) {
@@ -192,6 +218,7 @@ func TranslateOpenCodeSessionID(sessionID, clientTool string) string {
 	}
 	h := sha256.New()
 	h.Write([]byte("opencode\x00" + tool + "\x00" + trimmed))
+	h.Write(opencodeBootNonce[:])
 	digest := h.Sum(nil)
 	// Keep the deterministic time component but pin the low 12 counter bits
 	// to the small value accepted by the OpenCode v2 free-tier gate.

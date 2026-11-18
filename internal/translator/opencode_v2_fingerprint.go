@@ -216,6 +216,14 @@ func injectOpenCodeHarnessSystem(request map[string]any, flat, claude bool, call
 	if identityNote != "" {
 		suffix += "\n\n" + identityNote
 	}
+	injectOpenCodeHarnessSuffix(request, flat, claude, suffix)
+}
+
+// injectOpenCodeHarnessSuffix prepends the harness preamble and appends suffix
+// after the caller's own text. The preamble itself is not optional: the gate
+// fingerprints it, and a request without it is refused regardless of lane. It
+// is what a title request and an agent turn share; they differ only in suffix.
+func injectOpenCodeHarnessSuffix(request map[string]any, flat, claude bool, suffix string) {
 	switch {
 	case claude:
 		injectClaudeSystem(request, suffix)
