@@ -959,7 +959,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
 		LocalByDesign: true,
-		SystemoneURL:  "http://localhost:11434/v1/systemone",
+		// Phonon speech synthesis: the OpenAI-compatible /v1/audio/speech
+		// endpoint on the local daemon (upstream ollama-local.js ttsConfig,
+		// commit 31a9d262). Used when the connection has no custom base URL.
+		TTSURL:       "http://localhost:11434/v1/audio/speech",
+		SystemoneURL: "http://localhost:11434/v1/systemone",
 		// Saved host (providerSpecificData.baseUrl) is joined with this path.
 		SystemonePath: "/v1/systemone",
 	},

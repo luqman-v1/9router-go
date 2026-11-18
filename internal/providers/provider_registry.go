@@ -1452,7 +1452,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Category:     CategoryAPIKey,
 		Color:        "#ffffffff",
 		Icon:         "cloud",
-		ServiceKinds: []string{"llm"},
+		ServiceKinds: []string{"llm", "tts"},
 		Website:      "https://ollama.com",
 	},
 	"ollama-search": {
