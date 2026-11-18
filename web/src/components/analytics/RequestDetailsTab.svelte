@@ -11,6 +11,8 @@
   import {
     cachedTokensFor,
     calculateTPS,
+    getInputTokens,
+    getOutputTokens,
     fmt,
     formatDuration,
     providerDisplayName,
@@ -251,7 +253,7 @@
               </td>
               <td class="py-3 px-4 text-right">
                 <div class="flex flex-col items-end">
-                  <span>{fmt(item.tokens?.prompt_tokens)}</span>
+                  <span>{fmt(getInputTokens(item.tokens))}</span>
                   {#if item.tokens?.saved_tokens}
                     <span title={`Saved ${fmt(item.tokens.saved_tokens)} tokens`}>
                       <Badge variant="success" size="sm" class="text-[10px] px-1.5 py-0 font-semibold">
@@ -262,7 +264,7 @@
                 </div>
               </td>
               <td class="py-3 px-4 text-right text-success">
-                {fmt(item.tokens?.completion_tokens)}
+                {fmt(getOutputTokens(item.tokens))}
               </td>
               <td class="py-3 px-4 text-right text-info">
                 {fmt(cachedTokensFor(item))}
@@ -377,7 +379,7 @@
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
             <div class="text-text-muted text-[10px] uppercase font-bold tracking-wider">Speed</div>
             <div class="font-code text-sm font-bold text-emerald-500 mt-1">
-              {calculateTPS(selectedDetail.tokens?.completion_tokens, selectedDetail.latency?.total, selectedDetail.latency?.ttft) || '—'}
+              {calculateTPS(getOutputTokens(selectedDetail.tokens), selectedDetail.latency?.total, selectedDetail.latency?.ttft) || '—'}
             </div>
           </div>
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
@@ -452,14 +454,14 @@
 
         <!-- Token Group: Input (OmniRoute style) -->
         {#if selectedDetail.tokens}
-          {@const promptTokens = selectedDetail.tokens.prompt_tokens ?? 0}
+          {@const promptTokens = getInputTokens(selectedDetail.tokens)}
           {@const cacheRead = cachedTokensFor(selectedDetail)}
           {@const cacheWrite5m = selectedDetail.tokens.cache_creation_5m_input_tokens ?? 0}
           {@const cacheWrite1h = selectedDetail.tokens.cache_creation_1h_input_tokens ?? 0}
           {@const savedTokens = selectedDetail.tokens.saved_tokens ?? 0}
           {@const fromTokens = savedTokens > 0 ? (promptTokens + savedTokens) : promptTokens}
           {@const savedPct = fromTokens > 0 ? Math.round((savedTokens / fromTokens) * 100) : 0}
-          {@const compTokens = selectedDetail.tokens.completion_tokens ?? 0}
+          {@const compTokens = getOutputTokens(selectedDetail.tokens)}
           {@const reasoningTokens = selectedDetail.tokens.reasoning_tokens ?? 0}
 
           <div class="p-3.5 rounded-xl bg-surface-2/60 border border-border space-y-1.5">

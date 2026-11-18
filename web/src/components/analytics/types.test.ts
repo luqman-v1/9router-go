@@ -6,6 +6,8 @@ import {
   fmt,
   formatDetailStatus,
   formatDuration,
+  getInputTokens,
+  getOutputTokens,
   providerDisplayName,
   type RequestDetailItem,
 } from './types'
@@ -49,6 +51,26 @@ describe('request detail token formatting', () => {
   it('renders missing cache usage as zero', () => {
     expect(fmt(cachedTokensFor({}))).toBe('0')
     expect(fmt(cachedTokensFor({ tokens: { cached_tokens: 0, cache_read_input_tokens: 25 } }))).toBe('0')
+  })
+})
+
+describe('getInputTokens and getOutputTokens — issue #3890', () => {
+  it('prefers the canonical OpenAI prompt_tokens/completion_tokens', () => {
+    const tokens = { prompt_tokens: 50, completion_tokens: 100 }
+    expect(getInputTokens(tokens)).toBe(50)
+    expect(getOutputTokens(tokens)).toBe(100)
+  })
+
+  it('falls back to Claude input_tokens/output_tokens', () => {
+    const tokens = { input_tokens: 50, output_tokens: 100 }
+    expect(getInputTokens(tokens)).toBe(50)
+    expect(getOutputTokens(tokens)).toBe(100)
+  })
+
+  it('renders absent tokens as zero, no throw', () => {
+    expect(getInputTokens()).toBe(0)
+    expect(getOutputTokens(undefined)).toBe(0)
+    expect(getOutputTokens({})).toBe(0)
   })
 })
 
