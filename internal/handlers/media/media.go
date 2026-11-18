@@ -39,16 +39,16 @@ type MediaHandler struct {
 
 // NewMediaHandler creates a MediaHandler instance.
 func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.ChatHandler) *MediaHandler {
-	var transport http.RoundTripper
-	if origTransport, ok := http.DefaultTransport.(*http.Transport); ok {
-		t := origTransport.Clone()
-		t.ResponseHeaderTimeout = 2 * time.Minute
-		transport = proxy.NewFallbackTransport(t)
-	} else if fb, ok := http.DefaultTransport.(*proxy.FallbackTransport); ok {
-		transport = fb
-	} else {
-		transport = proxy.NewFallbackTransport(http.DefaultTransport)
-	}
+	// Base is the guarded transport, not a clone of http.DefaultTransport: that
+	// clone has no socket-level check at all, so the hostname pre-flight and the
+	// redirect policy were the entire SSRF surface, and a name that resolves
+	// public at check time and private at dial time walked straight through.
+	// The guarded dialer judges the address it is about to connect to and still
+	// honours ALLOW_PRIVATE_NETWORKING and the per-connection opt-in, so a LAN
+	// provider keeps working.
+	base := proxy.NewSafeTransport()
+	base.ResponseHeaderTimeout = 2 * time.Minute
+	transport := proxy.NewFallbackTransport(base)
 	return &MediaHandler{
 		Repo:       repo,
 		Client:     &http.Client{Transport: transport, Timeout: 0, CheckRedirect: checkRedirectPublic},
