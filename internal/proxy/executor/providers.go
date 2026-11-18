@@ -1803,7 +1803,7 @@ func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, se
 		geminiURL = fmt.Sprintf("%s/%s:%s", base, cleanModel, action)
 	}
 
-	geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(req.Body, req.SessionID)
+	geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(req.Body, req.SessionID, req.APIKeyID)
 	if err != nil {
 		return fmt.Errorf("translate to Gemini for opencode-go: %w", err)
 	}

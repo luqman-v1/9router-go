@@ -18,7 +18,7 @@ func TestZedGoogleProviderRequest(t *testing.T) {
 	body := []byte(`{"model":"gemini-3.8-flash","stream":true,"max_tokens":32,
 	 "messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}]}`)
 
-	providerRequest, err := zedGoogleProviderRequest(body, "gemini-3.8-flash")
+	providerRequest, err := zedGoogleProviderRequest(body, "gemini-3.8-flash", "")
 	if err != nil {
 		t.Fatalf("zedGoogleProviderRequest: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestZedGoogleProviderRequest(t *testing.T) {
 }
 
 func TestZedGoogleProviderRequestRejectsGarbage(t *testing.T) {
-	if _, err := zedGoogleProviderRequest([]byte("not json"), "gemini-3.8-flash"); err == nil {
+	if _, err := zedGoogleProviderRequest([]byte("not json"), "gemini-3.8-flash", ""); err == nil {
 		t.Fatal("expected an error for a malformed body")
 	}
 }

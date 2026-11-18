@@ -382,14 +382,15 @@ func (s *thoughtSignatureStore) pruneExpiredLocked(now time.Time) {
 }
 
 // StoreGeminiThoughtSignature stores a thought signature for a tool_call_id with optional session namespace and model family.
-func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model ...string) {
+// When sessionID is empty and an apiKeyID is supplied, the bare write keys are namespaced to that key.
+func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model string, apiKeyID ...string) {
 	if toolCallID == "" || signature == "" {
 		return
 	}
 
 	var family string
-	if len(model) > 0 && model[0] != "" {
-		family = SignatureFamily(model[0])
+	if model != "" {
+		family = SignatureFamily(model)
 	}
 	now := time.Now()
 	// Two clocks, deliberately: the in-memory entry is the hot path and keeps
@@ -410,6 +411,11 @@ func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model 
 
 	globalThoughtSigStore.pruneExpiredLocked(now)
 
+	var apiKey string
+	if len(apiKeyID) > 0 {
+		apiKey = apiKeyID[0]
+	}
+
 	keys := []string{toolCallID}
 	if cleanID != toolCallID {
 		keys = append(keys, cleanID)
@@ -420,6 +426,14 @@ func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model 
 		if cleanID != toolCallID {
 			keys = append(keys, sessionID+":"+cleanID)
 		}
+	} else if apiKey != "" {
+		// No session: scope bare keys to this API key so two keys on one
+		// account never replay each other's signatures.
+		scoped := []string{apiKey + ":" + toolCallID}
+		if cleanID != toolCallID {
+			scoped = append(scoped, apiKey+":"+cleanID)
+		}
+		keys = append(keys, scoped...)
 	}
 
 	for _, k := range keys {
@@ -444,29 +458,27 @@ func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model 
 
 // GetGeminiThoughtSignature retrieves a thought signature by tool_call_id,
 // scoped to the conversation that produced it and matched against the model
-// family.
-//
-// A non-empty sessionID makes the lookup session-only: the bare toolCallID key
-// is shared by every conversation on the account, so falling back to it is how
-// one conversation replayed another's signature and the provider answered
-// 400 INVALID_ARGUMENT "Corrupted thought signature". A request with no session
-// (a client that sends no session header) keeps the bare-key lookup, which is
-// also the key such a request writes.
-func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) string {
+// family. When sessionID is empty and an apiKeyID is supplied, the bare keys
+// are namespaced to that key so signatures are not replayed across keys.
+func GetGeminiThoughtSignature(toolCallID, sessionID string, model string, apiKeyID ...string) string {
 	if toolCallID == "" {
 		return ""
 	}
 
 	var targetFamily string
-	if len(model) > 0 && model[0] != "" {
-		targetFamily = SignatureFamily(model[0])
+	if model != "" {
+		targetFamily = SignatureFamily(model)
 	}
 	cleanID := toolCallID
 	if idx := strings.LastIndex(toolCallID, "__ts__"); idx != -1 {
 		cleanID = toolCallID[:idx]
 	}
 
-	candidates := signatureLookupKeys(toolCallID, cleanID, sessionID)
+	var apiKey string
+	if len(apiKeyID) > 0 {
+		apiKey = apiKeyID[0]
+	}
+	candidates := signatureLookupKeys(toolCallID, cleanID, sessionID, apiKey)
 	now := time.Now()
 
 	globalThoughtSigStore.mu.RLock()
@@ -529,12 +541,19 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) st
 
 // signatureLookupKeys lists the store keys a lookup may read, most specific
 // first. A session-scoped request may only read its own namespace; a request
-// with no session reads the bare keys, which is what it writes.
-func signatureLookupKeys(toolCallID, cleanID, sessionID string) []string {
+// with no session reads the bare keys, which is what it writes. When session is
+// empty but an apiKeyID is supplied, the bare keys are namespaced to that key
+// so two keys sharing an account never replay each other's signatures.
+func signatureLookupKeys(toolCallID, cleanID, sessionID string, apiKeyID ...string) []string {
 	if sessionID == "" {
-		keys := []string{toolCallID}
+		prefix := ""
+		if len(apiKeyID) > 0 && apiKeyID[0] != "" {
+			prefix = apiKeyID[0] + ":"
+		}
+		scope := prefix + toolCallID
+		keys := []string{scope}
 		if cleanID != toolCallID {
-			keys = append(keys, cleanID)
+			keys = append(keys, prefix+cleanID)
 		}
 		return keys
 	}

@@ -27,7 +27,7 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context
 	if req != nil && !req.StartTime.IsZero() {
 		startTime = req.StartTime
 	}
-	state := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx)}
+	state := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx), APIKeyId: req.APIKeyID}
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		cs := strings.TrimSpace(string(chunk))
 		if cs == "" || cs == "[DONE]" || cs == "data: [DONE]" {

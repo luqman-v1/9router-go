@@ -33,9 +33,10 @@ type Request struct {
 	TranslateResp  bool
 	ConnectionID   string            // for OAuth refresh by fallback
 	AuthType       string            // connection authType column ("oauth", "mcode-lease", ...)
+	APIKeyID       string            // authenticated key id for signature scoping
 	SessionID      string            // client session / conversation id
-	ConnData       map[string]any    // connection providerSpecificData (e.g. fingerprintId for client cloaking)
 	Leases         LeaseStore        // cross-process lease backend (nil = memory only)
+	ConnData       map[string]any    // connection providerSpecificData (e.g. fingerprintId for client cloaking)
 	ModelName      string            // extracted model name
 	Endpoint       string            // custom URL override (azure)
 	ToolNameMap    map[string]string // claude OAuth tool-cloak map (suffixed -> original)
