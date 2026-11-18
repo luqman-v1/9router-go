@@ -65,9 +65,11 @@ offer:
   the provider's own 5xx) is deliberately NOT reported dead — those are the
   upstream's answers through a working egress.
 
-- **A 60s wall-clock budget bounds the walk**, so a pool of hundreds of dead
-  proxies cannot hold a client request for minutes; the last upstream answer is
-  returned when it expires.
+- **A 180s wall-clock budget bounds the walk** (`proxyWalkBudget`), so a pool of
+  hundreds of dead proxies cannot hold a client request indefinitely; the last
+  upstream answer is returned when it expires. `maxProxyWalkSteps` (1024) caps
+  the attempt count separately, so a very large pool is bounded by whichever
+  limit arrives first.
 
 Not addressed here: a `429` that names a long reset (`retry_after_s=7200` in the
 report) is a per-egress window no walk can shorten. That is the per-provider proxy
