@@ -1,3 +1,0 @@
-### fix(dashboard): list an account's models from the provider's own list
-- The Codex account editor built its "Models this account may serve" checkboxes from the built-in catalogue only, so a model added by hand on the provider page (a `customModels` kv row) never appeared there and could not be granted to the account. `gpt-6.2-sol` was registered, routable, and missing from the picker.
-- The list is now the union of the catalogue, the provider's custom models (the same source the provider page renders, filtered by provider alias and chat kind), and ids already saved on the account — the last so a grant that no longer exists anywhere can still be unchecked.

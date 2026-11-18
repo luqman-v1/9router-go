@@ -1,5 +1,570 @@
 # Changelog
 
+## [v1.9.17-exp.6] - 2026-11-18
+
+### fix(security): judge the dialled address in the media client, and bound the antigravity 404 table
+- The media handler built its transport from a clone of `http.DefaultTransport`, which has no socket-level check. The hostname pre-flight and the redirect policy both judge a name, not the address actually dialled, so a host that resolves public when checked and private when dialled reached loopback, link-local and cloud-metadata addresses. The base transport is now `proxy.NewSafeTransport()`, whose dialer judges the address it is about to connect to and still honours `ALLOW_PRIVATE_NETWORKING` and the per-connection opt-in, so a local ollama or a LAN SearXNG is unaffected.
+- `NoteAntigravityModelNotFound` keyed a map on the caller's model name, so a client naming a new model per request could grow it without limit. The table is now capped at 512 pairs, sweeps expired rows before refusing an insert, ignores ids longer than 128 bytes, and fails open when full — parking is an optimisation and must never be the reason a request is refused.
+
+### fix(dashboard): list an account's models from the provider's own list
+- The Codex account editor built its "Models this account may serve" checkboxes from the built-in catalogue only, so a model added by hand on the provider page (a `customModels` kv row) never appeared there and could not be granted to the account. `gpt-6.2-sol` was registered, routable, and missing from the picker.
+- The list is now the union of the catalogue, the provider's custom models (the same source the provider page renders, filtered by provider alias and chat kind), and ids already saved on the account — the last so a grant that no longer exists anywhere can still be unchecked.
+
+### fix(opencode): harden the free-tier lanes and add gate probes
+
+Five ported fixes from a comparison audit against an external reference
+implementation (`jasonxu114514/opencode2api`), all scoped to the OpenCode lanes
+and none reaching generic routing. Four audit proposals were deliberately not
+ported; all are recorded at the end with their reasons so they are not
+re-raised.
+
+**The paid `opencode-zen` chat lane was sending the public token instead of the
+connection's key.** `zenHeaders` seeds its map from `proxy.BuildOpenCodeHeaders`,
+which hardcodes `Authorization: Bearer public`. That map is assigned to
+`cfg.StaticHeaders`, and `proxy.Forward` applies `StaticHeaders` *after* it sets
+`Authorization: Bearer <apiKey>` — so the placeholder overwrote the real
+credential on every paid zen chat request. A paid lane authenticating as the
+keyless public client is both a routing bug and a credential leak in the log.
+The free lane keeps the placeholder deliberately: the inference gate answers only
+the public credential.
+
+**Network-level abuse refusals are terminal again.** The gate words that verdict
+two ways, and only one was matched, so a terminal egress ban was replayed once
+and its penalty extended. `"free models aren't available" …
+"from your current network"` is now matched **conjunctively**: each half appears
+alone in benign prose, so matching either would make an ordinary error terminal
+and suppress a legitimate replay. Applied in both the retry classifier and the
+handler's refusal classifier, so the two layers agree on what a body means.
+
+**Title-generation requests no longer get agent shaping.** OpenCode 1.x/2.x fires
+tool-less title-generation calls. The gate accepts a tool-less title call and
+refuses the same call once agent tool declarations are attached, so shaping one
+like an agent turn was itself the cause of the refusal — after which the router
+spent an entire proxy-pool walk retrying a request that should never have carried
+tools. `IsOpenCodeTitleRequest` detects the shape (at most three turns, no tool
+declaration in any spelling, no assistant or tool turn, **and** a known title
+opener) and `ShapeOpenCodeV2TitleRequest` keeps the harness preamble the gate
+fingerprints while installing no tools. All six free-lane call sites route
+through one decision point (`shapeOpenCodeFreeBody`), which has its own test
+because a site left on the agent shaper would keep passing the translator tests
+while breaking the behaviour they exist for. The opener requirement is what makes
+detection safe to ship: a short tool-less turn is a perfectly ordinary request,
+so the failure mode has to be "behaves exactly as today" rather than "a real turn
+silently loses its tools".
+
+**The first SSE frame is read before `200 OK` is committed.** The gate can answer
+a refusal inside an HTTP `200` SSE frame, or stall before its first frame, and
+once the response head is on the wire no failover is possible. Measured against
+the unfixed code, an in-band refusal came back as a generic **502**: the gate's
+actual verdict was lost, so `classifyOpencodeFreeTierRefusal` classified on the
+wrong code and `parkRefusedProxyWithPool` parked the egress with the wrong
+window. A `FreeUsageLimitError` frame now surfaces as **429** and a
+`FreeTierError` frame as **403**. Built on the existing
+`proxy.NewStallReaderWithFirstEvent` rather than a second timeout implementation,
+so a stalled upstream is *closed*, which is what unblocks the pending read. The
+prelude is capped at `constants.UpstreamErrLimit`; an oversized prelude is itself
+a refusal. Guarded on `isEventStreamResponse`, so a lane that answers a streamed
+request with one JSON document passes through untouched — without that guard the
+gate rejected valid JSON `200`s. Wired on all six free-lane response paths.
+
+**The reference Bun transport and v2 Chat body key order are implemented but
+default-off** behind `OPENCODE_V2_REFERENCE_FINGERPRINT=1`. The reference
+ClientHello (HTTP/1.1 ALPN only, `X25519MLKEM768` first, both key shares,
+`PKCS1WithSHA1` appended) could not be validated: the free tier answered every
+probe with `429 FreeUsageLimitError`, so no reference layout could be shown to
+return `200`, and a wrong ClientHello `403`s *every* free-tier request. One flag
+flips and one flag reverts the spec, `WithForceHttp1` and the Chat body key order
+together. Both layouts keep 17 ciphers and 13 extensions, pinned by test, so the
+flag cannot silently move the two things the gate is most likely to measure. A
+latent bug in that area came out while wiring it: the stealth client cache was
+keyed on proxy URL alone, so a client built under one fingerprint was returned
+for the rest of the process lifetime and the flag would have been inert.
+
+**Not ported, recorded so it is not re-raised:**
+
+- **No session-timestamp re-anchor.** The audit asks for
+  `TranslateOpenCodeSessionID`'s time half to be anchored near `now`, on the
+  premise that a digest-derived value decodes as 1970–1972 and the gate reads
+  that as staleness. The premise does not hold for this encoding: the 12-hex
+  `ses_` prefix reserves 12 bits for the counter and leaves **36 bits of
+  milliseconds**, and `2^36` ms tops out in **1972** — so *no* id in this layout
+  can carry a modern instant, including the one the official CLI mints from
+  `time.Now()` through the same `descendingTimeHex` that
+  `GenerateOpenCodeSessionID` uses on the measured-working path. What the
+  derivation must keep is determinism per conversation, which it keeps, plus a
+  per-process `opencodeBootNonce` so a restart derives fresh sessions instead of
+  resuming a burned quota bucket.
+- **No caller-API-key session scope.** The audit also asks for the caller's key
+  to be mixed into derived sessions so distinct callers never collide.
+  `opencodeStableSessionKey` already scopes by connection **and** egress proxy,
+  which prevents that collision; adding key scope would fragment the per-session
+  quota budget the free tier accounts, turning one conversation's allowance into
+  several smaller ones.
+- **`x-opencode-project` stays the single `"global"` placeholder.** Minting a
+  per-request real-looking project id changes which upstream quota bucket a
+  request is accounted to, so it is out of scope by design rather than by
+  oversight. A caller-supplied `x-opencode-project` continues to win over the
+  placeholder, which remains the supported way to scope a deployment.
+- **No tool-cloaking strategy change.** The audit's `mcp_<digest>` proposal is
+  unproven here: the two reference projects measured opposite results, and this
+  host cannot settle it because the gate answers the quota refusal **before** it
+  validates tool declarations (a missing `model` returns `400` first, but a
+  foreign tool name returns the same `429` as a tool-less body).
+  `TestLiveOpenCode_ToolCloakingProbe` (integration tag, opt-in via
+  `9ROUTER_LIVE_OPENCODE=1`) runs the `no_tools` / `raw` / `mcp_<digest>` matrix
+  and reports rather than asserting, so the question stays answerable from a
+  clean egress.
+
+Verified: `go build ./...` clean; `go test ./internal/proxy/...
+./internal/translator/... ./internal/handlers/chat/...` green (the three
+`internal/proxy/executor/mcodelease` failures are pre-existing on `main`,
+reproduced by checking out upstream and re-running);
+`go test -tags=integration ./internal/integration/` green; `go vet` clean;
+`go.mod` unchanged, so the `CROSS_TARGETS` portability gate is not engaged. Both
+substantive fixes were confirmed to fail against the unfixed code — the paid-zen
+test reported `Authorization = "Bearer public"` and the first-event test reported
+`status = 502, want 429/403`. Tests pin the per-lane `Authorization`, the
+conjunctive abuse pair with both half-matches as non-terminal, 17 title-detection
+cases including all four false-positive guards, the shaping contract, the
+six-site wiring, the byte-exact healthy-stream replay, both in-band tokens
+mapping to their status, EOF before and mid frame, the oversized prelude, a
+stalled upstream bounded by the deadline, context cancellation releasing the
+attempt, both transport layouts' curve/share/sigalg/ALPN facts, the unchanged
+cipher and extension counts, the flag's exact-value parsing, the cache-key
+separation, and both body orders including their determinism.
+
+### Zed provider parity: tool calling, xAI, live catalog routing, status frames, usage
+
+- `internal/proxy/executor/zed.go`: the `open_ai` lane now reuses the canonical
+  `buildResponsesBody` transform instead of a hand-rolled builder. This gives
+  `gpt-*` tool turns (e.g. `gpt-5.6-luna`) the strict Responses shape upstream
+  requires: normalized object schemas with `properties`, clamped call ids,
+  system/developer messages folded into `instructions`, and `store: false`.
+  Previously a tool call reached cloud.zed.dev with fields the Responses
+  backend rejects, so tools appeared unusable on those models.
+- `internal/providers/zed.go`, `internal/proxy/executor/zed.go`: added the `x_ai`
+  wire provider with OpenAI-shaped passthrough, and made model routing consult
+  the account's live `/models` catalogue first (upstream `resolveModel`), with
+  a bounded/TTL cache and id-prefix fallback. A model whose id does not match
+  its backend family is now sent with the correct provider dialect.
+- `internal/proxy/executor/zed.go`: forward the client's `prompt_id` in the
+  completion envelope, matching upstream's `prompt_id` field.
+- `internal/proxy/executor/zed.go`, `internal/proxy/executor/zed_stream.go`:
+  send upstream's identity/protocol headers (`x-zed-version`, `9router/zed`
+  user agent, status/stream-ended/xAI support flags, broad Accept); recognize
+  `{"event":...}` / `{"status":...}` frames, translating `failed` statuses to
+  an OpenAI error chunk and `stream_ended` to `[DONE]`; refresh the LLM token
+  when upstream returns `x-zed-expired-token` / `x-zed-outdated-token`.
+- `internal/handlers/dashboard/usage_providers.go`: wire Zed into
+  `GET /api/usage/{connectionId}` with the upstream plan/usage shape —
+  Edit Predictions and Hosted Model Requests quotas, plan labels, token-billing
+  note for a zero request limit, trial/overdue-invoice messages, and the
+  `{"user_id} {access_token}"` layer-1 auth.
+- Added table-driven regression tests covering tool-body shaping, xAI envelope,
+  catalog-driven provider resolution, status frames, and Zed usage parsing.
+- Verified with `go test ./...`, `go vet` on the touched packages, and targeted
+  executor/providers/dashboard test runs.
+
+### fix(stream): emit a single [DONE] sentinel in passthrough streams
+
+- Ensures SSE passthrough stream flush never appends duplicate `[DONE]` sentinels when upstream ends with an unterminated `data: [DONE]`, matching merged upstream `decolua/9router@9ae6e147`.
+
+### Fixed
+- Antigravity's discovery roster (`v1internal:fetchAvailableModels`) is treated as advisory instead of authoritative. A tiered account can serve a model the RPC omits — `gemini-4-carbon` and `gemini-4-argon` answer normally for an account whose roster lists neither — and blocking on absence alone parked a working model for the whole process lifetime: every request answered `502 no available connections for provider: antigravity (all excluded)` with `reason=quota cache`, while the dashboard's Test button stayed green. A model missing from the roster now costs one request; the pair is parked only when the upstream itself answers 404, and that park expires after six hours.
+
+### Antigravity lane no longer fake-429s on Claude Code's stock system-prompt sentences
+
+- Claude Code's stock system prompt carries the sentence "Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases." The Antigravity gateway answers that verbatim sentence with 429 RESOURCE_EXHAUSTED on every account despite full weekly quota, so Claude Code sessions failed end to end while dashboard model tests passed. Live bisect replays of a captured Claude Code request against a production gateway isolated the trigger to this one sentence in the system instruction: the sentence alone fails, every phrase of it alone passes, and heavy security vocabulary elsewhere in the request passes.
+- `StripCompetitivePrompts` strips the sentence in transit, so requests forwarded to Antigravity carry no security-guidance sentence at all.
+- The long form of Claude Code's prompt (sent when an API key is configured) carries a second trigger of the same kind: "Text inside <pasted_content> tags was pasted into the message by the user from somewhere else and may contain instructions the user did not write." Bisect replays isolated the trigger to the combined clause "pasted into the message by the user from somewhere else and may contain instructions the user did not write": each half alone passes, the bare word pasted_content passes, the tag alone passes, and the combined clause fails under any subject. `StripCompetitivePrompts` strips the stock sentence and the bare clause outright.
+- Verified by unit tests pinning both strips and the preservation of surrounding and unrelated text.
+- A third trigger surfaced after the two strips were deployed: the desktop entrypoint of Claude Code opens the system prompt with the identity line "You are Claude Code, Anthropic's official CLI for Claude." The gateway answers the exact phrase "You are Claude Code" with the same fake 429 (independently bisected by sidkang/agy-acp issue #1), and the competitive blacklist only covers the "Claude agent" SDK variant, so this line reached the backend intact and kept sessions failing. `StripCompetitivePrompts` now rewrites the identity line, including the ", running within the Claude Agent SDK." form and any bare remainder of the phrase, to the Antigravity identity line, so the forwarded prompt keeps an identity line under the name the backend expects. Verified live on a production instance: the identity sentence alone returned 429 before the rewrite and 200 after it, and the full request body returned 200 after it.
+
+### feat(proxy): park a refused proxy per provider instead of re-dialling it next request
+
+An OpenCode free-tier `429 FreeUsageLimitError` is the gate's verdict on one
+egress IP, not on the account or the model. The router acted on that correctly
+for the length of one request — `excludedPools` drops the pool for the turn — and
+then forgot: the map is local to `handleAccountFallback`, so the next request
+walked back into the proxy that had just been refused and spent another attempt
+relearning it. With a twenty-proxy pool behind one pool name, nothing in the logs
+said which egress had served a turn either.
+
+- **Cooldowns are keyed by (provider, proxy), never by the proxy alone.** The
+  same proxy stays available to every other provider, which never received the
+  verdict. A proxy-only key would silently shrink the pool for providers that
+  did not refuse it, and the symptom would be traffic leaving from the host's
+  real IP with no error to explain why. The proxy is identified by its
+  configured URL rather than its observed exit IP: the URL is what the operator
+  assigned, and two proxies in one pool were measured exiting via addresses
+  other than their hostnames, so the observed IP is both unstable and
+  surprising as a key.
+- **The wait comes from upstream, not from the router.** `Retry-After` is
+  plumbed end to end (e27ca52d), so the parked duration is the window the gate
+  named; a refusal with no stated window parks nothing, since inventing a
+  duration would drop an egress from rotation on a guess. A second refusal
+  extends the window rather than shortening it, so concurrent requests cannot
+  race the deadline backwards.
+- **OpenCode gets its own ceiling (`openCodeProxyMaxCooldown`).** The generic
+  `maxResetCooldown` caps *account* cooldowns and is shared by every provider,
+  so raising it there would hold rate-limited accounts out of rotation for hours
+  on providers whose windows are seconds. e27ca52d left the 2h account clamp in
+  place and recorded the mismatch — OpenCode's real free-tier reset is ~21.5h —
+  as cross-provider policy rather than an OpenCode fix. This is that fix, on the
+  egress dimension where it belongs: it parks a proxy, not an account, so no
+  other provider's behaviour moves.
+- **A fully parked pool still serves traffic.** With every URL cooling the
+  resolver falls back to ordinary rotation. Failing the turn would refuse
+  service, and falling back to the direct client would publish the host's real
+  IP — both worse than trying a proxy the gate may have reopened.
+- **The egress label names the proxy.** `resolveEgress` now carries the
+  redacted proxy URL, so a usage row reads `Rot20 (socks5://***@198.51.100.11:30259)`
+  instead of just `Rot20`. Credentials are stripped before the label is built:
+  a pool of twenty proxies carries twenty passwords, and this string lands on
+  every usage row and every fallback log line.
+- **Recording is opt-in per provider.** Only the OpenCode lanes record today —
+  its gate is the one measured to answer 429 for a spent egress with an
+  hour-scale window — while the map itself is provider-keyed so a later provider
+  needs no migration.
+
+Verified against a live gateway with a twenty-proxy SOCKS5 round-robin pool: nine
+proxies were parked for 6h with credentials redacted, and none was drawn again
+afterwards (zero violations across the following requests). Unit tests pin the
+provider keying, alias canonicalisation, expiry, extend-never-shorten, the
+bounding of the map, and the three resolver behaviours (skip for the refusing
+provider, still offer to others, degrade rather than fail when all are parked).
+
+### fix(proxy): walk a proxy pool within one connection instead of giving up
+
+A proxy pool is many egresses behind **one** connection, but the account fallback
+loop advances over **connections**. A provider with one connection and a hundred
+proxies therefore got exactly **one attempt per request**: the resolver picked one
+URL, the gate refused it, and `free tier refused after retries` was reported while
+ninety-nine egresses had never been tried.
+
+The log that prompted this shows the failure exactly — three dead sockets and a
+429 across a few seconds, then surrender, on a pool that still had proxies to
+offer:
+
+```text
+15:48:35  egress=...103.17.37.100  connection refused
+15:48:42  egress=...103.17.38.11   connection refused
+15:48:43  egress=...103.17.39.146  connection refused
+15:48:48  egress=...103.17.36.106  429
+15:48:48  opencode free tier refused after retries; reporting classified failure
+```
+
+- **The forward is followed by a pool walk.**
+  `tryForwardWithConnection` is now called through `walkPoolOnFreeTierRefusal`,
+  which re-enters the forward against the next proxy in the same pool. Each pass
+  goes through the normal resolver, so rotation, the per-proxy client cache and
+  the strict-proxy marker all behave as they do on a first attempt.
+- **Only a free-tier refusal triggers the walk.** That refusal is the gate saying
+  "not this egress", a fact about the proxy for this request. A dead socket or a
+  5xx keeps the existing handling: it may be the upstream's fault, and skipping
+  a healthy proxy over it would walk a good pool on someone else's bad afternoon.
+  A *different* error on a later proxy ends the walk and hands that error back.
+- **Bounded by the pool size.** A hundred proxies is a hundred attempts, which is
+  what the operator asked for by assigning a hundred. The walk stops early when
+  the client disconnects, and when the pool is exhausted it returns the **last
+  upstream refusal**, so the caller's own handling — pool exclusion, then
+  direct — is unchanged and the operator sees what the gate said rather than an
+  internal error.
+- **Refusals are tracked per pool on the per-request `ConnectionData`.** It has
+  to outlive the loop body: `connData` is rebuilt from the row each iteration, so
+  state on it would be discarded by the retry that needs it. Keying by pool keeps
+  one pool's spent proxies from affecting another's.
+- **`nextProxyURL` skips spent proxies**, and draws one extra time beyond the
+  pool size. `NextURL` advances its cursor *before* reading, so a pool of N
+  returns each URL once per N calls but starts mid-cycle — a loop of exactly N can
+  revisit a URL and never reach another, reporting the pool exhausted while
+  untried proxies remained.
+- **The proxy is redacted before it reaches a log line.** A hundred-proxy pool
+  carries a hundred passwords.
+
+- **The keyless no-auth lane walks too.** The OpenCode free tier is keyless, so
+  it takes the synthesized no-auth branch (`ConnectionID "default"`) rather than
+  the multi-connection loop. The walk was wired only into the latter, so that
+  lane called the forward once, classified the refusal, and returned — the
+  operator's pool was never walked. Both paths now run it;
+  `walkPoolOnFreeTierRefusalFor` takes the connection identity because this lane
+  has no stored row to pass.
+
+- **A dead proxy socket walks too.** The two failures look identical in the log —
+  `Post ...: <error>` with status 0 — but only one is fixed by rotating. A
+  transport failure is now treated as egress-owned after `proxyEgressIsDead`
+  proves it, by dialling the proxy's own listen address with a 3s deadline: a
+  socket that refuses that would refuse any target. Three dead sockets in a pool
+  used to produce three instant 502s with the rest of the pool untried. The
+  probe runs only on the failure path, so a successful request pays nothing, and
+  a proxy that accepts the connection then fails (TLS, a rejected CONNECT, or
+  the provider's own 5xx) is deliberately NOT reported dead — those are the
+  upstream's answers through a working egress.
+
+- **A 180s wall-clock budget bounds the walk** (`proxyWalkBudget`), so a pool of
+  hundreds of dead proxies cannot hold a client request indefinitely; the last
+  upstream answer is returned when it expires. `maxProxyWalkSteps` (1024) caps
+  the attempt count separately, so a very large pool is bounded by whichever
+  limit arrives first.
+
+Not addressed here: a `429` that names a long reset (`retry_after_s=7200` in the
+report) is a per-egress window no walk can shorten. That is the per-provider proxy
+cooldown's job. This change makes the router *use the pool it was given*; that one
+makes it stop re-trying an egress that has said no.
+
+Verified against a live gateway with a six-proxy SOCKS5 pool: one request produced
+six attempts through six distinct proxies, where the same request previously made
+one. Unit tests pin walking past a refused proxy, exhaustion reporting, plain
+rotation when nothing is refused, per-pool scoping, and the happy path being
+untouched (a successful first attempt returns immediately, so no extra request is
+made).
+
+### fix(proxy): walk across separate imported proxy pools 1-by-1 until 200 OK
+
+Dashboard bulk proxy import creates one `ProxyPool` row per proxy (`Imported <ip>:<port>`, `len(pool.URLs) == 1`) and rotates across those rows via `providerStrategies.<provider>.rotateStrategy = "round-robin"`. `walkPoolOnFreeTierRefusalFor` previously walked only `pool.URLs` inside the first picked pool, so a single-URL imported pool broke out after 0 retries and returned `429` immediately while 350+ sibling pools went untried.
+
+- **Multi-pool + multi-URL unified walk (`internal/handlers/chat/proxy_pool_walk.go`)**: when the current pool has no unrefused URLs left, exclude that pool for the turn and advance via `resolveProviderProxyPoolID(provider, excludedPools)` step-by-step across all active pools until a healthy proxy answers `200 OK` (covered across keyless `conn=default`, stored connections, pinned connections, and combos).
+- **Exact 1-by-1 round-robin scan + pool-level cooldown skip (`internal/handlers/chat/connections.go`, `proxy_cooldown.go`)**: scan forward over the stable `ActivePoolIDs` slice rather than indexing a shrinking filtered slice (which skipped every second pool), and skip pools whose URLs are parked in `(provider, proxyURL)` cooldown in memory with zero SQLite queries (including 5-minute cooldowns on dead SOCKS5/HTTP proxy sockets).
+- **Fast first-turn failover & per-proxy OpenCode session isolation (`internal/proxy/opencode.go`, `internal/proxy/executor/opencode_session.go`, `opencode_stealth.go`)**: scope OpenCode stable sessions per proxy URL so hundreds of proxies do not share one `x-opencode-session`, skip redundant session-rotation replay on freshly-minted 0-turn sessions, bound the stealth client cache (`maxOpencodeStealthClients = 128`) with an 8s dial timeout, and unwrap `ForbidDirectReplay` (`strictProxy=true`) in `ProxyURLForTarget` so strict pools never lose their proxy on stealth transports.
+
+### fix(proxy): honour a dialable pool's noProxy list and validate the proxy scheme
+
+Two gaps left around proxy pools once the dispatch gate learned to dial
+`socks5`/`socks5h`: a dialable pool's `noProxy` list was stored and rendered but
+never applied, and a proxy URL naming a scheme the transport cannot speak was
+installed as a proxy anyway, failing at dial time instead of where the URL was
+read.
+
+- **`noProxy` is applied on the dial path**
+  (`internal/handlers/chat/connections_proxy.go`). `ShouldBypassNoProxy` was
+  called only from `resolveEdgeRelay`, so the bypass list of an HTTP or SOCKS
+  pool was ignored: a target the operator explicitly excluded from the proxy
+  still went out through it. The list is now read for every dialable pool (and
+  for a legacy connection's `connectionNoProxy`) and a matching target keeps the
+  connection's direct client. An empty list still proxies everything.
+- **The proxy scheme is validated once, in the transport**
+  (`internal/proxy/ssrf.go`). `NewSafeTransportForProxy` installed
+  `http.ProxyURL` for any URL `url.Parse` accepted, so an undialable scheme
+  produced a transport that looked configured and failed only at dial time —
+  after the request had committed to that proxy. It now installs the proxy only
+  for `http`/`https`/`socks5`/`socks5h` (the schemes Go's transport speaks
+  natively) and otherwise falls back to the ambient path, matching the existing
+  "cannot parse" behaviour.
+- **The pool test endpoint shares that transport**
+  (`internal/handlers/dashboard/proxypools.go`). It built its own
+  `&http.Transport{Proxy: http.ProxyURL(...)}`, which accepted any parseable
+  scheme and dialled without the SSRF dialer's proxy exemption, so it could
+  report `passed` for a pool the request path would refuse. It now goes through
+  `NewSafeTransportForProxy` via `poolProbeTransport`, and an undialable scheme
+  answers `unsupported proxy protocol in <scheme>` rather than a dial error.
+
+Not included: SOCKS4/SOCKS4a. The standard library has no SOCKS4 dialer and
+`golang.org/x/net/proxy` is SOCKS5-only, so such a pool is refused with the
+message above rather than silently dropped.
+
+Verified with unit tests pinning a pool's `noProxy` decision (listed host,
+subdomain, unlisted host, empty list), the dialable-scheme set at the transport
+boundary, and the probe endpoint's agreement with it.
+
+### Fixed
+- A tool a client loads mid-conversation (Claude Code's inline-tools: a `tool_addition` block carrying the real `input_schema`) now reaches a Chat-format upstream. The converted lane reads tools only from `tools`, so the added block was previously discarded: the model saw the stub entry — `Bash()` with no parameters — and answered with an empty call. The client rejects that call (`The required parameter command is missing`), retries the same request, and the model repeats it, so each round costs a full prompt. `tool_removal` is applied the same way, and neither block is forwarded to a Chat upstream, where they are not valid content.
+
+### fix(opencode): report the selected free model instead of GLM-5.3-Flash Free
+
+The OpenCode free-tier harness preamble is a verbatim CLI capture whose `# Your Model` block names GLM-5.3-Flash Free. Because the inference gate fingerprints those bytes, the block cannot be edited, and every free lane — `mimo-v2.6-flash-free`, `deepseek-v4.1-flash-free`, `beam-free`, and others — told the client it was GLM-5.3-Flash Free.
+
+`ConcealOpenCodeV2FingerprintTools` now appends a correction after the preamble with the model from the request, on all three wire shapes (Chat Completions, Responses, Claude Messages). The preamble stays byte-exact at the start; only the suffix changes.
+
+Verified: new table-driven `TestConcealOpenCodeV2ModelIdentity` pins the preamble prefix and the per-model identity suffix on all lanes; `go test ./internal/translator/... ./internal/proxy/...` passes. A live A/B probe against the keyless inference gate returned the identical `429 FreeUsageLimitError` with and without the suffix, so the added text does not change gate validation (the tier is IP-rate-limited right now).
+
+### Added
+
+- Qoder and Qoder CN daily credit check-in, ported from the merged upstream
+  `magpie-community/plugins` `packages/qoder` contract (v0.2.71, commit
+  `afe4c0864`, 2026-11-17). A bounded worker polls each account's `CLAIM_BENEFIT`
+  campaigns every 30 minutes and at the Beijing day boundary, claims one
+  campaign with the documented `POST …/{id}/claim`, and records the outcome in
+  `<DATA_DIR>/qoder-checkin.json`. The `qoderCheckin` setting gates it at runtime
+  and `GET /api/qoder/checkins` exposes the last result per account. Both sites
+  keep separate hosts and credentials (§3: no cross-provider aliasing).
+- `AGENTS.md` now records `yetone/magpie` and its community Qoder plugin as
+  merged-only secondary references for Qoder wire-contract work, with pinned
+  commits and a porting protocol.
+
+### Verification
+
+- `go test -tags=integration ./internal/integration/ -run TestQoderCheckinsEndpoint` — verifies the read-only state endpoint on the production router.
+- `go test ./internal/qodercheckin/...` — 8 tests covering claim, already-claimed,
+  inactive, refusal, expired sign-in, site isolation, ledger persistence and
+  outcome storage.
+- `go build ./internal/app/... ./internal/handlers/dashboard/... ./internal/qodercheckin/...`.
+
+### Fixed
+
+- Explain in place why Logout is unavailable when Require login is off, instead of sending the browser to /login and bouncing straight back to the dashboard (#1218).
+
+### Fixed
+- The Claude lane no longer decides what the API accepts by keeping allowlists. A content block or message key the gateway has not seen before is forwarded instead of being read as empty or stripped: a `tool_addition`-only turn survived via an earlier list entry, but the next block type a CLI adds would have been dropped in silence. Blocks are now removed only when they are provably empty (blank text, unsigned thinking) and message keys only when they are known-foreign (`reasoning_content`, `output_config`, `tool_calls`, `function_call`, `reasoning`). A `tool_result` keeps its turn alive whatever it carries, because dropping it leaves the paired `tool_use` unanswered.
+- A mid-history `role: "system"` turn is folded into the top-level `system` field instead of being forwarded, where the API answers 400 `role 'system' must precede an 'assistant' message` — and since the turn stays in the history, every later turn failed too.
+- A combo whose first member speaks Chat Completions (`cx/…`) converts the client's Claude body once, for every member. When the fallback reached the Claude member, the body still carried `tools: [{type: "function", function: {…}}]` and the Messages API answered 400 `tools.0: Input tag 'function' …`: the Claude member now converts a chat-shaped body back before sending it.
+- The stalled-tool-loop guard logs and forwards. It used to answer the client with a canned intervention instead of sending the turn upstream, so an agent that read the same file three times in one turn died — it now emits one `stalled tool loop detected` line and leaves the turn to the model.
+
+### Changed
+- The sanitizer reports what it removed, one `claude sanitize removed` line per request that actually lost something, naming each key and block type. A clean request logs nothing.
+- A regression corpus pins the Claude Code 2.1.325 payload shapes: unknown block type, unknown message key, `tool_addition`/`tool_removal`, mid-history system turn, `tool_use` with `input: null`.
+
+### Cache
+
+Added `POST /api/cache/semantic/invalidate`, a net-new dashboard API for dropping semantic cache entries without waiting for TTL expiry or purging the whole store. It takes a JSON body and returns `{ "invalidated": <count>, "success": true }`:
+
+- `model` — the entry's model. The in-memory tier compares it case-insensitively; the SQLite tier compares it exactly.
+- `prefix` — the entry's cache key must start with this string (keys are hex digests).
+
+Both filters are ANDed when both are present, and at least one is required (a request with neither returns `400`). Clearing the whole store stays `DELETE /api/cache`, and a single entry stays `DELETE /api/cache/entries`.
+
+Internally this adds `Cache.InvalidateByModelAndPrefix`, with `Store.InvalidateByModelAndPrefix` implemented on `LRUStore` (in-memory) and `PersistentLRUStore` (in-memory plus one SQLite statement, so there is no per-row N+1). The two tiers do not match the model identically: the in-memory filter is case-insensitive, the SQLite `DELETE` compares the model exactly. A request whose model differs only in case clears the in-memory entry and leaves its disk row.
+
+### Combos: support advertised context window mode (min, max, custom)
+
+Allow combo strategies to configure how their context window is advertised in `/v1/models` (`context_length`) and the dashboard `ComboCard`. This is a local enhancement: it is not a port of any upstream 9router change.
+
+- `ComboStrategy.ContextWindowMode` (`min` | `max` | `custom`) and `ContextWindow` integer.
+- `min` (default): advertises the narrowest seat window (safe for panel queries where every seat sees the request).
+- `max`: advertises the widest seat window (for rollover fallback chains where an oversized request advances to larger-window seats).
+- `custom`: advertises an explicit operator-chosen window, falling back to `min` when unset or 0.
+- Frontend: adds mode selector and custom token input in `ComboCard.svelte` and `CombosView.svelte`.
+- Unit tests in `internal/db/settings_test.go` and `internal/handlers/chat/combo_seat_limits_test.go`.
+
+### Security
+
+- SSRF guard on web search base URL overrides (SearXNG and all web-search providers). A client-supplied `providerSpecificData.baseUrl` override for `/v1/search` is now run through `handlerutil.AssertPublicURL` before dialling, refusing loopback/private/link-local/cloud-metadata addresses with a 400 instead of fetching them on the caller's behalf. Registry defaults and explicit public http(s) URLs still work. The registry default (e.g. SearXNG's `http://localhost:4000/search`) is trusted as admin-controlled and is not gated. Port of upstream `resolveBaseUrl` / `assertPublicUrl`.
+- Redirect SSRF guard on the media fetch path. A public search (or media) endpoint that answers `302` with a `Location` on a loopback, private, link-local or cloud-metadata address is no longer followed: every redirect hop is checked with `handlerutil.AssertPublicURL`, so a validated public base URL cannot be used to reach an internal address one hop later. The policy is installed on the media handler's client, on the direct TTS/search client, on the direct `forwardMediaRequest` client and on a copy of the shared chat client that the `forwardMediaRequest` combo branch dials each combo member with; the redirect ceiling of ten hops is restated because `CheckRedirect` replaces the stdlib policy. Covered by `TestResolveSearchURL_RedirectToPrivateRefused` (direct search) and `TestResolveSearchURL_ComboRedirectToPrivateRefused` (combo-member search), each of which fails if the loopback target receives a single request.
+
+### opendesign provider (open-design.ai / amr-link)
+
+Add the `opendesign` provider (alias `od`) routing model traffic to
+`https://amr-link.open-design.ai/v1` with dual-key auth:
+
+- **Registry**: `ProviderConfig` + `ProviderMeta` (Bearer auth on `Authorization`,
+  `Usage: true`, `PassthroughModels: true`, `ModelsFetcher` on
+  `https://amr-link.open-design.ai/v1/models`), 12 seed models in
+  `ProviderModels["opendesign"]`/`["od"]`, and model formats
+  (`claude-haiku-5.5` + `deepseek-v4-pro` → Responses, `glm-5.3-flash` → Claude,
+  rest chat).
+- **Executor**: `ForwardOpenDesign` — lane-based path selection
+  (`/chat/completions`, `/responses`, `/messages`), rejects `vela_ctrl_` keys on
+  the model lane, returns `*proxy.UpstreamError` so 401/403/429 are preserved
+  instead of being swallowed as transport errors.
+- **Usage / Design Plan**: `fetchOpenDesignUsage` reads the account's control
+  key (`vela_ctrl_…`) against `https://amr-api.open-design.ai` (separate control
+  host, never derived from BaseURL): `GET /api/v1/workspaces/current` (workspace
+  id cached per control key ~10 min under `sync.Mutex`, capped at 500 entries
+  with expired-then-oldest eviction), then
+  `GET /api/v1/workspaces/{id}/billing/preflight`. Credits are parsed with
+  `math/big.Rat` so large decimals are not lost to float64; percent =
+  `round(max(0, used/limit*100)*10)/10`.
+- **Dashboard**: control-key input field in `AddConnectionModal`
+  (`buildProviderSpecificData` writes `controlKey` into `providerSpecificData`);
+  `opendesign` added to `usageSupportedProviders` and `usageApikeyProviders`.
+
+Tests: table-driven `testing.T` coverage for quota decimal parsing,
+window-name boundaries, key classification, workspace caching TTL/isolation,
+lane selection, and `od` alias resolution. No `CHANGELOG.md` edit — this
+fragment is the entry.
+
+Sources: the `@magpie-community/opencode-opendesign-auth` plugin contract and
+the `AstroQore/opendesign2api` API shape (endpoint paths, auth headers, payload
+field names). This is a net-new local provider: no upstream `decolua/9router`
+parity commit exists for it, so the design was written here from the vendor
+protocol — control-plane (`amr-api`) and model-plane (`amr-link`) hosts kept
+separate, the `vela_ctrl_` control key confined to the control plane, and
+`big.Rat` credit arithmetic so large decimals survive intact.
+
+### Fixed
+
+- `internal/translator/thought_signature_store.go`: Scope bare-key thought-signature lookups by `apiKeyId` when no session header is sent. Previously two API keys sharing an account collided on bare `toolCallID` keys, allowing one key's signature to be replayed for another key's tool call. Read keys (`signatureLookupKeys`, `GetGeminiThoughtSignature`) and write keys (`StoreGeminiThoughtSignature`) now both namespace to `apiKeyId:toolCallID` when `sessionID` is empty and an apiKey ID is available. Backward compatible — keys and calls with no apiKey ID behave exactly as before.
+
+- `internal/translator/gemini.go`: `TranslateOpenAIToGeminiWithSession` accepts a trailing variadic `apiKeyID` argument; `GeminiStreamState` gains `APIKeyId`. `TranslateOpenAIToGemini` wraps it with no apiKey.
+
+- `internal/proxy/gemini.go`, `internal/proxy/executor/providers.go`, `internal/proxy/executor/gemini.go`, `internal/proxy/executor/zed_google.go`, `internal/handlers/chat/gemini_handler.go`: Thread the authenticated apiKey ID from request context into the translation path, so write-side scoping mirrors read-side scoping for every Gemini-style call lane (antigravity, opencode-go, zed-google, vertex).
+
+- `internal/proxy/executor/vertex.go`, `internal/proxy/executor/zed.go`: Thread `req.APIKeyID` into `TranslateOpenAIToGeminiWithSession` on the Vertex and Zed google lanes. Vertex passes it alongside `req.SessionID`; Zed passes it through `BuildZedCompletionBody` → `zedGoogleProviderRequest` (empty session, since Zed sends none). All Gemini-style lanes are now key-scoped.
+
+### fix(chat): strip thinking suffix before combo seat capability lookup
+
+A combo seat like `oc/deepseek-v4.1-flash-free(max)` carried its thinking suffix
+into `comboSeatCapabilities`, so the capability table was keyed by a suffixed
+model id that never matches. The seat fell through to the pattern-table
+default instead of publishing the bare model's own block (`context_length` /
+`max_completion_tokens`), and combos built on that seat advertised a window the
+model does not have.
+
+`comboSeatCapabilities` now strips the trailing `(level)` thinking suffix
+(using `thinking.StripSuffix`, the same helper `resolveModel` uses) before the
+capability lookup, so suffixed seats resolve to the same capability block as
+their bare model.
+
+Adds `TestHandleModels_ComboSeatThinkingSuffixStrippedBeforeCaps` covering a
+`(max)`-suffixed opencode seat publishing the bare model's 330000 / 128000
+limits.
+
+### Gemini 4 Hydrogen model, capabilities, xhigh thinking level, long decode, and Antigravity fake-quota 429 resilience
+
+Adds `gemini-4-hydrogen` plus level variants (`-xhigh`, `-high`, `-medium`, `-low`)
+to the registry for `ag`, `antigravity`, `gc`, `gemini`, `gemini-cli`, `gemini-web`,
+`gh`, `github`, and `vertex`. Mirrors Gemini 4 Argon wiring (gemini-level thinking,
+1M context window, $4/$20 intro pricing) but adds an `xhigh` thinking tier above
+`high`, long-decode continuation hops, and Antigravity fake-quota 429 resilience.
+Models and behavior are aligned with Antigravity's live `fetchAvailableModels` catalog.
+
+#### Models, Registry & Capabilities
+
+- `ProviderModels` registry lists hydrogen variants (`-xhigh`, `-high`, `-medium`, `-low`)
+  on all upstream-facing providers (`ag`, `antigravity`, `gc`, `gemini`, `gemini-cli`,
+  `gemini-web`, `gh`, `github`, `vertex`).
+- `patternCapabilities` gains `*gemini*hydrogen*` row: vision/PDF/audio/video,
+  reasoning/search/tools, `gemini-level` thinking format, thinking cannot be
+  disabled.
+- `patternThinking` gains `*gemini*hydrogen*` row advertising
+  `low|medium|high|xhigh` (ordered before `*gemini-4*` so Hydrogen claims its own
+  row); `xhigh` clamps to itself, `minimal`/`none` clamp to `low`.
+- Pricing: `gemini-4-hydrogen` and level variants at $4 input / $20 output per 1M,
+  cached 0.2, reasoning 20, cache creation 0.375.
+- `internal/pricing/tables.go` pricing rows for `gemini-4-hydrogen-xhigh`.
+- Dashboard `web/src/lib/models.ts` blocks updated for `ag`, `gc`, `gemini`,
+  `gemini-web`, `gh`, `vertex` so routed models appear in the dashboard catalog,
+  with `-xhigh` mapping to `(xhigh)` and `-high` mapping to `(high)`.
+
+#### Antigravity Fake-Quota 429 Resilience
+
+- `internal/translator/antigravity.go`: `rewriteBrandingText` gains the
+  `openclaw` → `antigravity` rewrite row for system instructions, matching the
+  unbounded case-insensitive rule (`openclaw`, `OpenClaw`, `OPENCLAW`, `openclaw-go`
+  all rewritten). The conversation is untouched.
+- `internal/proxy/gemini.go`: when the Antigravity backend answers a bare
+  429 `RESOURCE_EXHAUSTED` (without `QUOTA_EXHAUSTED`, `RATE_LIMIT_EXCEEDED`, or
+  `"Individual quota reached"` marker), `ForwardGemini` retries once with the
+  `systemInstruction` folded into `contents[0]` as a user-role turn. The retry
+  is gated on `cfg.Format != "gemini-cli"` — `gemini-cli` connections skip it
+  because the retry is Antigravity-specific (`WrapForAntigravity`). Explicit
+  quota errors are never retried. If the retry also fails, the original 429 is
+  returned so the combo loop can rotate the connection.
+- `internal/translator/antigravity.go`: `MoveSystemInstructionToContents` implements
+  the prompt relocation.
+
+#### Gemini Long-Decode Continuation Hops
+
+- `internal/handlers/chat/gemini_handler.go`: `followLongDecodeContinuation` chains
+  requests with `continuationToken` when the model is Hydrogen and the response
+  carries `finishReason: CONTINUATION`. Up to 16 hops (`maxLongDecodeHops`), the token
+  goes at the top level for Gemini native and at `request.continuationToken` for
+  the Antigravity envelope (`buildContinuationRequest`).
+- `internal/translator/antigravity.go`: `isHydrogenModel` detects Hydrogen models;
+  `hardenAntigravityRequest` lifts the output-token cap from 64k to 256k for Hydrogen
+  (`maxHydrogenOutputTokens`) so long decode responses are not truncated.
+
+Tests: `go test ./internal/providers/... ./internal/pricing/... ./internal/translator/... ./internal/proxy/... ./internal/handlers/chat/...` pass.
+
 ## [v1.9.17-exp.5] - 2026-11-16
 
 ### Fixed
