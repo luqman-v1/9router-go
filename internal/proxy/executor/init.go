@@ -96,6 +96,9 @@ func RegisterAll() {
 	Register("bazaarlink", func() Executor { return ForwardOpenAI })
 	Register("bluesminds", func() Executor { return ForwardOpenAI })
 	Register("devin-cli", func() Executor { return ForwardOpenAI })
+	// agy-acp drives the official agy CLI over Agent Client Protocol (stdio
+	// JSON-RPC). It is distinct from the HTTP antigravity provider.
+	Register("agy-acp", func() Executor { return ForwardAGYACP })
 	// Vertex AI: the registry entries carried no executor, so every request
 	// POSTed an OpenAI body at aiplatform.googleapis.com, which serves neither
 	// lane. Both provider ids share one implementation — the difference is the

@@ -1082,6 +1082,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://deepseek.com",
 		Notice:       &Notice{APIKeyURL: "https://platform.deepseek.com/api_keys"},
 	},
+	"agy-acp": {
+		ID:           "agy-acp",
+		Name:         "Antigravity CLI (ACP)",
+		Alias:        "agcpy",
+		Category:     CategoryOAuth,
+		Color:        "#F59E0B",
+		Icon:         "terminal",
+		Priority:     21,
+		ServiceKinds: []string{"llm"},
+		Website:      "https://antigravity.google",
+		Notice:       &Notice{Text: "Risk Notice: This provider drives the official `agy` CLI over Agent Client Protocol. Google's Antigravity Additional Terms of Service section 6 and FAQ state that wrapping agy in third-party tools and automating account rotation are not supported and may suspend your account. Multi-account failover is OFF by default. Install agy >= 1.5.0 (AGY_PATH overrides the binary), then either reference an existing Antigravity OAuth connection or import a refresh token. Use at your own risk.", SignupURL: "https://antigravity.google"},
+	},
 	"devin-cli": {
 		ID:           "devin-cli",
 		Name:         "Devin CLI",
