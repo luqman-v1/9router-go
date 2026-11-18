@@ -166,3 +166,68 @@ func TestResolveSearchURL_RedirectToPrivateRefused(t *testing.T) {
 		t.Fatalf("expected the redirect to be refused, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// The combo branch of forwardMediaRequest dials each member through the shared
+// chat client, so the redirect guard must ride on a copy of it there too. This
+// test drives a search-combo whose tavily/search member answers 302 with a
+// Location on a loopback server this test owns: without the guard the private
+// server would receive the request, so zero hits is the only acceptable result.
+func TestResolveSearchURL_ComboRedirectToPrivateRefused(t *testing.T) {
+	var privateHits atomic.Int32
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		privateHits.Add(1)
+		w.Write([]byte(`{"results":[{"title":"internal admin"}]}`))
+	}))
+	defer private.Close()
+
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, private.URL+"/admin", http.StatusFound)
+	}))
+	defer search.Close()
+
+	orig := providers.KnownProviders["tavily"]
+	tavily := orig
+	tavily.SearchURL = search.URL
+	providers.KnownProviders["tavily"] = tavily
+	defer func() { providers.KnownProviders["tavily"] = orig }()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	connData, _ := json.Marshal(map[string]any{"apiKey": "tvly-test-key"})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-tavily', 'tavily', 'apikey', 'Tavily Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS combos (
+		id TEXT PRIMARY KEY,
+		name TEXT UNIQUE NOT NULL,
+		kind TEXT,
+		models TEXT NOT NULL,
+		strategy TEXT DEFAULT 'fallback',
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL,
+		matchRules TEXT DEFAULT '',
+		customPrompt TEXT DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("create combos table: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	if err := repo.CreateCombo("search-combo", "search-combo", "webSearch", `["tavily/search"]`, "fallback", ""); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	handler := newTestMediaHandler(repo)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/search", strings.NewReader(`{"model":"search-combo","query":"internal admin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.HandleSearch(rec, req)
+
+	if hits := privateHits.Load(); hits != 0 {
+		t.Fatalf("combo redirect to private address was followed %d time(s); body: %s", hits, rec.Body.String())
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway from combo search, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

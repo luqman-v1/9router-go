@@ -1253,6 +1253,10 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				lastErr = clientErr.Error()
 				continue
 			}
+			// The client is the chat handler's shared one; guard its redirects
+			// so a combo search that answers 302 to a private address is
+			// refused rather than followed.
+			client = guardMediaRedirects(client)
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
