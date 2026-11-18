@@ -30,6 +30,8 @@ var ProviderModelFormats = map[string]map[string]ModelFormats{
 	// from the model family.
 	"commandcode-goat": commandcodeGoatModelFormats,
 	"cmc-goat":         commandcodeGoatModelFormats,
+	"opendesign":       opendesignModelFormats,
+	"od":               opendesignModelFormats,
 }
 
 // museModelFormats mirrors open-sse/providers/registry/muse.js models[]: Meta
@@ -334,4 +336,15 @@ func (m ModelFormats) SupportsFormat(format string) bool {
 		}
 	}
 	return false
+}
+
+// Open Design Cloud's OpenAI-compatible model plane serves every model on all
+// three lanes; each model's declared lane is only its default (amr-link
+// answers chat completions, Responses and Anthropic messages for any id).
+// claude-haiku-5.5 and deepseek-v4-pro default to Responses; glm-5.3-flash
+// defaults to Anthropic's messages; everything else defaults to chat.
+var opendesignModelFormats = map[string]ModelFormats{
+	"claude-haiku-5.5": openCodeZenFormats(FormatOpenAIResponses, FormatOpenAIResponses),
+	"deepseek-v4-pro":  openCodeZenFormats(FormatOpenAIResponses, FormatOpenAIResponses),
+	"glm-5.3-flash":    openCodeZenFormats(FormatClaude, FormatClaude),
 }

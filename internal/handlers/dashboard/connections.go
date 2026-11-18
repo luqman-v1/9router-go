@@ -147,7 +147,7 @@ var usageSupportedProviders = []string{
 	"antigravity", "claude", "clinepass", "codebuddy-cn", "codebuddy-intl", "codex",
 	"commandcode", "commandcode-goat", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
-	"minimax-code-global", "ollama",
+	"minimax-code-global", "ollama", "opendesign",
 	"free-pi", "freebuff", "opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
 	"vercel-ai-gateway", "xiaomi-mimo", "zed",
 	"zcode",
@@ -158,7 +158,7 @@ var usageSupportedProviders = []string{
 var usageApikeyProviders = []string{
 	"clinepass", "codebuddy-cn", "codebuddy-intl", "commandcode", "commandcode-goat", "deepseek", "gemini-web", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"free-pi", "freebuff", "opencode-go", "opencode-zen", "qoder", "qoder-cn",
+	"free-pi", "freebuff", "opencode-go", "opencode-zen", "opendesign", "qoder", "qoder-cn",
 	"vercel-ai-gateway", "xiaomi-mimo",
 }
 

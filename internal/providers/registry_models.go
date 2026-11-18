@@ -272,6 +272,8 @@ var ProviderModels = map[string][]string{
 	"zcode":                {"glm-5.3", "glm-5.3-flash"},
 	"atmorouter":           {"cc/claude-sonnet-4-6", "cc/claude-opus-4-7", "cx/gpt-5.6-sol", "cb/gemini-3.1-pro", "cbcn/glm-5.3", "ali/kimi-k2.7-code", "ali/qwen3.8-max", "ali/deepseek-v4.1-flash"},
 	"runcrate":             {"deepseek-ai/DeepSeek-V4.1-Flash", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "zai-org/GLM-5.3", "zai-org/GLM-5.3-Flash", "Qwen/Qwen3.8-Flash", "openai/gpt-oss-120b"},
+	"opendesign":           {"claude-haiku-5.5", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-eco", "glm-5.3-flash", "glm-5.3-flashx", "gpt-6-luna", "kimi-k2.7-code", "mimo-v2.6-flash", "mimo-v2.6-pro"},
+	"od":                   {"claude-haiku-5.5", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-eco", "glm-5.3-flash", "glm-5.3-flashx", "gpt-6-luna", "kimi-k2.7-code", "mimo-v2.6-flash", "mimo-v2.6-pro"},
 }
 
 // ProviderModelKinds maps provider alias/ID → model id → service kind for the

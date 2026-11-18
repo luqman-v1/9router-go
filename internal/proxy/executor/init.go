@@ -127,5 +127,9 @@ func RegisterAll() {
 	Register("minimax-code-global", func() Executor { return ForwardMinimaxCode })
 	Register("daoxe", func() Executor { return ForwardOpenAI })
 	Register("nan", func() Executor { return ForwardOpenAI })
+	// Open Design Cloud: dual-plane (runtime key at amr-link.open-design.ai/v1,
+	// control key at amr-api.open-design.ai). Its own executor so 401/403/429
+	// reach the client as real statuses instead of being written as 200.
+	Register("opendesign", func() Executor { return ForwardOpenDesign })
 	Register("openadapter", func() Executor { return ForwardOpenAI })
 }

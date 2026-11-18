@@ -69,6 +69,7 @@ var RegistryAliases = map[string]string{
 	"opencode":            "oc",
 	"opencode-go":         "ocg",
 	"opencode-zen":        "ocz",
+	"opendesign":          "od",
 	"perplexity":          "pplx",
 	"perplexity-agent":    "pa",
 	"perplexity-web":      "pw",

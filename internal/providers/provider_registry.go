@@ -1507,6 +1507,26 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Notice:            &Notice{Text: "OpenCode Zen PAYG: pay-as-you-go, key from https://opencode.ai/auth. Same models as Zen: paid + free tiers on the fast lane.", APIKeyURL: "https://opencode.ai/auth"},
 		ModelsFetcher:     &Fetcher{URL: "https://opencode.ai/zen/v1/models", Type: "opencode-free"},
 	},
+	// Open Design OpenDesign Cloud (open-design.ai) / AMR:
+	// https://open-design.ai/amr. Dual-plane provider: runtime key at
+	// amr-link.open-design.ai/v1 for model traffic; control key at
+	// amr-api.open-design.ai for plan/wallet/allowance. Its usage fetcher is
+	// fetched from the control host explicitly (fetchOpenDesignUsage).
+	"opendesign": {
+		ID:                "opendesign",
+		Name:              "OpenDesign Cloud",
+		Alias:             "od",
+		Category:          CategoryAPIKey,
+		AuthType:          "apikey",
+		Color:             "#E87040",
+		Icon:              "flare",
+		Usage:             true,
+		PassthroughModels: true,
+		ServiceKinds:      []string{"llm"},
+		Website:           "https://open-design.ai/amr",
+		Notice:            &Notice{Text: "Open Design Cloud: two keys per account — a runtime key (`sk-amr-…`) answers model requests at amr-link.open-design.ai/v1, a control key (`vela_ctrl_…`) reads the Design Plan allowance at amr-api.open-design.ai.", APIKeyURL: "https://open-design.ai/amr"},
+		ModelsFetcher:     &Fetcher{URL: "https://amr-link.open-design.ai/v1/models", Type: "openai"},
+	},
 	"perplexity": {
 		ID:           "perplexity",
 		Name:         "Perplexity",
