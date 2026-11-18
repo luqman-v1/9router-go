@@ -83,7 +83,7 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 		if err := dir.WriteCredentials(opts.Credentials); err != nil {
 			return err
 		}
-		defer dir.Clear()
+		defer func() { _ = dir.Clear() }()
 	}
 
 	cmd := buildCommand(ctx, bin, dir, opts)
@@ -110,11 +110,11 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 	mcpServers := []any{}
 	if len(opts.MCPTools) > 0 {
 		var berr error
-		bridge, berr = StartMCPBridge(opts.MCPTools, opts.MCPSeeded)
+		bridge, berr = StartMCPBridge(ctx, opts.MCPTools, opts.MCPSeeded)
 		if berr != nil {
 			return berr
 		}
-		defer bridge.Close()
+		defer func() { _ = bridge.Close() }()
 		mcpServers = append(mcpServers, map[string]any{"name": "router_client_tools", "url": bridge.URL()})
 	}
 	// session/new with an mcpServers array (required by agy; an object is
@@ -232,11 +232,11 @@ func classifyError(err error) error {
 	switch {
 	case strings.Contains(msg, "invalid_grant"), strings.Contains(msg, "unauthorized"),
 		strings.Contains(msg, "401"), strings.Contains(msg, "oauth-personal"), strings.Contains(msg, "login"):
-		return fmt.Errorf("%w: %v", ErrAuth, err)
+		return fmt.Errorf("%w: %w", ErrAuth, err)
 	case strings.Contains(msg, "quota"), strings.Contains(msg, "429"), strings.Contains(msg, "rate_limit"):
-		return fmt.Errorf("%w: %v", ErrQuota, err)
+		return fmt.Errorf("%w: %w", ErrQuota, err)
 	case strings.Contains(msg, "403"), strings.Contains(msg, "policy"), strings.Contains(msg, "disabled"), strings.Contains(msg, "tos"):
-		return fmt.Errorf("%w: %v", ErrPolicy, err)
+		return fmt.Errorf("%w: %w", ErrPolicy, err)
 	default:
 		return err
 	}

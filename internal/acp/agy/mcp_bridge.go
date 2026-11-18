@@ -39,8 +39,9 @@ type MCPBridge struct {
 
 // StartMCPBridge binds an ephemeral loopback port and serves tools. The bridge
 // must be Close'd when the turn ends.
-func StartMCPBridge(tools []MCPTool, seeded map[string]string) (*MCPBridge, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func StartMCPBridge(ctx context.Context, tools []MCPTool, seeded map[string]string) (*MCPBridge, error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("mcp loopback listen: %w", err)
 	}

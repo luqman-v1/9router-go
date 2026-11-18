@@ -80,19 +80,19 @@ func Start(ctx context.Context, cmd *exec.Cmd) (*Client, error) {
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stdin.Close()
+		_ = stdin.Close()
 		return nil, fmt.Errorf("acp stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		stdin.Close()
-		stdout.Close()
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, fmt.Errorf("acp stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
-		stderr.Close()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return nil, fmt.Errorf("acp start: %w", err)
 	}
 	c := &Client{
@@ -296,9 +296,9 @@ func (c *Client) processError() error {
 // Close terminates the subprocess and releases its pipes. Idempotent.
 func (c *Client) Close() {
 	c.closeDone()
-	c.stdin.Close()
-	c.stdout.Close()
-	c.stderr.Close()
+	_ = c.stdin.Close()
+	_ = c.stdout.Close()
+	_ = c.stderr.Close()
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}

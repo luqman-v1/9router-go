@@ -15,7 +15,7 @@ func TestMCPBridge(t *testing.T) {
 		Description: "Get weather",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
 	}}
-	bridge, err := StartMCPBridge(tools, nil)
+	bridge, err := StartMCPBridge(context.Background(), tools, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestMCPBridgeContext(t *testing.T) {
 // A seeded tool result must not re-emit a tool_call: on a fresh session that
 // would restart the round-trip forever instead of letting agy finish the turn.
 func TestMCPBridgeSeededNoToolCall(t *testing.T) {
-	bridge, err := StartMCPBridge([]MCPTool{{Name: "get_weather", InputSchema: map[string]any{}}}, map[string]string{"get_weather": "sunny"})
+	bridge, err := StartMCPBridge(context.Background(), []MCPTool{{Name: "get_weather", InputSchema: map[string]any{}}}, map[string]string{"get_weather": "sunny"})
 	if err != nil {
 		t.Fatal(err)
 	}
