@@ -134,13 +134,14 @@ func catalogBaseID(modelID string) string {
 	return base
 }
 
-// catalogProviderKeys returns the ids a catalog entry may be filed under for a
-// lookup on providerID: the provider itself, plus every local id that maps to
-// it through ProviderAliases (our `claude` is models.dev `anthropic`). Mirrors
-// sync.js localIds, so a lookup under either name resolves.
+// catalogProviderKeys returns every provider spelling that may own a catalog
+// entry for providerID. Upstream files limits per registry entry, while
+// /v1/models publishes short aliases (e.g. `oc` for `opencode`), so a lookup
+// must consider the id itself, its canonical id, the models.dev id those two
+// map to, and every local alias that resolves to the same canonical provider.
 func catalogProviderKeys(providerID string) []string {
-	keys := make([]string, 0, 2)
-	seen := make(map[string]bool, 2)
+	keys := make([]string, 0, 4)
+	seen := make(map[string]bool, 4)
 	add := func(id string) {
 		if id == "" || seen[id] {
 			return
@@ -148,10 +149,24 @@ func catalogProviderKeys(providerID string) []string {
 		seen[id] = true
 		keys = append(keys, id)
 	}
-	add(providerID)
+	id := strings.ToLower(providerID)
+	add(id)
+	canonical := ResolveAlias(id)
+	add(canonical)
+	if mapped, ok := ProviderAliases[id]; ok {
+		add(mapped)
+	}
+	if mapped, ok := ProviderAliases[canonical]; ok {
+		add(mapped)
+	}
 	for local, upstream := range ProviderAliases {
-		if upstream == providerID {
+		if upstream == id || upstream == canonical {
 			add(local)
+		}
+	}
+	for alias, target := range ProviderAliasMap {
+		if target == id || target == canonical {
+			add(alias)
 		}
 	}
 	return keys
@@ -219,10 +234,7 @@ func GetCatalogLimits(provider, model string) (contextWindow, maxOutput int) {
 	if globalCatalog == nil || globalCatalog.Providers == nil {
 		return 0, 0
 	}
-	keys := []string{strings.ToLower(provider)}
-	if mapped, ok := ProviderAliases[strings.ToLower(provider)]; ok {
-		keys = append(keys, mapped)
-	}
+	keys := catalogProviderKeys(provider)
 	for _, key := range keys {
 		byModel, ok := globalCatalog.Providers[key]
 		if !ok {

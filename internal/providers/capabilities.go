@@ -1058,22 +1058,63 @@ var providerTokenLimits = map[string]map[string][2]int{
 	},
 }
 
-// lookupProviderTokenLimits returns the limits a provider declares for a model,
-// or (0, 0) when it declares none.
-func lookupProviderTokenLimits(provider, model string) (contextWindow, maxOutput int) {
-	byModel, ok := providerTokenLimits[strings.ToLower(provider)]
-	if !ok {
-		return 0, 0
+// providerCapabilityKeys returns the published provider id first, then its
+// canonical id. The static capability tables are keyed by canonical ids, but
+// /v1/models publishes short aliases (`oc`, `cf`, ...), so an alias-only lookup
+// silently skipped the provider's own limits and inherited a generic guess.
+func providerCapabilityKeys(provider string) []string {
+	keys := []string{provider}
+	if canonical := ResolveAlias(provider); canonical != "" && canonical != provider {
+		keys = append(keys, canonical)
 	}
+	return keys
+}
+
+// lookupProviderTokenLimits returns the limits a provider declares for a model,
+// or (0, 0) when it declares none. It tries the published id and its canonical
+// id so an alias sees the same provider-qualified declaration.
+func lookupProviderTokenLimits(provider, model string) (contextWindow, maxOutput int) {
 	base := model
 	if _, after, found := strings.CutLast(model, "/"); found {
 		base = after
 	}
-	if limits, found := byModel[base]; found {
-		return limits[0], limits[1]
+	for _, key := range providerCapabilityKeys(provider) {
+		byModel, ok := providerTokenLimits[strings.ToLower(key)]
+		if !ok {
+			continue
+		}
+		if limits, found := byModel[base]; found {
+			return limits[0], limits[1]
+		}
+		if limits, found := byModel[model]; found {
+			return limits[0], limits[1]
+		}
 	}
-	if limits, found := byModel[model]; found {
-		return limits[0], limits[1]
+	return 0, 0
+}
+
+// lookupCanonicalStaticLimits copies only the token limits from the canonical
+// provider's static capability entry when the published alias has none. It must
+// not copy thinking shape or modalities: those stay keyed by the published id,
+// which is what the thinking-level fixtures assert.
+func lookupCanonicalStaticLimits(provider, model string) (contextWindow, maxOutput int) {
+	canonical := ResolveAlias(provider)
+	if canonical == "" || canonical == provider {
+		return 0, 0
+	}
+	pCaps, ok := providerCapabilities[canonical]
+	if !ok {
+		return 0, 0
+	}
+	baseModel := model
+	if _, after, found := strings.CutLast(model, "/"); found {
+		baseModel = after
+	}
+	if c, found := pCaps[model]; found {
+		return c.ContextWindow, c.MaxOutput
+	}
+	if c, found := pCaps[baseModel]; found {
+		return c.ContextWindow, c.MaxOutput
 	}
 	return 0, 0
 }
@@ -1473,6 +1514,9 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 		} else if c, found := pCaps[baseModel]; found {
 			fill(c.ContextWindow, c.MaxOutput)
 		}
+	}
+	if c, m := lookupCanonicalStaticLimits(provider, model); c > 0 || m > 0 {
+		fill(c, m)
 	}
 	if c, m := GetCatalogLimits(provider, model); c > 0 || m > 0 {
 		fill(c, m)
