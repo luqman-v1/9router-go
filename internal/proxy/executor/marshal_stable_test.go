@@ -1,60 +1,114 @@
 package executor
 
 import (
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 )
 
-// Prefix stability is what DeepSeek's prompt cache keys on: the serialized
-// request body must be byte-identical across turns of the same session for
-// every byte the two requests share. encoding/json/v2 randomizes map member
-// order by default, so every unmarshal->mutate->remarshal cycle reshuffles
-// the entire body and destroys the shared prefix. Deterministic marshaling
-// (RFC 8785-style sorted keys) makes the prefix stable.
+func TestMarshalOpenCodeV2Chat_LeadingKeyOrder(t *testing.T) {
+	body := map[string]any{
+		"temperature":           0.2,
+		"model":                 "glm-5.3-flash-free",
+		"max_completion_tokens": 32000,
+		"stream":                true,
+		"messages":              []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream_options":        map[string]any{"include_usage": true},
+		"tools":                 []any{},
+		"top_p":                 1,
+	}
 
-func TestDeterministicMarshal_PrefixStableAcrossTurns(t *testing.T) {
-	turn1 := map[string]any{
-		"model": "deepseek-v4-pro",
-		"messages": []any{
-			map[string]any{"role": "user", "content": "sys"},
-			map[string]any{"role": "assistant", "content": "a0"},
-		},
+	out, err := marshalOpenCodeV2Chat(body)
+	if err != nil {
+		t.Fatalf("marshalOpenCodeV2Chat: %v", err)
 	}
-	turn2body := append([]any{}, turn1["messages"].([]any)...)
-	turn2body = append(turn2body,
-		map[string]any{"role": "user", "content": "u0"},
-		map[string]any{"role": "assistant", "content": "a1"},
-	)
-	turn2 := map[string]any{"model": turn1["model"], "messages": turn2body}
 
-	b1, err := marshalStable(turn1)
-	if err != nil {
-		t.Fatal(err)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("output is not a JSON object: %v\n%s", err, out)
 	}
-	b2, err := marshalStable(turn2)
-	if err != nil {
-		t.Fatal(err)
+	if parsed["model"] != "glm-5.3-flash-free" {
+		t.Errorf("model lost in rewriting: %v", parsed["model"])
 	}
-	// With sorted keys the shared bytes are: {"messages":[ <shared items>,
-	// then turn 2 appends more items before the closing of the array, and
-	// "model" (sorted after "messages") sits at the tail. Trim turn 1 at the
-	// end of its last shared message; turn 2 must start with those bytes.
-	shared := `{"messages":[{"content":"sys","role":"user"},{"content":"a0","role":"assistant"}`
-	if !strings.HasPrefix(string(b1), shared) || !strings.HasPrefix(string(b2), shared) {
-		t.Errorf("shared prefix broken:\nturn1: %s\nturn2: %s", b1, b2)
+
+	// The leading keys must appear in v2ChatKeyOrder order.
+	text := string(out)
+	at := -1
+	for _, key := range v2ChatKeyOrder {
+		idx := strings.Index(text, `"`+key+`"`)
+		if idx < 0 {
+			t.Fatalf("leading key %q missing from output: %s", key, text)
+		}
+		if idx < at {
+			t.Errorf("key %q appears out of order: %s", key, text)
+		}
+		at = idx
+	}
+	// The tail follows, alphabetically, after every leading key.
+	if strings.Index(text, `"temperature"`) < at {
+		t.Errorf("tail key temperature must follow the leading block: %s", text)
+	}
+	if strings.Index(text, `"temperature"`) > strings.Index(text, `"top_p"`) {
+		t.Errorf("tail keys must stay alphabetical: %s", text)
 	}
 }
 
-func TestDeterministicMarshal_StableOverManyCalls(t *testing.T) {
-	m := map[string]any{"b": 1, "a": map[string]any{"z": []any{1, 2}, "y": "s"}, "c": true}
-	first, err := marshalStable(m)
+// An absent budget must stay absent. The gate distinguishes "no ceiling" from
+// "ceiling null", and clampOutputBudget deliberately never invents one.
+func TestMarshalOpenCodeV2Chat_SkipsAbsentKeys(t *testing.T) {
+	out, err := marshalOpenCodeV2Chat(map[string]any{
+		"model":    "m",
+		"messages": []any{},
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("marshalOpenCodeV2Chat: %v", err)
 	}
-	for i := 0; i < 500; i++ {
-		out, _ := marshalStable(m)
-		if string(out) != string(first) {
-			t.Fatalf("output differed at call %d:\n%s\n%s", i, first, out)
+	if strings.Contains(string(out), "max_completion_tokens") {
+		t.Errorf("absent budget must not be materialized: %s", out)
+	}
+	if !strings.HasPrefix(string(out), `{"model":"m"`) {
+		t.Errorf("model must lead: %s", out)
+	}
+}
+
+// Only leading keys present in the body participate, so a body with no leading
+// keys at all still serializes as a plain object.
+func TestMarshalOpenCodeV2Chat_NoLeadingKeys(t *testing.T) {
+	out, err := marshalOpenCodeV2Chat(map[string]any{"zeta": 1, "alpha": 2})
+	if err != nil {
+		t.Fatalf("marshalOpenCodeV2Chat: %v", err)
+	}
+	if string(out) != `{"alpha":2,"zeta":1}` {
+		t.Errorf("got %s", out)
+	}
+}
+
+// Determinism is the property marshalStable exists for: the same logical request
+// must produce byte-identical output on every call, or a prefix-caching upstream
+// misses on every turn.
+func TestMarshalOpenCodeV2Chat_IsDeterministic(t *testing.T) {
+	build := func() map[string]any {
+		return map[string]any{
+			"model":            "m",
+			"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
+			"stream":           true,
+			"temperature":      0.1,
+			"top_p":            0.9,
+			"presence_penalty": 0,
+			"seed":             7,
+		}
+	}
+	first, err := marshalOpenCodeV2Chat(build())
+	if err != nil {
+		t.Fatalf("marshalOpenCodeV2Chat: %v", err)
+	}
+	for i := range 20 {
+		next, err := marshalOpenCodeV2Chat(build())
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if string(next) != string(first) {
+			t.Fatalf("output is not deterministic:\n first %s\n  next %s", first, next)
 		}
 	}
 }

@@ -266,6 +266,13 @@ func TestIsOpenCodeTerminalRefusal(t *testing.T) {
 		{"abuse of traffic phrasing", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"abuse of traffic from your network"}}`)}, true},
 		{"upper-case phrasing", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"DETECTED ABUSIVE TRAFFIC"}}`)}, true},
 		{"generic gate refusal is not terminal", &proxy.UpstreamError{StatusCode: 403, Body: []byte(gateRefusalBody)}, false},
+		// The gate also words the same verdict without the word "abuse":
+		// "free models aren't available ... from your current network".
+		{"network-abuse pair", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Free models aren't available for free users from your current network. Subscribe to OpenCode Go to keep going."}}`)}, true},
+		// Each half alone appears in benign prose, so neither may be terminal
+		// on its own: matching either would suppress a legitimate replay.
+		{"first half alone is not terminal", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Free models aren't available right now."}}`)}, false},
+		{"second half alone is not terminal", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Requests from your current network are slow today."}}`)}, false},
 		// A body that merely mentions the word must still be retried: widening
 		// this to the handler's bare "abuse" match would discard a recovery.
 		{"anti-abuse near miss", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"blocked by our anti-abuse filter"}}`)}, false},
