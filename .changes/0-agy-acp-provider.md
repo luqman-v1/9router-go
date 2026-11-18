@@ -8,4 +8,6 @@
 ### Verification
 
 - `go test ./internal/acp/agy/...` passes with a fake ACP subprocess (handshake, streaming, credential file mode 0600, model mapping, error classification).
+- Provider artwork `web/public/providers/agy-acp.png` added so the dashboard's provider-artwork parity test passes for the new registry entry.
+- Lint clean: checked pipe/credential `Close` return values, wrapped sentinel errors with `%w`, and used `net.ListenConfig.Listen` with context for the MCP loopback listener.
 - `go build ./...` passes.
