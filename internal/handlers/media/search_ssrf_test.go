@@ -1,9 +1,14 @@
 package media
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
 )
 
@@ -112,5 +117,52 @@ func TestResolveSearchURL_PublicHostnameAllowed(t *testing.T) {
 	}
 	if got != "https://public.searxng.example/search" {
 		t.Errorf("got %q, want %q", got, "https://public.searxng.example/search")
+	}
+}
+
+// A search endpoint that answers 302 with a Location on a private address must
+// not be followed: that hop is the bypass the resolveSearchURL pre-flight
+// cannot see, because the host it validated is public and only the redirect
+// lands inside. The target is a second loopback server this test owns, so a
+// refused request leaves it with zero hits — a dial error would otherwise read
+// the same as a refusal.
+func TestResolveSearchURL_RedirectToPrivateRefused(t *testing.T) {
+	var privateHits atomic.Int32
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		privateHits.Add(1)
+		w.Write([]byte(`{"results":[{"title":"internal admin"}]}`))
+	}))
+	defer private.Close()
+
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, private.URL+"/admin", http.StatusFound)
+	}))
+	defer search.Close()
+
+	orig := providers.KnownProviders["tavily"]
+	tavily := orig
+	tavily.SearchURL = search.URL
+	providers.KnownProviders["tavily"] = tavily
+	defer func() { providers.KnownProviders["tavily"] = orig }()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	connData, _ := json.Marshal(map[string]any{"apiKey": "tvly-test-key"})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-tavily', 'tavily', 'apikey', 'Tavily Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	handler := newTestMediaHandler(db.NewRepo(database))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/search", strings.NewReader(`{"model":"tavily/search","query":"internal admin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.HandleSearch(rec, req)
+
+	if hits := privateHits.Load(); hits != 0 {
+		t.Fatalf("redirect to private address was followed %d time(s); body: %s", hits, rec.Body.String())
+	}
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected the redirect to be refused, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

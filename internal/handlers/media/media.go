@@ -51,7 +51,7 @@ func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.Cha
 	}
 	return &MediaHandler{
 		Repo:       repo,
-		Client:     &http.Client{Transport: transport, Timeout: 0},
+		Client:     &http.Client{Transport: transport, Timeout: 0, CheckRedirect: checkRedirectPublic},
 		TokenSaver: ts,
 		ChatH:      chatH,
 	}
@@ -933,6 +933,39 @@ func targetPrivate(ctx context.Context, host string) bool {
 	return false
 }
 
+// maxRedirectHops restates net/http's default ceiling: CheckRedirect replaces
+// the stdlib policy, so a chain that would have been cut at ten hops would
+// otherwise loop until the request context died.
+const maxRedirectHops = 10
+
+// checkRedirectPublic is the CheckRedirect policy for every media client. A
+// public entry point must not be able to walk the gateway into a private
+// address with a 302: resolveSearchURL refuses a private search base URL before
+// the first request, but the host it dialled can answer with a redirect to
+// 127.0.0.1, 169.254.169.254 or an RFC1918 address, and with
+// ALLOW_PRIVATE_NETWORKING on (the default) the dialer's socket-level guard is
+// skipped, so this hop is the only refusal. Every hop is checked, not just the
+// first: a chain of public hosts ending in loopback is the same fetch.
+func checkRedirectPublic(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirectHops {
+		return fmt.Errorf("stopped after %d redirects", maxRedirectHops)
+	}
+	if err := handlerutil.AssertPublicURL(req.URL.String()); err != nil {
+		return fmt.Errorf("redirect refused: %s: %w", req.URL.Redacted(), err)
+	}
+	return nil
+}
+
+// guardMediaRedirects returns a copy of client that refuses a redirect hop
+// landing on an internal address. A copy, because the client the chat handler
+// hands out is shared by every lane, and one lane may not change the policy
+// the others dial with.
+func guardMediaRedirects(client *http.Client) *http.Client {
+	clone := *client
+	clone.CheckRedirect = checkRedirectPublic
+	return &clone
+}
+
 // resolveSearchURL picks the search endpoint a provider dials. The provider's
 // own configured base URL (registry default) is trusted as admin-controlled;
 // anything else — a per-connection override stored by the dashboard, or a
@@ -1475,6 +1508,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
 		return
 	}
+	// The client is the chat handler's shared one; the guard rides on a copy
+	// so a redirect on this fetch cannot walk into a private address.
+	client = guardMediaRedirects(client)
 
 	connID := ""
 	if conn != nil {
