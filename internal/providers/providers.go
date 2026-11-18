@@ -1456,6 +1456,13 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// agy-acp: no HTTP endpoint — the executor spawns the official agy CLI
+	// and speaks ACP over stdio. Kept separate from antigravity (HTTP).
+	"agy-acp": {
+		BaseURL:    "agy-acp://acp/stdio",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"kilo-gateway": {
 		BaseURL:    "https://api.kilo.ai/api/gateway/chat/completions",
 		AuthHeader: "Authorization",

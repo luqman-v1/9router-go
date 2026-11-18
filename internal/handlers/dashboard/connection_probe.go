@@ -260,6 +260,7 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"trae":      {tokenExists: true},
 	"devin":     {tokenExists: true},
 	"devin-cli": {tokenExists: true},
+	"agy-acp":   {tokenExists: true},
 	"kimchi": {
 		url: kimchiProbeURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ",

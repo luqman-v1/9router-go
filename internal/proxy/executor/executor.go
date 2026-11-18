@@ -49,6 +49,10 @@ type Request struct {
 	ResponseBuf          io.Writer // writer to capture response text for token estimation & logging
 	StartTime            time.Time // request start time for TTFT tracking
 	TTFT                 *int64    // pointer to TTFT metric (ms to first chunk)
+	// ACPCredentials resolves the OAuth credential pair for ACP-style
+	// providers (agy-acp). Set by the chat handler so the executor can
+	// refresh/reference an antigravity connection without owning the DB.
+	ACPCredentials func(ctx context.Context, connData map[string]any, connectionID string) (accessToken, refreshToken string, expiresAt time.Time, err error)
 }
 
 // markTTFT stamps the time-to-first-token on the first emitted chunk, once.

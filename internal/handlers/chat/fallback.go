@@ -228,7 +228,11 @@ func (h *ChatHandler) handleAccountFallback(
 			continue
 		}
 		apiKey := extractAPIKey(connData)
-		if apiKey == "" && !customJSONKeyOptional(connData) {
+		// agy-acp is credential-resolved by the executor from either a
+		// referenced antigravity connection or copied tokens, so a blank
+		// apiKey on the connection is valid.
+		acpOptional := provider == "agy-acp" && connData != nil
+		if apiKey == "" && !customJSONKeyOptional(connData) && !acpOptional {
 			providerCfg, pErr := h.getProviderConfig(provider, connData)
 			if pErr == nil && providerCfg.DefaultAPIKey != "" {
 				apiKey = providerCfg.DefaultAPIKey
@@ -718,7 +722,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if apiKey == "" {
 		if providerCfg.DefaultAPIKey != "" {
 			apiKey = providerCfg.DefaultAPIKey
-		} else if !customJSONKeyOptional(connData) {
+		} else if !customJSONKeyOptional(connData) && provider != "agy-acp" {
 			return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
 		}
 	}
@@ -1199,6 +1203,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			StartTime:      start,
 			TTFT:           &metrics.TTFT,
 		}
+		if provider == "agy-acp" {
+			acpData := map[string]any{}
+			if connData != nil {
+				if raw, jerr := json.Marshal(connData); jerr == nil {
+					_ = json.Unmarshal(raw, &acpData)
+				}
+			}
+			execReq.ACPCredentials = func(ctx context.Context, _ map[string]any, cid string) (string, string, time.Time, error) {
+				return h.resolveACPCredentials(ctx, acpData, cid)
+			}
+		}
 		// client_id cloaking: hand the connection's providerSpecificData
 		// (fingerprintId) to executors that mimic an official client.
 		if connData != nil && len(connData.ProviderSpecificData) > 0 {
@@ -1259,6 +1274,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					ResponseBuf:    &streamNoteWriter{w: &metrics.ResponseBuf, note: metrics.NoteOutput},
 					StartTime:      start,
 					TTFT:           &metrics.TTFT,
+				}
+				if provider == "agy-acp" {
+					acpData := map[string]any{}
+					if connData != nil {
+						if raw, jerr := json.Marshal(connData); jerr == nil {
+							_ = json.Unmarshal(raw, &acpData)
+						}
+					}
+					retryReq.ACPCredentials = func(ctx context.Context, _ map[string]any, cid string) (string, string, time.Time, error) {
+						return h.resolveACPCredentials(ctx, acpData, cid)
+					}
 				}
 				// Same client_id cloaking as the first attempt: a refreshed
 				// retry without ConnData would fall back to a random id and
