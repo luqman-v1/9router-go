@@ -188,6 +188,9 @@ func TestRecordCooldownStampsWindow(t *testing.T) {
 	defer cleanup()
 	repo := NewRepo(database)
 
+	// Captured before the write so the assertion below cannot be widened by
+	// the test's own clock reads.
+	before := time.Now().UTC()
 	if err := repo.RecordModelCooldown("deepseek", "deepseek-chat"); err != nil {
 		t.Fatalf("RecordModelCooldown: %v", err)
 	}
@@ -205,9 +208,20 @@ func TestRecordCooldownStampsWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CooldownUntil unparseable: %v", err)
 	}
-	want := time.Now().UTC().Add(providers.ModelCooldownSec * time.Second)
-	if until.Before(want.Add(-time.Second)) || until.After(want.Add(time.Second)) {
-		t.Errorf("CooldownUntil = %s, want ~%s", until, want)
+	// CooldownUntil is stamped with time.RFC3339, which truncates to whole
+	// seconds, while this window is measured from before the write. A
+	// one-second tolerance around a nanosecond-precision time.Now() taken
+	// *after* the call therefore fails whenever the write lands late in a
+	// second: truncation alone can contribute up to 999ms of skew, and the
+	// elapsed write time adds more. Bound the result against the interval the
+	// write could actually have used instead.
+	window := providers.ModelCooldownSec * time.Second
+	floor := before.Add(window).Truncate(time.Second)
+	if until.Before(floor) {
+		t.Errorf("CooldownUntil = %s, want no earlier than %s", until, floor)
+	}
+	if ceiling := time.Now().UTC().Add(window); until.After(ceiling) {
+		t.Errorf("CooldownUntil = %s, want no later than %s", until, ceiling)
 	}
 }
 
