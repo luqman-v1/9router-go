@@ -28,6 +28,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "alitp-intl": "alitp-intl",
   "anthropic": "anthropic",
   "antigravity": "ag",
+  "agy-acp": "agcpy",
   "api-airforce": "af",
   "assemblyai": "aai",
   "aws-polly": "aws-polly",
@@ -192,6 +193,32 @@ const FREEBUFF_MODELS: ProviderModel[] = [
 
 export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   "fb": FREEBUFF_MODELS,
+  // agy-acp: roster of the local agy 1.5.9 CLI, kept in sync with
+  // internal/providers/registry_models.go. Explicit — no cross-provider alias.
+  "agy-acp": [
+    { "id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)" },
+    { "id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)" },
+    { "id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)" },
+    { "id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash" },
+    { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Thinking)" },
+    { "id": "claude-opus-4-6-thinking", "name": "Claude Opus 4.6 (Thinking)" },
+    { "id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" },
+    { "id": "gpt-oss-120b", "name": "GPT-OSS 120B" },
+    { "id": "claude-sonnet", "name": "Claude Sonnet 4.6" },
+    { "id": "claude-opus", "name": "Claude Opus 4.6" }
+  ],
+  "agcpy": [
+    { "id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)" },
+    { "id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)" },
+    { "id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)" },
+    { "id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash" },
+    { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Thinking)" },
+    { "id": "claude-opus-4-6-thinking", "name": "Claude Opus 4.6 (Thinking)" },
+    { "id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" },
+    { "id": "gpt-oss-120b", "name": "GPT-OSS 120B" },
+    { "id": "claude-sonnet", "name": "Claude Sonnet 4.6" },
+    { "id": "claude-opus", "name": "Claude Opus 4.6" }
+  ],
   "br": [
     {
       "id": "us.anthropic.claude-opus-5",
