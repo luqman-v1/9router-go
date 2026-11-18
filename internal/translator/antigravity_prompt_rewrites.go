@@ -5,9 +5,9 @@ import "regexp"
 // Antigravity's backend answers a system prompt that carries another coding
 // harness's branding with a false 429 RESOURCE_EXHAUSTED, even when the
 // account's quota is untouched. The rows below are the fingerprints observed
-// in Hermes Agent / OpenClaw payloads (ag-shield commit 0ffb051, issues #5697,
-// #5701, #5703): wording, section headers, and environment identifiers that
-// identify the caller as a competing client.
+// in Hermes Agent / OpenClaw payloads (local hardening): wording, section
+// headers, and environment identifiers that identify the caller as a
+// competing client.
 //
 // The rewrite is deliberately literal: instruction bodies survive, only the
 // fingerprinted phrasing becomes neutral. Rows run in order, so compound
@@ -38,7 +38,7 @@ func regexpFingerprint(from, to string) antigravityFingerprintRewrite {
 
 var antigravityFingerprintRewrites = []antigravityFingerprintRewrite{
 	// Confirmed Hermes system-prompt sentences the backend reads as a
-	// competing harness (#5697, #5701, #5703).
+	// competing harness (local hardening).
 	literalFingerprint(
 		"solve coding tasks. Be concise, practical, and tool-aware.",
 		"work on their coding tasks. Keep responses concise and practical, and use the available tools when they help.",

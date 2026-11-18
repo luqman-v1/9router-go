@@ -141,7 +141,7 @@ func TestForwardGemini_ClientCancelled_StaysTerminal(t *testing.T) {
 // quota reached" marker), ForwardGemini retries once with the
 // systemInstruction folded into contents[0]. If the retry also fails, the
 // original 429 is returned so the combo loop can rotate the connection
-// (decolua/9router#5703).
+// (local hardening).
 func TestForwardGemini_Bare429RetriesWithMovedSystemInstruction(t *testing.T) {
 	var hits atomic.Int64
 	var secondBody atomic.Value
@@ -226,7 +226,7 @@ func TestForwardGemini_Bare429RetriesWithMovedSystemInstruction(t *testing.T) {
 // TestForwardGemini_ExplicitQuota429DoesNotRetry pins the gate: a 429 with
 // QUOTA_EXHAUSTED details is a real quota error, not a content rejection,
 // so ForwardGemini must NOT retry with the moved systemInstruction
-// (decolua/9router#5703).
+// (local hardening).
 func TestForwardGemini_ExplicitQuota429DoesNotRetry(t *testing.T) {
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +258,7 @@ func TestForwardGemini_ExplicitQuota429DoesNotRetry(t *testing.T) {
 
 // TestForwardGemini_Bare429RetryFails_ReturnsOriginal429 pins the fallback:
 // when the retry also fails, the original 429 is returned so the combo loop
-// can rotate the connection (decolua/9router#5703).
+// can rotate the connection (local hardening).
 func TestForwardGemini_Bare429RetryFails_ReturnsOriginal429(t *testing.T) {
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

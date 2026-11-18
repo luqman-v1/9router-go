@@ -1151,7 +1151,7 @@ func TestStripCompetitivePrompts_RewritesOpenCodeBrandInSystemInstruction(t *tes
 // upstream's OpenClaw rewrite row: the literal `openclaw` client identifier
 // is rewritten in the system instruction only, with upstream's exact
 // capitalisation mapping. Upstream's own rule is unbounded and
-// case-insensitive (decolua/9router#5703), so `openclaw-go` and
+// case-insensitive (local hardening), so `openclaw-go` and
 // `OPENCLAW` are rewritten too.
 func TestStripCompetitivePrompts_RewritesOpenClawBrandInSystemInstruction(t *testing.T) {
 	tests := []struct {
@@ -1226,7 +1226,7 @@ func TestStripCompetitivePrompts_RewritesOpenClawBrandInSystemInstruction(t *tes
 // the systemInstruction is folded into contents[0] as a user-role turn and
 // cleared. Used by ForwardGemini when the Antigravity backend answers a bare
 // 429 RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED details), which means the
-// backend flagged the systemInstruction shape itself (decolua/9router#5703).
+// backend flagged the systemInstruction shape itself (local hardening).
 func TestMoveSystemInstructionToContents(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1329,7 +1329,7 @@ func TestMoveSystemInstructionToContents(t *testing.T) {
 // TestIsBareResourceExhausted pins the 429 fallback gate: a bare
 // RESOURCE_EXHAUSTED with no QUOTA_EXHAUSTED / RATE_LIMIT_EXCEEDED /
 // "Individual quota reached" marker triggers the moveSystemInstructionToContents
-// retry, while an explicit quota error does not (decolua/9router#5703).
+// retry, while an explicit quota error does not (local hardening).
 func TestIsBareResourceExhausted(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1401,7 +1401,7 @@ func isBareResourceExhaustedTestHelper(body []byte) bool {
 // TestHardenAntigravityRequest_HydrogenCapLift pins the Hydrogen-specific
 // output-token cap: Hydrogen models get a 256k ceiling instead of the 64k
 // Antigravity cap, preventing truncation of long decode responses
-// (decolua/9router#5703).
+// (local hardening).
 func TestHardenAntigravityRequest_HydrogenCapLift(t *testing.T) {
 	// Non-Hydrogen model: cap at 65536.
 	body := `{"generationConfig":{"maxOutputTokens":128000}}`
