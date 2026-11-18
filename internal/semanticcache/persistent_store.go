@@ -214,18 +214,23 @@ func (p *PersistentLRUStore) InvalidateByModel(ctx context.Context, model string
 // delete matches it exactly (case-sensitive), so on a case-mismatched request
 // the in-memory entry and its disk row are removed by different predicates. The
 // prefix matches any key whose stored key starts with keyPrefix (keys are hex
-// digests, so no LIKE escaping is needed), and an empty prefix drops the key
-// predicate. An empty model leaves the SQL comparing the model to the empty
-// string, which matches no row: pass a real model or a prefix, never an empty
-// model alone.
+// digests, so no LIKE escaping is needed). An empty model with a non-empty
+// prefix matches all models with that key prefix; an empty prefix drops the
+// key predicate.
 func (p *PersistentLRUStore) InvalidateByModelAndPrefix(ctx context.Context, model, keyPrefix string) int {
 	count := p.lru.InvalidateByModelAndPrefix(ctx, model, keyPrefix)
 	if p.db != nil {
-		query := `DELETE FROM semanticCacheEntries WHERE model = ?`
-		args := []any{model}
-		if keyPrefix != "" {
+		query := `DELETE FROM semanticCacheEntries`
+		args := []any{}
+		if model != "" && keyPrefix != "" {
 			query = `DELETE FROM semanticCacheEntries WHERE model = ? AND key LIKE ?`
-			args = append(args, keyPrefix+"%")
+			args = []any{model, keyPrefix + "%"}
+		} else if model != "" {
+			query = `DELETE FROM semanticCacheEntries WHERE model = ?`
+			args = []any{model}
+		} else if keyPrefix != "" {
+			query = `DELETE FROM semanticCacheEntries WHERE key LIKE ?`
+			args = []any{keyPrefix + "%"}
 		}
 		_, _ = p.db.ExecContext(ctx, query, args...)
 	}
