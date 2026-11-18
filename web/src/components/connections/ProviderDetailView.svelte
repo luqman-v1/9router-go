@@ -32,6 +32,7 @@
   import { copyToClipboard } from '../../lib/clipboard'
   import { parseModelIds } from '../../lib/bulk-models'
   import { inferModelKind, customModelKeyFor } from '../../lib/modelKindInference'
+  import type { CustomModelType } from './modelTypeOptions'
   import {
     importCustomModelsBestEffort,
     notifyCustomModelsChanged,
@@ -2513,13 +2514,17 @@
     modelId: string,
     caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean },
     limits?: { contextWindow?: number; maxOutput?: number },
+    modelType?: CustomModelType,
   ) {
+    // The modal picks the kind; the id is only consulted for a caller that adds
+    // a model without going through it.
+    const kind = modelType ?? inferModelKind(modelId)
     try {
-      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId), {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId, kind), {
         id: modelId,
         providerAlias: storageAlias,
-        type: inferModelKind(modelId),
-        ...(caps ? { caps } : {}),
+        type: kind,
+        ...(kind !== 'llm' ? {} : caps ? { caps } : {}),
         ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
         ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
       })
