@@ -55,9 +55,15 @@ var (
 	agRosterMissMu       sync.RWMutex
 	agRosterMissBlocked  = make(map[string]time.Time) // connectionID|model -> blockUntil
 	agRosterMissBlockTTL = 6 * time.Hour
-	agLastRefreshAt      = make(map[string]time.Time) // connectionID -> last refresh timestamp
-	agInflightMu         sync.Mutex
-	agInflight           = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
+	// The model half of that key comes from the request, so a caller naming
+	// model after model could otherwise grow the map without bound. Sized for
+	// the models one account can plausibly be refused, and the write path
+	// sweeps expired rows before it refuses anything.
+	agRosterMissMaxEntries  = 512
+	agRosterMissMaxModelLen = 128
+	agLastRefreshAt         = make(map[string]time.Time) // connectionID -> last refresh timestamp
+	agInflightMu            sync.Mutex
+	agInflight              = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
 
 	// MinAntigravityQuotaRefreshInterval prevents hammering quota API during 429 bursts.
 	MinAntigravityQuotaRefreshInterval = 30 * time.Second
@@ -188,13 +194,35 @@ func IsAntigravityModelServed(connectionID, model string) bool {
 // answered 404 for, which is the only evidence that the account truly does not
 // serve it. See agRosterMissBlocked for why the roster alone is not enough.
 func NoteAntigravityModelNotFound(connectionID, model string) {
-	if connectionID == "" || model == "" {
+	if connectionID == "" || model == "" || len(model) > agRosterMissMaxModelLen {
 		return
 	}
+	key := connectionID + "|" + model
+	now := time.Now().UTC()
 	agRosterMissMu.Lock()
-	agRosterMissBlocked[connectionID+"|"+model] = time.Now().UTC().Add(agRosterMissBlockTTL)
+	if _, parked := agRosterMissBlocked[key]; !parked && len(agRosterMissBlocked) >= agRosterMissMaxEntries {
+		sweepAgRosterMissLocked(now)
+		if len(agRosterMissBlocked) >= agRosterMissMaxEntries {
+			// Fail open: parking is an optimisation, and a full map must never
+			// be the reason a request is refused.
+			agRosterMissMu.Unlock()
+			log.Warn("ag_quota", "model 404 not parked: table full", "connection", shortConnID(connectionID), "model", model)
+			return
+		}
+	}
+	agRosterMissBlocked[key] = now.Add(agRosterMissBlockTTL)
 	agRosterMissMu.Unlock()
 	log.Warn("ag_quota", "upstream does not serve model", "connection", shortConnID(connectionID), "model", model)
+}
+
+// sweepAgRosterMissLocked drops parks whose window has passed. The caller holds
+// the write lock.
+func sweepAgRosterMissLocked(now time.Time) {
+	for key, until := range agRosterMissBlocked {
+		if !until.After(now) {
+			delete(agRosterMissBlocked, key)
+		}
+	}
 }
 
 // antigravityModelNotServed reports whether the upstream has already answered
