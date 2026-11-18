@@ -224,12 +224,15 @@ export function cachedTokensFor(detail: RequestDetailItem): number {
   return detail.tokens?.cached_tokens ?? detail.tokens?.cache_read_input_tokens ?? 0
 }
 
+// Legacy Claude rows store 0 in the canonical columns, so a truthy `||`
+// (matching upstream tokenDisplay.js) falls through to the Claude pair instead
+// of rendering 0 for a request that did report usage.
 export function getInputTokens(tokens?: RequestDetailItem['tokens']): number {
-  return tokens?.prompt_tokens ?? tokens?.input_tokens ?? 0
+  return (tokens?.prompt_tokens || tokens?.input_tokens) ?? 0
 }
 
 export function getOutputTokens(tokens?: RequestDetailItem['tokens']): number {
-  return tokens?.completion_tokens ?? tokens?.output_tokens ?? 0
+  return (tokens?.completion_tokens || tokens?.output_tokens) ?? 0
 }
 
 export function timeAgo(timestamp?: string): string {

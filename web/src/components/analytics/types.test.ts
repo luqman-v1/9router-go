@@ -72,6 +72,13 @@ describe('getInputTokens and getOutputTokens — issue #3890', () => {
     expect(getOutputTokens(undefined)).toBe(0)
     expect(getOutputTokens({})).toBe(0)
   })
+
+  it('falls through zero canonical tokens to the Claude pair', () => {
+    // Legacy Claude rows store 0 in the canonical columns, so a 0 must not be
+    // treated as a real reading (upstream tokenDisplay.js uses `||`).
+    expect(getInputTokens({ prompt_tokens: 0, input_tokens: 50 })).toBe(50)
+    expect(getOutputTokens({ completion_tokens: 0, output_tokens: 100 })).toBe(100)
+  })
 })
 
 describe('providerDisplayName', () => {
