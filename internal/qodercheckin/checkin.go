@@ -251,7 +251,7 @@ func (c *Checker) call(ctx context.Context, a Account, method, u string, dst any
 	defer func() { _ = res.Body.Close() }()
 	payload, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
-		return errors.New("Qoder's sign-in has expired — sign in again")
+		return errors.New("qoder sign-in has expired — sign in again")
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		var e struct {
