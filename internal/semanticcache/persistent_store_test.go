@@ -197,6 +197,9 @@ func TestPersistentLRUStore_InvalidateByModelAndPrefix_PrefixOnlyRealDB(t *testi
 		}
 		dbKeys = append(dbKeys, k)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows iteration: %v", err)
+	}
 	if len(dbKeys) != 1 || dbKeys[0] != "prefixB-model1" {
 		t.Errorf("DB rows = %v, want [prefixB-model1]", dbKeys)
 	}
