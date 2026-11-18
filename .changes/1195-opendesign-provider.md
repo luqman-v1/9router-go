@@ -16,7 +16,8 @@ Add the `opendesign` provider (alias `od`) routing model traffic to
 - **Usage / Design Plan**: `fetchOpenDesignUsage` reads the account's control
   key (`vela_ctrl_…`) against `https://amr-api.open-design.ai` (separate control
   host, never derived from BaseURL): `GET /api/v1/workspaces/current` (workspace
-  id cached per control key ~10 min under `sync.Mutex`), then
+  id cached per control key ~10 min under `sync.Mutex`, capped at 500 entries
+  with expired-then-oldest eviction), then
   `GET /api/v1/workspaces/{id}/billing/preflight`. Credits are parsed with
   `math/big.Rat` so large decimals are not lost to float64; percent =
   `round(max(0, used/limit*100)*10)/10`.
@@ -29,6 +30,10 @@ window-name boundaries, key classification, workspace caching TTL/isolation,
 lane selection, and `od` alias resolution. No `CHANGELOG.md` edit — this
 fragment is the entry.
 
-Sources: `@magpie-community/opencode-opendesign-auth` plugin contract and
-`AstroQore/opendesign2api` (net-new provider; no upstream `decolua/9router`
-parity exists for opendesign).
+Sources: the `@magpie-community/opencode-opendesign-auth` plugin contract and
+the `AstroQore/opendesign2api` API shape (endpoint paths, auth headers, payload
+field names). This is a net-new local provider: no upstream `decolua/9router`
+parity commit exists for it, so the design was written here from the vendor
+protocol — control-plane (`amr-api`) and model-plane (`amr-link`) hosts kept
+separate, the `vela_ctrl_` control key confined to the control plane, and
+`big.Rat` credit arithmetic so large decimals survive intact.

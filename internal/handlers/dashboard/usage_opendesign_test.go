@@ -23,12 +23,7 @@ func withOpenDesignUsageServer(t *testing.T, handler http.HandlerFunc) {
 	t.Cleanup(func() {
 		openDesignControlHost = prev
 		openDesignWorkspaceMu.Lock()
-		openDesignWorkspaceCache = map[string]struct {
-			id     string
-			at     time.Time
-			tier   string
-			expire time.Time
-		}{}
+		openDesignWorkspaceCache = map[string]openDesignWorkspaceEntry{}
 		openDesignWorkspaceMu.Unlock()
 	})
 }
@@ -311,12 +306,9 @@ func TestOpenDesignWorkspaceCacheTTL(t *testing.T) {
 	}
 
 	openDesignWorkspaceMu.Lock()
-	openDesignWorkspaceCache["ctrl-1"] = struct {
-		id     string
-		at     time.Time
-		tier   string
-		expire time.Time
-	}{id: "ws-cached", at: time.Now().Add(-openDesignWorkspaceTTL), tier: "free", expire: time.Now().Add(-time.Second)}
+	openDesignWorkspaceCache["ctrl-1"] = openDesignWorkspaceEntry{
+		id: "ws-cached", at: time.Now().Add(-openDesignWorkspaceTTL), tier: "free", expire: time.Now().Add(-time.Second),
+	}
 	openDesignWorkspaceMu.Unlock()
 
 	id3, _, err3 := openDesignWorkspace(ctx, "ctrl-1")
@@ -351,5 +343,64 @@ func TestOpenDesignWorkspace_DifferentKeysAreIsolated(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("expected 2 workspace reads (one per key), got %d", calls)
+	}
+}
+
+func TestStoreOpenDesignWorkspace_IsBounded(t *testing.T) {
+	openDesignWorkspaceMu.Lock()
+	defer openDesignWorkspaceMu.Unlock()
+	openDesignWorkspaceCache = map[string]openDesignWorkspaceEntry{}
+
+	base := time.Now()
+	for i := range openDesignWorkspaceMax + 10 {
+		at := base.Add(time.Duration(i) * time.Second)
+		storeOpenDesignWorkspace(fmt.Sprintf("ctrl-%d", i), openDesignWorkspaceEntry{
+			id: "ws", at: at, tier: "free", expire: at.Add(openDesignWorkspaceTTL),
+		})
+	}
+	if len(openDesignWorkspaceCache) > openDesignWorkspaceMax {
+		t.Fatalf("cache = %d entries, want <= %d", len(openDesignWorkspaceCache), openDesignWorkspaceMax)
+	}
+	// The oldest insertions were the first evicted, so the newest max survive.
+	if _, ok := openDesignWorkspaceCache["ctrl-0"]; ok {
+		t.Error("ctrl-0 still cached: oldest entry was not evicted")
+	}
+	if _, ok := openDesignWorkspaceCache["ctrl-9"]; ok {
+		t.Error("ctrl-9 still cached: it is the last evicted insertion")
+	}
+	newest := openDesignWorkspaceMax - 1
+	if _, ok := openDesignWorkspaceCache[fmt.Sprintf("ctrl-%d", newest)]; !ok {
+		t.Errorf("ctrl-%d evicted: newest entry must survive", newest)
+	}
+
+	// An expired entry is purged even when the map is not yet at the cap.
+	openDesignWorkspaceCache["ctrl-expired"] = openDesignWorkspaceEntry{at: base, expire: base.Add(-time.Second)}
+	storeOpenDesignWorkspace("ctrl-new", openDesignWorkspaceEntry{at: base, expire: base.Add(openDesignWorkspaceTTL)})
+	if _, ok := openDesignWorkspaceCache["ctrl-expired"]; ok {
+		t.Error("ctrl-expired still cached after a store")
+	}
+}
+
+func TestStoreOpenDesignWorkspace_RefreshDoesNotEvict(t *testing.T) {
+	openDesignWorkspaceMu.Lock()
+	defer openDesignWorkspaceMu.Unlock()
+	openDesignWorkspaceCache = map[string]openDesignWorkspaceEntry{}
+
+	base := time.Now()
+	for i := range openDesignWorkspaceMax {
+		at := base.Add(time.Duration(i) * time.Second)
+		storeOpenDesignWorkspace(fmt.Sprintf("ctrl-%d", i), openDesignWorkspaceEntry{
+			id: "ws", at: at, tier: "free", expire: at.Add(openDesignWorkspaceTTL),
+		})
+	}
+	// Refreshing a live key must not evict a sibling.
+	storeOpenDesignWorkspace("ctrl-0", openDesignWorkspaceEntry{
+		id: "ws", at: base, tier: "free", expire: base.Add(openDesignWorkspaceTTL),
+	})
+	if len(openDesignWorkspaceCache) != openDesignWorkspaceMax {
+		t.Fatalf("cache = %d entries, want %d", len(openDesignWorkspaceCache), openDesignWorkspaceMax)
+	}
+	if _, ok := openDesignWorkspaceCache["ctrl-1"]; !ok {
+		t.Error("ctrl-1 evicted by a refresh of ctrl-0")
 	}
 }

@@ -34,14 +34,51 @@ var openDesignControlHost = "https://amr-api.open-design.ai"
 // openDesignWorkspaceCache holds the per-control-key workspace read with a TTL.
 // Never keyed by provider alone: two connections can belong to two accounts.
 var openDesignWorkspaceMu sync.Mutex
-var openDesignWorkspaceCache = make(map[string]struct {
+var openDesignWorkspaceCache = make(map[string]openDesignWorkspaceEntry)
+
+const openDesignWorkspaceTTL = 10 * time.Minute
+
+// openDesignWorkspaceMax bounds the cache: a control key is client-supplied, so
+// an unbounded map keyed by it would grow for as long as the gateway runs.
+const openDesignWorkspaceMax = 500
+
+// storeOpenDesignWorkspace inserts entry under controlKey, keeping the cache at
+// or below openDesignWorkspaceMax. Expired entries go first; then the oldest
+// insertion (map order is random, so "oldest" means the smallest at timestamp).
+// Caller holds openDesignWorkspaceMu.
+func storeOpenDesignWorkspace(controlKey string, entry openDesignWorkspaceEntry) {
+	if _, exists := openDesignWorkspaceCache[controlKey]; !exists && len(openDesignWorkspaceCache) >= openDesignWorkspaceMax {
+		now := time.Now()
+		for key, cached := range openDesignWorkspaceCache {
+			if !now.Before(cached.expire) {
+				delete(openDesignWorkspaceCache, key)
+			}
+		}
+		for len(openDesignWorkspaceCache) >= openDesignWorkspaceMax {
+			var oldestKey string
+			var oldestAt time.Time
+			first := true
+			for key, cached := range openDesignWorkspaceCache {
+				if first || cached.at.Before(oldestAt) {
+					oldestKey, oldestAt, first = key, cached.at, false
+				}
+			}
+			if oldestKey == "" {
+				return
+			}
+			delete(openDesignWorkspaceCache, oldestKey)
+		}
+	}
+	openDesignWorkspaceCache[controlKey] = entry
+}
+
+// openDesignWorkspaceEntry is one cached workspace read, kept per control key.
+type openDesignWorkspaceEntry struct {
 	id     string
 	at     time.Time
 	tier   string
 	expire time.Time
-})
-
-const openDesignWorkspaceTTL = 10 * time.Minute
+}
 
 // fetchOpenDesignUsage fetches the Design Plan allowance windows + wallet
 // balance for an account's control key. Provider-specific failures surface as
@@ -219,13 +256,11 @@ func openDesignWorkspace(ctx context.Context, controlKey string) (id string, tie
 	}
 	tier = usageStr(payload["personalMembershipTier"])
 
+	now := time.Now()
 	openDesignWorkspaceMu.Lock()
-	openDesignWorkspaceCache[controlKey] = struct {
-		id     string
-		at     time.Time
-		tier   string
-		expire time.Time
-	}{id: id, at: time.Now(), tier: tier, expire: time.Now().Add(openDesignWorkspaceTTL)}
+	storeOpenDesignWorkspace(controlKey, openDesignWorkspaceEntry{
+		id: id, at: now, tier: tier, expire: now.Add(openDesignWorkspaceTTL),
+	})
 	openDesignWorkspaceMu.Unlock()
 	return id, tier, nil
 }
