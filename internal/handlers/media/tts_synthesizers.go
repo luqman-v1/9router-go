@@ -35,7 +35,8 @@ var directHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		Proxy: nil, // direct connection to bypass proxy allowlist
 	},
-	Timeout: 15 * time.Second,
+	Timeout:       15 * time.Second,
+	CheckRedirect: checkRedirectPublic,
 }
 
 func doDirectOrClient(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {

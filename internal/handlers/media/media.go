@@ -51,7 +51,7 @@ func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.Cha
 	}
 	return &MediaHandler{
 		Repo:       repo,
-		Client:     &http.Client{Transport: transport, Timeout: 0},
+		Client:     &http.Client{Transport: transport, Timeout: 0, CheckRedirect: checkRedirectPublic},
 		TokenSaver: ts,
 		ChatH:      chatH,
 	}
@@ -933,6 +933,90 @@ func targetPrivate(ctx context.Context, host string) bool {
 	return false
 }
 
+// maxRedirectHops restates net/http's default ceiling: CheckRedirect replaces
+// the stdlib policy, so a chain that would have been cut at ten hops would
+// otherwise loop until the request context died.
+const maxRedirectHops = 10
+
+// checkRedirectPublic is the CheckRedirect policy for every media client. A
+// public entry point must not be able to walk the gateway into a private
+// address with a 302: resolveSearchURL refuses a private search base URL before
+// the first request, but the host it dialled can answer with a redirect to
+// 127.0.0.1, 169.254.169.254 or an RFC1918 address, and with
+// ALLOW_PRIVATE_NETWORKING on (the default) the dialer's socket-level guard is
+// skipped, so this hop is the only refusal. Every hop is checked, not just the
+// first: a chain of public hosts ending in loopback is the same fetch.
+func checkRedirectPublic(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirectHops {
+		return fmt.Errorf("stopped after %d redirects", maxRedirectHops)
+	}
+	if err := handlerutil.AssertPublicURL(req.URL.String()); err != nil {
+		return fmt.Errorf("redirect refused: %s: %w", req.URL.Redacted(), err)
+	}
+	return nil
+}
+
+// guardMediaRedirects returns a copy of client that refuses a redirect hop
+// landing on an internal address. A copy, because the client the chat handler
+// hands out is shared by every lane, and one lane may not change the policy
+// the others dial with.
+func guardMediaRedirects(client *http.Client) *http.Client {
+	clone := *client
+	clone.CheckRedirect = checkRedirectPublic
+	return &clone
+}
+
+// resolveSearchURL picks the search endpoint a provider dials. The provider's
+// own configured base URL (registry default) is trusted as admin-controlled;
+// anything else — a per-connection override stored by the dashboard, or a
+// client-supplied baseUrl — is client-controlled and must be public http(s)
+// only, otherwise a custom SearXNG (or any web search) base URL is an SSRF
+// primitive: an attacker points it at 127.0.0.1:11434, 169.254.169.254 or a
+// LAN host and the gateway fetches it on their behalf.
+//
+// Matches upstream resolveBaseUrl / assertPublicUrl: invalid URL, non-http(s)
+// scheme, internal/private/loopback/link-local/metadata addresses are all
+// refused. The guard runs here so a rejected override answers with a clear
+// error instead of reaching the dialer (which under ALLOW_PRIVATE_NETWORKING=1
+// — the default — lets every address class through).
+func resolveSearchURL(cfg *providers.ProviderConfig, psd map[string]any, targetURL string) (string, error) {
+	override := psdStr(psd, "baseUrl")
+	if override != "" {
+		u, err := url.Parse(override)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return "", fmt.Errorf("invalid search base URL: %q", override)
+		}
+		if u.Hostname() == "" {
+			return "", fmt.Errorf("invalid search base URL: empty host")
+		}
+		if handlerutil.AssertPublicURL(override) != nil {
+			return "", fmt.Errorf("search base URL is not allowed: %q", override)
+		}
+		return strings.TrimRight(override, "/"), nil
+	}
+	if cfg.SearchURL != "" {
+		return cfg.SearchURL, nil
+	}
+	// No override and no configured search lane: keep the derived
+	// targetURL (baseURL + endpoint) so generic search providers still
+	// reach baseURL + /v1/search instead of an empty string.
+	return targetURL, nil
+}
+
+// psdStr reads a string field from provider-specific data, mirroring the
+// dashboard's copy so the media handler does not import the dashboard package.
+func psdStr(psd map[string]any, keys ...string) string {
+	if psd == nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := psd[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Request, body []byte, defaultModel, endpoint string) {
 	if handlerutil.GetServiceKind(r.Context()) == "" {
 		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), kindFromEndpoint(endpoint)))
@@ -1125,12 +1209,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			method := r.Method
 			switch endpoint {
 			case "/v1/search":
-				if providerCfg.SearchURL != "" {
-					targetURL = providerCfg.SearchURL
-					method = strings.ToUpper(providerCfg.SearchMethod)
-					if method == "" {
-						method = http.MethodPost
-					}
+				targetURL, err = resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
+				if err != nil {
+					lastErr = err.Error()
+					continue
+				}
+				method = strings.ToUpper(providerCfg.SearchMethod)
+				if method == "" {
+					method = http.MethodPost
 				}
 			case "/v1/web/fetch":
 				if providerCfg.FetchURL != "" {
@@ -1167,6 +1253,10 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				lastErr = clientErr.Error()
 				continue
 			}
+			// The client is the chat handler's shared one; guard its redirects
+			// so a combo search that answers 302 to a private address is
+			// refused rather than followed.
+			client = guardMediaRedirects(client)
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
@@ -1422,6 +1512,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
 		return
 	}
+	// The client is the chat handler's shared one; the guard rides on a copy
+	// so a redirect on this fetch cannot walk into a private address.
+	client = guardMediaRedirects(client)
 
 	connID := ""
 	if conn != nil {
@@ -1487,8 +1580,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	method := r.Method
-	if endpoint == "/v1/search" && providerCfg.SearchURL != "" && !hasCustomBaseURL {
-		targetURL = providerCfg.SearchURL
+	if endpoint == "/v1/search" {
+		searchURL, err := resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		targetURL = searchURL
 		if providerCfg.SearchMethod != "" {
 			method = strings.ToUpper(providerCfg.SearchMethod)
 		} else {
