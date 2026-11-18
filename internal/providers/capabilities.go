@@ -1309,6 +1309,32 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 	return res
 }
 
+// ExplicitToolSupport reports whether the static registry explicitly declares
+// Tools:true for provider/model. Unlike GetCapabilitiesForModel it does not
+// inherit DefaultCapabilities.Tools — which is true for every unknown model —
+// so callers can distinguish "declared tool-capable" from "not declared".
+// Custom overrides and dynamic catalog modalities are intentionally ignored:
+// neither can turn tool support on, and a provider-specific request filter
+// must not be widened by an unrelated modalities refresh.
+func ExplicitToolSupport(provider, model string) bool {
+	if provider == "" || model == "" {
+		return false
+	}
+	caps, ok := providerCapabilities[provider]
+	if !ok {
+		return false
+	}
+	if c, ok := caps[model]; ok {
+		return c.Tools
+	}
+	if _, after, ok := strings.CutLast(model, "/"); ok {
+		if c, ok := caps[after]; ok {
+			return c.Tools
+		}
+	}
+	return false
+}
+
 func mergeCapabilities(base, overlay Capabilities) Capabilities {
 	if overlay.Vision {
 		base.Vision = true

@@ -980,6 +980,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 				}
 			}
 			pipedBody = filtered
+
+			// Cloudflare's OpenAI-compatible endpoint rejects tool-call rounds for
+			// models it does not declare tool-capable (e.g. llama-3.1-8b-instruct-fp8-fast).
+			// The gateway's default capability is Tools:true for unknown models, so
+			// ask the static registry instead of GetCapabilitiesForModel: only models
+			// explicitly marked Tools:true keep their tool definitions and turns.
+			// Everything else gets the same prose flattening combo fusion already
+			// uses for panel models, preserving context without emitting tool_calls.
+			if provider == "cloudflare-ai" && !providers.ExplicitToolSupport(provider, wireModel) {
+				pipedBody = stripToolsForNonToolModel(pipedBody)
+			}
 		}
 	}
 
