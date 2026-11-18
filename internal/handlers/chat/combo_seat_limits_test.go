@@ -196,6 +196,28 @@ func TestHandleModels_WebSeatDoesNotDragMinimumDown(t *testing.T) {
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
 }
 
+// A thinking suffix like "(max)" on a combo seat is not part of the model id:
+// comboSeatCapabilities strips it before the capability lookup, so the seat
+// publishes the bare model's own block instead of the floor capability.
+func TestHandleModels_ComboSeatThinkingSuffixStrippedBeforeCaps(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// opencode's deepseek-v4.1-flash-free declares 330000 context_length and
+	// 128000 max_completion_tokens (providerCapabilities["opencode"]). A seat
+	// that kept the "(max)" suffix missed that row and fell through to the
+	// pattern-table default, so the suffixed seat must publish the bare
+	// model's own block.
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+			('c-think', 'thinking-combo', 'llm', '["oc/deepseek-v4.1-flash-free(max)"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "thinking-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 330000)
+	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 128000)
+}
+
 func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

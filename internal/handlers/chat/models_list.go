@@ -14,6 +14,7 @@ import (
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/thinking"
 )
 
 // ModelInfoObject represents a model entry in the /v1/models response. The
@@ -1148,6 +1149,10 @@ func (h *ChatHandler) comboSeatCapabilities(seat string, connMap ...map[string]*
 		modelID = seat[slash+1:]
 		providerID = providers.ResolveAlias(prefix)
 	}
+	// Strip a trailing thinking suffix like "(max)" before the capability
+	// lookup: the tables are keyed by the bare model id, and a suffixed seat
+	// would resolve to the floor capability instead of the model's own block.
+	modelID = thinking.StripSuffix(modelID)
 	return providers.GetCapabilitiesDetailForModel(providerID, modelID)
 }
 
