@@ -164,7 +164,7 @@ func fetchZedUsage(ctx context.Context, accessToken string, psd map[string]any) 
 	if err != nil {
 		return usageResult{message: "Zed error: " + err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return usageResult{message: "Zed error: " + err.Error()}

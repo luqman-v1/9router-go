@@ -33,7 +33,6 @@ func zedJSONLToSSE(r io.Reader) io.Reader {
 		scanner := bufio.NewScanner(r)
 		buf := make([]byte, 64*1024)
 		scanner.Buffer(buf, 10*1024*1024) // tool calls and multimodal payloads run large
-		defer pw.Close()
 		for scanner.Scan() {
 			// scanner.Bytes() returns a slice the scanner reuses on the next
 			// Scan, so the line is copied before anything is appended to it.
