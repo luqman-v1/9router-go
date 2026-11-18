@@ -3,6 +3,7 @@ package media
 import (
 	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,29 +62,63 @@ func TestHandleAudioSpeech_OllamaLocalPhonon(t *testing.T) {
 		}
 	})
 
-	t.Run("default TTSURL", func(t *testing.T) {
-		var gotPath string
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotPath = r.URL.Path
-			w.Header().Set("Content-Type", "audio/wav")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("RIFFdefault"))
-		}))
-		defer upstream.Close()
-
-		// No custom base URL: the provider's TTSURL decides the target.
-		orig := providers.KnownProviders["ollama-local"]
-		cfg := orig
-		cfg.TTSURL = upstream.URL + "/v1/audio/speech"
-		providers.KnownProviders["ollama-local"] = cfg
-		defer func() { providers.KnownProviders["ollama-local"] = orig }()
+	// The registry default is what this subtest pins, and the request carries
+	// no injected TTSURL or loopback marker: the media lane itself must mark a
+	// local-by-design provider's upstream loopback-safe, exactly as the chat
+	// lane does, or the dial guard refuses every attempt under
+	// ALLOW_PRIVATE_NETWORKING=false.
+	t.Run("registry default TTSURL", func(t *testing.T) {
+		const wantTTSURL = "http://localhost:11434/v1/audio/speech"
+		cfg, ok := providers.KnownProviders["ollama-local"]
+		if !ok {
+			t.Fatal(`providers.KnownProviders["ollama-local"] is missing`)
+		}
+		if cfg.TTSURL != wantTTSURL {
+			t.Fatalf("KnownProviders[\"ollama-local\"].TTSURL = %q, want %q", cfg.TTSURL, wantTTSURL)
+		}
 
 		database, cleanup := setupMultimodalTestDB(t)
 		defer cleanup()
 		seedOllamaLocalConn(t, database, `{"apiKey":"none"}`)
 
 		handler := newTestMediaHandler(db.NewRepo(database))
+
+		// The default is a loopback URL, so the request needs a listener on
+		// that exact port. Skip when the port is taken: nothing to assert then.
+		ln, err := net.Listen("tcp", "127.0.0.1:11434")
+		if err != nil {
+			t.Skipf("cannot bind the default Ollama host 127.0.0.1:11434: %v", err)
+		}
+		upstream := &httptest.Server{
+			Listener: ln,
+			Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/audio/speech" {
+					t.Errorf("upstream path = %q, want /v1/audio/speech", r.URL.Path)
+				}
+				var reqBody struct {
+					Model string `json:"model"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&reqBody)
+				// The tagged request forwards its resolved id verbatim
+				// (provider/model is what the branch strips).
+				if reqBody.Model != "phonon:en" {
+					t.Errorf("upstream model = %q, want phonon:en", reqBody.Model)
+				}
+				w.Header().Set("Content-Type", "audio/wav")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("RIFFdefault"))
+			})},
+		}
+		upstream.Start()
+		defer upstream.Close()
+
 		body := `{"model":"ollama-local/phonon:en","input":"hello"}`
+		// No loopback marker is injected: the media lane marks local-by-design
+		// providers loopback-safe itself (media.go forwardMediaRequest). The
+		// environment is pinned off so the dial guard is at its strictest —
+		// a lane that forgot the marker answers 502 here, not on the
+		// operator's box.
+		t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
 		req := httptest.NewRequest("POST", "/v1/audio/speech", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -93,8 +128,8 @@ func TestHandleAudioSpeech_OllamaLocalPhonon(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 		}
-		if gotPath != "/v1/audio/speech" {
-			t.Errorf("upstream path = %q, want /v1/audio/speech", gotPath)
+		if rec.Body.String() != "RIFFdefault" {
+			t.Errorf("body = %q, want raw audio passthrough", rec.Body.String())
 		}
 	})
 }
