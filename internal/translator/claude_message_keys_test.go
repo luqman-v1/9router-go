@@ -33,15 +33,43 @@ func TestSanitizeClaudePassthrough_DropsForeignMessageKeys(t *testing.T) {
 	if len(decoded.Messages) != 3 {
 		t.Fatalf("messages dropped, got %d: %s", len(decoded.Messages), got)
 	}
-	for i, msgMap := range decoded.Messages {
-		for key := range msgMap {
-			if key != "role" && key != "content" {
+	for _, key := range []string{"reasoning_content", "output_config", "tool_calls", "function_call", "reasoning"} {
+		for i, msgMap := range decoded.Messages {
+			if _, ok := msgMap[key]; ok {
 				t.Errorf("messages[%d] kept the foreign key %q: %s", i, key, got)
 			}
 		}
 	}
 	if block := decoded.Messages[1]["content"].([]any)[0].(map[string]any); block["type"] != "tool_use" {
 		t.Errorf("the tool_use block was lost: %s", got)
+	}
+}
+
+// A key the sweep does not know is not assumed foreign: a newer CLI may add a
+// field this gateway has never heard of, and deleting it loses it silently.
+// Nothing is dropped, so the sweep must report no change — otherwise the body
+// is reserialized for nothing and loses its byte-for-byte pass-through.
+func TestDropForeignMessageKeys_KeepsUnknownKey(t *testing.T) {
+	msg := map[string]any{"role": "user", "content": "hi", "cache_config": map[string]any{"ttl": 1}}
+	if dropForeignMessageKeys(msg) {
+		t.Error("an unknown key is not foreign: the sweep must report no change")
+	}
+	if _, ok := msg["cache_config"]; !ok {
+		t.Error("an unknown message key must survive to the API")
+	}
+}
+
+// The known-foreign keys are still removed, on a message that carries content.
+func TestDropForeignMessageKeys_RemovesKnownForeignKey(t *testing.T) {
+	msg := map[string]any{"role": "user", "content": "hi", "output_config": map[string]any{"format": "text"}}
+	if !dropForeignMessageKeys(msg) {
+		t.Error("expected the known-foreign key sweep to report a change")
+	}
+	if _, ok := msg["output_config"]; ok {
+		t.Error("output_config must still be dropped")
+	}
+	if msg["content"] != "hi" {
+		t.Errorf("content must survive, got %#v", msg["content"])
 	}
 }
 

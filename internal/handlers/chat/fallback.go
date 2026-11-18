@@ -746,10 +746,18 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	}
 	var claudeToolMap map[string]string
 	if upstreamClaude {
-		if !claudeNative {
+		if !claudeNative || bodySpeaksOpenAIChat(pipedBody) {
 			// Raw OpenAI-format body would be invalid at the Messages API:
 			// convert to a spec-compliant Claude payload (top-level system,
 			// tools, merged roles) — what the dashboard does server-side.
+			//
+			// The body can be OpenAI-shaped even on a Claude-native provider:
+			// a combo whose first member speaks Chat (cx/gpt-6-astra) converts
+			// the client's Claude body once, for every member, so a later
+			// Claude member inherits tools as {type:"function",function:{…}}
+			// and the Messages API answers 400 "Input tag 'function'". The
+			// provider name says nothing about the shape on the wire; the body
+			// does.
 			pipedBody = executor.EnsureClaudeMessagesFor(pipedBody, provider, model)
 		}
 		// The OpenAI→Claude conversion merges turns, so a client body whose
@@ -2114,4 +2122,46 @@ func sanitizeOutboundToolSchemas(body []byte, provider string) []byte {
 		return newBody
 	}
 	return body
+}
+
+// bodySpeaksOpenAIChat reports whether this request body is in Chat
+// Completions shape rather than the Claude Messages shape a /v1/messages
+// client sends. A combo converts a client's body once, for its first member,
+// so by the time a Claude member is tried the wire can be OpenAI's even though
+// the provider is Anthropic — and the Messages API then answers 400 "Input tag
+// 'function' found using 'type'".
+func bodySpeaksOpenAIChat(body []byte) bool {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+	if tools, ok := req["tools"].([]any); ok {
+		for _, tRaw := range tools {
+			tool, ok := tRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, has := tool["function"]; has {
+				return true
+			}
+			if typ, _ := tool["type"].(string); typ == "function" {
+				return true
+			}
+		}
+	}
+	if msgs, ok := req["messages"].([]any); ok {
+		for _, mRaw := range msgs {
+			msg, ok := mRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, has := msg["tool_calls"]; has {
+				return true
+			}
+			if role, _ := msg["role"].(string); role == "tool" {
+				return true
+			}
+		}
+	}
+	return false
 }
