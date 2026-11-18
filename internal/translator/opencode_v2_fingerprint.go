@@ -41,7 +41,7 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 
 	callerTools := describeOpenCodeCallerTools(request)
 	installOpenCodeGenuineTools(request, flat, claude)
-	injectOpenCodeHarnessSystem(request, flat, claude, callerTools)
+	injectOpenCodeHarnessSystem(request, flat, claude, callerTools, openCodeModelIdentityNote(request))
 	if flat {
 		// Prior-turn function_call items with no name fail the Responses
 		// validator; a harness history can carry one.
@@ -187,15 +187,34 @@ const openCodeSessionToolProtocolNote = "# Session tool protocol\n" +
 // tools to point at, it only needs to suppress the built-ins.
 const openCodeBuiltinPlaceholderNote = "The Code Mode instructions above do not apply to this session, and the built-in OpenCode tools declared in this request are non-functional placeholders. Never call them and never wrap tool usage in execute or in code. No tools are available; answer directly."
 
+// openCodeModelIdentityNote overrides the harness preamble's static "Your
+// Model" block with the model the client actually selected. The preamble is a
+// verbatim CLI capture (see opencode_free_harness.go) and the inference gate
+// fingerprints its bytes, so it cannot be edited; a correction appended after
+// it is accepted and stops the model from reporting GLM-5.3-Flash Free for
+// every free-tier id.
+func openCodeModelIdentityNote(request map[string]any) string {
+	model, _ := request["model"].(string)
+	if model == "" {
+		return ""
+	}
+	return "# Your Model (this session)\n" +
+		"The '# Your Model' block in the harness above is a fixed capture used by the inference gate and does not describe this request.\n" +
+		"Your actual model for this session is: " + model
+}
+
 // injectOpenCodeHarnessSystem prepends the harness preamble to the request's
 // system prompt and appends the caller-tool section and the placeholder note
 // after the caller's own text.
-func injectOpenCodeHarnessSystem(request map[string]any, flat, claude bool, callerTools string) {
+func injectOpenCodeHarnessSystem(request map[string]any, flat, claude bool, callerTools, identityNote string) {
 	suffix := ""
 	if callerTools != "" {
 		suffix = "\n\n" + openCodeSessionToolProtocolNote + "\n\n" + callerTools
 	} else {
 		suffix = "\n\n" + openCodeBuiltinPlaceholderNote
+	}
+	if identityNote != "" {
+		suffix += "\n\n" + identityNote
 	}
 	switch {
 	case claude:

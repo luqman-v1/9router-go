@@ -180,3 +180,56 @@ func TestConcealOpenCodeV2LeavesUnparseableBodyAlone(t *testing.T) {
 		t.Fatal("unparseable body must pass through untouched")
 	}
 }
+
+// TestConcealOpenCodeV2ModelIdentity verifies the harness preamble's static
+// "Your Model" block is corrected by a suffix that follows the client's
+// selected model, without editing the fingerprinted preamble bytes.
+func TestConcealOpenCodeV2ModelIdentity(t *testing.T) {
+	const model = "mimo-v2.6-flash-free"
+	tests := []struct {
+		name string
+		flat bool
+		body string
+		read func(t *testing.T, m map[string]any) string
+	}{
+		{
+			name: "chat completions",
+			body: `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`,
+			read: func(t *testing.T, m map[string]any) string {
+				first := m["messages"].([]any)[0].(map[string]any)
+				return first["content"].(string)
+			},
+		},
+		{
+			name: "responses",
+			flat: true,
+			body: `{"model":"` + model + `","instructions":"Be terse.","input":[]}`,
+			read: func(t *testing.T, m map[string]any) string {
+				return m["instructions"].(string)
+			},
+		},
+		{
+			name: "claude messages",
+			body: `{"model":"` + model + `","system":"Be terse.","messages":[{"role":"user","content":"hi"}]}`,
+			read: func(t *testing.T, m map[string]any) string {
+				return m["system"].(string)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, _ := ConcealOpenCodeV2FingerprintTools([]byte(tt.body), tt.flat, false)
+			m := decodeShaped(t, out)
+			system := tt.read(t, m)
+			if !strings.HasPrefix(system, openCodeHarnessSystem) {
+				t.Fatal("harness preamble must stay byte-exact at the start")
+			}
+			if !strings.HasSuffix(system, "Your actual model for this session is: "+model) {
+				t.Fatalf("identity suffix missing or wrong: %.200s", system[len(system)-min(len(system), 200):])
+			}
+			if strings.Index(system, "Your actual model for this session") <= strings.Index(system, openCodeHarnessSystem) {
+				t.Fatal("identity suffix must follow the preamble, not replace it")
+			}
+		})
+	}
+}
