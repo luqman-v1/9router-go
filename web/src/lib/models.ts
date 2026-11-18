@@ -406,6 +406,31 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "upstreamModelId": "gemini-4-argon-medium(medium)"
     },
     {
+      "id": "gemini-4-hydrogen-xhigh",
+      "name": "Gemini 4 Hydrogen (XHigh)",
+      "upstreamModelId": "gemini-4-hydrogen-xhigh(xhigh)"
+    },
+    {
+      "id": "gemini-4-hydrogen-high",
+      "name": "Gemini 4 Hydrogen (High)",
+      "upstreamModelId": "gemini-4-hydrogen-high(high)"
+    },
+    {
+      "id": "gemini-4-hydrogen-medium",
+      "name": "Gemini 4 Hydrogen (Medium)",
+      "upstreamModelId": "gemini-4-hydrogen-medium(medium)"
+    },
+    {
+      "id": "gemini-4-hydrogen-low",
+      "name": "Gemini 4 Hydrogen (Low)",
+      "upstreamModelId": "gemini-4-hydrogen-low(low)"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen",
+      "upstreamModelId": "gemini-4-hydrogen-medium(medium)"
+    },
+    {
       "id": "gemini-3.8-flash-high",
       "name": "Gemini 3.8 Flash (High)",
       "upstreamModelId": "gemini-3.8-flash-high(high)"
@@ -2539,6 +2564,22 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Gemini 4 Argon"
     },
     {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen"
+    },
+    {
+      "id": "gemini-4-hydrogen-high",
+      "name": "Gemini 4 Hydrogen (High)"
+    },
+    {
+      "id": "gemini-4-hydrogen-medium",
+      "name": "Gemini 4 Hydrogen (Medium)"
+    },
+    {
+      "id": "gemini-4-hydrogen-low",
+      "name": "Gemini 4 Hydrogen (Low)"
+    },
+    {
       "id": "gemini-3.1-pro-preview",
       "name": "Gemini 3.1 Pro Preview"
     },
@@ -2571,6 +2612,22 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen"
+    },
+    {
+      "id": "gemini-4-hydrogen-high",
+      "name": "Gemini 4 Hydrogen (High)"
+    },
+    {
+      "id": "gemini-4-hydrogen-medium",
+      "name": "Gemini 4 Hydrogen (Medium)"
+    },
+    {
+      "id": "gemini-4-hydrogen-low",
+      "name": "Gemini 4 Hydrogen (Low)"
     },
     {
       "id": "gemini-3.8-flash",
@@ -2770,7 +2827,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon"
-    }
+    },
   ],
   "gh": [
     {
@@ -2876,6 +2933,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen"
     },
     {
       "id": "kimi-k3",
@@ -6012,6 +6073,22 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen"
+    },
+    {
+      "id": "gemini-4-hydrogen-high",
+      "name": "Gemini 4 Hydrogen (High)"
+    },
+    {
+      "id": "gemini-4-hydrogen-medium",
+      "name": "Gemini 4 Hydrogen (Medium)"
+    },
+    {
+      "id": "gemini-4-hydrogen-low",
+      "name": "Gemini 4 Hydrogen (Low)"
     },
     {
       "id": "gemini-3.1-pro-preview",

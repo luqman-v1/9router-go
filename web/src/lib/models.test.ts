@@ -131,3 +131,21 @@ describe('keyless live catalogs', () => {
   })
 })
 
+// Hydrogen variants must appear in the ag/antigravity catalog with their
+// expected upstreamModelId values, including the xhigh tier.
+describe('gemini-4-hydrogen variants', () => {
+  it('lists gemini-4-hydrogen-xhigh in the antigravity catalog', () => {
+    const models = getModelsByProviderId('antigravity')
+    const xhigh = models.find((m) => m.id === 'gemini-4-hydrogen-xhigh')
+    expect(xhigh, 'gemini-4-hydrogen-xhigh must be in antigravity catalog').toBeDefined()
+    expect(xhigh?.upstreamModelId).toBe('gemini-4-hydrogen-xhigh(xhigh)')
+  })
+
+  it('lists gemini-4-hydrogen-high in the antigravity catalog', () => {
+    const models = getModelsByProviderId('antigravity')
+    const high = models.find((m) => m.id === 'gemini-4-hydrogen-high')
+    expect(high, 'gemini-4-hydrogen-high must be in antigravity catalog').toBeDefined()
+    expect(high?.upstreamModelId).toBe('gemini-4-hydrogen-high(high)')
+  })
+})
+

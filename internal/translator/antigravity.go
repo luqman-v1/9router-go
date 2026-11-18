@@ -20,6 +20,12 @@ import (
 // so the cap is aligned with that rather than the upstream 64000 constant.
 const maxAntigravityOutputTokens = 65536
 
+// maxHydrogenOutputTokens is the lifted output-token ceiling for Gemini 4
+// Hydrogen models. Hydrogen supports ~1M unified context windows and can
+// produce completions well beyond the 64k Antigravity cap, so the cap is
+// raised to 256k for long-decode continuation hops.
+const maxHydrogenOutputTokens = 256000
+
 // thinkingHeadroomTokens is added on top of thinkingBudget when ensuring
 // maxOutputTokens strictly exceeds it (parity across chat and image paths).
 const thinkingHeadroomTokens = 8192
@@ -324,6 +330,11 @@ var (
 	// other whitespace between the two words, and a port that accepted more
 	// would rewrite phrasings upstream leaves alone.
 	hermesIdentityRegex = regexp.MustCompile(`(?i)You are Hermes(?: Agent)?(?:,\s*(?:an intelligent AI assistant|an AI assistant|an AI agent))?(?:,?\s*(?:built|created)\s+by\s+Nous Research)?\.`)
+	// antigravityOpenClawRegex matches the literal `openclaw` client
+	// identifier upstream rewrites in the system instruction. Upstream's rule
+	// is unbounded and case-insensitive, so `OpenClaw`, `OPENCLAW` and
+	// `openclaw-go` are rewritten too (parity with upstream).
+	antigravityOpenClawRegex = regexp.MustCompile(`(?i)openclaw`)
 )
 
 // normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
@@ -379,6 +390,23 @@ func rewriteAntigravityBrand(text string) string {
 	})
 }
 
+// rewriteOpenClawBrand rewrites the literal `openclaw` client
+// identifier to `antigravity`, matching upstream's OpenClaw rewrite row.
+// Upstream's replacement preserves the
+// three capitalisations it names and lowercases everything else.
+func rewriteOpenClawBrand(text string) string {
+	return antigravityOpenClawRegex.ReplaceAllStringFunc(text, func(m string) string {
+		switch m {
+		case "OpenClaw":
+			return "Antigravity"
+		case "OPENCLAW":
+			return "ANTIGRAVITY"
+		default:
+			return "antigravity"
+		}
+	})
+}
+
 // rewriteBrandingText applies competitive-prompt rewrites. Harness markers
 // (tags + branding) are fingerprints of system-instruction text only;
 // user/model messages, tool definitions, arguments, and results keep the
@@ -406,6 +434,9 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 		// competing-client branding with a fake 429 Quota Exhausted. The
 		// conversation keeps the caller's vocabulary.
 		text = rewriteAntigravityBrand(text)
+		// OpenClaw rewrite row: competing-client
+		// branding in the system instruction.
+		text = rewriteOpenClawBrand(text)
 	}
 	return strings.TrimSpace(text)
 }
@@ -780,12 +811,20 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 	return fmt.Sprintf("agent/%s/%d/%s/%d", conversationID, time.Now().UnixMilli(), trajectoryID, step)
 }
 
+// isHydrogenModel reports whether modelName identifies a Gemini 4 Hydrogen
+// model. Hydrogen models have a 1M unified context window and can produce
+// completions well beyond the Antigravity cap, so they get a lifted
+// output-token ceiling and long-decode continuation hops.
+func isHydrogenModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(modelName), "hydrogen")
+}
+
 // antigravityCanonicalThinkingLevel spells thinkingLevel with the enum casing
 // the official agy CLI uses ("HIGH", not "high"). It is a scoped byte-level
 // substitution on the JSON value only: re-marshalling the whole body here would
 // re-encode thought signatures on functionCall/thought parts and corrupt them.
 func antigravityCanonicalThinkingLevel(body []byte) []byte {
-	for _, level := range [...]string{"minimal", "low", "medium", "high"} {
+	for _, level := range [...]string{"minimal", "low", "medium", "high", "xhigh"} {
 		old := []byte(`"thinkingLevel":"` + level + `"`)
 		if bytes.Contains(body, old) {
 			newValue := []byte(`"thinkingLevel":"` + strings.ToUpper(level) + `"`)
@@ -796,13 +835,24 @@ func antigravityCanonicalThinkingLevel(body []byte) []byte {
 }
 
 // hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
-// rejects and caps maxOutputTokens at maxAntigravityOutputTokens. It leaves the
-// request byte-for-byte intact when nothing needs changing so thought signatures
+// rejects and caps maxOutputTokens at the model-specific limit. For Hydrogen
+// (Gemini 4) models the cap is lifted to maxHydrogenOutputTokens to prevent
+// truncation of long decode responses. For all other
+// models it caps at maxAntigravityOutputTokens. It leaves the request
+// byte-for-byte intact when nothing needs changing so thought signatures
 // on functionCall/thought parts are never re-encoded (which would corrupt them).
-func hardenAntigravityRequest(geminiBody []byte) []byte {
+func hardenAntigravityRequest(geminiBody []byte, modelName string) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(geminiBody, &m); err != nil {
 		return geminiBody
+	}
+
+	// Hydrogen (Gemini 4) supports output tokens well beyond 64k; lifting
+	// the Antigravity cap for Hydrogen models prevents truncation of long
+	// decode responses.
+	maxCap := maxAntigravityOutputTokens
+	if isHydrogenModel(modelName) {
+		maxCap = maxHydrogenOutputTokens
 	}
 
 	changed := false
@@ -815,8 +865,8 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 
 	gc, _ := m["generationConfig"].(map[string]any)
 	if gc != nil {
-		if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
-			gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
+		if v, ok := gc["maxOutputTokens"].(float64); ok && v > float64(maxCap) {
+			gc["maxOutputTokens"] = float64(maxCap)
 			changed = true
 		}
 		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT (PR #3981)
@@ -830,8 +880,8 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 			curMax, hasMax := gc["maxOutputTokens"].(float64)
 			if !hasMax || curMax <= thinkingBudget {
 				newMax := thinkingBudget + thinkingHeadroomTokens
-				if newMax > maxAntigravityOutputTokens {
-					newMax = maxAntigravityOutputTokens
+				if newMax > float64(maxCap) {
+					newMax = float64(maxCap)
 				}
 				gc["maxOutputTokens"] = newMax
 				changed = true
@@ -1022,7 +1072,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 			geminiBody = cloakedBytes
 		}
 	}
-	geminiBody = hardenAntigravityRequest(geminiBody)
+	geminiBody = hardenAntigravityRequest(geminiBody, modelName)
 	geminiBody = antigravityCanonicalThinkingLevel(geminiBody)
 
 	sess := projectID
@@ -1061,6 +1111,96 @@ func UnwrapAntigravityResponse(raw []byte) []byte {
 		return raw // passthrough on failure
 	}
 	return []byte(envelope.Response)
+}
+
+// MoveSystemInstructionToContents folds the systemInstruction of a Gemini
+// request body into contents[0] as a user-role turn and clears
+// systemInstruction. Returns the rewritten body and true when the change
+// was applied; the input bytes are never mutated. When the body carries no
+// systemInstruction, or it is already empty, the original bytes and false
+// are returned unchanged.
+//
+// Used by ForwardGemini as a 1-hop fallback retry: the Antigravity backend
+// answers a bare 429 RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED details) when
+// it rejects the systemInstruction shape itself, and moving it to
+// contents[0] is the upstream fix.
+func MoveSystemInstructionToContents(body []byte) ([]byte, bool) {
+	// jsontext.Value, not map[string]any: every member the rewrite does not
+	// touch keeps its original bytes, so a tool call's thought signature is
+	// never re-encoded. The member is looked up under both spellings —
+	// systemInstruction, the tag GeminiRequest marshals today, and
+	// system_instruction, the spelling the field carried before the rename
+	// that older clients and the retry's own tests still send — and whichever
+	// the body used is the key the rewrite removes.
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body, false
+	}
+
+	rawSystem := fields["systemInstruction"]
+	if snake, ok := fields["system_instruction"]; ok {
+		rawSystem = snake
+	}
+	if !geminiSystemInstructionWorthMoving(rawSystem) {
+		return body, false
+	}
+	var sys GeminiContent
+	if err := json.Unmarshal(rawSystem, &sys); err != nil {
+		return body, false
+	}
+
+	contents := decodeGeminiContents(fields["contents"])
+	if encoded, err := json.Marshal(foldGeminiSystemInstruction(sys.Parts, contents), json.Deterministic(true)); err == nil {
+		fields["contents"] = jsontext.Value(encoded)
+	}
+	delete(fields, "systemInstruction")
+	delete(fields, "system_instruction")
+
+	out, err := json.Marshal(fields, json.Deterministic(true))
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
+// geminiSystemInstructionWorthMoving reports whether a raw system-instruction
+// member carries at least one part, so an absent, null or empty member leaves
+// the request alone.
+func geminiSystemInstructionWorthMoving(raw jsontext.Value) bool {
+	if len(raw) == 0 || raw.Kind() == jsontext.KindNull {
+		return false
+	}
+	var sys GeminiContent
+	if err := json.Unmarshal(raw, &sys); err != nil {
+		return false
+	}
+	return len(sys.Parts) > 0
+}
+
+// decodeGeminiContents decodes a raw contents member, treating an absent or
+// non-array member as no contents.
+func decodeGeminiContents(raw jsontext.Value) []GeminiContent {
+	if len(raw) == 0 || raw.Kind() != '[' {
+		return nil
+	}
+	var contents []GeminiContent
+	if err := json.Unmarshal(raw, &contents); err != nil {
+		return nil
+	}
+	return contents
+}
+
+// foldGeminiSystemInstruction prepends sysParts to contents[0] as a user-role
+// turn, or creates that turn when contents is empty.
+func foldGeminiSystemInstruction(sysParts []GeminiPart, contents []GeminiContent) []GeminiContent {
+	if len(contents) == 0 {
+		return []GeminiContent{{Role: "user", Parts: sysParts}}
+	}
+	contents[0] = GeminiContent{
+		Role:  "user",
+		Parts: append(append([]GeminiPart{}, sysParts...), contents[0].Parts...),
+	}
+	return contents
 }
 
 // IsAntigravityImageModel checks if the model name is an image generation model.

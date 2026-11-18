@@ -43,6 +43,13 @@ func (h *ChatHandler) antigravityConnData(connectionID string) *shared.Connectio
 	return &cd
 }
 
+// maxLongDecodeHops is the maximum number of continuation hops for long
+// decode responses (finishReason CONTINUATION with a continuationToken).
+// Hydrogen (Gemini 4) models can produce ~1M output tokens; each hop
+// continues from the last token until the response is complete or the
+// hop limit is reached.
+const maxLongDecodeHops = 16
+
 // forwardGeminiNativeRequest handles forwarding for gemini-native providers (antigravity).
 func (h *ChatHandler) forwardGeminiNativeRequest(
 	ctx context.Context,
@@ -165,6 +172,25 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	}
 	recordAntigravityOutcome(connectionID, resp.StatusCode, nil)
 
+	// Long-decode continuation hops: when the model is Hydrogen and the
+	// response carries a finishReason CONTINUATION with a continuationToken,
+	// chain requests to continue the decode until the response is complete
+	// or the hop limit is reached. The response body
+	// is consumed and a fresh one is obtained for each hop.
+	// Handle long-decode continuation hops
+	if isLongDecodeModel(modelName) && !isStream && projectID != "" {
+		contResp, contErr := h.followLongDecodeContinuation(ctx, httpClient, cfg, apiKey, body, modelName, projectID, resp, translateResponse, metrics)
+		// Guard both nil checks: contResp is nil on every error path, so a
+		// plain `defer contResp.Body.Close()` would panic exactly where
+		// bodyclose wants a Close — release the connection safely instead.
+		if contResp != nil && contResp.Body != nil {
+			defer func() { _ = contResp.Body.Close() }()
+		}
+		if contErr != nil {
+			return contErr
+		}
+		resp = contResp
+	}
 	var bodyCloser io.Closer = resp.Body
 	defer func() {
 		if bodyCloser != nil {
@@ -581,6 +607,140 @@ func (h *ChatHandler) forceRefreshLocked(connectionID string) (oauthTokenResult,
 	}
 	log.Info("oauth", "token refreshed", "provider", provider, "project", pid)
 	return oauthTokenResult{token: tokenResp.AccessToken, projectID: pid}, nil
+}
+
+// isLongDecodeModel reports whether a model supports long-decode
+// continuation hops. Currently only Gemini 4 Hydrogen models have the
+// continuationToken mechanism.
+func isLongDecodeModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(modelName), "hydrogen")
+}
+
+// followLongDecodeContinuation follows finishReason=CONTINUATION responses by
+// chaining requests with continuationToken until the response is complete or
+// maxLongDecodeHops is reached. It returns the final *http.Response and an
+// error. On error the caller should return the error directly.
+func (h *ChatHandler) followLongDecodeContinuation(
+	ctx context.Context,
+	httpClient *http.Client,
+	cfg *providers.ProviderConfig,
+	apiKey string,
+	body []byte,
+	modelName string,
+	projectID string,
+	resp *http.Response,
+	translateResp bool,
+	metrics *streamMetrics,
+) (*http.Response, error) {
+	for hop := 0; hop < maxLongDecodeHops; hop++ {
+		// Read the response body.
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("long-decode: read response body: %w", readErr)
+		}
+
+		// Unwrap the Antigravity envelope if present.
+		inner := translator.UnwrapAntigravityResponse(raw)
+
+		// Check for finishReason CONTINUATION with a continuationToken.
+		var geminiResp struct {
+			Candidates []struct {
+				FinishReason string `json:"finishReason"`
+			} `json:"candidates"`
+			ContinuationToken string `json:"continuationToken"`
+		}
+		if jsonErr := json.Unmarshal(inner, &geminiResp); jsonErr != nil {
+			// Cannot parse: treat as complete, return the original body.
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		finished := false
+		for _, c := range geminiResp.Candidates {
+			if c.FinishReason != "" && c.FinishReason != "CONTINUATION" {
+				finished = true
+				break
+			}
+		}
+		if geminiResp.ContinuationToken == "" || finished {
+			// No continuation needed: return the response as-is.
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		log.Info("gemini", "long-decode continuation hop", "hop", hop+1, "model", modelName)
+
+		// Build the continuation request by injecting the continuationToken.
+		contReq, buildErr := buildContinuationRequest(body, geminiResp.ContinuationToken)
+		if buildErr != nil {
+			log.Warn("gemini", "long-decode: build continuation request failed", "error", buildErr)
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		// Forward the continuation request.
+		nextResp, fwdErr := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, contReq, false, projectID, modelName)
+		if fwdErr != nil {
+			log.Warn("gemini", "long-decode: forward continuation failed", "hop", hop+1, "error", fwdErr)
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		// Accumulate the response body for the next iteration.
+		resp = nextResp
+
+		// Check if this is the last hop.
+		if hop == maxLongDecodeHops-1 {
+			log.Info("gemini", "long-decode: reached max hops", "hops", maxLongDecodeHops, "model", modelName)
+		}
+	}
+
+	// We exited the loop without returning; read the final response and return it.
+	if resp != nil {
+		return resp, nil
+	}
+	return nil, fmt.Errorf("long-decode: no response after %d hops", maxLongDecodeHops)
+}
+
+// buildContinuationRequest injects the continuationToken into the request body
+// at the appropriate location. For Gemini native (non-Antigravity) requests
+// the token goes at the top level; for Antigravity requests it goes at
+// request.continuationToken.
+func buildContinuationRequest(body []byte, token string) (string, error) {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "", fmt.Errorf("parse request body: %w", err)
+	}
+
+	// Antigravity envelope: {project, model, request: {..., continuationToken}}
+	if _, hasRequest := m["request"]; hasRequest {
+		if reqMap, ok := m["request"].(map[string]any); ok {
+			reqMap["continuationToken"] = token
+			m["request"] = reqMap
+		}
+	} else {
+		// Plain Gemini request: continuationToken at top level.
+		m["continuationToken"] = token
+	}
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal continuation request: %w", err)
+	}
+	return string(out), nil
 }
 
 // handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
