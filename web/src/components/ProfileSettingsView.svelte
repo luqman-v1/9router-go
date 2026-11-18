@@ -240,6 +240,7 @@
   let stickyRoundRobinLimit = $state(3)
   let comboStrategy = $state('first-model')
   let forceFallback = $state(false)
+  let qoderCheckin = $state(false)
 
   // Feature Visibility: ids of the sidebar entries this deployment hides. The
   // entry list itself lives in web/src/lib/nav.ts, shared with the sidebar.
@@ -316,6 +317,7 @@
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
       if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
       if (typeof settings.forceFallback === 'boolean') forceFallback = settings.forceFallback
+      if (typeof settings.qoderCheckin === 'boolean') qoderCheckin = settings.qoderCheckin
 
       // Global system prompt
       enableSystemPrompt = !!settings.systemPromptEnabled
@@ -529,6 +531,7 @@
         stickyRoundRobinLimit,
         comboStrategy,
         forceFallback,
+        qoderCheckin,
         systemPromptEnabled: enableSystemPrompt,
         systemPromptPrefix,
         systemPromptSuffix,
@@ -1139,6 +1142,17 @@
         <p class="text-[11px] text-text-subtle">
           When every account is in cooldown, send the request through the account that
           frees up first instead of failing. Requests can still be rejected upstream.
+        </p>
+
+        <Toggle
+          checked={qoderCheckin}
+          size="sm"
+          label="Qoder daily credit check-in"
+          onChange={(v: boolean) => (qoderCheckin = v)}
+        />
+        <p class="text-[11px] text-text-subtle">
+          Claim Qoder and Qoder CN daily credits automatically every 30 minutes.
+          Last result per account is available at <code>GET /api/qoder/checkins</code>.
         </p>
 
       </div>

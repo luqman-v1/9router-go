@@ -199,6 +199,8 @@ func SetupRoutes(r interface {
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
 	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
+	// Qoder daily-credit check-in state (read-only).
+	r.Get("/api/qoder/checkins", dashH.HandleGetQoderCheckins)
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	// Usage per client API key. Registered before the {connectionId} route:
 	// chi matches in order, so a route added after it would be read as a

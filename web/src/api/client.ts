@@ -342,6 +342,8 @@ export interface Settings {
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean
+  /** Qoder / Qoder CN daily-credit check-in. */
+  qoderCheckin?: boolean
   semanticCacheEnabled?: boolean
   semanticCacheTTL?: number
   // Prompt-cache window 9router pins on Claude head anchors: "5m" (default) or "1h".
