@@ -27,6 +27,12 @@ type UpstreamError struct {
 	// where the response is still in hand, so this is the only chance to keep
 	// them.
 	Header http.Header
+	// Local marks a refusal this gateway produced itself, before the upstream
+	// was dialed (admission control: a full per-connection queue). Downstream
+	// failover must not cool an account over it — the credential was never
+	// exercised — and it must never be inferred from the body: an upstream that
+	// echoes a matching payload would otherwise dodge its own cooldown.
+	Local bool
 	// ReadErr records a failure to read the error body in full (a truncated or
 	// mis-declared response). The status and whatever bytes arrived are still
 	// valid and callers branch on the status, so a read failure must not erase

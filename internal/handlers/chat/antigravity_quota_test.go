@@ -688,11 +688,18 @@ func TestAntigravityRoster_DropsUnservedModel(t *testing.T) {
 		t.Errorf("served model rejected")
 	}
 
-	// Unserved bundled model (e.g. claude-opus-5-5) must be reported as unserved and blocked
+	// Unserved bundled model (e.g. claude-opus-5-5) is reported as unserved, but
+	// the roster is only advisory: the account can still serve a model it omits
+	// (gemini-4-carbon on a 3.8-tiered account), so the first request is allowed
+	// and only a real upstream 404 parks the pair.
 	if IsAntigravityModelServed(connID, "claude-opus-5-5") {
 		t.Errorf("unserved model accepted")
 	}
+	if IsAntigravityModelBlocked(connID, "claude-opus-5-5") {
+		t.Errorf("a roster miss alone must not block routing")
+	}
+	NoteAntigravityModelNotFound(connID, "claude-opus-5-5")
 	if !IsAntigravityModelBlocked(connID, "claude-opus-5-5") {
-		t.Errorf("unserved model must be blocked from routing")
+		t.Errorf("a model the upstream 404'd must be blocked from routing")
 	}
 }
