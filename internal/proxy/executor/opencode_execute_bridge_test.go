@@ -79,6 +79,37 @@ func TestBridgeRewritesStreamingExecuteCall(t *testing.T) {
 	}
 }
 
+// Regression for the hy4-flash-free cron failures of 2026-11-19: an execute
+// call pending at stream end held the finish_reason line, which was flushed
+// with a single \n right before `data: [DONE]`. The OpenAI SDK joins adjacent
+// data lines into one event, so it parsed chunk+[DONE] as one JSON payload and
+// failed with provider_stream_non_json_data ("Extra data").
+func TestBridgeDoneSentinelOwnEvent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := NewOpenCodeExecuteBridgeWriter(rec)
+	args := fullCallToolArgs()
+	startChunk := choiceWrap(callDelta(map[string]any{"index": 0, "id": "call_1", "function": map[string]any{"name": "execute", "arguments": args}}))
+	finishChunk := choiceWrap(map[string]any{"index": 0, "finish_reason": "tool_calls", "delta": map[string]any{}})
+
+	for _, l := range []string{chunkLine(t, startChunk), chunkLine(t, finishChunk), "data: [DONE]\n\n"} {
+		if _, err := w.Write([]byte(l)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := rec.Body.String()
+	// The held finish line ends with a single \n; [DONE] must start a fresh
+	// event after a blank line, not merge into the finish payload.
+	if strings.Contains(out, "}\ndata: [DONE]") {
+		t.Fatalf("finish line and [DONE] merged into one SSE event: %q", out)
+	}
+	if !strings.Contains(out, "}\n\ndata: [DONE]") {
+		t.Fatalf("finish line must end with a blank line before [DONE]: %q", out)
+	}
+	if got := strings.Count(out, "data: [DONE]"); got != 1 {
+		t.Fatalf("expected exactly one sentinel, got %d: %q", got, out)
+	}
+}
+
 // TestBridgeLeavesOrdinaryCallsAndContentAlone checks passthrough fidelity for
 // non-execute traffic.
 func TestBridgeLeavesOrdinaryCallsAndContentAlone(t *testing.T) {

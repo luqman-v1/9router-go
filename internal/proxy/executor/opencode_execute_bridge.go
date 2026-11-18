@@ -144,6 +144,12 @@ type openCodeExecuteBridgeWriter struct {
 	lineBuf  string
 	pending  map[int]*pendingExecuteCall
 	finished bool
+	// trailingNL counts newlines at the tail of the bytes written to the
+	// underlying writer. SSE events are separated by a blank line; a data
+	// line ended with a single \n still belongs to the current event, so
+	// [DONE] written right after it merges into the same payload and the
+	// OpenAI SDK fails with "Extra data" (hy4-flash-free cron, 2026-11-19).
+	trailingNL int
 }
 
 // NewOpenCodeExecuteBridgeWriter wraps w for the free chat lanes.
@@ -183,16 +189,28 @@ func cutLine(s string) (line, rest string, found bool) {
 func (w *openCodeExecuteBridgeWriter) writeLine(line string) error {
 	payload, isData := sseDataPayload(line)
 	if !isData {
-		_, err := w.ResponseWriter.Write([]byte(line))
-		return err
+		return w.raw(line)
 	}
 	if payload == "[DONE]" {
 		if err := w.flushPending(); err != nil {
 			return err
 		}
 		w.finished = true
-		_, err := w.ResponseWriter.Write([]byte(line))
-		return err
+		// The sentinel is its own SSE event. A held finish_reason line
+		// flushed above ends with a single \n; without a blank line the SDK
+		// joins it and [DONE] into one data payload and fails with
+		// "Extra data" instead of closing the stream.
+		switch w.trailingNL {
+		case 0:
+			if err := w.raw("\n\n"); err != nil {
+				return err
+			}
+		case 1:
+			if err := w.raw("\n"); err != nil {
+				return err
+			}
+		}
+		return w.raw(line)
 	}
 	var chunk sseChunk
 	if json.Unmarshal([]byte(payload), &chunk) != nil {
@@ -256,7 +274,31 @@ func (w *openCodeExecuteBridgeWriter) writeLine(line string) error {
 
 func (w *openCodeExecuteBridgeWriter) raw(line string) error {
 	_, err := w.ResponseWriter.Write([]byte(line))
+	w.noteTrailing(line)
 	return err
+}
+
+// noteTrailing updates trailingNL after a write: the count of newlines at the
+// tail of line, added to the previous count when line is entirely newlines.
+func (w *openCodeExecuteBridgeWriter) noteTrailing(line string) {
+	trail := 0
+	for i := len(line) - 1; i >= 0; i-- {
+		if line[i] != '\n' {
+			break
+		}
+		trail++
+		if trail == 2 {
+			break
+		}
+	}
+	if trail == len(line) {
+		w.trailingNL += trail
+		if w.trailingNL > 2 {
+			w.trailingNL = 2
+		}
+		return
+	}
+	w.trailingNL = trail
 }
 
 func (w *openCodeExecuteBridgeWriter) replayEntry(entry *pendingExecuteCall) {
