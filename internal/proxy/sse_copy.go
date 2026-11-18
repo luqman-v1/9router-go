@@ -257,10 +257,16 @@ func (c *sseCopier) writeDoneLine() error {
 	if c.seenInbandError && !c.hasTerminal {
 		return c.writeErrorClose()
 	}
+	// The sentinel must be its own SSE event. Some providers emit the terminal
+	// chunk and the following `data: [DONE]` back-to-back, with no blank line
+	// between them; without a separator OpenAI clients join both data lines
+	// into one payload and fail with `JSONDecodeError: Extra data` instead of
+	// closing the stream. ensureBlank is a no-op when the previous event is
+	// already blank-line terminated (including an empty stream).
+	if err := c.ensureBlank(); err != nil {
+		return err
+	}
 	if !c.hasTerminal {
-		if err := c.ensureBlank(); err != nil {
-			return err
-		}
 		if err := c.writeRaw([]byte(sseStopTerminal)); err != nil {
 			return err
 		}
