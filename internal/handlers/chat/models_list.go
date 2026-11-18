@@ -1162,22 +1162,32 @@ func (h *ChatHandler) comboSeatCapabilities(seat string, connMap ...map[string]*
 // A seat that is itself a combo name contributes its own leaves' result, and
 // cycles are cut: a name already on the walk contributes nothing, which bounds
 // a self-referencing combo (upstream's `visiting` set).
-func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
+func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string, settings *db.SettingsData, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
 	visiting := make(map[string]bool, 4)
 	visiting[comboName] = true
 	window, maxOut := h.minComboSeatLimits(index, index[comboName], visiting, connMap...)
-	mode := h.comboWindowMode(comboName)
-	switch mode {
+	cs := comboStrategyFor(settings, comboName)
+	switch cs.ContextWindowMode {
 	case db.ComboWindowModeMax:
 		return h.maxComboSeatLimits(index, comboName, visiting, connMap...)
 	case db.ComboWindowModeCustom:
-		if w := h.comboContextWindow(comboName); w > 0 {
-			return w, maxOut
+		if cs.ContextWindow > 0 {
+			return cs.ContextWindow, maxOut
 		}
 		return window, maxOut
 	default:
 		return window, maxOut
 	}
+}
+
+// comboStrategyFor returns the stored strategy row for a combo, or the zero
+// value when settings were not loaded or the combo has no row. The zero row's
+// unset ContextWindowMode is "min", so callers get the default mode.
+func comboStrategyFor(settings *db.SettingsData, comboName string) db.ComboStrategy {
+	if settings == nil || comboName == "" {
+		return db.ComboStrategy{}
+	}
+	return settings.ComboStrategies[comboName]
 }
 
 // minComboSeatLimits walks one level of a combo's seat list and folds every
@@ -1266,38 +1276,6 @@ func foldTokenMaximum(currentWindow, currentMax, candidateWindow, candidateMax i
 	return currentWindow, currentMax
 }
 
-// comboWindowMode returns the mode the combo's strategy row declares, defaulting
-// to min when unset or invalid.
-func (h *ChatHandler) comboWindowMode(comboName string) string {
-	if h.Repo == nil || comboName == "" {
-		return db.ComboWindowModeMin
-	}
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
-		return db.ComboWindowModeMin
-	}
-	if cs, ok := settings.ComboStrategies[comboName]; ok && cs.ContextWindowMode != "" {
-		return cs.ContextWindowMode
-	}
-	return db.ComboWindowModeMin
-}
-
-// comboContextWindow returns the explicit window the combo's strategy row
-// declares when its mode is custom, otherwise zero.
-func (h *ChatHandler) comboContextWindow(comboName string) int {
-	if h.Repo == nil || comboName == "" {
-		return 0
-	}
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
-		return 0
-	}
-	if cs, ok := settings.ComboStrategies[comboName]; ok && cs.ContextWindowMode == db.ComboWindowModeCustom {
-		return cs.ContextWindow
-	}
-	return 0
-}
-
 // appendCombos lists combo names with the union of their leaf capabilities,
 // matching upstream aggregateComboCapabilities, plus the combo-wide token
 // limits upstream comboSeatLimits derives.
@@ -1305,6 +1283,9 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 	if h.Repo == nil {
 		return data
 	}
+	// One settings read for the whole page: the per-combo window mode lives in
+	// comboStrategies, and reading it per combo is an N+1 on the ledger.
+	settings, _ := h.Repo.GetSettings()
 	var connMap map[string]*ModelInfo
 	if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
 		connMap = make(map[string]*ModelInfo, len(conns)*4)
@@ -1354,7 +1335,7 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 		// seat can serve the request, so the window is the smallest one in the
 		// tree). A combo with no LLM seat at all publishes neither key rather
 		// than a guess.
-		contextWindow, maxOutput := h.comboSeatLimits(index, combo.Name, connMap)
+		contextWindow, maxOutput := h.comboSeatLimits(index, combo.Name, settings, connMap)
 		entry.ContextLength = optionalTokenLimit(contextWindow)
 		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
 

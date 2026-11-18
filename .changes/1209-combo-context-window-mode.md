@@ -1,6 +1,6 @@
 ### Combos: support advertised context window mode (min, max, custom)
 
-Allow combo strategies to configure how their context window is advertised in `/v1/models` (`context_length`) and the dashboard `ComboCard`:
+Allow combo strategies to configure how their context window is advertised in `/v1/models` (`context_length`) and the dashboard `ComboCard`. This is a local enhancement: it is not a port of any upstream 9router change.
 
 - `ComboStrategy.ContextWindowMode` (`min` | `max` | `custom`) and `ContextWindow` integer.
 - `min` (default): advertises the narrowest seat window (safe for panel queries where every seat sees the request).
