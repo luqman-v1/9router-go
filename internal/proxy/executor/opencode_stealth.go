@@ -63,6 +63,29 @@ var opencodeHeaderOrder = []string{
 // bunBoringSSLSpec returns a ClientHelloSpec matching Bun's BoringSSL handshake
 // (17 cipher suites and 12 extensions in exact baseline order).
 func bunBoringSSLSpec() (tls.ClientHelloSpec, error) {
+	return bunBoringSSLSpecFor(false), nil
+}
+
+// bunBoringSSLSpecFor builds the Bun ClientHello.
+//
+// referenceFingerprint selects the layout opencode2api measured against Bun
+// 1.4.3's fetch (JA4 t13d1713h1), which differs from the baseline in three
+// places:
+//
+//   - ALPN is HTTP/1.1 only. Bun's fetch speaks HTTP/1.1, so a ClientHello
+//     offering h2 is not what it sends.
+//   - The post-quantum hybrid X25519MLKEM768 leads SupportedCurves and is sent
+//     as a key share, with CurveP521 dropped. Verified: utls materializes the
+//     MLKEM share (1216 bytes) even though the spec carries no explicit bytes,
+//     so listing the group is enough — see
+//     TestBunSpec_MLKEMKeyShareIsMaterialized.
+//   - PKCS1WithSHA1 is appended after PKCS1WithSHA512.
+//
+// It stays opt-in because the baseline is the layout this repository has run in
+// production, and neither could be validated against a live 200 while this was
+// written: the gate refused the probe egress on quota. Turning the reference
+// layout on unverified would replace a known-good handshake with a guess.
+func bunBoringSSLSpecFor(referenceFingerprint bool) tls.ClientHelloSpec {
 	ciphers := []uint16{
 		tls.TLS_AES_128_GCM_SHA256,
 		tls.TLS_AES_256_GCM_SHA384,
@@ -83,34 +106,53 @@ func bunBoringSSLSpec() (tls.ClientHelloSpec, error) {
 		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
 	}
 
+	curves := []tls.CurveID{
+		tls.X25519,
+		tls.CurveP256,
+		tls.CurveP384,
+		tls.CurveP521,
+	}
+	keyShares := []tls.KeyShare{
+		{Group: tls.X25519},
+	}
+	alpn := []string{"h2", "http/1.1"}
+	signatureAlgorithms := []tls.SignatureScheme{
+		tls.ECDSAWithP256AndSHA256,
+		tls.PSSWithSHA256,
+		tls.PKCS1WithSHA256,
+		tls.ECDSAWithP384AndSHA384,
+		tls.PSSWithSHA384,
+		tls.PKCS1WithSHA384,
+		tls.PSSWithSHA512,
+		tls.PKCS1WithSHA512,
+	}
+	if referenceFingerprint {
+		curves = []tls.CurveID{
+			tls.X25519MLKEM768,
+			tls.X25519,
+			tls.CurveP256,
+			tls.CurveP384,
+		}
+		keyShares = []tls.KeyShare{
+			{Group: tls.X25519MLKEM768},
+			{Group: tls.X25519},
+		}
+		alpn = []string{"http/1.1"}
+		signatureAlgorithms = append(signatureAlgorithms, tls.PKCS1WithSHA1)
+	}
+
 	extensions := []tls.TLSExtension{
 		&tls.SNIExtension{},
 		&tls.ExtendedMasterSecretExtension{},
 		&tls.RenegotiationInfoExtension{Renegotiation: tls.RenegotiateOnceAsClient},
-		&tls.SupportedCurvesExtension{Curves: []tls.CurveID{
-			tls.X25519,
-			tls.CurveP256,
-			tls.CurveP384,
-			tls.CurveP521,
-		}},
+		&tls.SupportedCurvesExtension{Curves: curves},
 		&tls.SupportedPointsExtension{SupportedPoints: []byte{0}},
 		&tls.SessionTicketExtension{},
-		&tls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
+		&tls.ALPNExtension{AlpnProtocols: alpn},
 		&tls.StatusRequestExtension{},
-		&tls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []tls.SignatureScheme{
-			tls.ECDSAWithP256AndSHA256,
-			tls.PSSWithSHA256,
-			tls.PKCS1WithSHA256,
-			tls.ECDSAWithP384AndSHA384,
-			tls.PSSWithSHA384,
-			tls.PKCS1WithSHA384,
-			tls.PSSWithSHA512,
-			tls.PKCS1WithSHA512,
-		}},
+		&tls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: signatureAlgorithms},
 		&tls.SCTExtension{},
-		&tls.KeyShareExtension{KeyShares: []tls.KeyShare{
-			{Group: tls.X25519},
-		}},
+		&tls.KeyShareExtension{KeyShares: keyShares},
 		&tls.PSKKeyExchangeModesExtension{Modes: []uint8{tls.PskModeDHE}},
 		&tls.SupportedVersionsExtension{Versions: []uint16{
 			tls.VersionTLS13,
@@ -122,17 +164,40 @@ func bunBoringSSLSpec() (tls.ClientHelloSpec, error) {
 		CipherSuites:       ciphers,
 		CompressionMethods: []uint8{0},
 		Extensions:         extensions,
-	}, nil
+	}
+}
+
+// opencodeReferenceFingerprint reports whether the reference (opencode2api)
+// Bun fingerprint is enabled via OPENCODE_V2_REFERENCE_FINGERPRINT=1.
+//
+// It is opt-in because the baseline is the handshake this repository has run in
+// production while the reference layout could not be validated against a live
+// 200. One escape hatch, one reason: the transport spec, the Chat body key
+// order and the extra sigalg are all the same "match the reference byte for
+// byte" decision, so a single flag flips them together and a single flag
+// reverts them.
+func opencodeReferenceFingerprint() bool {
+	return os.Getenv("OPENCODE_V2_REFERENCE_FINGERPRINT") == "1"
 }
 
 // newOpencodeClientProfile builds a ClientProfile configured with Bun's BoringSSL
 // TLS ClientHello and HTTP/2 settings.
 func newOpencodeClientProfile() profiles.ClientProfile {
+	reference := opencodeReferenceFingerprint()
+	specFactory := bunBoringSSLSpec
+	if reference {
+		specFactory = func() (tls.ClientHelloSpec, error) {
+			return bunBoringSSLSpecFor(true), nil
+		}
+	}
+	// The HTTP/2 settings are inert under the reference layout — it negotiates
+	// HTTP/1.1 only — but the positional NewClientProfile signature means
+	// dropping them would be churn for no behaviour change.
 	return profiles.NewClientProfile(
 		tls.ClientHelloID{
 			Client:      "bun",
 			Version:     "1.4.2",
-			SpecFactory: bunBoringSSLSpec,
+			SpecFactory: specFactory,
 		},
 		map[http2.SettingID]uint32{
 			http2.SettingHeaderTableSize:      65536,
@@ -172,6 +237,11 @@ func newOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, e
 		tls_client.WithClientProfile(newOpencodeClientProfile()),
 		tls_client.WithNotFollowRedirects(),
 	}
+	if opencodeReferenceFingerprint() {
+		// The ALPN list is what a fingerprint is computed from; this stops the
+		// transport from negotiating h2 anyway if a server ignored it.
+		options = append(options, tls_client.WithForceHttp1())
+	}
 	if proxyURL := opencodeProxyFrom(reference); proxyURL != "" {
 		options = append(options, tls_client.WithProxyUrl(strings.TrimRight(proxyURL, "/")))
 	}
@@ -201,10 +271,17 @@ func opencodeProxyFrom(reference *http.Client) string {
 }
 
 func getOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, error) {
+	// The profile is flag-dependent, so the flag belongs in the cache key: a
+	// key of proxy URL alone would hand back a client built under the other
+	// fingerprint for the process lifetime.
 	proxyURL := opencodeProxyFrom(reference)
+	cacheKey := proxyURL
+	if opencodeReferenceFingerprint() {
+		cacheKey = "reference\x00" + proxyURL
+	}
 	opencodeClientMu.Lock()
 	defer opencodeClientMu.Unlock()
-	if client, ok := opencodeClients[proxyURL]; ok {
+	if client, ok := opencodeClients[cacheKey]; ok {
 		return client, nil
 	}
 	client, err := newOpencodeStealthClient(reference)
@@ -220,7 +297,7 @@ func getOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, e
 			break
 		}
 	}
-	opencodeClients[proxyURL] = client
+	opencodeClients[cacheKey] = client
 	return client, nil
 }
 
