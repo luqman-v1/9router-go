@@ -94,3 +94,30 @@ func TestZedJSONLToSSEKeepsBlankPayloadOut(t *testing.T) {
 		t.Errorf("data: frames = %d, want 2\n%s", n, string(got))
 	}
 }
+
+func TestZedUnwrapLineStatusFrames(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"event envelope", `{"event":{"type":"message_start"}}`, `{"type":"message_start"}`},
+		{"native event passes", `{"type":"content_block_delta"}`, `{"type":"content_block_delta"}`},
+		{"failed status", `{"status":{"failed":{"message":"quota exceeded"}}}`, `[Zed error] quota exceeded`},
+		{"stream ended", `{"status":"stream_ended"}`, `[DONE]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := string(zedUnwrapLine([]byte(tt.line)))
+			if tt.name == "failed status" {
+				if !strings.Contains(got, tt.want) {
+					t.Errorf("got %q, want to contain %q", got, tt.want)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

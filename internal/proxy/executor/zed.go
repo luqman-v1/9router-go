@@ -66,6 +66,38 @@ const (
 	zedDefaultMaxOutputTokens = 4096
 )
 
+// Zed's status-protocol headers. Upstream zedAuth.js sends them so the cloud
+// can emit {"status":...} frames and a stream-ended request-completion status;
+// without them a failed completion can be reported only as a dropped stream.
+const (
+	zedHeaderExpiredToken   = "x-zed-expired-token"
+	zedHeaderOutdatedToken  = "x-zed-outdated-token"
+	zedHeaderSupportsStatus = "x-zed-client-supports-status-messages"
+	zedHeaderStreamEnded    = "x-zed-client-supports-stream-ended-request-completion-status"
+	zedHeaderSupportsXAI    = "x-zed-client-supports-x-ai"
+	zedHeaderVersion        = "x-zed-version"
+	zedUserAgent            = "9router/zed"
+	zedVersion              = "0.200.0"
+)
+
+// zedCatalogTTL matches upstream's MODEL_CACHE_TTL_MS (one hour). The cache is
+// bounded by entry count: unbounded maps keyed by a credential hash would be a
+// memory leak on a router serving many accounts.
+const (
+	zedCatalogTTL      = time.Hour
+	zedCatalogCacheMax = 128
+)
+
+type zedCatalogEntry struct {
+	byID      map[string]string
+	expiresAt time.Time
+}
+
+var (
+	zedCatalogMu    sync.Mutex
+	zedCatalogCache = make(map[string]zedCatalogEntry, zedCatalogCacheMax)
+)
+
 // ZedWireModel is the (provider, model) pair Zed's envelope carries: the
 // provider names the nested body's dialect, the model is the id inside it.
 type ZedWireModel struct {
@@ -79,8 +111,10 @@ type ZedWireModel struct {
 type ZedModelOverrides map[string]ZedWireModel
 
 // ResolveZedModel decides the wire provider and inner model id for a requested
-// model. Deterministic: claude* speaks Anthropic, gpt*/o-series speak OpenAI's
-// Responses API, and anything else is refused rather than guessed.
+// model. With overrides it uses the account's live catalogue first (upstream
+// resolveModel): the catalogue is authoritative because Zed fronts several
+// backends and a model id is not a reliable provider hint. The prefix table is
+// only the fallback when the catalogue is unavailable or omits the model.
 func ResolveZedModel(requested string, overrides ZedModelOverrides) (ZedWireModel, error) {
 	id := zedStripModelPrefix(requested)
 	if id == "" {
@@ -103,6 +137,64 @@ func ResolveZedModel(requested string, overrides ZedModelOverrides) (ZedWireMode
 		return ZedWireModel{}, fmt.Errorf("zed: model %q is not served by Zed (unknown provider)", id)
 	}
 	return ZedWireModel{Provider: provider, Model: id}, nil
+}
+
+// resolveZedWireModel resolves a model through the account's live catalogue,
+// falling back to the id-prefix inference when the catalogue can't say. The
+// cache is bounded by entry count and TTL so a process serving many accounts
+// cannot grow it without limit.
+func resolveZedWireModel(ctx context.Context, client *http.Client, origin string, creds providers.ZedCredentials, requested string) ZedWireModel {
+	id := zedStripModelPrefix(requested)
+	fallback := ZedWireModel{Model: id, Provider: providers.ZedWireProvider(id)}
+	if id == "" {
+		return fallback
+	}
+	key := zedCatalogCacheKey(origin, creds)
+	now := time.Now()
+	zedCatalogMu.Lock()
+	entry, ok := zedCatalogCache[key]
+	if ok && now.Before(entry.expiresAt) {
+		zedCatalogMu.Unlock()
+		return zedWireFromCatalog(entry.byID, id, fallback)
+	}
+	zedCatalogMu.Unlock()
+
+	catalog, err := providers.ZedFetchModels(ctx, client, creds)
+	if err != nil || len(catalog) == 0 {
+		return fallback
+	}
+	byID := make(map[string]string, len(catalog))
+	for _, model := range catalog {
+		if model.ID == "" || model.IsDisabled {
+			continue
+		}
+		if wire := providers.NormalizeZedWireProvider(model.Provider); wire != "" {
+			byID[model.ID] = wire
+		}
+	}
+	zedCatalogMu.Lock()
+	if len(zedCatalogCache) >= zedCatalogCacheMax {
+		// Cheap bounded eviction: drop the oldest-expiring entry. The catalog
+		// is a pure optimization; losing one just costs a fresh fetch.
+		var oldest string
+		var oldestAt time.Time
+		for k, v := range zedCatalogCache {
+			if oldest == "" || v.expiresAt.Before(oldestAt) {
+				oldest, oldestAt = k, v.expiresAt
+			}
+		}
+		delete(zedCatalogCache, oldest)
+	}
+	zedCatalogCache[key] = zedCatalogEntry{byID: byID, expiresAt: now.Add(zedCatalogTTL)}
+	zedCatalogMu.Unlock()
+	return zedWireFromCatalog(byID, id, fallback)
+}
+
+func zedWireFromCatalog(byID map[string]string, id string, fallback ZedWireModel) ZedWireModel {
+	if wire, ok := byID[id]; ok && wire != "" {
+		return ZedWireModel{Model: id, Provider: wire}
+	}
+	return fallback
 }
 
 // zedStripModelPrefix removes a provider prefix a client may echo
@@ -144,6 +236,16 @@ func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID st
 			key = apiKeyID[0]
 		}
 		providerRequest, err = zedGoogleProviderRequest(trimmed, wire.Model, key)
+	case "x_ai":
+		// xAI is OpenAI-shaped on Zed's wire: forward the client body as-is with
+		// the catalogue model id and upstream-forced streaming.
+		var body map[string]any
+		if err := json.Unmarshal(trimmed, &body); err != nil {
+			return nil, fmt.Errorf("zed: parse x_ai provider request: %w", err)
+		}
+		body["model"] = wire.Model
+		body["stream"] = true
+		providerRequest = body
 	default:
 		return nil, fmt.Errorf("zed: unsupported wire provider %q", wire.Provider)
 	}
@@ -155,6 +257,12 @@ func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID st
 		"provider":         wire.Provider,
 		"model":            wire.Model,
 		"provider_request": providerRequest,
+	}
+	var withPrompt struct {
+		PromptID string `json:"prompt_id"`
+	}
+	if err := json.Unmarshal(trimmed, &withPrompt); err == nil && withPrompt.PromptID != "" {
+		envelope["prompt_id"] = withPrompt.PromptID
 	}
 	if threadID = strings.TrimSpace(threadID); threadID != "" {
 		envelope["thread_id"] = threadID
@@ -264,67 +372,29 @@ func zedNormalizeClaudeContent(msg map[string]any) {
 }
 
 // zedResponsesProviderRequest builds the OpenAI Responses body nested in the
-// envelope: every item carries a type, and message content uses input_text.
+// envelope. It reuses buildResponsesBody — the same Chat Completions → Responses
+// transform every strict Responses upstream uses — so Zed's open_ai lane gets
+// the exact tool schema normalization (object properties default, unicode
+// pattern strip), call-id clamping, system/developer extraction into
+// `instructions`, and `store: false` that a client-side `gpt-*` tool turn needs.
+// The previous hand-rolled builder dropped all of those and was why a
+// gpt-5.6-luna tool call reached cloud.zed.dev with nameless/oversized fields
+// the Responses backend rejects.
 func zedResponsesProviderRequest(openAIBody []byte, model string) (map[string]any, error) {
-	var src map[string]any
-	if err := json.Unmarshal(openAIBody, &src); err != nil {
-		return nil, fmt.Errorf("zed: parse request body: %w", err)
+	built, _, err := buildResponsesBody(openAIBody)
+	if err != nil {
+		return nil, fmt.Errorf("zed: build responses provider request: %w", err)
 	}
-
-	items := make([]any, 0, len(zedAsSlice(src["messages"])))
-	for _, raw := range zedAsSlice(src["messages"]) {
-		msg, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		role := zedAsString(msg["role"])
-		switch role {
-		case "tool":
-			items = append(items, map[string]any{
-				"type":    "function_call_output",
-				"call_id": zedAsString(msg["tool_call_id"]),
-				"output":  zedContentText(msg["content"]),
-			})
-		case "assistant":
-			for _, tcRaw := range zedAsSlice(msg["tool_calls"]) {
-				call, isMap := tcRaw.(map[string]any)
-				if !isMap {
-					continue
-				}
-				fn, _ := call["function"].(map[string]any)
-				items = append(items, map[string]any{
-					"type":      "function_call",
-					"call_id":   zedAsString(call["id"]),
-					"name":      zedAsString(fn["name"]),
-					"arguments": zedAsString(fn["arguments"]),
-				})
-			}
-			if text := zedContentText(msg["content"]); text != "" {
-				items = append(items, zedResponsesMessage("assistant", "output_text", text))
-			}
-		default:
-			items = append(items, zedResponsesMessage(role, "input_text", zedContentText(msg["content"])))
-		}
+	var body map[string]any
+	if err := json.Unmarshal(built, &body); err != nil {
+		return nil, fmt.Errorf("zed: parse responses provider request: %w", err)
 	}
-
-	body := map[string]any{
-		"model":  model,
-		"input":  items,
-		"stream": true,
-	}
-	if maxOut := zedAsInt(src["max_completion_tokens"]); maxOut > 0 {
-		body["max_output_tokens"] = maxOut
-	} else if maxOut := zedAsInt(src["max_tokens"]); maxOut > 0 {
-		body["max_output_tokens"] = maxOut
-	}
-	if tools := zedAsSlice(src["tools"]); len(tools) > 0 {
-		body["tools"] = zedResponsesTools(tools)
-	}
-	for _, key := range []string{"temperature", "top_p"} {
-		if v, ok := src[key]; ok && v != nil {
-			body[key] = v
-		}
-	}
+	// buildResponsesBody strips the model's provider prefix for its own lane;
+	// Zed's envelope carries the exact catalogue id the client asked for.
+	body["model"] = model
+	// Zed streams even a non-streaming ask; the response is folded by
+	// zedWriteWhole when the client wants a single document.
+	body["stream"] = true
 	return body, nil
 }
 
@@ -441,76 +511,6 @@ func zedGoogleProviderRequest(openAIBody []byte, model string, apiKeyID string) 
 	return body, nil
 }
 
-// zedResponsesMessage is one Responses input message item.
-func zedResponsesMessage(role, blockType, text string) map[string]any {
-	if role == "" {
-		role = "user"
-	}
-	return map[string]any{
-		"type": "message",
-		"role": role,
-		"content": []any{
-			map[string]any{"type": blockType, "text": text},
-		},
-	}
-}
-
-// zedResponsesTools flattens chat-completions tools into the Responses shape
-// ({type:function, name, description, parameters}).
-func zedResponsesTools(tools []any) []any {
-	out := make([]any, 0, len(tools))
-	for _, raw := range tools {
-		tool, ok := raw.(map[string]any)
-		if !ok {
-			out = append(out, raw)
-			continue
-		}
-		fn, hasFn := tool["function"].(map[string]any)
-		if !hasFn {
-			out = append(out, tool)
-			continue
-		}
-		flat := map[string]any{"type": "function"}
-		for _, key := range []string{"name", "description", "parameters", "strict"} {
-			if v, ok := fn[key]; ok {
-				flat[key] = v
-			}
-		}
-		out = append(out, flat)
-	}
-	return out
-}
-
-// zedContentText flattens a chat message content value (string or block array)
-// into plain text.
-func zedContentText(raw any) string {
-	switch v := raw.(type) {
-	case nil:
-		return ""
-	case string:
-		return v
-	case []any:
-		var b strings.Builder
-		for _, block := range v {
-			blockMap, ok := block.(map[string]any)
-			if !ok {
-				continue
-			}
-			text := zedAsString(blockMap["text"])
-			if text == "" {
-				continue
-			}
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(text)
-		}
-		return b.String()
-	default:
-		return fmt.Sprint(v)
-	}
-}
-
 func zedAsString(v any) string {
 	s, _ := v.(string)
 	return s
@@ -580,6 +580,13 @@ var (
 // zedTokenCacheKey identifies one credential. The access token is hashed so
 // the raw credential never becomes a map key.
 func zedTokenCacheKey(origin string, creds providers.ZedCredentials) string {
+	sum := sha256.Sum256([]byte(creds.AccessToken))
+	return origin + "|" + creds.UserID + "|" + creds.OrganizationID + "|" + hex.EncodeToString(sum[:])
+}
+
+// zedCatalogCacheKey hashes the credential so a raw access token never becomes
+// a map key. Mirrors the token cache key's isolation across accounts/origins.
+func zedCatalogCacheKey(origin string, creds providers.ZedCredentials) string {
 	sum := sha256.Sum256([]byte(creds.AccessToken))
 	return origin + "|" + creds.UserID + "|" + creds.OrganizationID + "|" + hex.EncodeToString(sum[:])
 }
@@ -703,9 +710,13 @@ func ForwardZed(w http.ResponseWriter, req *Request) error {
 	if requested == "" {
 		requested = zedBodyModel(req.Body)
 	}
-	wire, err := ResolveZedModel(requested, nil)
-	if err != nil {
-		return proxy.UpstreamFailure(http.StatusBadRequest, err.Error())
+	origin := zedOrigin(req.Config)
+	// Upstream resolveModel() consults the account's live /models catalogue
+	// first so a model id is never guessed against the wrong provider dialect.
+	wire := resolveZedWireModel(req.Ctx, req.Client, origin, creds, requested)
+	if wire.Provider == "" {
+		return proxy.UpstreamFailure(http.StatusBadRequest,
+			fmt.Sprintf("zed: model %q is not served by Zed (unknown provider)", requested))
 	}
 
 	envelope, err := BuildZedCompletionBody(req.Body, wire, req.SessionID, req.APIKeyID)
@@ -713,20 +724,17 @@ func ForwardZed(w http.ResponseWriter, req *Request) error {
 		return proxy.UpstreamFailure(http.StatusBadRequest, err.Error())
 	}
 
-	origin := zedOrigin(req.Config)
 	token, err := zedLLMToken(req.Ctx, req.Client, origin, creds, false)
 	if err != nil {
 		return err
 	}
 	resp, err := zedPostCompletion(req, origin, creds, token, envelope)
 	if err != nil {
-		// A 401 on the model call means the cached token is dead (revoked, or
-		// expired earlier than its exp claim promised): mint once more and
-		// replay the call. proxy.DoRequest reports every non-200 as an
-		// *UpstreamError, so the status is read off the error, never off a
-		// response — and a 401 from the token exchange itself is not replayed,
-		// because a rejected account token cannot be fixed by re-minting.
-		if !zedIsUnauthorized(err) {
+		// A 401 or an expired/outdated-token header on the model call means the
+		// cached LLM token is dead (revoked, or expired earlier than its exp
+		// claim promised): mint once more and replay. A rejected account token
+		// from the exchange itself is not replayed.
+		if !zedNeedsTokenRefresh(err) {
 			return err
 		}
 		token, err = zedLLMToken(req.Ctx, req.Client, origin, creds, true)
@@ -850,11 +858,14 @@ func zedWriteWhole(w http.ResponseWriter, req *Request, wire ZedWireModel, data 
 // refresh-on-401 policy: one mint, one replay, no nested retries.
 func zedPostCompletion(req *Request, origin string, creds providers.ZedCredentials, token string, envelope []byte) (*http.Response, error) {
 	headers := map[string]string{
-		"Content-Type":  "application/json",
-		"Authorization": "Bearer " + token,
-	}
-	if req.IsStream {
-		headers["Accept"] = "text/event-stream"
+		"Content-Type":          "application/json",
+		"Accept":                "application/x-ndjson, text/event-stream, */*",
+		"Authorization":         "Bearer " + token,
+		"User-Agent":            zedUserAgent,
+		zedHeaderVersion:        zedVersion,
+		zedHeaderSupportsStatus: "true",
+		zedHeaderStreamEnded:    "true",
+		zedHeaderSupportsXAI:    "true",
 	}
 	if creds.SystemID != "" {
 		headers[providers.ZedSystemIDHeader] = creds.SystemID
@@ -869,16 +880,17 @@ func zedPostCompletion(req *Request, origin string, creds providers.ZedCredentia
 	return resp, nil
 }
 
-// zedIsUnauthorized reports whether an upstream failure is a 401, including
-// through the wrapping zedPostCompletion adds. A 401 is the only status the
-// serving lane replays, so it is tested for separately from the pass-through
-// path, which must surface every other status and body verbatim.
-func zedIsUnauthorized(err error) bool {
+// zedNeedsTokenRefresh mirrors upstream shouldRefreshZedLlmToken: the cloud
+// can mark an LLM token expired/outdated via response headers, which means a
+// fresh token must be minted and the completion replayed.
+func zedNeedsTokenRefresh(err error) bool {
 	var upstreamErr *proxy.UpstreamError
 	if !errors.As(err, &upstreamErr) {
 		return false
 	}
-	return upstreamErr.StatusCode == http.StatusUnauthorized
+	return upstreamErr.StatusCode == http.StatusUnauthorized ||
+		upstreamErr.Header.Get(zedHeaderExpiredToken) != "" ||
+		upstreamErr.Header.Get(zedHeaderOutdatedToken) != ""
 }
 
 // zedBodyModel reads the model id out of the request body when the dispatch
