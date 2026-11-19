@@ -4,6 +4,10 @@
   - New endpoints `GET /api/oauth/agy-acp/authorize` and `POST /api/oauth/agy-acp/exchange` share the Google consumer OAuth client, scopes, and callback machinery with antigravity (refactored into `writeGoogleAuthorize` / `exchangeGoogleCode`), but store their **own** `agy-acp` connection rows (`agcpy-<hash>` ids) — a login never writes or mutates an antigravity row (§3 provider isolation). Credential sharing between the providers remains the explicit per-connection `sourceConnection` reference.
   - `agy-acp` registered in `KnownOAuthConfigs` (standard Google refresher), `accessTokenOnlyProviders` (apiKey mirrors the access token), and `sensitiveProviders` (background refresh pacing), so its copied tokens refresh proactively and on reactive 401 like antigravity's.
 
+### Fixed
+
+- Every turn on a dashboard-logged-in `agy-acp` connection failed with HTTP 502 "connection carries no accessToken/refreshToken and no sourceConnection": the request path marshals `ConnectionData`, which has no `refreshToken` field, so copy mode never saw the stored token pair. `resolveACPCredentials` now falls back to the connection's stored DB row (`ownACPCredentials`), which also picks up tokens a background refresh has rotated. Regression test reproduces the exact request-path map.
+
 ### Verification
 
 - `go test ./internal/handlers/oauth/ ./internal/proxy/oauth/ ./internal/providers/` pass, including new table-driven handler tests (authorize URL shape, exchange stores an agy-acp-only row, re-login upserts, error cases).
