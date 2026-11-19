@@ -7,7 +7,6 @@
 ### Fixed
 
 - Every turn on a dashboard-logged-in `agy-acp` connection failed with HTTP 502 "connection carries no accessToken/refreshToken and no sourceConnection": the request path marshals `ConnectionData`, which has no `refreshToken` field, so copy mode never saw the stored token pair. `resolveACPCredentials` now falls back to the connection's stored DB row (`ownACPCredentials`), which also picks up tokens a background refresh has rotated. Regression test reproduces the exact request-path map.
-- Multi-account failover now works when an agy account's credentials die: agy 1.5.x reports fatal faults ("⚠ failed to construct executor…", "⚠ needs sign-in…") as ordinary `agent_message_chunk` text with `stopReason: end_turn`, which the executor forwarded as a billed HTTP 200 — the fallback loop never advanced. `RunTurn` now buffers turn-leading text that could be a lone "⚠" banner and converts it into a classified error (auth/quota/policy/generic 502, all retryable), so the account loop moves to the next connection. Real model output streams unbuffered as soon as it diverges from the banner shape. Verified live: sabotaged account 1 + healthy account 2 → response served by account 2 (`usageHistory.connectionId`).
 
 ### Verification
 
