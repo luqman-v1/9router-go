@@ -150,3 +150,44 @@ func TestChatRequestToVersionedCompatibleBaseURLLandsOnChatCompletions(t *testin
 		t.Errorf("upstream received path %q, want /api/v1/chat/completions", gotPath)
 	}
 }
+
+// A custom node's own /models feed is the authoritative source for its windows.
+// Before this, fetchCompatibleNodeModels parsed ids only (parseOpenAIStyleModelIDs),
+// so a node that declared context_length still fell to the static family guess.
+// The node feed must keep its limits, in either spelling, exactly like the
+// provider feeds — and a node that states none keeps the static resolution.
+func TestFetchCompatibleNodeModelsKeepsDeclaredWindows(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"vendor/big","context_length":1000000,"top_provider":{"max_completion_tokens":131072}},
+			{"id":"vendor/camel","contextLength":262144,"maxOutputTokens":32000},
+			{"id":"vendor/limit","limit":{"context":512000,"output":64000}},
+			{"id":"vendor/bare"}
+		]}`))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	handler := NewChatHandler(db.NewRepo(database))
+	handler.Client = upstream.Client()
+	connData := &shared.ConnectionData{APIKey: "sk-node", BaseURL: upstream.URL + "/v1"}
+
+	got := handler.fetchCompatibleNodeModels(context.Background(),
+		&models.ProviderConnection{ID: "conn-node"}, connData, "openai-compatible-chat-node")
+	if len(got) != 4 {
+		t.Fatalf("discovered %d entries, want 4: %+v", len(got), got)
+	}
+	want := []LiveModel{
+		{ID: "vendor/big", ContextLength: 1000000, MaxOutput: 131072, LimitsAuthoritative: true},
+		{ID: "vendor/camel", ContextLength: 262144, MaxOutput: 32000, LimitsAuthoritative: true},
+		{ID: "vendor/limit", ContextLength: 512000, MaxOutput: 64000, LimitsAuthoritative: true},
+		{ID: "vendor/bare"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

@@ -27,6 +27,15 @@
   resolvers, so models newer than the registry snapshot are discoverable; on
   any fetch failure the static registry remains the fallback. Cached 5 min
   per credential with singleflight, bounded like every other live resolver.
+- **Custom (openai/anthropic-compatible) nodes now keep their feed's windows.**
+  `fetchCompatibleNodeModels` parsed ids only (`parseOpenAIStyleModelIDs`), so a
+  custom endpoint that declared `context_length`/`limit.context` still fell to
+  the static family guess. It now uses the same `parseModelsFeedLiveModels` the
+  provider feeds use, marking stated limits authoritative; a node that states
+  none keeps the static resolution. The node's own baseUrl is always the source
+  (the compatible dispatch case precedes the registry-feed case), never the
+  upstream provider's catalog. Pinned by
+  `TestFetchCompatibleNodeModelsKeepsDeclaredWindows`.
 - **Free-tier models published floor windows.** Every catalogued free model
   was audited; the ones whose family pattern mis-guessed now carry their real
   per-gateway limits: OpenCode free lane `ling-3.0-flash-fin-free` (262144),
@@ -107,3 +116,21 @@
   `TestResolveLiveCatalogModelsFeed` (unit) and
   `TestNousLiveFeedPublishesProviderWindow` (integration, fake provider feed:
   `/v1/models` publishes the feed's 1000000/131072 with no import or custom row).
+- Live e2e against the real provider feeds (`9ROUTER_LIVE_TESTS=1`,
+  `TestLiveE2E_ModelsFeedWindow`): nous `qwen/qwen4-max` and `:free` resolve
+  1000000/131072 authoritative from the live `/v1/models`; opencode-zen
+  `mimo-v2.6-flash-free` resolves 200000/32000 with the operator's credential;
+  the static fallback cross-check publishes 1000000/65536. opencode-go skips
+  when no active connection is configured. Offline runs skip cleanly.
+
+### Deliberate divergence from upstream
+- Upstream `fetchCompatibleModelIds` returns ids only and
+  `LIVE_MODEL_RESOLVERS` covers a fixed provider set (kiro/qoder/github/
+  clinepass/cursor/zed/commandcode/…), deriving windows from
+  `getCapabilitiesForModel`. This port instead treats **the provider's own feed
+  as the window source** for every provider that publishes one (nous,
+  openrouter, tokenharbor, opencode zen/go, …) and for custom compatible nodes,
+  marking stated limits authoritative. The user's standing requirement is that
+  the LLM provider itself — not a static family guess — is the source of truth
+  for context windows; the static tables remain the fallback when a feed is
+  unreachable or states no limit.
