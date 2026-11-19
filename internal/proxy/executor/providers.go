@@ -1328,7 +1328,9 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 		}
 		role, _ := msgMap["role"].(string)
 
-		if role == "system" {
+		// Anthropic allows only user/assistant/system; OpenAI's newer
+		// "developer" role is the same thing as system.
+		if role == "system" || role == "developer" {
 			switch c := msgMap["content"].(type) {
 			case string:
 				if strings.TrimSpace(c) != "" {
