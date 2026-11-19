@@ -66,6 +66,13 @@ func getAntigravityRedirectURI(r *http.Request) string {
 // HandleAntigravityAuthorize returns the Google OAuth authorization URL for Antigravity.
 // GET /api/oauth/antigravity/authorize
 func (h *OAuthHandler) HandleAntigravityAuthorize(w http.ResponseWriter, r *http.Request) {
+	writeGoogleAuthorize(w, r)
+}
+
+// writeGoogleAuthorize builds the Google consumer-OAuth consent URL shared by
+// the antigravity and agy-acp logins (same OAuth client, same scopes) and
+// writes it as JSON, or redirects when redirect=true.
+func writeGoogleAuthorize(w http.ResponseWriter, r *http.Request) {
 	clientID, _, _ := getAntigravityOAuthConfig()
 	redirectURI := getAntigravityRedirectURI(r)
 
@@ -109,6 +116,36 @@ func (h *OAuthHandler) HandleAntigravityAuthorize(w http.ResponseWriter, r *http
 // and stores the Antigravity connection in the database.
 // POST /api/oauth/antigravity/exchange
 func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.Request) {
+	h.exchangeGoogleCode(w, r, googleLoginTarget{
+		provider:   "antigravity",
+		idPrefix:   "ag-",
+		namePrefix: "Antigravity",
+		projectID:  defaultAntigravityProjectID,
+	})
+}
+
+// googleLoginTarget parameterizes the shared Google consumer-OAuth login for
+// the providers that sign in with the antigravity OAuth client. Each target
+// stores its own connection rows; no provider ever writes another's row.
+type googleLoginTarget struct {
+	provider   string
+	idPrefix   string
+	namePrefix string
+	projectID  string
+}
+
+// googleTokenData is the Google token-endpoint response shared by every
+// consumer-OAuth login.
+type googleTokenData struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+	Scope        string `json:"scope"`
+	IDToken      string `json:"id_token"`
+}
+
+func (h *OAuthHandler) exchangeGoogleCode(w http.ResponseWriter, r *http.Request, target googleLoginTarget) {
 	if r.Method != http.MethodPost {
 		handlerutil.WriteJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -139,6 +176,17 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 		return
 	}
 
+	tokenData, ok := requestGoogleTokens(w, r, code, redirectURI, target.provider)
+	if !ok {
+		return
+	}
+	h.storeGoogleConnection(w, tokenData, target)
+}
+
+// requestGoogleTokens performs the authorization-code exchange against the
+// Google token endpoint. It writes the error response itself and returns
+// ok=false on any failure.
+func requestGoogleTokens(w http.ResponseWriter, r *http.Request, code, redirectURI, provider string) (*googleTokenData, bool) {
 	clientID, clientSecret, tokenURL := getAntigravityOAuthConfig()
 
 	form := url.Values{
@@ -152,7 +200,7 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	tokenReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to create token request")
-		return
+		return nil, false
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// No custom UA: the handler runs server-side against Google token
@@ -162,45 +210,40 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	client := &http.Client{Timeout: 15 * time.Second}
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
-		log.Error("oauth", "antigravity token exchange failed", "error", err)
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "antigravity token exchange failed")
-		return
+		log.Error("oauth", provider+" token exchange failed", "error", err)
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, provider+" token exchange failed")
+		return nil, false
 	}
 	defer tokenResp.Body.Close()
 
 	respBody, err := io.ReadAll(tokenResp.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to read token response")
-		return
+		return nil, false
 	}
-
 	if tokenResp.StatusCode != http.StatusOK {
 		// Never log the raw body: token responses carry access/refresh tokens.
-		log.Warn("oauth", "antigravity token exchange non-200", "status", tokenResp.StatusCode, "bytes", len(respBody))
+		log.Warn("oauth", provider+" token exchange non-200", "status", tokenResp.StatusCode, "bytes", len(respBody))
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("token exchange returned status %d", tokenResp.StatusCode))
-		return
+		return nil, false
 	}
 
-	var tokenData struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
-		Scope        string `json:"scope"`
-		IDToken      string `json:"id_token"`
-	}
-
+	var tokenData googleTokenData
 	if err := json.Unmarshal(respBody, &tokenData); err != nil {
-		log.Error("oauth", "antigravity decode token response failed", "error", err)
+		log.Error("oauth", provider+" decode token response failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to decode token response")
-		return
+		return nil, false
 	}
-
 	if tokenData.AccessToken == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "missing access_token in token response")
-		return
+		return nil, false
 	}
+	return &tokenData, true
+}
 
+// storeGoogleConnection upserts the connection row for a completed Google
+// login and writes the success response.
+func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *googleTokenData, target googleLoginTarget) {
 	email := ""
 	if tokenData.IDToken != "" {
 		email = extractEmailFromJWT(tokenData.IDToken)
@@ -208,21 +251,21 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 
 	connID := ""
 	if email != "" {
-		connID = "ag-" + shortHash(email)
+		connID = target.idPrefix + shortHash(email)
 	} else if tokenData.RefreshToken != "" {
-		connID = "ag-" + shortHash(tokenData.RefreshToken)
+		connID = target.idPrefix + shortHash(tokenData.RefreshToken)
 	} else {
-		connID = "ag-" + randomString(12)
+		connID = target.idPrefix + randomString(12)
 	}
 
-	connName := connectionDisplayName("antigravity", "", email, "Antigravity")
+	connName := connectionDisplayName(target.provider, "", email, target.namePrefix)
 
 	now := currentTimestamp()
 	dataMap := map[string]any{
 		"apiKey":      tokenData.AccessToken,
 		"accessToken": tokenData.AccessToken,
 		"tokenType":   tokenData.TokenType,
-		"projectId":   defaultAntigravityProjectID,
+		"projectId":   target.projectID,
 	}
 	if tokenData.RefreshToken != "" {
 		dataMap["refreshToken"] = tokenData.RefreshToken
@@ -271,17 +314,14 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 				connName, string(dataBytes), now, connID,
 			)
 		} else {
-			priority := 1
-			if h.Repo != nil {
-				priority = h.Repo.ResolveDefaultPriority("antigravity")
-			}
+			priority := h.Repo.ResolveDefaultPriority(target.provider)
 			_, err = h.Repo.RawDB().Exec(
-				"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, 'antigravity', 'oauth', ?, ?, 1, ?, ?, ?)",
-				connID, connName, priority, string(dataBytes), now, now,
+				"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",
+				connID, target.provider, connName, priority, string(dataBytes), now, now,
 			)
 		}
 		if err != nil {
-			log.Error("oauth", "save antigravity connection failed", "conn", connID, "error", err)
+			log.Error("oauth", "save "+target.provider+" connection failed", "conn", connID, "error", err)
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to save connection")
 			return
 		}
@@ -291,7 +331,7 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 		"success": true,
 		"connection": map[string]any{
 			"id":          connID,
-			"provider":    "antigravity",
+			"provider":    target.provider,
 			"email":       email,
 			"displayName": connName,
 		},

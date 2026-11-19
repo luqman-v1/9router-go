@@ -25,6 +25,45 @@ func TestResolveACPCredentialsCopyMode(t *testing.T) {
 	}
 }
 
+// Regression: the request path marshals ConnectionData, which has no
+// refreshToken field. A Google-login agy-acp connection stores its tokens in
+// the DB row; copy mode must read them from there instead of failing with
+// errNoACPCredentials (HTTP 502 on every turn after dashboard login).
+func TestResolveACPCredentialsFromStoredRow(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	t.Cleanup(cleanup)
+	repo := db.NewRepo(database)
+	h := &ChatHandler{Repo: repo}
+
+	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	data, _ := json.Marshal(map[string]any{
+		"accessToken":  "stored-access",
+		"refreshToken": "stored-refresh",
+		"expiresAt":    expiry,
+		"apiKey":       "stored-access",
+	})
+	if err := repo.CreateProviderConnectionFull("agcpy-own", "agy-acp", "oauth", "own", nil, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly what fallback.go hands down: ConnectionData minus refreshToken.
+	requestPath := map[string]any{"apiKey": "stored-access", "accessToken": "stored-access"}
+	access, refresh, gotExpiry, err := h.resolveACPCredentials(context.Background(), requestPath, "agcpy-own")
+	if err != nil {
+		t.Fatalf("stored-row copy mode failed: %v", err)
+	}
+	if access != "stored-access" || refresh != "stored-refresh" || gotExpiry.IsZero() {
+		t.Fatalf("stored-row copy mode returned %q/%q/%v", access, refresh, gotExpiry)
+	}
+}
+
+func TestResolveACPCredentialsNoTokensAnywhere(t *testing.T) {
+	h := &ChatHandler{}
+	_, _, _, err := h.resolveACPCredentials(context.Background(), map[string]any{"accessToken": "only-access"}, "conn-x")
+	if err == nil {
+		t.Fatal("expected error when no refresh token exists anywhere")
+	}
+}
+
 func TestResolveACPCredentialsReferenceMode(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	t.Cleanup(cleanup)

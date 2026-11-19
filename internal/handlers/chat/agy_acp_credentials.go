@@ -32,8 +32,11 @@ func (h *ChatHandler) resolveACPCredentials(ctx context.Context, connData map[st
 		}
 	}
 	if source == "" {
-		// No reference: use this connection's own copied token.
-		return localACPCredentials(connData)
+		// No reference: use this connection's own token. The request path
+		// only carries the fields ConnectionData parses (no refreshToken),
+		// so read the stored row by id — that also picks up tokens a
+		// background refresh has since rotated.
+		return h.ownACPCredentials(connData, connectionID)
 	}
 
 	if h.Repo == nil || h.Repo.RawDB() == nil {
@@ -83,6 +86,28 @@ func localACPCredentials(connData map[string]any) (string, string, time.Time, er
 	}
 	expiry, _ := time.Parse(time.RFC3339, oauth.ExpiresAt)
 	return oauth.AccessToken, oauth.RefreshToken, expiry, nil
+}
+
+// ownACPCredentials resolves the connection's own token pair. It first tries
+// the map handed down the request path, then falls back to the stored row:
+// ConnectionData drops refreshToken, so a Google-login connection would
+// otherwise always fail copy mode with errNoACPCredentials.
+func (h *ChatHandler) ownACPCredentials(connData map[string]any, connectionID string) (string, string, time.Time, error) {
+	if access, refresh, expiry, err := localACPCredentials(connData); err == nil {
+		return access, refresh, expiry, nil
+	}
+	if connectionID == "" || h.Repo == nil || h.Repo.RawDB() == nil {
+		return "", "", time.Time{}, fmt.Errorf("%w", errNoACPCredentials)
+	}
+	conn, err := h.Repo.GetProviderConnectionByID(connectionID)
+	if err != nil || conn == nil {
+		return "", "", time.Time{}, fmt.Errorf("%w", errNoACPCredentials)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(conn.Data), &stored); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("agy-acp: decode own connection data: %w", err)
+	}
+	return localACPCredentials(stored)
 }
 
 var errNoACPCredentials = fmt.Errorf("agy-acp: connection carries no accessToken/refreshToken and no sourceConnection")

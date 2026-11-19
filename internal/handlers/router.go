@@ -553,6 +553,9 @@ func mountOAuthRoutes(r interface {
 	r.Post("/api/oauth/free-pi/session/reset", oauthH.HandleFreePiSessionReset)
 	r.Get("/api/oauth/antigravity/authorize", oauthH.HandleAntigravityAuthorize)
 	r.Post("/api/oauth/antigravity/exchange", oauthH.HandleAntigravityExchange)
+	// agy-acp: same Google consumer OAuth client, its own connection rows.
+	r.Get("/api/oauth/agy-acp/authorize", oauthH.HandleAGYACPAuthorize)
+	r.Post("/api/oauth/agy-acp/exchange", oauthH.HandleAGYACPExchange)
 	r.Get("/api/oauth/cline/authorize", oauthH.HandleClineAuthorize)
 	r.Post("/api/oauth/cline/exchange", oauthH.HandleClineExchange)
 	r.Get("/api/oauth/pkce/authorize", oauthH.HandlePKCEAuthorize)

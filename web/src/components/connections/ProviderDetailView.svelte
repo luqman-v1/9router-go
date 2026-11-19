@@ -1582,12 +1582,13 @@
   }
   // Add Connection Button flow
   async function handleAddConnectionClick() {
-    if (providerId === 'antigravity') {
-      const confirmed = typeof window !== 'undefined' && localStorage.getItem('ag_risk_confirmed') === 'true'
+    if (providerId === 'antigravity' || providerId === 'agy-acp') {
+      const riskKey = providerId === 'agy-acp' ? 'agcpy_risk_confirmed' : 'ag_risk_confirmed'
+      const confirmed = typeof window !== 'undefined' && localStorage.getItem(riskKey) === 'true'
       if (!confirmed) {
         showRiskNoticeModal = true
       } else {
-        openAntigravityOAuth()
+        openGoogleConsumerOAuth()
       }
     } else if (providerId === 'freebuff') {
       startFreebuffFlow()
@@ -1623,19 +1624,24 @@
 
   function confirmRiskAndProceed() {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('ag_risk_confirmed', 'true')
+      localStorage.setItem(providerId === 'agy-acp' ? 'agcpy_risk_confirmed' : 'ag_risk_confirmed', 'true')
     }
     showRiskNoticeModal = false
-    openAntigravityOAuth()
+    openGoogleConsumerOAuth()
   }
 
-  async function openAntigravityOAuth() {
+  // antigravity and agy-acp share the Google consumer OAuth client; each
+  // exchanges into its own provider's connection rows.
+  async function openGoogleConsumerOAuth() {
     oauthError = null
     callbackInput = ''
     copiedAuthUrl = false
     try {
       const redirectUri = antigravityCallback()
-      const res = await api.getAntigravityAuthorizeUrl(redirectUri)
+      const res =
+        providerId === 'agy-acp'
+          ? await api.getAGYACPAuthorizeUrl(redirectUri)
+          : await api.getAntigravityAuthorizeUrl(redirectUri)
       oauthAuthUrl = res.authUrl || res.url || res.redirectUrl
       if (res.state) {
         rememberPending({
@@ -2388,7 +2394,7 @@
         }
         return
       }
-      if (providerId !== 'antigravity') {
+      if (providerId !== 'antigravity' && providerId !== 'agy-acp') {
         if (raw.includes('code=') || raw.includes('http')) {
           oauthError = `Direct OAuth login is not supported for ${providerName}. Paste an access token / refresh token instead.`
           return
@@ -2413,7 +2419,10 @@
         pending = null
       }
       const exchangeRedirectUri = redirectUri || pending?.redirectUri || antigravityCallback()
-      const res = await api.antigravityExchange(code, exchangeRedirectUri, pending?.state)
+      const res =
+        providerId === 'agy-acp'
+          ? await api.agyACPExchange(code, exchangeRedirectUri, pending?.state)
+          : await api.antigravityExchange(code, exchangeRedirectUri, pending?.state)
       if (res?.success === false || (res as { error?: string })?.error) {
         oauthError = (res as { error?: string })?.error || 'Authorization failed'
       } else {
@@ -3881,7 +3890,7 @@
             <span class="material-symbols-outlined text-[18px]">vpn_key</span>
             {isAuthorizingFreebuff ? 'Polling Authorization...' : 'Authorize Freebuff CLI'}
           </button>
-        {:else if providerId === 'antigravity'}
+        {:else if providerId === 'antigravity' || providerId === 'agy-acp'}
           <button
             type="button"
             onclick={handleAddConnectionClick}

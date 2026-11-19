@@ -2121,6 +2121,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ code, redirectUri, state }),
     }),
+  getAGYACPAuthorizeUrl: (redirectUri: string) =>
+    request<{ url: string; redirectUrl: string; authUrl: string; state: string; redirectUri: string }>(
+      `/api/oauth/agy-acp/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
+    ),
+  agyACPExchange: (code: string, redirectUri: string, state?: string) =>
+    request<{ success: boolean; error?: string }>('/api/oauth/agy-acp/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code, redirectUri, state }),
+    }),
   getClineAuthorizeUrl: (provider: string, redirectUri?: string) =>
     request<{ url: string; authUrl: string; state: string; codeVerifier: string; codeChallenge: string; redirectUri: string }>(
       `/api/oauth/cline/authorize?provider=${encodeURIComponent(provider)}${redirectUri ? `&redirect_uri=${encodeURIComponent(redirectUri)}` : ''}`
