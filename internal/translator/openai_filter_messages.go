@@ -338,6 +338,9 @@ func normalizeToolChoice(body map[string]any) bool {
 	case "any":
 		body["tool_choice"] = "required"
 		return true
+	case "none":
+		body["tool_choice"] = "none"
+		return true
 	case "tool", openaiBlockFunction:
 		// Flat Responses API shape: {"type": "function", "name": "search"}
 		// (or Claude-shaped {"type": "tool", "name": ...}). OpenAI Chat wants

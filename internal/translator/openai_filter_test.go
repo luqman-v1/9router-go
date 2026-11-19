@@ -202,7 +202,7 @@ func TestFilterToOpenAIFormat(t *testing.T) {
 	})
 }
 
-func TestNormalizeToolChoiceFlatFunction(t *testing.T) {
+func TestNormalizeToolChoice(t *testing.T) {
 	tests := []struct {
 		name string
 		in   map[string]any
@@ -259,6 +259,30 @@ func TestNormalizeToolChoiceFlatFunction(t *testing.T) {
 				"tool_choice": map[string]any{"type": "function", "name": ""},
 			},
 			want: map[string]any{"type": "function", "name": ""},
+		},
+		{
+			name: "none choice maps to none string",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{"type": "none"},
+			},
+			want: "none",
+		},
+		{
+			name: "any choice maps to required",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{"type": "any"},
+			},
+			want: "required",
+		},
+		{
+			name: "string choice passes through untouched",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": "required",
+			},
+			want: "required",
 		},
 	}
 
