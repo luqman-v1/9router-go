@@ -424,7 +424,7 @@ func miniMaxCodeAccountCallQuery(ctx context.Context, site miniMaxCodeSite, path
 		var fallbackErr error
 		status, out, fallbackErr = send(site.agentFallback)
 		if fallbackErr != nil && status == 0 {
-			return nil, fmt.Errorf("%s: %s couldn't be reached (%v), nor %s (%v)", what, site.agent, err, site.agentFallback, fallbackErr)
+			return nil, fmt.Errorf("%s: %s couldn't be reached (%w), nor %s (%w)", what, site.agent, err, site.agentFallback, fallbackErr)
 		}
 		err = fallbackErr
 	}
