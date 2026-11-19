@@ -1,0 +1,51 @@
+{
+  "id": "ping",
+  "label": "ping",
+  "description": "Collapse ping echo replies to the round-trip statistics a reader actually needs.",
+  "category": "cloud",
+  "priority": 72,
+  "match": {
+    "outputTypes": ["net-ping"],
+    "commands": ["^ping\\b", "^ping6\\b"],
+    "patterns": ["^PING \\S", "round-trip min/avg/max(?:/mdev)? =", "^\\d+ packets transmitted, \\d+ packets received"]
+  },
+  "rules": {
+    "stripAnsi": true,
+    "dropPatterns": [
+      "^\\s*$",
+      "^64 bytes from ",
+      "^\\d+ bytes from ",
+      "^Request timeout for icmp_seq "
+    ],
+    "includePatterns": [
+      "^PING ",
+      "round-trip min/avg/max(?:/mdev)? =",
+      "^--- .* ping statistics ---$",
+      "^\\d+ packets transmitted, \\d+ packets received",
+      "^\\d+ (?:packets )?received, \\d+% packet loss"
+    ],
+    "collapsePatterns": [],
+    "deduplicate": true,
+    "maxLines": 60,
+    "headLines": 20,
+    "tailLines": 20
+  },
+  "preserve": {
+    "errorPatterns": ["Name or service not known", "Network is unreachable", "100% packet loss"],
+    "summaryPatterns": ["round-trip min/avg/max(?:/mdev)? =", "^\\d+ packets transmitted"]
+  },
+  "tests": [
+    {
+      "name": "inline sample",
+      "command": "ping -c 3 example.com",
+      "input": "PING example.com (93.184.216.34): 56 data bytes\n64 bytes from 93.184.216.34: icmp_seq=0 ttl=56 time=11.1 ms\n64 bytes from 93.184.216.34: icmp_seq=1 ttl=56 time=11.2 ms\n64 bytes from 93.184.216.34: icmp_seq=2 ttl=56 time=11.3 ms\n\n--- example.com ping statistics ---\n3 packets transmitted, 3 packets received, 0.0% packet loss\nround-trip min/avg/max/mdev = 11.108/11.208/11.292/0.090 ms\n",
+      "expected": "PING example.com (93.184.216.34): 56 data bytes\n\n--- example.com ping statistics ---\n3 packets transmitted, 3 packets received, 0.0% packet loss\nround-trip min/avg/max/mdev = 11.108/11.208/11.292/0.090 ms\n"
+    },
+    {
+      "name": "unreachable host keeps the failure",
+      "command": "ping -c 1 nosuchhost.invalid",
+      "input": "PING nosuchhost.invalid (1.2.3.4): 56 data bytes\nRequest timeout for icmp_seq 0\n\n--- nosuchhost.invalid ping statistics ---\n1 packets transmitted, 0 packets received, 100% packet loss\n",
+      "expected": "PING nosuchhost.invalid (1.2.3.4): 56 data bytes\n\n--- nosuchhost.invalid ping statistics ---\n1 packets transmitted, 0 packets received, 100% packet loss\n"
+    }
+  ]
+}
