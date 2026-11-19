@@ -31,6 +31,11 @@
     planBulkKeys,
     type BulkKeyProblem,
   } from '../lib/bulk-keys'
+  import {
+    applyBuyerPreset,
+    BUYER_PRESETS,
+    DEFAULT_BUYER_PRESET_ID,
+  } from './keys/buyerKeyPresets'
   import { api, type APIKey, type Settings, type TunnelStatusResponse } from '../api/client'
   import { parseTokenAmount } from '../lib/tokenUnits'
   import type { ActiveTab } from '../lib/router'
@@ -209,6 +214,10 @@
   let newKeyContextLimit = $state('')
   let isSubmittingKey = $state(false)
   let newlyCreatedKey = $state<string | null>(null)
+  // The buyer preset chosen in the create dialog. Selecting one pre-fills the
+  // policy the key gets issued with; the fields stay editable afterwards in the
+  // key's policy modal, so this is a starting point rather than a lock.
+  let createKeyPreset = $state<string>(DEFAULT_BUYER_PRESET_ID)
   // Bulk-create state. The pasted block is planned (not created) on every
   // keystroke so the preview counts what will happen before anything is sent,
   // and the results are held so the download and the success dialog can show
@@ -877,6 +886,47 @@
       if (res.key) {
         newlyCreatedKey = res.key
         localStorage.setItem('9router_key', res.key)
+
+        // POST /api/keys only mints the row — it accepts no policy fields — so a
+        // buyer key is minted and then issued the policy its preset names. Both
+        // calls are awaited and a failure is surfaced, not swallowed: a key that
+        // exists but is unrestricted is worse than a failed create, because the
+        // operator hands a buyer a credential that can spend the whole account.
+        const draft = applyBuyerPreset(createKeyPreset, newKeyName, new Date())
+        try {
+          // The budget goes first, so a failure in the allowlist write leaves a
+          // capped-but-unrestricted key rather than a restricted key with no
+          // limit — the second is the larger exposure. They cannot be one
+          // request: the policy route's `access` object refuses the wildcard
+          // patterns these presets are built from, so the allowlist goes through
+          // the models route, which speaks the pattern language.
+          await api.updateApiKeyPolicy(res.id, {
+            rateLimitRpm: draft.rateLimitRpm,
+            rateLimitTpm: 0,
+            rateLimitConcurrency: 0,
+            tokenQuota: 0,
+            queueTimeoutMs: 0,
+            expiresAt: draft.expiresAt,
+            metadata: draft.metadata,
+            name: draft.name,
+            limitMicros: draft.limitMicros,
+            limitTokens: draft.limitTokens,
+            budgetPeriod: 'monthly',
+            hardCutoff: draft.hardCutoff,
+          })
+          // An empty allowlist means allow-all, so the full-access preset simply
+          // writes nothing rather than sending a pattern that denies everything.
+          if (draft.models.length > 0) {
+            await api.setApiKeyModels(res.id, draft.models)
+          }
+        } catch (err) {
+          alert(
+            `Key created, but its ${BUYER_PRESETS.find((p) => p.id === draft.presetId)?.label ?? draft.presetId} policy could not be applied: ${
+              err instanceof Error ? err.message : String(err)
+            }. Open the key's policy dialog to set the limit before sharing it.`,
+          )
+        }
+
         newKeyName = ''
         newKeyQuota = ''
         newKeyContextLimit = ''
@@ -1341,6 +1391,27 @@
       </div>
       {#if createKeyTab === 'single'}
       <form onsubmit={handleCreateKey} class="space-y-4">
+        <!-- Buyer preset. The policy fields a resold key needs already exist,
+             but as separate controls in the key's policy dialog; picking one
+             here stamps all of them at mint time. Every field stays editable
+             afterwards, so this is a starting point, not a lock. -->
+        <div class="space-y-1">
+          <label for="key-preset-input" class="block text-xs font-semibold text-text-muted">
+            Issue with
+          </label>
+          <select
+            id="key-preset-input"
+            bind:value={createKeyPreset}
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm text-text-main focus:outline-none focus:border-brand-500"
+          >
+            {#each BUYER_PRESETS as preset (preset.id)}
+              <option value={preset.id}>{preset.label}</option>
+            {/each}
+          </select>
+          <p class="text-[11px] text-text-subtle">
+            {BUYER_PRESETS.find((p) => p.id === createKeyPreset)?.description ?? ''}
+          </p>
+        </div>
         <div class="space-y-1">
           <label for="key-name-input" class="block text-xs font-semibold text-text-muted">
             Key Name
