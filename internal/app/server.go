@@ -16,7 +16,9 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/handlers/dashboard"
 	"9router/proxy/internal/headroom"
+	"9router/proxy/internal/minimaxcheckin"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
@@ -119,6 +121,8 @@ func ProvideServer(p ServerParams) *http.Server {
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
 			// Claim Qoder daily credits on boot and every 30 minutes.
 			startQoderCheckin(shutdown.Context(), p.Repo, config.ResolveDataDir())
+			// Claim MiniMax Code daily check-in credits on the same cadence.
+			startMiniMaxCheckin(shutdown.Context(), p.Repo, config.ResolveDataDir())
 			db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
 			// The Gemini Web session cookie is renewed by the site every few
 			// minutes, and the renewed value is what keeps a signed-in
@@ -277,6 +281,26 @@ func startQoderCheckin(ctx context.Context, repo *db.Repo, dataDir string) {
 		return
 	}
 	loop := qodercheckin.NewLoop(checker, qodercheckin.ConfigFromRepo(repo), qodercheckin.RepoAccounts(repo))
+	go loop.Run(ctx)
+}
+
+// startMiniMaxCheckin claims MiniMax Code's daily check-in credits on a
+// 30-minute loop. The setting is read on every tick, so toggling minimaxCheckin
+// in the dashboard takes effect without a restart. The signed account call and
+// credential refresh live in the dashboard handler; this wires its checker into
+// the background loop. Credentials come from the stored MiniMax Code OAuth
+// connections and never leave this process except to that site's account host.
+func startMiniMaxCheckin(ctx context.Context, repo *db.Repo, dataDir string) {
+	if repo == nil {
+		return
+	}
+	ledger, err := minimaxcheckin.NewLedger(filepath.Join(dataDir, "minimax-checkin.json"))
+	if err != nil {
+		log.Printf("[minimax-checkin] init failed: %v", err)
+		return
+	}
+	checker := &dashboard.DashboardHandler{Repo: repo}
+	loop := minimaxcheckin.NewLoop(checker, minimaxcheckin.ConfigFromRepo(repo), minimaxcheckin.RepoAccounts(repo), ledger)
 	go loop.Run(ctx)
 }
 

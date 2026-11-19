@@ -12,6 +12,7 @@
     type CodexResetCredit,
     type ConnectionUsageResponse,
     type GLMResetCard,
+    type MiniMaxCheckinResult,
     type ProviderConnection,
   } from '../api/client'
   import {
@@ -100,6 +101,9 @@
   let quotaData = $state<Record<string, QuotaEntry>>({})
   let quotaLoading = $state<Record<string, boolean>>({})
   let quotaErrors = $state<Record<string, string>>({})
+  // MiniMax Code daily check-in: last outcome per account + per-row busy flag.
+  let minimaxCheckins = $state<Record<string, MiniMaxCheckinResult>>({})
+  let minimaxCheckinBusy = $state<Record<string, boolean>>({})
   let autoRefresh = $state(true)
   let hasHydratedAutoRefresh = $state(false)
   let lastUpdated = $state<Date | null>(null)
@@ -716,6 +720,44 @@
     lastUpdated = new Date()
   }
 
+  // MiniMax Code daily check-in (magpie's /checkin). The background loop claims
+  // every 30 minutes when enabled; this reads the last outcome and lets the
+  // operator claim one account right away.
+  async function loadMiniMaxCheckins(): Promise<void> {
+    try {
+      const res = await api.getMiniMaxCheckins()
+      minimaxCheckins = res.checkins || {}
+    } catch {
+      // The ledger is best-effort; a missing file just means no outcome yet.
+    }
+  }
+
+  async function checkInMiniMaxNow(conn: ProviderConnection): Promise<void> {
+    if (minimaxCheckinBusy[conn.id]) return
+    minimaxCheckinBusy = { ...minimaxCheckinBusy, [conn.id]: true }
+    try {
+      const result = await api.miniMaxCheckinNow(conn.id)
+      minimaxCheckins = { ...minimaxCheckins, [conn.id]: result }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      minimaxCheckins = {
+        ...minimaxCheckins,
+        [conn.id]: {
+          outcome: 'failed',
+          credit: 0,
+          streak: 0,
+          message,
+          provider: conn.provider,
+          account: conn.name || conn.email || conn.id,
+          accountId: conn.id,
+          checkedAt: new Date().toISOString(),
+        },
+      }
+    } finally {
+      minimaxCheckinBusy = { ...minimaxCheckinBusy, [conn.id]: false }
+    }
+  }
+
   async function refreshAll(force = false): Promise<void> {
     if (refreshingAll) return
     refreshingAll = true
@@ -1029,6 +1071,7 @@
       connectionsLoading = false
       initialLoadDone = true
       await fetchQuotasFor(visibleConnections, visibleConnections)
+      void loadMiniMaxCheckins()
     })()
 
     // Pause auto-refresh when tab hidden (Page Visibility API)
@@ -1452,6 +1495,35 @@
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
                     <span>{resetCardCount}</span>
+                  </button>
+                {/if}
+
+                {#if (conn.provider === 'minimax-code' || conn.provider === 'minimax-code-global') && conn.authType === 'oauth'}
+                  {@const ci = minimaxCheckins[conn.id]}
+                  {@const ciBusy = minimaxCheckinBusy[conn.id] === true}
+                  {@const ciLabel = ci
+                    ? ci.outcome === 'claimed' || ci.outcome === 'done'
+                      ? `+${ci.credit}`
+                      : ci.outcome
+                    : 'Check in'}
+                  <button
+                    type="button"
+                    disabled={isLoading || rowBusy || ciBusy}
+                    onclick={() => checkInMiniMaxNow(conn)}
+                    aria-label="MiniMax Code daily check-in"
+                    title={ci
+                      ? `Daily check-in: ${ci.outcome}${ci.streak ? `, streak ${ci.streak}` : ''}${ci.message ? ` — ${ci.message}` : ''}`
+                      : "Claim today's MiniMax Code check-in"}
+                    class="flex h-11 sm:h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {ci && (ci.outcome === 'claimed' || ci.outcome === 'done')
+                      ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10'
+                      : ci && ci.outcome === 'failed'
+                        ? 'border-red-500/30 bg-red-500/5 text-red-600 dark:text-red-400'
+                        : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[15px] {ciBusy ? 'animate-spin' : ''}">
+                      {ciBusy ? 'progress_activity' : 'event_available'}
+                    </span>
+                    <span>{ciLabel}</span>
                   </button>
                 {/if}
 
