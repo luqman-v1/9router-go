@@ -146,6 +146,16 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
   - Never add artificial `else if (providerId === '...')` blocks in `ProviderDetailView.svelte` to inject models from one provider into another.
   - Buttons like `Import from /models` must only appear for providers that genuinely support dynamic catalog discovery upstream (`cline`, `clinepass`, `qoder`, `qoder-cn`).
 
+### E. Provider Add/Update: Capability & Context-Window Parity Gate (STRICTLY MANDATORY)
+Whenever you **add a provider, add/update a model, or touch routing limits**, you MUST verify the resolved capability and context window against upstream **before** declaring it done. A model that falls to the substring floor (`128000/4096`, `131072/8192`) while a real window exists upstream is a regression, even when every test passes. This rule exists because that exact class shipped `nous/qwen/qwen4-max` at 131k instead of 1M, and ~120 more entries sat on the floor until a full-catalog sweep found them.
+
+1. **Check the resolved value, not the table entry.** Call `providers.GetCapabilitiesDetailForModel(providerID, model)` (and `GetCapabilitiesForModel`) and confirm `ContextWindow`/`MaxOutput` match the source. The resolution precedence is: custom caps → `providerTokenLimits` → `providerCapabilities` → canonical static → `GetCatalogLimits` (models.dev) → pattern/exact caps → `GetModelTokenLimits` (substring) → floor. A row can exist in one table and still lose to an earlier, window-less entry — verify the *effective* result.
+2. **Source of truth for the window is the provider's own feed first.** Where the provider publishes `/v1/models` (or a `modelsFetcher`), that feed's `context_length`/`contextLength`/`limit.context` is authoritative; the live-feed resolver (`internal/handlers/chat/live_catalog_modelsfeed.go`) must read it. Static tables are the accurate *fallback* when the feed is unreachable — not the primary source. Cross-check models.dev per-gateway entries and the upstream merged tables (`open-sse/providers/capabilities.js`, `providerModels.js`) for the static fallback. **Custom nodes included:** an `openai-compatible-*`/`anthropic-compatible-*` connection fetches its *own* configured `baseUrl` feed (`fetchCompatibleNodeModels`, same parser), never the registry provider's catalog — the compatible dispatch case precedes the registry-feed case, and the node's stated limits outrank the static family guess.
+3. **Sync limits across every lane the provider serves.** A model reachable through free/paid/zen/go/reseller lanes (e.g. `opencode`/`opencode-zen`/`opencode-go`, `ag`/`antigravity`) must resolve the same window on each lane. Pin only `ContextWindow`/`MaxOutput` per lane; leave `Reasoning`/`ThinkingFormat` on the upstream-synced resolution so the `thinking_levels.json` fixture (1829 pairs) stays green. Do not force a window onto a deliberate divergence (grok probe, fable adaptive, gemini-web, EOL rows).
+4. **Full sweep, not spot checks.** For any data-correctness change to limits/capabilities, sweep the whole published catalog (`ProviderModels` × `GetCapabilitiesDetailForModel`), not just the provider you were asked about. Classify every floor hit: non-LLM (window N/A), router/web mode, floor-is-the-true-window, real bug with a source, or genuinely unpublished. Fix the ones with a source; never invent a number for the unpublished ones.
+5. **Pin it with a regression test.** Add the model to `internal/providers/catalog_sweep_test.go` (`TestCatalogSweepNoFloorWhereSourceExists`) or a focused table-driven test asserting the exact window. A capability/limit fix without a test that fails on the floor value is not done.
+6. **Catalog reader sanity.** If the model id carries a vendor namespace or `:suffix` (`hf:openai/gpt-oss-120b`, `meta-llama/...:free`), confirm `GetCatalogLimits` resolves it via `catalogBaseID` and that the provider has its models.dev alias in `ProviderAliases` (`together→togetherai`, `github→github-copilot`, `kilo-gateway→kilo`, `codex→openai`). A missing alias silently drops the whole provider's catalog to the floor.
+
 ---
 
 ## 4. Golang Engineering & Optimization Principles
@@ -548,6 +558,10 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
    - Frontend: Convert React logic into Svelte 5 runes (`$state`, `$derived`, `$effect`, `bind:value`).
 4. **Implement & Test**:
    - Backend: Write code in `internal/...` and unit tests in `*_test.go` (table-driven tests using `testing.T`).
+   - **Provider/model add or update**: run the §3.E capability & context-window
+     parity gate — verify the resolved `ContextWindow`/`MaxOutput` against the
+     provider's feed / models.dev / upstream tables, sweep the catalog, and pin a
+     regression test. A floor value where a real window exists is not done.
    - Frontend: Write/update components in `web/src/`, verify `cd web && bun run build`, **and** run `make vet-svelte`.
      `tsc -b` cannot read `.svelte` files, so a Svelte script block calling a function it never imported compiles, lints and bundles clean, then throws a `ReferenceError` the first time a user clicks it (issue #130). `make vet-svelte` is the only gate that sees that class of bug.
 5. **Verify**:

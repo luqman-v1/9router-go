@@ -278,12 +278,13 @@ func TestEnsureClaudeMessagesFor_UsesLaneProvider(t *testing.T) {
 }
 
 // TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive: Zed's Anthropic lane
-// serves claude-haiku-5-5 with adaptive thinking. The global *claude*haiku*
-// pattern emits the budget shape (thinking.type.enabled + budget_tokens),
-// which Zed rejects with 400 — the exact error this fix ships against. The
-// "zed" lane id must resolve claude-adaptive, while the same id under
-// "anthropic" keeps the budget shape other providers expect. Mirrors upstream
-// open-sse/providers/capabilities.js PROVIDER_CAPABILITIES override semantics
+// serves claude-haiku-5-5 with adaptive thinking. The budget shape
+// (thinking.type.enabled + budget_tokens) is rejected with 400 — the exact
+// error this fix ships against. Upstream 8aef7480 later added the GLOBAL
+// MODEL_CAPABILITIES entry for this id (adaptive-only on every lane; the
+// budget pattern would 400 on the Claude API itself), so the zed pin and the
+// anthropic lane now agree on claude-adaptive. The wire assertions keep both
+// lanes honest. Mirrors upstream open-sse/providers/capabilities.js
 // (see tests/unit/opencode-go-claude-haiku-55-thinking.test.js).
 func TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive(t *testing.T) {
 	model := "claude-haiku-5-5"
@@ -292,11 +293,8 @@ func TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive(t *testing.T) {
 		t.Fatalf("zed capability ThinkingFormat = %q, want claude-adaptive", zedCaps.ThinkingFormat)
 	}
 	otherCaps := providers.GetCapabilitiesForModel("anthropic", model)
-	if otherCaps.ThinkingFormat == "claude-adaptive" {
-		t.Fatalf("anthropic capability ThinkingFormat = %q; the override must not leak past the zed lane", otherCaps.ThinkingFormat)
-	}
-	if otherCaps.ThinkingFormat == "" {
-		t.Fatalf("anthropic capability ThinkingFormat is empty, want a budget shape for the same id")
+	if otherCaps.ThinkingFormat != "claude-adaptive" {
+		t.Fatalf("anthropic capability ThinkingFormat = %q, want claude-adaptive (upstream global haiku-5-5 entry)", otherCaps.ThinkingFormat)
 	}
 
 	out := EnsureClaudeMessagesFor([]byte(`{"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), "zed", model)
@@ -316,19 +314,19 @@ func TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive(t *testing.T) {
 		t.Errorf("zed output_config.effort missing, want the effort depth (%s)", out)
 	}
 
-	// The same id on another lane must keep its own thinking shape: Zed's
-	// override must not leak into the shared Anthropic conversion.
+	// The anthropic lane resolves the same global entry: adaptive there too,
+	// and never the budget shape the model rejects.
 	otherOut := EnsureClaudeMessagesFor([]byte(`{"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), "anthropic", model)
 	var other map[string]any
 	if err := json.Unmarshal(otherOut, &other); err != nil {
 		t.Fatal(err)
 	}
 	oth, _ := other["thinking"].(map[string]any)
-	if oth["type"] == "adaptive" {
-		t.Errorf("anthropic thinking.type = %v, want the budget shape (%s)", oth["type"], otherOut)
+	if oth["type"] != "adaptive" {
+		t.Errorf("anthropic thinking.type = %v, want adaptive (%s)", oth["type"], otherOut)
 	}
-	if _, hasBudget := oth["budget_tokens"]; !hasBudget {
-		t.Errorf("anthropic thinking lacks budget_tokens; the override leaked (%s)", otherOut)
+	if _, hasBudget := oth["budget_tokens"]; hasBudget {
+		t.Errorf("anthropic thinking carries budget_tokens = %v; adaptive must have none (%s)", oth["budget_tokens"], otherOut)
 	}
 }
 

@@ -2915,14 +2915,24 @@
             : undefined
         // An endpoint that reports its own limits is the authoritative source;
         // saving them means /v1/models keeps publishing them after the row
-        // outlives this import.
+        // outlives this import. OpenRouter-style feeds spell them snake_case
+        // (context_length / max_completion_tokens); normalized catalogues
+        // (nous, qoder, zed) spell them camelCase (contextLength /
+        // maxOutputTokens) — reading only the first shape dropped the 1M
+        // window nous/qwen4-max declares and published the 131k name guess.
         const declaredCtxLen =
-          typeof m === 'object' && m !== null && 'context_length' in m
-            ? Number(m.context_length) || 0
+          typeof m === 'object' && m !== null
+            ? Number(
+                ('context_length' in m ? m.context_length : undefined) ??
+                  ('contextLength' in m ? m.contextLength : undefined),
+              ) || 0
             : 0
         const declaredMaxOut =
-          typeof m === 'object' && m !== null && 'max_completion_tokens' in m
-            ? Number(m.max_completion_tokens) || 0
+          typeof m === 'object' && m !== null
+            ? Number(
+                ('max_completion_tokens' in m ? m.max_completion_tokens : undefined) ??
+                  ('maxOutputTokens' in m ? m.maxOutputTokens : undefined),
+              ) || 0
             : 0
         pending.push({
           id: modelId,

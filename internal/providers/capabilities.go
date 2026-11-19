@@ -238,15 +238,22 @@ var DefaultCapabilities = Capabilities{
 }
 
 var modelCapabilities = map[string]Capabilities{
-	"claude-opus-5":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-5-thinking":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-5-agentic":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-5-thinking-agentic": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	"claude-opus-5":                  {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-thinking":         {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-agentic":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-thinking-agentic": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	// Opus 5.5 — experimental preview on Kiro (1M context, 2x credits).
-	"claude-opus-5.5":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-5.5-thinking":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-5.5-agentic":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-5.5-thinking-agentic": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	"claude-opus-5.5":                  {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5.5-thinking":         {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5.5-agentic":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5.5-thinking-agentic": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	// Haiku 5.5 is adaptive-only like the rest of the 5.x line (upstream
+	// MODEL_CAPABILITIES): the *claude*haiku* budget pattern would 400 on
+	// thinking.type.enabled.
+	"claude-haiku-5-5": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	// Sonnet 5.5 dotted id (Kiro preview / GitHub Copilot / Token Harbor),
+	// same model as the dashed rows below.
+	"claude-sonnet-5.5": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	// Opus 5.5 on Antigravity (upstream v0.5.99, a07ed95b): all five
 	// effort spellings, 1M window / 128K output. thinkingCanDisable:false is
 	// representable here — without it CanDisableThinking defaults to true and
@@ -265,16 +272,16 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-opus-5-5-high":     {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-opus-5-5-medium":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-opus-5-5-low":      {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4.6":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4.7":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4-7":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4.8":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4-6":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4-8":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4.8-thinking": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-opus-4-8-thinking": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-sonnet-4.6":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-sonnet-4-6":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	"claude-opus-4.6":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.7":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-7":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.8":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-6":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-8":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.8-thinking": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-8-thinking": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-4.6":        {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-4-6":        {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	// Sonnet 5.5 on Antigravity (upstream v0.5.99, a07ed95b): the bare id
 	// already had a row, but only the base spelling — the four effort
 	// variants fell through to the *claude*sonnet* pattern and lost the 1M
@@ -296,10 +303,10 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-sonnet-5-5-high":           {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-sonnet-5-5-medium":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-sonnet-5-5-low":            {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-sonnet-5":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-sonnet-5-thinking":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-sonnet-5-agentic":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-sonnet-5-thinking-agentic": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	"claude-sonnet-5":                  {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-thinking":         {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-agentic":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-thinking-agentic": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"gpt-image-1":                      {ImageOutput: true},
 	// Agnes AI (apihub.agnes-ai.com). Both ids take text AND image URLs, so
 	// without these rows every Agnes request resolved through
@@ -322,14 +329,14 @@ var modelCapabilities = map[string]Capabilities{
 	// answers 400 code 1210 "Invalid API parameter". It looked intermittent
 	// because only some turns ask.
 
-	"glm-5.3-flash": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false)},
+	"glm-5.3-flash": {Vision: true, VideoInput: true, PDF: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
 	// claude-fable-5 (no -1 suffix) is adaptive-only like fable-5-1; upstream
 	// capabilities.js only matches it through *claude*fable* -> claude-budget,
 	// which produced thinking{type:"enabled"} and a 400 on the real API.
-	"claude-fable-5":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	"claude-fable-5":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-fable-5-1": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-fable-5-2": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
-	"glm-5.2":          {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false)},
+	"glm-5.2":          {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
 	// Upstream b6a9ca43: the exact glm-5.2 entry shadows the *glm-5.2*
 	// pattern completely, so it must repeat the pattern's
 	// ThinkingEffortSupported or reasoning_effort is dropped for GLM-5.2
@@ -341,22 +348,27 @@ var modelCapabilities = map[string]Capabilities{
 	// probed live on /inference/v1 and /zen/v1). Global like upstream: no
 	// other provider serves this id.
 	"glm-5.3-flash-free":           {Vision: true, VideoInput: true, PDF: true, Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
-	"glm-4.6v":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
-	"glm-4.5v":                     {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
-	"deepseek-v4-flash-vision-exp": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+	"glm-4.6v":                     {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ContextWindow: 128000, MaxOutput: 32768},
+	"glm-4.5v":                     {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ContextWindow: 64000, MaxOutput: 16384},
+	"deepseek-v4-flash-vision-exp": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ContextWindow: 1000000, MaxOutput: 384000},
 	"sensenova-6.8-flash":          {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 	"sensenova-6.8-flash-lite":     {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 	"deepseek-v4-vision":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true},
-	"deepseek-v4.1-flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+	"deepseek-v4.1-flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ContextWindow: 1000000, MaxOutput: 384000},
 	// Some gateways publish this model under the hyphenated id (dash instead
 	// of dot); without the row it fell through to the text-only `*deepseek-v4*`
 	// pattern and lost its vision and 1M window.
-	"deepseek-v4-1-flash":             {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
-	"deepseek-flash":                  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
-	"muse-spark-1.2-contributor":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
-	"muse-spark-1.3-contributor":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
-	"muse-spark-1.2-contributor-free": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
-	"muse-spark-1.3-contributor-free": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
+	"deepseek-v4-1-flash": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ContextWindow: 1000000, MaxOutput: 384000},
+	"deepseek-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ContextWindow: 128000, MaxOutput: 64000},
+	// Muse Spark contributor ids carry the same 1M window as their -free
+	// siblings (models.dev meta/muse-spark-1.x-contributor); without it the
+	// muse lane fell to the 128k floor.
+	"muse-spark-1.2-contributor":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"muse-spark-1.3-contributor":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"muse-spark-1.2-contributor-free": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"muse-spark-1.3-contributor-free": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	// OpenCode Free Union Alpha — multimodal, 262K context, 131K output.
+	"union-alpha": {Vision: true, Tools: true, ContextWindow: 262144, MaxOutput: 131072},
 	// OpenCode Free ids newer than the tables above (upstream #2690): without
 	// a row they fall through to text-only defaults and the client's
 	// reasoning_effort is stripped before it reaches the upstream. Modality
@@ -372,15 +384,15 @@ var modelCapabilities = map[string]Capabilities{
 	"north-mini-code-free":      {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 256000, MaxOutput: 64000},
 	"ring-2.6-1t-free":          {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 262000, MaxOutput: 66000},
 	"x-preview-f-free":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
-	"vision-model":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
-	"coder-model":               {Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
-	"kimi-k3":                   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"vision-model":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
+	"coder-model":               {Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
+	"kimi-k3":                   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
 	"kimi-k3.1-pro":             {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
-	"kimi-for-coding":           {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-for-coding-highspeed": {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-k2.7-code":            {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-k2.7-code-highspeed":  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"kimi-for-coding":           {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"kimi-for-coding-highspeed": {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"kimi-k2.7-code":            {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"kimi-k2.7-code-highspeed":  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
 }
 
 // codexExtendedContextWindow is the context window the codex registry
@@ -457,23 +469,53 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		// (upstream #5097); pin the published window so clients compact instead
 		// of hard-failing mid-session.
 		"deepseek-v4.1-flash-free": {Vision: true, Reasoning: true, ThinkingFormat: "deepseek", ContextWindow: 330000, MaxOutput: 128000},
+		// Free ids the family patterns mis-guess: models.dev's opencode entry
+		// is the per-gateway source (the free lane truncates differently from
+		// the vendor API). Without these rows ling/nemotron fell to the
+		// *ling-*/*nemotron* 128k floor.
+		"ling-3.0-flash-fin-free":     {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 32768},
+		"nemotron-3-ultra-free":       {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 128000},
+		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 262144},
+		// hy4 free ids: the provider's own zen feed (limit.context/output,
+		// probed live) and models.dev's opencode entry both file 1M/65536.
+		// Without a row hy4-flash-free fell to the 128k floor (no *hy4*
+		// pattern exists). Window pinned only; thinking stays on the family
+		// resolution (the fixture pins it).
+		"hy4-flash-free": {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 	},
 	"nvidia": {
-		"minimaxai/minimax-m2.7":        {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
-		"minimaxai/minimax-m3":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
-		"z-ai/glm-5.2":                  {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"deepseek-ai/deepseek-v4-pro":   {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"deepseek-ai/deepseek-v4-flash": {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"nvidia/nemotron-3.5-bolt-e4b":                  {Tools: true, ContextWindow: 128000, MaxOutput: 8192},
+		"nvidia/nemotron-3.5-lightning-30b-a3b":         {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 8192},
+		"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 8192},
+		"nvidia/nemotron-3-ultra-550b-a55b":             {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 8192},
+		"poolside/laguna-xs-2.1":                        {Tools: true, ContextWindow: 200000, MaxOutput: 32000},
+		"meta/llama-guard-4-12b":                        {ContextWindow: 128000, MaxOutput: 4096},
+		"nvidia/riva-translate-4b-instruct-v2":          {ContextWindow: 128000, MaxOutput: 4096},
+		"meta/llama-3.3-70b-instruct":                   {Tools: true, ContextWindow: 128000, MaxOutput: 4096},
+		"minimaxai/minimax-m2.7":                        {Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 131072},
+		"minimaxai/minimax-m3":                          {Vision: true, Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 512000, MaxOutput: 131072},
+		"z-ai/glm-5.2":                                  {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 128000},
+		"deepseek-ai/deepseek-v4-pro":                   {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 65536},
+		"deepseek-ai/deepseek-v4-flash":                 {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 65536},
+		// Free-tier ids the family patterns mis-guess: gemma-4 carries a 256k
+		// window on NIM (models.dev), gpt-oss-120b matches the sibling 20b's
+		// 131072/131072 declaration.
+		"google/gemma-4-31b-it": {Vision: true, Reasoning: true, Tools: true, ContextWindow: 256000, MaxOutput: 16384},
+		"openai/gpt-oss-120b":   {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 131072, MaxOutput: 131072},
 	},
 	"codex": {
 		// Codex OAuth reports its own context windows (open-sse/providers/
 		// capabilities.js), which differ from both the OpenAI API's and the
 		// sibling GPT-5.6 models' — Sol is wider than Terra/Luna, and the [1m]
 		// variants are wider again.
-		"gpt-6-astra":            codexGpt56Caps(272000),
-		"gpt-6-sol":              codexGpt56Caps(272000),
-		"gpt-6-luna":             codexGpt56Caps(272000),
-		"gpt-6.1-sol":            codexGpt56Caps(272000),
+		"gpt-6-astra": codexGpt56Caps(272000),
+		"gpt-6-sol":   codexGpt56Caps(272000),
+		"gpt-6-luna":  codexGpt56Caps(272000),
+		"gpt-6.1-sol": codexGpt56Caps(272000),
+		// codex-rs/models-manager/models.json: gpt-6.1-terra carries a 500k
+		// window on Codex (the API model is 1.05M; Codex caps the default
+		// window like its siblings).
+		"gpt-6.1-terra":          codexGpt56Caps(500000),
 		"gpt-6-astra[1m]":        codexGpt56Caps(codexExtendedContextWindow),
 		"gpt-6-sol[1m]":          codexGpt56Caps(codexExtendedContextWindow),
 		"gpt-6-luna[1m]":         codexGpt56Caps(codexExtendedContextWindow),
@@ -534,23 +576,23 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"deepseek-v4-pro":     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true), ContextWindow: 1000000, MaxOutput: 393216},
 		"deepseek-v4.1-flash": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true), ContextWindow: 1000000, MaxOutput: 393216},
 		"deepseek-v4-flash":   {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 50000},
-		"deepseek-v3-2-volc":  {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
+		"deepseek-v3-2-volc":  {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 96000, MaxOutput: 32000},
 	},
 	"hcnsec": {
 		"auto":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"DeepSeek-V4-Flash":        {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"DeepSeek-V4-Pro":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"DeepSeek-V4.1-Flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4-Flash":        {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 384000},
+		"DeepSeek-V4-Pro":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 384000},
+		"DeepSeek-V4.1-Flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 128000},
 		"glm-5.3":                  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 		"glm-5.3-flash":            {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
-		"MiMo-V2.6-Flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"MiMo-V2.6-Flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
 		"MiniCPM-V-4.7-35B-A3B":    {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
-		"MiniMax-M3.1-Flash":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"MiniMax-M3.1-Flash":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 		"Qwen3-Embedding-8B":       {},
 		"Qwen3.8-27B":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 65536},
 		"Qwen3.8-Flash-Next":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
-		"sensenova-6.8-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"sensenova-6.8-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"sensenova-6.8-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+		"sensenova-6.8-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 		"sensenova-u1.5-lite":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 		"step-5-preview":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 64000},
 		"stepaudio-2.5-asr":        {},
@@ -559,15 +601,16 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"stepaudio-2.5-tts":        {},
 	},
 	"poolside": {
-		"laguna-s-2.1":  {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"laguna-xs-2.1": {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"laguna-s-2.1":  {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 32000},
+		"laguna-xs-2.1": {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 32000},
 	},
 	// sensenova-intl serves the same OpenAI wire as the China lane; the 6.8 pair
 	// mirrors the sensenova rows above and u1.5-lite is the image-gen id served
 	// through the image lane (upstream registry/sensenova-intl.js, 14b27dc7).
 	"sensenova-intl": {
-		"sensenova-6.8-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-		"sensenova-6.8-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"sensenova-6.8-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
+		"sensenova-6.8-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
+		"sensenova-6.7-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
 		"sensenova-u1.5-lite":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 	},
 	// Devin CLI's registry declares 200k for these GPT variants; the generic
@@ -681,6 +724,7 @@ func init() {
 	kiroGpt56 := Capabilities{
 		Vision: true, Reasoning: true, Search: true, Tools: true,
 		ThinkingFormat: "openai", ThinkingCanDisable: new(true),
+		ContextWindow: 272000, MaxOutput: 128000,
 	}
 	providerCapabilities["kiro"] = map[string]Capabilities{
 		"gpt-5.6-sol":                    kiroGpt56,
@@ -698,7 +742,7 @@ func init() {
 	}
 
 	providerCapabilities["ollama"] = map[string]Capabilities{
-		"deepseek-v4.1-flash:cloud": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+		"deepseek-v4.1-flash:cloud": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ContextWindow: 1000000, MaxOutput: 384000},
 	}
 
 	// gemini-web overrides the generic `*gemini-3*` pattern row. The web surface
@@ -745,6 +789,7 @@ func init() {
 		"glm-5.3-flash": {
 			Vision: true, VideoInput: true, PDF: true, Reasoning: true, Tools: true,
 			ThinkingFormat: "openai", ThinkingCanDisable: new(false),
+			ContextWindow: 1000000, MaxOutput: 131072,
 		},
 		// OpenCode Go's claude-haiku-5-5 rejects `thinking.type.enabled` — the shape
 		// the global *claude*haiku* pattern sends — with 400: `"thinking.type.enabled"
@@ -756,6 +801,31 @@ func init() {
 		// be stated here too. Port of upstream decolua/9router
 		// open-sse/providers/capabilities.js (opencode-go pin, 8aef7480).
 		"claude-haiku-5-5": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+		// Per-gateway windows the family patterns mis-guess, pinned to the
+		// provider's own go feed (limit.context/output, probed live) — the same
+		// numbers models.dev's opencode-go entry files. Only the window is
+		// pinned here; maxOutput and thinking shape stay on the upstream-synced
+		// family resolution (the fixture pins those), and the live feed supplies
+		// the gateway's exact output cap when a connection exists.
+		"hy4-preview":                {Tools: true, ContextWindow: 1024000},
+		"hy4":                        {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
+		"hy4-flash-free":             {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
+		"hy3":                        {Reasoning: true, Tools: true, ThinkingFormat: "hunyuan", ContextWindow: 256000},
+		"muse-spark-1.2-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+		"muse-spark-1.3-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+		"beam-free":                  {Tools: true, ContextWindow: 1048576},
+	}
+
+	// OpenCode Zen serves the same free ids as the free lane on the fast PAYG
+	// lane; the family patterns mis-guess ling/nemotron there too. Only the
+	// window is pinned — the thinking shape stays on the upstream pattern
+	// resolution (the fixture pins it), and the live zen feed supplies the
+	// gateway's exact numbers when a connection exists.
+	providerCapabilities["opencode-zen"] = map[string]Capabilities{
+		"ling-3.0-flash-fin-free":     {Reasoning: true, Tools: true, ContextWindow: 262144},
+		"nemotron-3-ultra-free":       {Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ContextWindow: 262144},
+		"hy4-flash-free":              {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 	}
 
 	providerCapabilities["nous"] = map[string]Capabilities{
@@ -799,7 +869,20 @@ func init() {
 	// Kimi K2.6 uses the kimi thinking level set (levelMax) per the fixture.
 	providerCapabilities["cloudflare-ai"] = map[string]Capabilities{
 		"@cf/mistralai/mistral-small-3.1-24b-instruct": {Vision: true, Tools: true, ThinkingFormat: "openai"},
-		"@cf/moonshotai/kimi-k2.6":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi"},
+		"@cf/moonshotai/kimi-k2.6":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ContextWindow: 262144, MaxOutput: 256000},
+		// Workers AI truncates well below the vendor API window; models.dev's
+		// cloudflare-workers-ai entry carries the per-gateway figures. Without
+		// them the family patterns published the vendor window (1M for a 32k
+		// qwen-coder endpoint) or the 128k floor.
+		// Thinking shapes follow upstream's pattern resolution (the fixture pins
+		// them): *qwen*coder* and the generic *qwen* row give the qwen format,
+		// and deepseek-r1-distill matches *qwen* before *deepseek-r* upstream.
+		// Only the limits are the models.dev gateway figures.
+		"@cf/qwen/qwen2.5-coder-32b-instruct":          {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 32768, MaxOutput: 32768},
+		"@cf/qwen/qwq-32b":                             {Reasoning: true, ThinkingFormat: "qwen", ThinkingCanDisable: new(false), ContextWindow: 24000, MaxOutput: 24000},
+		"@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 80000, MaxOutput: 80000},
+		"@cf/meta/llama-3.3-70b-instruct-fp8-fast":     {Tools: true, ContextWindow: 24000, MaxOutput: 24000},
+		"@cf/google/gemma-4-26b-a4b-it":                {Vision: true, Tools: true, ContextWindow: 256000, MaxOutput: 16384},
 	}
 
 	// NaN.Builders (nanbuilders) — OpenAI-compatible free tier
@@ -821,6 +904,135 @@ func init() {
 	providerCapabilities["nan"] = providerCapabilities["nanbuilders"]
 	providerCapabilities["hc"] = providerCapabilities["hcnsec"]
 	providerCapabilities["oad"] = providerCapabilities["openadapter"]
+
+	// Doubao Seed 2.0 family — volcengine/byteplus publish 256000 (pro/lite/mini)
+	// and 262144 (code) per models.dev; the ark/sumopod resellers serve the same
+	// weights. Only the window is pinned: upstream declares no reasoning for
+	// these ids (the fixture pins that), so adding Reasoning here would offer
+	// thinking levels the provider does not publish.
+	seedPro := Capabilities{Tools: true, ContextWindow: 256000, MaxOutput: 128000}
+	seedLite := Capabilities{Tools: true, ContextWindow: 256000, MaxOutput: 131072}
+	seedCode := Capabilities{Tools: true, ContextWindow: 262144, MaxOutput: 131072}
+	providerCapabilities["volcengine-ark"] = map[string]Capabilities{
+		"Doubao-Seed-2.0-pro":  seedPro,
+		"Doubao-Seed-2.0-lite": seedLite,
+		"Doubao-Seed-2.0-Code": seedCode,
+		"Doubao-Seed-Code":     seedCode,
+	}
+	providerCapabilities["ark"] = providerCapabilities["volcengine-ark"]
+	providerCapabilities["byteplus"] = map[string]Capabilities{
+		"seed-2-0-pro":         seedPro,
+		"seed-2-0-lite":        seedLite,
+		"seed-2-0-lite-260228": seedLite,
+		"seed-2-0-mini":        seedLite,
+		"seed-2-0-mini-260215": seedLite,
+		"seed-2-0-code":        seedCode,
+	}
+	providerCapabilities["bpm"] = providerCapabilities["byteplus"]
+	providerCapabilities["sumopod"] = map[string]Capabilities{
+		"seed-2-0-pro":  seedPro,
+		"seed-2-0-lite": seedLite,
+		"seed-2-0-mini": seedLite,
+		"seed-2-0-code": seedCode,
+		"gpt-4o":        {Vision: true, Search: true, Tools: true, ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-4o-mini":   {Vision: true, Search: true, Tools: true, ContextWindow: 128000, MaxOutput: 16384},
+	}
+	providerCapabilities["sp"] = providerCapabilities["sumopod"]
+
+	// llama-3.3-70b / llama-3.2-3b / Hermes-3 / QwQ carry the vendor 131072
+	// window (models.dev openrouter meta-llama entries); the reseller lanes
+	// (hyperbolic/nebius/fireworks/cerebras/openadapter/venice) had no row and
+	// fell to the 128k floor. maxOutput stays on the family resolution.
+	llama33 := Capabilities{Tools: true, ContextWindow: 131072}
+	llama32_3b := Capabilities{Tools: true, ContextWindow: 131072}
+	providerCapabilities["hyperbolic"] = map[string]Capabilities{
+		"meta-llama/Llama-3.3-70B-Instruct":   llama33,
+		"meta-llama/Llama-3.2-3B-Instruct":    llama32_3b,
+		"NousResearch/Hermes-3-Llama-3.1-70B": {Tools: true, ContextWindow: 131072},
+		"Qwen/QwQ-32B":                        {Reasoning: true, Tools: true, ThinkingFormat: "qwen", ThinkingCanDisable: new(false), ContextWindow: 131072},
+	}
+	providerCapabilities["hyp"] = providerCapabilities["hyperbolic"]
+	providerCapabilities["nebius"] = map[string]Capabilities{
+		"meta-llama/Llama-3.3-70B-Instruct": llama33,
+	}
+	providerCapabilities["fireworks"] = map[string]Capabilities{
+		"accounts/fireworks/models/llama-v3p3-70b-instruct": llama33,
+	}
+	providerCapabilities["cerebras"] = map[string]Capabilities{
+		"llama-3.3-70b": llama33,
+	}
+	providerCapabilities["openadapter"]["meta-llama/llama-3.3-70b-instruct"] = llama33
+	providerCapabilities["venice"] = map[string]Capabilities{
+		"hermes-3-llama-3.1-405b": {Tools: true, ContextWindow: 131072},
+	}
+
+	// nemotron-3-super-120b-a12b: 262144 on every gateway that files it
+	// (models.dev openrouter/kilo/vercel). bazaarlink/bzl had no row.
+	nemotronSuper := Capabilities{Reasoning: true, Tools: true, ContextWindow: 262144, MaxOutput: 16384}
+	providerCapabilities["bazaarlink"] = map[string]Capabilities{"nemotron-3-super-120b-a12b": nemotronSuper}
+	providerCapabilities["bzl"] = providerCapabilities["bazaarlink"]
+
+	// pixtral-12b: mistral files 128000/128000 (models.dev); the dated id is
+	// the same model. pixtral-large/mistral-small-4/saba have no published
+	// window yet and keep the conservative default.
+	providerCapabilities["mistral"] = map[string]Capabilities{
+		"pixtral-12b-2409": {Vision: true, Tools: true, ContextWindow: 128000, MaxOutput: 128000},
+	}
+
+	// Cloudflare llama-3.1 fast/awq variants share the 32000 window the
+	// fp8 sibling files (models.dev cloudflare-workers-ai).
+	providerCapabilities["cloudflare-ai"]["@cf/meta/llama-3.1-8b-instruct-fp8-fast"] = Capabilities{ContextWindow: 32000, MaxOutput: 32000}
+	providerCapabilities["cloudflare-ai"]["@cf/meta/llama-3.1-8b-instruct-awq"] = Capabilities{ContextWindow: 32000, MaxOutput: 32000}
+	providerCapabilities["cloudflare-ai"]["@cf/meta/llama-3.1-70b-instruct-fp8-fast"] = Capabilities{ContextWindow: 32000, MaxOutput: 32000}
+
+	// Cursor serves the real Anthropic models under its own ids: claude-4.5-*
+	// are the 4.5 family (200000/64000 vendor window), claude-4.6-* the 4.6
+	// family (1M/128000). The *claude* pattern carries no window, so these fell
+	// to the 128k floor. Reasoning/thinking stay on the pattern (fixture-pinned).
+	cursorClaude45 := Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget", ContextWindow: 200000, MaxOutput: 64000}
+	cursorClaude46 := Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget", ContextWindow: 1000000, MaxOutput: 128000}
+	providerCapabilities["cursor"] = map[string]Capabilities{
+		"claude-4.5-haiku":                  cursorClaude45,
+		"claude-4.5-sonnet":                 cursorClaude45,
+		"claude-4.5-sonnet-thinking":        cursorClaude45,
+		"claude-4.5-opus":                   cursorClaude45,
+		"claude-4.5-opus-high":              cursorClaude45,
+		"claude-4.5-opus-high-thinking":     cursorClaude45,
+		"claude-4.6-opus-max":               cursorClaude46,
+		"claude-4.6-sonnet-medium-thinking": cursorClaude46,
+	}
+	providerCapabilities["cu"] = providerCapabilities["cursor"]
+
+	// perplexity-agent routes claude-sonnet-4-6 to the vendor model (1M/128000).
+	providerCapabilities["perplexity-agent"] = map[string]Capabilities{
+		"anthropic/claude-sonnet-4-6": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget", ContextWindow: 1000000, MaxOutput: 128000},
+	}
+	providerCapabilities["pa"] = providerCapabilities["perplexity-agent"]
+
+	// kenari free ids: llama-3.3-70b carries the vendor 131072 window; the
+	// nemotron-3.5-super-vl free tier files 1M/131072 (models.dev openrouter).
+	providerCapabilities["kenari"] = map[string]Capabilities{
+		"llama-3-3-70b-instruct:free":       {Tools: true, ContextWindow: 131072},
+		"nemotron-3-5-super-vl:free":        {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000, MaxOutput: 131072},
+		"nvidia/nemotron-3.5-super-vl:free": {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000, MaxOutput: 131072},
+	}
+
+	// synthetic's NVFP4 quantization of nemotron-3-super-120b-a12b serves the
+	// same 262144 window as the base weights (models.dev openrouter/kilo).
+	providerCapabilities["synthetic"] = map[string]Capabilities{
+		"hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": {Reasoning: true, Tools: true, ContextWindow: 262144, MaxOutput: 16384},
+	}
+	providerCapabilities["syn"] = providerCapabilities["synthetic"]
+
+	// kenari's dots-3-note-preview free tier files 512000 (models.dev openrouter
+	// dots-studio/dots-3-note-preview:free).
+	providerCapabilities["kenari"]["dots-3-note-preview:free"] = Capabilities{Reasoning: true, Tools: true, ContextWindow: 512000}
+
+	// kimchi's nemotron-3-ultra-fp4 is the FP4 quantization of nemotron-3-ultra
+	// (1M window on the free tier, models.dev openrouter/nvidia).
+	providerCapabilities["kimchi"] = map[string]Capabilities{
+		"nemotron-3-ultra-fp4": {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+	}
 
 	initPatternIndex()
 }
@@ -872,7 +1084,7 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*claude-3*", caps: Capabilities{Vision: true, Tools: true}},
 	{pattern: "*claude*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
 
-	{pattern: "*gemini*image*", caps: Capabilities{Vision: true, ImageOutput: true, Tools: true}},
+	{pattern: "*gemini*image*", caps: Capabilities{Vision: true, ImageOutput: true, Tools: true, ContextWindow: 1048576}},
 	// Gemini Omni is a reasoning model on the gemini-level wire with thinking
 	// always on. Absent this row the generic *gemini* fallback (Reasoning
 	// false) won, so GetThinkingLevels returned nil and the level never got
@@ -889,23 +1101,29 @@ var patternCapabilities = []patternCapability{
 	// Gemini 4 Hydrogen: LOW/MEDIUM/HIGH/XHIGH — adds an xhigh tier above Argon,
 	// thinking cannot be disabled. Same wire shape as Argon, higher ceiling.
 	{pattern: "*gemini*hydrogen*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
-	{pattern: "*gemini-4*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
-	{pattern: "*gemini-3.8*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
-	{pattern: "*gemini-3.7*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
-	{pattern: "*gemini-3*pro*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
-	{pattern: "*gemini-3*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
-	{pattern: "*gemini-2.5*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-budget", ThinkingRange: &ThinkingRange{Min: 0, Max: 24576}}},
-	{pattern: "*gemini-2*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Search: true, Tools: true}},
-	{pattern: "*gemini*", caps: Capabilities{Vision: true, Search: true, Tools: true}},
-	{pattern: "*gemma*", caps: Capabilities{Vision: true, Tools: true}},
+	{pattern: "*gemini-4*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 65536}},
+	{pattern: "*gemini-3.8*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 65536}},
+	{pattern: "*gemini-3.7*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 65536}},
+	{pattern: "*gemini-3*pro*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 65535}},
+	{pattern: "*gemini-3*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 65536}},
+	{pattern: "*gemini-2.5*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-budget", ThinkingRange: &ThinkingRange{Min: 0, Max: 24576}, ContextWindow: 1048576, MaxOutput: 65536}},
+	{pattern: "*gemini-2*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Search: true, Tools: true, ContextWindow: 1048576, MaxOutput: 65536}},
+	{pattern: "*gemini*", caps: Capabilities{Vision: true, Search: true, Tools: true, ContextWindow: 1048576}},
+	{pattern: "*gemma*", caps: Capabilities{Vision: true, Tools: true, ContextWindow: 128000}},
 	{pattern: "*nanobanana*", caps: Capabilities{Vision: true, ImageOutput: true, Tools: true}},
 
 	// 1.05M is the API window for the whole gpt-6 family (astra, luna, sol alike).
 	// It used to carry one gateway's 272k truncation, so every other provider's
 	// gpt-6 models were published at 3.9x under their real window. A gateway
 	// that really truncates lower says so in its own row below.
+	// Image variants are image models, not chat models — first match wins, so
+	// the row precedes the family entry (upstream PATTERN_CAPABILITIES).
+	{pattern: "*gpt-6*image*", caps: Capabilities{ImageOutput: true, Tools: true}},
 	{pattern: "*gpt-6*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1050000, MaxOutput: 128000}},
 	{pattern: "*gpt-5*image*", caps: Capabilities{ImageOutput: true, Tools: true}},
+	// The codex row precedes the numbered tiers (upstream order): gpt-5.6-codex
+	// carries the 400k codex window, not the 1.05M tier window.
+	{pattern: "*gpt-5*codex*", caps: Capabilities{Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 400000, MaxOutput: 128000}},
 	// gpt-5.4 is where the 1.05M window starts, but the mini and nano tiers
 	// stayed at 400k — first match wins, so those two have to be listed ahead of
 	// it. The image row has to be ahead of all of them: gpt-5.6-sol-image would
@@ -919,53 +1137,63 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*gpt-5.6*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1050000, MaxOutput: 128000}},
 
 	{pattern: "*gpt-image*", caps: Capabilities{ImageOutput: true, Tools: true}},
-	{pattern: "*gpt-5*codex*", caps: Capabilities{Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*gpt-5*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*gpt-4o*", caps: Capabilities{Vision: true, Search: true, Tools: true}},
-	{pattern: "*gpt-4.1*", caps: Capabilities{Vision: true, Tools: true}},
-	{pattern: "*gpt-4-turbo*", caps: Capabilities{Vision: true, Tools: true}},
-	{pattern: "*gpt-4*", caps: Capabilities{Tools: true}},
-	{pattern: "*gpt-3.5*", caps: Capabilities{Tools: true}},
-	{pattern: "*gpt-oss*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
+	{pattern: "*gpt-5*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 400000, MaxOutput: 128000}},
+	{pattern: "*gpt-4o*", caps: Capabilities{Vision: true, Search: true, Tools: true, ContextWindow: 128000, MaxOutput: 16384}},
+	{pattern: "*gpt-4.1*", caps: Capabilities{Vision: true, Tools: true, ContextWindow: 1000000, MaxOutput: 32768}},
+	{pattern: "*gpt-4-turbo*", caps: Capabilities{Vision: true, Tools: true, ContextWindow: 128000}},
+	{pattern: "*gpt-4*", caps: Capabilities{Tools: true, ContextWindow: 128000}},
+	{pattern: "*gpt-3.5*", caps: Capabilities{Tools: true, ContextWindow: 16385, MaxOutput: 4096}},
+	// gpt-oss carries a 131072 window on every gateway that publishes it
+	// (models.dev: groq/cerebras/vercel/openrouter all agree); the old 128000
+	// was a rounded guess. maxOutput stays unset so each gateway's catalog
+	// figure (65536 groq/openrouter, 131072 vercel) fills it.
+	{pattern: "*gpt-oss*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 131072}},
 	{pattern: "*solar-pro*", caps: Capabilities{Reasoning: true, Tools: true}},
 
-	{pattern: "*o1-mini*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*o1*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*o3*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*o4*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
+	{pattern: "*o1-mini*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000}},
+	{pattern: "*o1*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 100000}},
+	{pattern: "*o3*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 100000}},
+	{pattern: "*o4*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 100000}},
 
 	{pattern: "*grok*image*", caps: Capabilities{ImageOutput: true, Tools: true}},
-	{pattern: "*grok-code*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
+	{pattern: "*grok-code*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 256000}},
 	// Grok 4.7 needs its own row: without it the id falls to the *grok-4*
 	// catch-all and then to the token-limit table's 128000/4096 floor, and
 	// combos report the smallest member window. Upstream b0655314 probed the
 	// 500k limit on the Grok CLI proxy (476k prompt accepted, 614k rejected
 	// with "613738 tokens > 500000 tokens").
 	{pattern: "*grok-4.7*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 500000, MaxOutput: 500000}},
-	{pattern: "*grok-4.6*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*grok-4.5*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*grok-4*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*grok-3*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*grok*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
+	{pattern: "*grok-4.6*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 500000, MaxOutput: 500000}},
+	{pattern: "*grok-4.5*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 500000, MaxOutput: 64000}},
+	{pattern: "*grok-4*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 256000}},
+	{pattern: "*grok-3*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 131072}},
+	{pattern: "*grok*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 256000}},
 
-	{pattern: "*qwen*vl*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen*omni*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen*coder*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen*max*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen3.5*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen3.6*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen3.7*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen3.8*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true}},
-	{pattern: "*qwen*plus*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwen*235b*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
-	{pattern: "*qwq*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen", ThinkingCanDisable: new(false)}},
-	{pattern: "*qwen*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen"}},
+	// Limits and modalities mirror upstream PATTERN_CAPABILITIES (master
+	// aba4c45d..1855aa44). Without them every qwen id fell to the substring
+	// table's 131072/8192 floor — nous/qwen4-max published 131k against the
+	// 1M window the provider's own /v1/models declares.
+	{pattern: "*qwen*vl*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 262144}},
+	{pattern: "*qwen*omni*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 262144, MaxOutput: 65536}},
+	{pattern: "*qwen*coder*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000}},
+	{pattern: "*qwen*max*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 65536}},
+	{pattern: "*qwen3.5*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 65536}},
+	{pattern: "*qwen3.6*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 65536}},
+	{pattern: "*qwen3.7*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 65536}},
+	// *qwen3.8* is a Go-only row (upstream has none): limits follow the 3.5–3.7
+	// family, but ThinkingFormat stays unset — the qwen wire dialect on these
+	// ids is unverified upstream, so the transport default keeps serving them.
+	{pattern: "*qwen3.8*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ContextWindow: 1000000, MaxOutput: 65536}},
+	{pattern: "*qwen*plus*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 65536}},
+	{pattern: "*qwen*235b*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 262144}},
+	{pattern: "*qwq*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen", ThinkingCanDisable: new(false), ContextWindow: 131072}},
+	{pattern: "*qwen*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 262144}},
 
-	{pattern: "*kimi*k3*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)}},
-	{pattern: "*kimi*for-coding*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)}},
-	{pattern: "*kimi*k2.7*code*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)}},
-	{pattern: "*kimi*k2*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi"}},
-	{pattern: "*kimi*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "kimi"}},
+	{pattern: "*kimi*k3*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072}},
+	{pattern: "*kimi*for-coding*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536}},
+	{pattern: "*kimi*k2.7*code*", caps: Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536}},
+	{pattern: "*kimi*k2*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ContextWindow: 262144, MaxOutput: 262144}},
+	{pattern: "*kimi*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "kimi", ContextWindow: 262144}},
 
 	// GLM-5.2/5.3 carry a 1M window; the `*glm-5*` catch-all below is 200k, so
 	// both versions need their own row (upstream #4544). The thinking
@@ -978,57 +1206,57 @@ var patternCapabilities = []patternCapability{
 	// disable thinking — but left it out of scope; don't "fix" it here.
 	{pattern: "*glm-5.3*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000}},
 	{pattern: "*glm-5.2*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 128000}},
-	{pattern: "*glm-5*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
-	{pattern: "*glm-4.7*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
-	{pattern: "*glm-4*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
-	{pattern: "*glm*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
+	{pattern: "*glm-5*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ContextWindow: 200000, MaxOutput: 128000}},
+	{pattern: "*glm-4.7*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ContextWindow: 200000, MaxOutput: 128000}},
+	{pattern: "*glm-4*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ContextWindow: 200000}},
+	{pattern: "*glm*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ContextWindow: 200000}},
 	{pattern: "*z-ai*", caps: Capabilities{Reasoning: true, Tools: true}},
 	{pattern: "*zai*", caps: Capabilities{Reasoning: true, Tools: true}},
 
-	{pattern: "*deepseek-v4.*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true}},
-	{pattern: "*deepseek-v4*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true}},
+	{pattern: "*deepseek-v4.*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 128000}},
+	{pattern: "*deepseek-v4*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 384000}},
 	{pattern: "*deepseek*flash*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true}},
-	{pattern: "*reasoner*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false)}},
-	{pattern: "*deepseek-r*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false)}},
-	{pattern: "*deepseek-chat*", caps: Capabilities{Tools: true}},
-	{pattern: "*deepseek*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek"}},
+	{pattern: "*reasoner*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false), ContextWindow: 128000}},
+	{pattern: "*deepseek-r*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false), ContextWindow: 128000}},
+	{pattern: "*deepseek-chat*", caps: Capabilities{Tools: true, ContextWindow: 128000}},
+	{pattern: "*deepseek*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ContextWindow: 128000}},
 
 	{pattern: "*minimax*image*", caps: Capabilities{ImageOutput: true, Tools: true}},
-	{pattern: "*minimax-m3*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "minimax"}},
-	{pattern: "*minimax-m2.7*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "minimax", ThinkingCanDisable: new(false)}},
-	{pattern: "*minimax-m2.5*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "minimax", ThinkingCanDisable: new(false)}},
-	{pattern: "*minimax*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "minimax", ThinkingCanDisable: new(false)}},
+	{pattern: "*minimax-m3*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "minimax", ContextWindow: 1000000, MaxOutput: 131072}},
+	{pattern: "*minimax-m2.7*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "minimax", ThinkingCanDisable: new(false), ContextWindow: 204800, MaxOutput: 131072}},
+	{pattern: "*minimax-m2.5*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "minimax", ThinkingCanDisable: new(false), ContextWindow: 204800, MaxOutput: 131072}},
+	{pattern: "*minimax*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "minimax", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 131072}},
 
-	{pattern: "*mimo*v2.6*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false)}},
-	{pattern: "*mimo*v2.5*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false)}},
-	{pattern: "*mimo*omni*", caps: Capabilities{Vision: true, AudioInput: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false)}},
-	{pattern: "*mimo*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false)}},
+	{pattern: "*mimo*v2.6*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072}},
+	{pattern: "*mimo*v2.5*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072}},
+	{pattern: "*mimo*omni*", caps: Capabilities{Vision: true, AudioInput: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 131072}},
+	{pattern: "*mimo*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 131072}},
 
-	{pattern: "*llama-4*", caps: Capabilities{Vision: true, Tools: true}},
-	{pattern: "*llama*", caps: Capabilities{Tools: true}},
+	{pattern: "*llama-4*", caps: Capabilities{Vision: true, Tools: true, ContextWindow: 1000000}},
+	{pattern: "*llama*", caps: Capabilities{Tools: true, ContextWindow: 128000}},
 
-	{pattern: "*codestral*", caps: Capabilities{Tools: true}},
+	{pattern: "*codestral*", caps: Capabilities{Tools: true, ContextWindow: 256000}},
 	{pattern: "*devstral*", caps: Capabilities{Vision: true, Tools: true}},
-	{pattern: "*mistral-large*", caps: Capabilities{Vision: true, Tools: true}},
-	{pattern: "*mistral*", caps: Capabilities{Tools: true}},
+	{pattern: "*mistral-large*", caps: Capabilities{Vision: true, Tools: true, ContextWindow: 256000}},
+	{pattern: "*mistral*", caps: Capabilities{Tools: true, ContextWindow: 128000}},
 
-	{pattern: "*command-a-vision*", caps: Capabilities{Vision: true, Tools: true}},
-	{pattern: "*command*", caps: Capabilities{Tools: true}},
+	{pattern: "*command-a-vision*", caps: Capabilities{Vision: true, Tools: true, ContextWindow: 128000}},
+	{pattern: "*command*", caps: Capabilities{Tools: true, ContextWindow: 128000}},
 
-	{pattern: "*sonar*", caps: Capabilities{Search: true, Tools: true}},
-	{pattern: "*pplx*", caps: Capabilities{Search: true, Tools: true}},
-	{pattern: "*perplexity*", caps: Capabilities{Search: true, Tools: true}},
+	{pattern: "*sonar*", caps: Capabilities{Search: true, Tools: true, ContextWindow: 128000}},
+	{pattern: "*pplx*", caps: Capabilities{Search: true, Tools: true, ContextWindow: 128000}},
+	{pattern: "*perplexity*", caps: Capabilities{Search: true, Tools: true, ContextWindow: 128000}},
 
-	{pattern: "*laguna-s-2.1*free*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*laguna-s-2.1*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*laguna*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
+	{pattern: "*laguna-s-2.1*free*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 32000}},
+	{pattern: "*laguna-s-2.1*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 32000}},
+	{pattern: "*laguna*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 32000}},
 
-	{pattern: "*muse*spark*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
-	{pattern: "*hunyuan*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "hunyuan"}},
-	{pattern: "hy3*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "hunyuan"}},
-	{pattern: "*step-*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "step"}},
-	{pattern: "*nemotron*", caps: Capabilities{Reasoning: true, Tools: true}},
-	{pattern: "*ling-*", caps: Capabilities{Reasoning: true, Tools: true}},
+	{pattern: "*muse*spark*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072}},
+	{pattern: "*hunyuan*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "hunyuan", ContextWindow: 262144, MaxOutput: 262144}},
+	{pattern: "hy3*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "hunyuan", ContextWindow: 262144, MaxOutput: 262144}},
+	{pattern: "*step-*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "step", ContextWindow: 128000}},
+	{pattern: "*nemotron*", caps: Capabilities{Reasoning: true, Tools: true, ContextWindow: 128000}},
+	{pattern: "*ling-*", caps: Capabilities{Reasoning: true, Tools: true, ContextWindow: 128000}},
 	{pattern: "*muse-spark*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true}},
 }
 
