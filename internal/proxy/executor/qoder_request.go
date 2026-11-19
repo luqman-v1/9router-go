@@ -425,7 +425,10 @@ func buildQoderChatRequestWithAttachments(ctx context.Context, body []byte, mode
 	}
 
 	model, _ := request["model"].(string)
-	qoderKey := qoderModelKey(model)
+	// Friendly names resolve here too: qoderModelConfig has already fetched
+	// the catalog when one was needed, so its display names (and the static
+	// alias table) reduce the wire id to the same raw key the config carries.
+	qoderKey := qoderResolveModelKey(creds, region, model)
 	if qoderKey == "" {
 		return qoderBuiltChat{}, fmt.Errorf("qoder: request carries no model")
 	}

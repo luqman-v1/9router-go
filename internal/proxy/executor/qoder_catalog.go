@@ -22,8 +22,20 @@ import (
 // in the dashboard first.
 
 const (
-	// qoderCatalogTTL matches upstream's CACHE_TTL_MS (1h).
+	// qoderCatalogTTL matches upstream's CACHE_TTL_MS (1h). Deliberately kept
+	// at upstream's hour rather than the 5-minute snapshot some sibling
+	// gateways use: AGENTS.md §1 makes decolua/9router the behavioral spec,
+	// and a 12x tighter refresh loop buys nothing on a per-credential cache
+	// that chat already force-refreshes when a model is missing. The short
+	// retry window below covers the unfetched-catalog case instead.
 	qoderCatalogTTL = time.Hour
+
+	// qoderCatalogRetryWindow holds off non-forced fetches after a failed
+	// attempt on a credential that has no live snapshot. Without it every
+	// request on an install whose catalog is unreachable queues behind a
+	// fresh fetch (and its timeout). Forced fetches — chat's last resort and
+	// the post-login fill — ignore the window.
+	qoderCatalogRetryWindow = 30 * time.Second
 
 	// qoderCatalogTimeout bounds one catalogue fetch, including a PAT
 	// exchange. Upstream uses the same connect timeout for the chat POST.
@@ -40,7 +52,14 @@ type qoderCatalog struct {
 	// published, including `enable:false` ones: chat needs model_config for
 	// a model the IDE hides just as much as for a visible one.
 	rawConfigs map[string]map[string]any
-	expiresAt  time.Time
+	// names maps every advertised id (raw keys and sanitized display names)
+	// to the raw key a request must carry. Built once per snapshot so a
+	// refresh cannot reshuffle friendly-name resolution.
+	names map[string]string
+	// attemptedAt records the last fetch start, successful or not. Only a
+	// credential without a live snapshot obeys it (qoderCatalogRetryWindow).
+	attemptedAt time.Time
+	expiresAt   time.Time
 }
 
 var (
@@ -126,7 +145,10 @@ func qoderStaticModelConfig(key string) map[string]any {
 }
 
 // qoderModelConfig resolves model_config for a model key, fetching the live
-// catalogue when the cache cannot answer.
+// catalogue when the cache cannot answer. The key may be a friendly name:
+// the cached catalog's display names resolve first, the static alias table
+// second, and a freshly fetched catalog re-resolves the original id so a
+// name only the live list knows still lands on its raw key.
 //
 // It force-refreshes once before giving up: a first-ever request for a
 // credential has an empty cache by definition, and a stale entry for a newly
@@ -136,13 +158,14 @@ func qoderStaticModelConfig(key string) map[string]any {
 // resort: Sonus/Cantus are accepted by chat even when /model/list never
 // mentions them, so refusing here would make an available model look broken.
 func qoderModelConfig(ctx context.Context, do QoderDoer, creds QoderCosyCreds, region QoderRegion, modelKey string) (map[string]any, error) {
-	if config := qoderCachedModelConfig(creds, region, modelKey); config != nil {
+	resolved := qoderResolveModelKey(creds, region, modelKey)
+	if config := qoderCachedModelConfig(creds, region, resolved); config != nil {
 		return config, nil
 	}
 
 	catalog, err := qoderFetchCatalog(ctx, do, creds, region, false)
 	if err == nil && catalog != nil {
-		if config := qoderDefensiveCopy(catalog.rawConfigs[modelKey], modelKey); config != nil {
+		if config := qoderConfigFromCatalog(catalog, modelKey); config != nil {
 			return config, nil
 		}
 	}
@@ -154,13 +177,30 @@ func qoderModelConfig(ctx context.Context, do QoderDoer, creds QoderCosyCreds, r
 	if refreshed == nil {
 		return nil, fmt.Errorf("qoder: model catalogue unavailable for %s", region)
 	}
-	if config := qoderDefensiveCopy(refreshed.rawConfigs[modelKey], modelKey); config != nil {
+	if config := qoderConfigFromCatalog(refreshed, modelKey); config != nil {
 		return config, nil
 	}
-	if config := qoderStaticModelConfig(modelKey); config != nil {
+	if config := qoderStaticModelConfig(resolved); config != nil {
 		return config, nil
 	}
 	return nil, fmt.Errorf("qoder: model_config for %q not yet known (run a model list fetch or check upstream connectivity)", modelKey)
+}
+
+// qoderConfigFromCatalog reads one snapshot's config for an advertised id.
+// The snapshot's own names win over the static alias table, so an account
+// whose display names differ from the marketing names resolves the way its
+// model list says. The returned copy is stamped with the raw key, never the
+// friendly id: model_config.key is what Qoder routes the chat by.
+func qoderConfigFromCatalog(catalog *qoderCatalog, id string) map[string]any {
+	// Normalize exactly like the cache-hit path: a client may send the
+	// qualified form ("qd/qwen3.8-flash") and the snapshot indexes bare ids.
+	key := qoderModelKey(id)
+	if canonical, ok := qoderCatalogKeyFromNames(catalog.names, key); ok {
+		key = canonical
+	} else if alias, ok := qoderModelAliases[strings.ToLower(key)]; ok {
+		key = alias
+	}
+	return qoderDefensiveCopy(catalog.rawConfigs[key], key)
 }
 
 // qoderFetchCatalog reads the live model list, COSY-signed with the caller's
@@ -177,12 +217,18 @@ func qoderFetchCatalog(ctx context.Context, do QoderDoer, creds QoderCosyCreds, 
 
 	key := qoderCatalogKey(creds, region)
 	if !forceRefresh {
+		if qoderCatalogRetryHoldoff(creds, region) {
+			return nil, errQoderCatalogRetryHoldoff
+		}
 		// A miss already in flight answers this request instead of issuing a
 		// second one, so a burst of parallel chat windows fans out to exactly
 		// one upstream call.
 		result, err, _ := qoderCatalogSfly.Do(key, func() (any, error) {
 			if cached := qoderCachedModelConfigAny(creds, region); cached != nil {
 				return cached, nil
+			}
+			if qoderCatalogRetryHoldoff(creds, region) {
+				return nil, errQoderCatalogRetryHoldoff
 			}
 			return qoderFetchCatalogOnce(ctx, do, creds, region)
 		})
@@ -206,9 +252,21 @@ func qoderCachedModelConfigAny(creds QoderCosyCreds, region QoderRegion) *qoderC
 	return entry
 }
 
+// qoderProviderIDForRegion maps a region back to the provider id the endpoint
+// table is keyed by. QoderEndpointsFor expects provider ids: handing it the
+// raw region string "cn" silently falls through to the intl deployment, which
+// would send CN credentials to the intl gateway (AGENTS.md §3.A).
+func qoderProviderIDForRegion(region QoderRegion) string {
+	if region == QoderRegionCN {
+		return "qoder-cn"
+	}
+	return "qoder"
+}
+
 // qoderFetchCatalogOnce performs the COSY-signed GET of /algo/api/v2/model/list.
 func qoderFetchCatalogOnce(ctx context.Context, do QoderDoer, creds QoderCosyCreds, region QoderRegion) (*qoderCatalog, error) {
-	modelListURL := QoderEndpointsFor(string(region)).ModelListURLForToken(creds.AuthToken)
+	qoderRecordCatalogAttempt(creds, region)
+	modelListURL := QoderEndpointsFor(qoderProviderIDForRegion(region)).ModelListURLForToken(creds.AuthToken)
 
 	headers, err := buildQoderCosyHeaders(nil, modelListURL, creds)
 	if err != nil {
@@ -248,7 +306,12 @@ func qoderFetchCatalogOnce(ctx context.Context, do QoderDoer, creds QoderCosyCre
 		return nil, fmt.Errorf("qoder model list carried no models")
 	}
 
-	catalog := &qoderCatalog{rawConfigs: rawConfigs, expiresAt: time.Now().Add(qoderCatalogTTL)}
+	catalog := &qoderCatalog{
+		rawConfigs:  rawConfigs,
+		names:       qoderCatalogNames(rawConfigs),
+		attemptedAt: time.Now(),
+		expiresAt:   time.Now().Add(qoderCatalogTTL),
+	}
 	qoderCatalogMu.Lock()
 	defer qoderCatalogMu.Unlock()
 	qoderCatalogs[qoderCatalogKey(creds, region)] = catalog

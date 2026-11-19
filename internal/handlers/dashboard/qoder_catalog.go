@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"9router/proxy/internal/proxy/executor"
@@ -106,7 +107,7 @@ func fetchQoderCatalogModels(ctx context.Context, provider, token string, psd ma
 		return nil, fmt.Errorf("Qoder model list was not JSON")
 	}
 
-	models := make([]QoderModel, 0, len(parsed.Chat))
+	enabled := make([]qoderCatalogEntry, 0, len(parsed.Chat))
 	for _, entry := range parsed.Chat {
 		if entry.Key == "" {
 			continue
@@ -116,21 +117,50 @@ func fetchQoderCatalogModels(ctx context.Context, provider, token string, psd ma
 		if entry.Enable != nil && !*entry.Enable {
 			continue
 		}
-		name := entry.DisplayName
-		if name == "" {
-			name = entry.Key
+		enabled = append(enabled, entry)
+	}
+
+	models := make([]QoderModel, 0, len(enabled)*2)
+	used := make(map[string]bool, len(enabled)*2)
+	for _, entry := range enabled {
+		models = append(models, qoderModelFromEntry(entry, entry.Key))
+		used[entry.Key] = true
+	}
+	// A confirmed key is also advertised under its sanitized display_name,
+	// so `qd/qfmodel` and `qd/qwen3.8-flash` name one model. Names are weighed
+	// in raw-key order and never override a live key or an earlier name, so
+	// two models sharing a display name cannot reshuffle the list between
+	// fetches. Chat resolves the same ids through the executor's catalog.
+	byKey := append([]qoderCatalogEntry(nil), enabled...)
+	sort.Slice(byKey, func(i, j int) bool { return byKey[i].Key < byKey[j].Key })
+	for _, entry := range byKey {
+		id := executor.QoderAdvertisedID(entry.DisplayName, entry.Key)
+		if id == "" || used[id] {
+			continue
 		}
-		models = append(models, QoderModel{
-			ID:              entry.Key,
-			Name:            name,
-			ContextLength:   qoderIntOr(entry.MaxInputTokens, qoderDefaultContextLength),
-			IsVL:            entry.IsVL,
-			IsReasoning:     entry.IsReasoning,
-			MaxOutputTokens: qoderIntOr(entry.MaxOutputTokens, 0),
-			Description:     entry.Description,
-		})
+		used[id] = true
+		models = append(models, qoderModelFromEntry(entry, id))
 	}
 	return models, nil
+}
+
+// qoderModelFromEntry shapes one catalog record as an advertised model. The
+// id is the raw key or a display-name-derived alias; the human-facing name
+// stays the upstream display_name either way.
+func qoderModelFromEntry(entry qoderCatalogEntry, id string) QoderModel {
+	name := entry.DisplayName
+	if name == "" {
+		name = entry.Key
+	}
+	return QoderModel{
+		ID:              id,
+		Name:            name,
+		ContextLength:   qoderIntOr(entry.MaxInputTokens, qoderDefaultContextLength),
+		IsVL:            entry.IsVL,
+		IsReasoning:     entry.IsReasoning,
+		MaxOutputTokens: qoderIntOr(entry.MaxOutputTokens, 0),
+		Description:     entry.Description,
+	}
 }
 
 func qoderIntOr(v any, fallback int) int {
