@@ -21,6 +21,11 @@ type ErrorRule struct {
 	// spent. These do NOT clear on a short timer, so they get a long cooldown
 	// and are surfaced as a distinct status instead of a transient blip.
 	Quota bool
+	// ModelScoped marks a verdict about one model's availability on a healthy
+	// account (upstream modelScoped). The caller locks that provider/model
+	// pair and must leave the connection's account-scoped cooldown alone, so
+	// sibling models on the same key keep serving.
+	ModelScoped bool
 }
 
 // BackoffConfig controls exponential backoff scaling.
@@ -55,6 +60,12 @@ const (
 	// is not, so the account waits out a short window instead of absorbing
 	// every turn the same address is refused on.
 	cooldownAddressRefused = 30 * 60 * 1000
+
+	// cooldownNIMClusterDegraded parks one NVIDIA NIM model whose cluster is
+	// unhealthy (upstream 2275bc0d). The API key still serves every other
+	// model, so the verdict is model-scoped: the credential is never cooled
+	// down, and the model is re-probed after a quarter hour.
+	cooldownNIMClusterDegraded = 15 * 60 * 1000
 
 	// QuotaExhaustedCooldownMs is how long an account is parked after the
 	// upstream reports its credit/quota budget is spent. Ported from the
@@ -120,6 +131,12 @@ var ErrorRules = []ErrorRule{
 	// into an error) must not park a healthy connection. The real Google
 	// ban carries the "disabled in this account" sentence above plus the
 	// cloudcode-pa domain, which is what parks the account for 24h.
+	// NVIDIA NIM answers 400 with "degraded" when the cluster behind one
+	// model is unhealthy (upstream 2275bc0d). The credential is fine and
+	// the other models on that key are fine; parking the key would take
+	// them down with it, so the verdict is model-scoped and the model
+	// waits out a quarter hour.
+	{Provider: "nvidia", Text: "degraded", CooldownMs: cooldownNIMClusterDegraded, ModelScoped: true},
 	{Text: "rate_limit_exceeded", CooldownMs: cooldownShort},
 	{Text: "creditlimitexceeded", CooldownMs: cooldownLong},
 	{Text: "insufficient_quota", CooldownMs: cooldownLong},
@@ -440,6 +457,10 @@ type ErrorClassification struct {
 	ShouldFallback  bool
 	CooldownMs      int
 	NewBackoffLevel int // only meaningful when the matched rule has Backoff=true
+	// ModelScoped is true when the matched rule is a verdict on one model
+	// rather than on the credential (upstream modelScoped). The caller locks
+	// the provider/model pair and must not park the connection's key.
+	ModelScoped bool
 }
 
 // ClassifyError classifies an upstream error by matching text and status against ErrorRules.
@@ -479,6 +500,7 @@ func ClassifyErrorForProvider(statusCode int, errorText string, backoffLevel int
 				ShouldFallback:  true,
 				CooldownMs:      rule.CooldownMs,
 				NewBackoffLevel: backoffLevel,
+				ModelScoped:     rule.ModelScoped,
 			}
 		}
 

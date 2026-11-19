@@ -102,6 +102,12 @@ func classifyMessage(lowerMsg string) (Kind, Scope, bool) {
 		"not supported", "not available", "not found", "does not exist",
 	}):
 		return KindModelUnavailable, ScopeModel, true
+	case strings.Contains(lowerMsg, "degraded"):
+		// NVIDIA NIM answers 400 with "degraded" when the cluster behind one
+		// model is unhealthy (upstream decolua@2275bc0d). The credential
+		// serves every other model, so the verdict is about that model
+		// alone: model-scoped, never an account lock.
+		return KindModelUnavailable, ScopeModel, true
 	default:
 		return "", "", false
 	}
