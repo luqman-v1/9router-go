@@ -437,3 +437,126 @@ func TestFitToolNames_LegacyFunctions(t *testing.T) {
 		t.Errorf("expected long name replaced in functions: %s", string(got))
 	}
 }
+
+// TestFitToolNamesForProvider_OpenAI_SHA256Alias verifies that for the openai
+// provider (and azure), tool names > 64 chars are aliased to a deterministic
+// tool_<sha256[:50]> instead of the legacy truncation.
+func TestFitToolNamesForProvider_OpenAI_SHA256Alias(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action" // 77 chars
+	if len(longName) <= MaxToolNameLength {
+		t.Fatalf("fixture name must exceed %d chars, got %d", MaxToolNameLength, len(longName))
+	}
+	body := []byte(`{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "` + longName + `", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "result"}
+		],
+		"tools": [{"type": "function", "function": {"name": "` + longName + `", "description": "test"}}],
+		"tool_choice": {"type": "function", "function": {"name": "` + longName + `"}}
+	}`)
+
+	got, toolMap := FitToolNamesForProvider(body, "openai")
+	if len(toolMap) == 0 {
+		t.Fatal("expected a tool name map, got none")
+	}
+	if len(toolMap) != 1 {
+		t.Fatalf("expected 1 mapped tool, got %d: %v", len(toolMap), toolMap)
+	}
+
+	// The alias must be tool_<50 hex chars> (sha256[:25] bytes hex-encoded).
+	var alias string
+	for k, v := range toolMap {
+		alias = k
+		if v != longName {
+			t.Errorf("expected mapped value to be original name %q, got %q", longName, v)
+		}
+	}
+	if !strings.HasPrefix(alias, "tool_") {
+		t.Errorf("expected alias to start with 'tool_', got %q", alias)
+	}
+	if len(alias) != 5+50 {
+		t.Errorf("expected alias length %d (tool_ + 50 hex), got %d: %q", 55, len(alias), alias)
+	}
+
+	// Body must not contain the long name anywhere; it must contain the alias
+	// in tools[], tool_choice, and messages[].tool_calls[].
+	gotStr := string(got)
+	if strings.Contains(gotStr, longName) {
+		t.Errorf("expected long name replaced in body, still present: %s", gotStr)
+	}
+	if count := strings.Count(gotStr, alias); count != 3 {
+		t.Errorf("expected alias to appear 3 times (tools, tool_choice, tool_calls), got %d: %s", count, gotStr)
+	}
+}
+
+// TestFitToolNamesForProvider_NonHashProvider_KeepsTruncation verifies that
+// providers NOT in the 64-char-limit set (e.g. deepseek) keep the legacy
+// truncation behavior with _N suffix.
+func TestFitToolNamesForProvider_NonHashProvider_KeepsTruncation(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action"
+	body := []byte(`{
+		"model": "deepseek-chat",
+		"tools": [{"type": "function", "function": {"name": "` + longName + `"}}]
+	}`)
+	got, toolMap := FitToolNamesForProvider(body, "deepseek")
+	if len(toolMap) != 1 {
+		t.Fatalf("expected 1 mapped tool, got %d: %v", len(toolMap), toolMap)
+	}
+	for k := range toolMap {
+		// Legacy truncation produces a name ending in _1 (or _N).
+		if !strings.HasSuffix(k, "_1") && k == longName {
+			t.Errorf("expected truncated name with _1 suffix, got %q", k)
+		}
+		if strings.HasPrefix(k, "tool_") && len(k) == 55 {
+			t.Errorf("provider deepseek must NOT use sha256 alias, got %q", k)
+		}
+		if len(k) > MaxToolNameLength {
+			t.Errorf("fitted name still exceeds %d chars: %q", MaxToolNameLength, k)
+		}
+	}
+	_ = got
+}
+
+// TestFitToolNamesForProvider_RestoreResponse verifies that
+// RestoreToolNamesInPayload restores the original name from the alias.
+func TestFitToolNamesForProvider_RestoreResponse(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action"
+	body := []byte(`{
+		"tools": [{"type": "function", "function": {"name": "` + longName + `"}}]
+	}`)
+	_, toolMap := FitToolNamesForProvider(body, "openai")
+	if len(toolMap) == 0 {
+		t.Fatal("expected tool map, got none")
+	}
+
+	// Build a fake response that uses the alias.
+	var alias string
+	for k := range toolMap {
+		alias = k
+	}
+	resp := []byte(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"` + alias + `","arguments":"{}"}}]}}]}`)
+
+	restored := RestoreToolNamesInPayload(resp, toolMap)
+	if strings.Contains(string(restored), alias) {
+		t.Errorf("expected alias replaced by original name, still present: %s", string(restored))
+	}
+	if !strings.Contains(string(restored), longName) {
+		t.Errorf("expected original name %q in restored payload: %s", longName, string(restored))
+	}
+}
+
+// TestFitToolNamesForProvider_NoToolsUnchanged verifies that a body without
+// tool names is returned unchanged with a nil map, regardless of provider.
+func TestFitToolNamesForProvider_NoToolsUnchanged(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+	for _, provider := range []string{"openai", "azure", "azure-openai", "deepseek"} {
+		got, toolMap := FitToolNamesForProvider(body, provider)
+		if string(got) != string(body) {
+			t.Errorf("provider %s: expected body unchanged, got: %s", provider, got)
+		}
+		if len(toolMap) != 0 {
+			t.Errorf("provider %s: expected empty toolMap, got: %v", provider, toolMap)
+		}
+	}
+}

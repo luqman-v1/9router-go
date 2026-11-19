@@ -2,9 +2,46 @@ package translator
 
 import (
 	"bytes"
+	"crypto/sha256"
 	json "encoding/json/v2"
 	"fmt"
 )
+
+// FitToolNamesForProvider is like FitToolNames but takes the provider id so
+// sha256-based aliasing is used for providers that enforce a 64-char limit
+// (openai, azure, azure-openai). OmniRoute #20258 spec: tool_<sha256[:50]>.
+func FitToolNamesForProvider(body []byte, provider string) ([]byte, map[string]string) {
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	if !bytes.Contains(body, []byte(`"tools"`)) &&
+		!bytes.Contains(body, []byte(`"functions"`)) &&
+		!bytes.Contains(body, []byte(`"tool_calls"`)) &&
+		!bytes.Contains(body, []byte(`"function_call"`)) &&
+		!bytes.Contains(body, []byte(`"tool_use"`)) &&
+		!bytes.Contains(body, []byte(`"functionCall"`)) &&
+		!bytes.Contains(body, []byte(`"functionResponse"`)) &&
+		!bytes.Contains(body, []byte(`"tool_choice"`)) {
+		return body, nil
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, nil
+	}
+
+	toolMap := FitToolNamesInMap(req, provider)
+	if len(toolMap) == 0 {
+		return body, nil
+	}
+
+	newBody, err := json.Marshal(req, json.Deterministic(true))
+	if err != nil {
+		return body, nil
+	}
+	return newBody, toolMap
+}
 
 // MaxToolNameLength is the maximum allowed length for a function/tool name
 // across OpenAI and OpenAI-compatible APIs (regex: ^[a-zA-Z0-9_-]{1,64}$).
@@ -46,7 +83,7 @@ func FitToolNames(body []byte) ([]byte, map[string]string) {
 		return body, nil
 	}
 
-	toolMap := FitToolNamesInMap(req)
+	toolMap := FitToolNamesInMap(req, "")
 	if len(toolMap) == 0 {
 		return body, nil
 	}
@@ -60,7 +97,7 @@ func FitToolNames(body []byte) ([]byte, map[string]string) {
 
 // FitToolNamesInMap modifies tool names in-place on req and returns the
 // shortenedName -> originalLongName mapping. Returns nil when nothing was changed.
-func FitToolNamesInMap(req map[string]any) map[string]string {
+func FitToolNamesInMap(req map[string]any, provider string) map[string]string {
 	if req == nil {
 		return nil
 	}
@@ -70,9 +107,56 @@ func FitToolNamesInMap(req map[string]any) map[string]string {
 		return nil
 	}
 
-	origToShort, shortToOrig := assignFittedToolNames(longNames, existing)
+	assign := assignFittedToolNames
+	if usesToolNameHash(provider) {
+		assign = assignHashedToolNames
+	}
+	origToShort, shortToOrig := assign(longNames, existing)
 	replaceToolNamesInMap(req, origToShort)
 	return shortToOrig
+}
+
+// UsesToolNameHash reports whether provider enforces the 64-character tool
+// name limit and expects deterministic sha256-based aliasing (e.g. openai,
+// azure). OmniRoute #20258 spec: tool_<sha256[:50]> for names > 64 chars.
+func UsesToolNameHash(provider string) bool {
+	return provider == "openai" || provider == "azure" || provider == "azure-openai"
+}
+
+func usesToolNameHash(provider string) bool {
+	return UsesToolNameHash(provider)
+}
+
+// assignHashedToolNames generates deterministic aliases for long tool names
+// using sha256 hash: tool_<sha256[:50]>. Matches OmniRoute #20258 behavior.
+func assignHashedToolNames(longNames []string, existing map[string]bool) (map[string]string, map[string]string) {
+	origToShort := make(map[string]string, len(longNames))
+	shortToOrig := make(map[string]string, len(longNames))
+
+	for _, orig := range longNames {
+		hash := sha256.Sum256([]byte(orig))
+		alias := fmt.Sprintf("tool_%x", hash[:25])
+
+		if existing[alias] || shortToOrig[alias] != "" {
+			alias = fmt.Sprintf("tool_%x", hash[:24])
+			if existing[alias] || shortToOrig[alias] != "" {
+				idx := 1
+				for {
+					candidate := fmt.Sprintf("%s_%d", alias[:60], idx)
+					if !existing[candidate] && shortToOrig[candidate] == "" {
+						alias = candidate
+						break
+					}
+					idx++
+				}
+			}
+		}
+
+		shortToOrig[alias] = orig
+		origToShort[orig] = alias
+		existing[alias] = true
+	}
+	return origToShort, shortToOrig
 }
 
 func collectToolNames(req map[string]any) (map[string]bool, []string) {
