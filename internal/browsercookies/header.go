@@ -129,7 +129,7 @@ func NormalizeCookieHeaderInput(raw string) (string, error) {
 		return header, nil
 	}
 	if strings.HasPrefix(stripped, "[") || strings.HasPrefix(stripped, "{") {
-		return "", fmt.Errorf("Invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
+		return "", fmt.Errorf("invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
 	}
 	return stripped, nil
 }
@@ -175,10 +175,10 @@ func parseJSONCookiesToHeader(raw string) (header string, isJSON bool, err error
 		if obj, isObj := parsed.(map[string]any); isObj {
 			entries, ok = obj["cookies"].([]any)
 			if !ok {
-				return "", true, fmt.Errorf("Invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
+				return "", true, fmt.Errorf("invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
 			}
 		} else {
-			return "", true, fmt.Errorf("Invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
+			return "", true, fmt.Errorf("invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
 		}
 	}
 	if len(entries) == 0 {
@@ -189,15 +189,15 @@ func parseJSONCookiesToHeader(raw string) (header string, isJSON bool, err error
 	for i, entry := range entries {
 		obj, isObj := entry.(map[string]any)
 		if !isObj {
-			return "", true, fmt.Errorf("Invalid cookie JSON at index %d: expected an object", i)
+			return "", true, fmt.Errorf("invalid cookie JSON at index %d: expected an object", i)
 		}
 		name, nameOK := obj["name"].(string)
 		if !nameOK || name == "" {
-			return "", true, fmt.Errorf("Invalid cookie JSON at index %d: missing required field 'name'", i)
+			return "", true, fmt.Errorf("invalid cookie JSON at index %d: missing required field 'name'", i)
 		}
 		value, valueOK := obj["value"].(string)
 		if !valueOK {
-			return "", true, fmt.Errorf("Invalid cookie JSON at index %d: missing required field 'value'", i)
+			return "", true, fmt.Errorf("invalid cookie JSON at index %d: missing required field 'value'", i)
 		}
 		parts = append(parts, name+"="+value)
 	}
