@@ -62,18 +62,18 @@ func TestHandler_PWAAssets(t *testing.T) {
 			expectedHeaderPart: "image/png",
 		},
 		{
-			name:               "serves kenari.png via SVG fallback",
+			name:               "serves kenari.png",
 			targetPath:         "/providers/kenari.png",
 			expectedStatus:     http.StatusOK,
 			expectedHeaderKey:  "Content-Type",
-			expectedHeaderPart: "image/svg+xml",
+			expectedHeaderPart: "image/png",
 		},
 		{
-			name:               "serves runcrate.png via SVG fallback",
+			name:               "serves runcrate.png",
 			targetPath:         "/providers/runcrate.png",
 			expectedStatus:     http.StatusOK,
 			expectedHeaderKey:  "Content-Type",
-			expectedHeaderPart: "image/svg+xml",
+			expectedHeaderPart: "image/png",
 		},
 		{
 			name:               "serves atmorouter.png via SVG fallback",
