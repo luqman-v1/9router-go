@@ -96,8 +96,17 @@ func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request,
 		h.forwardNvidiaTTS(w, r, body, modelInfo, req.Input, req.Voice, req.ResponseFormat)
 		return
 	}
+	// 4. ollama-local (phonon): OpenAI-compatible /v1/audio/speech on the
+	// local daemon. The body is forwarded verbatim to the configured Ollama
+	// host; the registry kind (ProviderModelKinds) keeps the phonon ids out of
+	// the LLM list and publishes AudioOutput (upstream ollama-local.js
+	// ttsConfig, commit 31a9d262).
+	if modelInfo.Provider == "ollama-local" {
+		h.forwardMediaRequest(w, r, body, "phonon", "/v1/audio/speech")
+		return
+	}
 
-	// 4. Default OpenAI-compatible TTS
+	// 5. Default OpenAI-compatible TTS
 	h.forwardMediaRequest(w, r, body, "tts-1", "/v1/audio/speech")
 }
 

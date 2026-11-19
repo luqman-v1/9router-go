@@ -215,24 +215,30 @@ var ProviderModels = map[string][]string{
 	"ocg":                 {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-k3", "kimi-k3.1-pro", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash", "longcat-2.0", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "space-bunny-free", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "hy4-preview", "hy3", "hy3-preview", "omen-alpha", "grok-4.7", "grok-4.6", "grok-4.5", "gpt-5.6-luna", "gpt-6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor", "claude-haiku-5-5", "gemini-4-argon-contributor", "longcat-2.5-preview-free", "step-5-preview", "beam-free"},
 	"ocz":                 {"claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5", "gpt-5-codex", "gpt-5-nano", "grok-build-0.1", "grok-4.6", "grok-4.5", "muse-spark-1.3", "muse-spark-1.2", "qwen3.6-plus", "qwen3.5-plus", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "big-pickle", "deepseek-v4-flash-free", "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.0-flash-fin-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free", "jev-1.13", "jev-1.13-free"},
 	"ollama":              {"gpt-oss:120b", "kimi-k2.5", "glm-5", "minimax-m2.5", "glm-4.7-flash", "qwen3.5", "minimax-m3", "deepseek-v4.1-flash:cloud", "clef", "clef-flash", "clef:cloud"},
-	"openai":              {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3", "o3-mini", "o3-pro", "o4-mini", "o1", "o1-mini", "text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002", "tts-1", "tts-1-hd", "gpt-4o-mini-tts", "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-1", "dall-e-3", "dall-e-2"},
-	"opencode":            {"muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free", "union-alpha", "jev-1.13-free"},
-	"opencode-go":         {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-k3", "kimi-k3.1-pro", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash", "longcat-2.0", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "space-bunny-free", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "hy4-preview", "hy3", "hy3-preview", "omen-alpha", "grok-4.7", "grok-4.6", "grok-4.5", "gpt-5.6-luna", "gpt-6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor", "claude-haiku-5-5", "gemini-4-argon-contributor", "longcat-2.5-preview-free", "step-5-preview", "beam-free"},
-	"opencode-zen":        {"claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5", "gpt-5-codex", "gpt-5-nano", "grok-build-0.1", "grok-4.6", "grok-4.5", "muse-spark-1.3", "muse-spark-1.2", "qwen3.6-plus", "qwen3.5-plus", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "big-pickle", "deepseek-v4-flash-free", "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.0-flash-fin-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free", "jev-1.13", "jev-1.13-free"},
-	"openrouter":          {"openai/text-embedding-3-large", "openai/text-embedding-3-small", "openai/text-embedding-ada-002", "qwen/qwen3-embedding-8b", "perplexity/pplx-embed-v1-4b", "perplexity/pplx-embed-v1-0.6b", "nvidia/llama-nemotron-embed-vl-1b-v2:free", "openai/gpt-4o-mini-tts", "openai/tts-1-hd", "openai/tts-1", "openai/dall-e-3", "openai/gpt-image-1", "google/imagen-3.0-generate-002", "black-forest-labs/FLUX.1-schnell", "google/veo-3.1", "openai/sora-2-pro", "bytedance/seedance-2.0", "typesafe/jev-1.13"},
-	"oad":                 {"glm-4.7", "deepseek/deepseek-chat", "qwen/qwen-2.5-72b-instruct", "meta-llama/llama-3.3-70b-instruct"},
-	"openadapter":         {"glm-4.7", "deepseek/deepseek-chat", "qwen/qwen-2.5-72b-instruct", "meta-llama/llama-3.3-70b-instruct"},
-	"pa":                  {"perplexity/sonar", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-8", "google/gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "perplexity/glm-5.2", "perplexity/kimi-k2.7-code", "nvidia/nemotron-3-super-120b-a12b"},
-	"perplexity":          {"sonar-pro", "sonar"},
-	"perplexity-agent":    {"perplexity/sonar", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-8", "google/gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "perplexity/glm-5.2", "perplexity/kimi-k2.7-code", "nvidia/nemotron-3-super-120b-a12b"},
-	"perplexity-web":      {"pplx-auto", "pplx-sonar", "pplx-gpt", "pplx-gemini", "pplx-sonnet", "pplx-opus", "pplx-nemotron"},
-	"poolside":            {"poolside/laguna-s-2.1", "poolside/laguna-xs-2.1"},
-	"pplx":                {"sonar-pro", "sonar"},
-	"ps":                  {"poolside/laguna-s-2.1", "poolside/laguna-xs-2.1"},
-	"pw":                  {"pplx-auto", "pplx-sonar", "pplx-gpt", "pplx-gemini", "pplx-sonnet", "pplx-opus", "pplx-nemotron"},
-	"qd":                  {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
-	"qdcn":                {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
-	"qianfan":             {"deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "glm-5.1", "kimi-k2.6", "qwen3.5-397b-a17b", "qwen3.5-27b"},
+	// ollama-local serves the self-hosted Ollama daemon's OpenAI-compatible
+	// endpoints. The phonon family is speech synthesis (upstream
+	// ollama-local.js ttsConfig, commit 31a9d262): 15 tags across 8 voices,
+	// all classified "tts" in ProviderModelKinds below so they stay out of
+	// the LLM list and publish AudioOutput.
+	"ollama-local":     {"phonon:latest", "phonon", "phonon:multilingual", "phonon:40m-multilingual", "phonon:en", "phonon:31m-en", "phonon:40m-en", "phonon:de", "phonon:40m-de", "phonon:es", "phonon:40m-es", "phonon:fr", "phonon:40m-fr", "phonon:pt", "phonon:40m-pt"},
+	"openai":           {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3", "o3-mini", "o3-pro", "o4-mini", "o1", "o1-mini", "text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002", "tts-1", "tts-1-hd", "gpt-4o-mini-tts", "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-1", "dall-e-3", "dall-e-2"},
+	"opencode":         {"muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free", "union-alpha", "jev-1.13-free"},
+	"opencode-go":      {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-k3", "kimi-k3.1-pro", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash", "longcat-2.0", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "space-bunny-free", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "hy4-preview", "hy3", "hy3-preview", "omen-alpha", "grok-4.7", "grok-4.6", "grok-4.5", "gpt-5.6-luna", "gpt-6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor", "claude-haiku-5-5", "gemini-4-argon-contributor", "longcat-2.5-preview-free", "step-5-preview", "beam-free"},
+	"opencode-zen":     {"claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5", "gpt-5-codex", "gpt-5-nano", "grok-build-0.1", "grok-4.6", "grok-4.5", "muse-spark-1.3", "muse-spark-1.2", "qwen3.6-plus", "qwen3.5-plus", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "big-pickle", "deepseek-v4-flash-free", "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.0-flash-fin-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free", "jev-1.13", "jev-1.13-free"},
+	"openrouter":       {"openai/text-embedding-3-large", "openai/text-embedding-3-small", "openai/text-embedding-ada-002", "qwen/qwen3-embedding-8b", "perplexity/pplx-embed-v1-4b", "perplexity/pplx-embed-v1-0.6b", "nvidia/llama-nemotron-embed-vl-1b-v2:free", "openai/gpt-4o-mini-tts", "openai/tts-1-hd", "openai/tts-1", "openai/dall-e-3", "openai/gpt-image-1", "google/imagen-3.0-generate-002", "black-forest-labs/FLUX.1-schnell", "google/veo-3.1", "openai/sora-2-pro", "bytedance/seedance-2.0", "typesafe/jev-1.13"},
+	"oad":              {"glm-4.7", "deepseek/deepseek-chat", "qwen/qwen-2.5-72b-instruct", "meta-llama/llama-3.3-70b-instruct"},
+	"openadapter":      {"glm-4.7", "deepseek/deepseek-chat", "qwen/qwen-2.5-72b-instruct", "meta-llama/llama-3.3-70b-instruct"},
+	"pa":               {"perplexity/sonar", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-8", "google/gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "perplexity/glm-5.2", "perplexity/kimi-k2.7-code", "nvidia/nemotron-3-super-120b-a12b"},
+	"perplexity":       {"sonar-pro", "sonar"},
+	"perplexity-agent": {"perplexity/sonar", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-8", "google/gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "perplexity/glm-5.2", "perplexity/kimi-k2.7-code", "nvidia/nemotron-3-super-120b-a12b"},
+	"perplexity-web":   {"pplx-auto", "pplx-sonar", "pplx-gpt", "pplx-gemini", "pplx-sonnet", "pplx-opus", "pplx-nemotron"},
+	"poolside":         {"poolside/laguna-s-2.1", "poolside/laguna-xs-2.1"},
+	"pplx":             {"sonar-pro", "sonar"},
+	"ps":               {"poolside/laguna-s-2.1", "poolside/laguna-xs-2.1"},
+	"pw":               {"pplx-auto", "pplx-sonar", "pplx-gpt", "pplx-gemini", "pplx-sonnet", "pplx-opus", "pplx-nemotron"},
+	"qd":               {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
+	"qdcn":             {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
+	"qianfan":          {"deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "glm-5.1", "kimi-k2.6", "qwen3.5-397b-a17b", "qwen3.5-27b"},
 	// smodel (Sonus) / cmodel (Cantus): the frontier reasoning pair is absent
 	// from many per-account catalogs, so the executor falls back to a static
 	// model_config; they stay listed so the picker still offers them.
@@ -613,6 +619,27 @@ var ProviderModelKinds = map[string]map[string]string{
 		"parakeet-ctc-1.1b-asr":        "stt",
 		"nvidia/parakeet-ctc-1.1b-asr": "stt",
 		"tacotron2":                    "tts",
+	},
+	// ollama-local's phonon family is speech synthesis: the registry kind is
+	// load-bearing because the id carries no "tts" signal, so the name-based
+	// rule in capabilities.go cannot reach it (upstream ollama-local.js
+	// ttsConfig, commit 31a9d262).
+	"ollama-local": {
+		"phonon:latest":           "tts",
+		"phonon":                  "tts",
+		"phonon:multilingual":     "tts",
+		"phonon:40m-multilingual": "tts",
+		"phonon:en":               "tts",
+		"phonon:31m-en":           "tts",
+		"phonon:40m-en":           "tts",
+		"phonon:de":               "tts",
+		"phonon:40m-de":           "tts",
+		"phonon:es":               "tts",
+		"phonon:40m-es":           "tts",
+		"phonon:fr":               "tts",
+		"phonon:40m-fr":           "tts",
+		"phonon:pt":               "tts",
+		"phonon:40m-pt":           "tts",
 	},
 	"oc": {
 		"jev-1.13-free": "systemone",
