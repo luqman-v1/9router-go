@@ -1,5 +1,54 @@
 # Changelog
 
+## [v1.9.17-exp.8] - 2026-11-19
+
+### Fixed
+
+- `agy-acp` models now appear in the dashboard's provider detail, model picker, and combo catalog. The frontend `web/src/lib/models.ts` static catalog had no `agy-acp`/`agcpy` entry, so `getModelsByProviderId()` returned an empty list even though the Go registry and `/v1/models` already served the models.
+
+### Changed
+
+- Synced the full Antigravity roster to `agy-acp` (37 ids incl. gemini-4 carbon/argon/hydrogen, gemini-3.8/3.7 flash, gemini-3.1-pro, claude-sonnet/opus 5-5 and 4-6, gpt-oss-120b), across `internal/providers/registry_models.go`, `internal/providers/capabilities.go`, `internal/acp/agy/models.go`, and `web/src/lib/models.ts`. Models an account cannot select still list and fail clearly at `session/new` — no silent fallback.
+- Removed the now-redundant short-id alias map in `internal/acp/agy/models.go` (those ids are now catalogue entries themselves).
+
+### Verification
+
+- `go test ./internal/acp/agy/ ./internal/providers/ ./internal/proxy/executor/` pass.
+- `bun test src scripts` — 845 pass, 0 fail.
+- `bun run ratchet:svelte` — 0 unresolved identifiers, 74 errors (baseline unchanged).
+- `bun run build` succeeds; `dist/` 4.8 MB.
+
+### Fixed
+
+- Keep the `[DONE]` SSE sentinel its own event on the OpenCode execute bridge (`openCodeExecuteBridgeWriter`). When a `CALL_TOOL`-wrapped tool call was still pending at stream end, the held `finish_reason` line was flushed with a single newline immediately before `data: [DONE]`; OpenAI clients joined both data lines into one payload and failed with `provider_stream_non_json_data` (`JSONDecodeError: Extra data`), killing tool calls on `hy4-flash-free`. The bridge now tracks trailing newlines and inserts the missing blank line before the sentinel, mirroring the passthrough fix in #1251. Regression test: `TestBridgeDoneSentinelOwnEvent`.
+
+### Fixed
+
+- Ensure the `[DONE]` SSE sentinel is always its own event. When an upstream terminal chunk arrives without a blank-line separator, the gateway now inserts one before the sentinel so OpenAI clients do not join both data lines into one payload and fail with `JSONDecodeError: Extra data`.
+
+### Fixed
+
+- Provider aliases now resolve to their canonical id when reading synced catalog limits and static provider token limits. Models published under short aliases (e.g. `oc/hy4-flash-free`) use the same context window as their canonical provider instead of falling back to the generic 128k/4k guess.
+
+### Fixed
+
+- Keep the Cloudflare error body in attempt logs: unparsed upstream bodies are no longer replaced by the ~160-rune `ForwardOpenAI upstream: forward to <url>` wrapper before truncation (#1226).
+- Strip tool definitions and flatten tool turns before forwarding to Cloudflare models not declared tool-capable, avoiding a 400 on multi-turn tool conversations sent through combos (#1226).
+
+### Added
+
+- `agy-acp` provider: independent provider that drives the locally installed `agy` CLI over the Agent Client Protocol (JSON-RPC NDJSON over stdio) instead of calling Google's HTTP API. Registered with its own executor, alias `agcpy`, model catalogue, capabilities, and a ToS risk notice; no cross-provider aliasing with `antigravity`.
+- Multi-account support: each `agy-acp` connection gets an isolated 0700 account dir and writes `agy`'s file-backed OAuth token (0600) at turn time, cleared afterwards. Concurrency is bounded by a capped worker manager (queue + timeout, no unbounded growth). Failover stays off by default.
+- Shared credentials with `antigravity`: `providerSpecificData.sourceConnection` references an existing Antigravity connection so the same OAuth token is refreshed and reused; `accessToken`/`refreshToken` on the connection itself support the copy/manual-import mode. Both modes are resolved and refreshed by the chat handler without exposing tokens to logs.
+- Loopback HTTP MCP tool bridge: OpenAI `tools` are exposed to agy on `127.0.0.1:<ephemeral>` (no `nc` dependency), tool calls are emitted as OpenAI `tool_calls` deltas, and prior tool results are seeded for multi-turn calls. Permission auto-approval is limited to `accept-edits`/`auto`/`bypass` modes.
+
+### Verification
+
+- `go test ./internal/acp/agy/...` passes with a fake ACP subprocess (handshake, streaming, credential file mode 0600, model mapping, error classification).
+- Provider artwork `web/public/providers/agy-acp.png` added so the dashboard's provider-artwork parity test passes for the new registry entry.
+- Lint clean: checked pipe/credential `Close` return values, wrapped sentinel errors with `%w`, and used `net.ListenConfig.Listen` with context for the MCP loopback listener.
+- `go build ./...` passes.
+
 ## [v1.9.17-exp.6] - 2026-11-18
 
 ### fix(security): judge the dialled address in the media client, and bound the antigravity 404 table

@@ -1,3 +1,0 @@
-### Fixed
-
-- Keep the `[DONE]` SSE sentinel its own event on the OpenCode execute bridge (`openCodeExecuteBridgeWriter`). When a `CALL_TOOL`-wrapped tool call was still pending at stream end, the held `finish_reason` line was flushed with a single newline immediately before `data: [DONE]`; OpenAI clients joined both data lines into one payload and failed with `provider_stream_non_json_data` (`JSONDecodeError: Extra data`), killing tool calls on `hy4-flash-free`. The bridge now tracks trailing newlines and inserts the missing blank line before the sentinel, mirroring the passthrough fix in #1251. Regression test: `TestBridgeDoneSentinelOwnEvent`.
