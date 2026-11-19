@@ -72,6 +72,21 @@ func (h *DashboardHandler) HandleSetApiKeyModels(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// The allowlist table has no foreign key, so a write for an unknown id
+	// commits cleanly — rows land for a key that does not exist and the
+	// operator is told the restriction was saved. Every sibling key route
+	// resolves the row first and answers 404; without that check here, a
+	// typo in the panel silently restricts nothing while reporting success.
+	existing, err := h.Repo.GetApiKeyByID(id)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
