@@ -151,6 +151,20 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 		promptResultCh <- res
 	}()
 
+	// agy reports fatal agent faults (dead credentials, unusable model plan)
+	// as ordinary agent_message_chunk text followed by stopReason end_turn —
+	// not as a JSON-RPC error. Forwarding that text made every auth failure a
+	// billed HTTP 200 and stopped the multi-account failover loop. Hold the
+	// turn-leading text until real output proves the turn is alive, and turn
+	// a lone diagnostic into a classified error instead.
+	var lead strings.Builder
+	leadAlive := false // real output seen; leading text is no longer suspect
+	flushLead := func() {
+		if lead.Len() > 0 {
+			onEvent(TurnEvent{Kind: UpdateText, Text: lead.String()})
+			lead.Reset()
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -160,7 +174,17 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 		case res := <-promptResultCh:
 			text, stop := FinalResult(res)
 			if text != "" {
+				if !leadAlive && isAgentDiagnostic(lead.String()+text) {
+					return classifyError(fmt.Errorf("agy-acp: %s", strings.TrimSpace(lead.String()+text)))
+				}
+				flushLead()
 				onEvent(TurnEvent{Kind: UpdateText, Text: text})
+			}
+			if !leadAlive {
+				if d := strings.TrimSpace(lead.String()); isAgentDiagnostic(d) {
+					return classifyError(fmt.Errorf("agy-acp: %s", d))
+				}
+				flushLead()
 			}
 			onEvent(TurnEvent{Kind: UpdateDone, Done: true})
 			return stopReasonError(stop)
@@ -174,10 +198,21 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 			}
 			switch kind {
 			case UpdateText:
-				if text != "" {
+				if text == "" {
+					continue
+				}
+				if leadAlive {
 					onEvent(TurnEvent{Kind: UpdateText, Text: text})
+					continue
+				}
+				lead.WriteString(text)
+				if !isAgentDiagnosticPrefix(lead.String()) {
+					leadAlive = true
+					flushLead()
 				}
 			case UpdateThinking:
+				leadAlive = true
+				flushLead()
 				onEvent(TurnEvent{Kind: UpdateThinking, Text: text})
 			case UpdateToolCall:
 				// agy calls client tools through loopback MCP, not through
@@ -185,13 +220,20 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 				// the bridge emits the actual OpenAI tool_call.
 				continue
 			case UpdateError:
-				return fmt.Errorf("agy-acp: %s", text)
+				return classifyError(fmt.Errorf("agy-acp: %s", text))
 			case UpdateDone:
+				if !leadAlive {
+					if d := strings.TrimSpace(lead.String()); isAgentDiagnostic(d) {
+						return classifyError(fmt.Errorf("agy-acp: %s", d))
+					}
+					flushLead()
+				}
 				onEvent(TurnEvent{Kind: UpdateDone, Done: true})
 				return nil
 			}
 			_ = update
 		case call := <-bridgeCalls(bridge):
+			flushLead()
 			onEvent(TurnEvent{Kind: UpdateToolCall, ToolCall: &ToolCall{
 				ID: call.ID, Name: call.Name, Input: call.Args,
 			}})
@@ -200,6 +242,48 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 			return classifyError(client.processError())
 		}
 	}
+}
+
+// isAgentDiagnostic reports whether a whole turn's text is one of agy's
+// fatal fault banners rather than model output. agy prefixes these with
+// "⚠" and ends the turn with end_turn; the marker set is taken from the
+// agy binary's own diagnostic strings (1.5.x).
+func isAgentDiagnostic(text string) bool {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "⚠") {
+		return false
+	}
+	for _, marker := range []string{
+		"failed to construct executor",
+		"plan model not specified",
+		"needs sign-in", "needs sign in", "needs setup",
+		"quota", "rate limit", "rate_limit",
+		"unauthorized", "invalid_grant", "authentication",
+		"permission denied", "403",
+	} {
+		if strings.Contains(strings.ToLower(t), marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAgentDiagnosticPrefix reports whether buffered turn-leading text could
+// still become a fatal banner. Anything else means real model output has
+// started and streaming resumes unbuffered.
+func isAgentDiagnosticPrefix(buf string) bool {
+	t := strings.TrimSpace(buf)
+	if t == "" {
+		return true
+	}
+	if !strings.HasPrefix(t, "⚠") {
+		return strings.HasPrefix("⚠", t)
+	}
+	// A banner is a single short line; long or multi-line text is content.
+	if len(t) > 512 || strings.Contains(strings.Trim(buf, " \t\r\n"), "\n") {
+		return false
+	}
+	return true
 }
 
 // bridgeCalls returns the bridge's call channel, or nil when no bridge is
@@ -231,7 +315,8 @@ func classifyError(err error) error {
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "invalid_grant"), strings.Contains(msg, "unauthorized"),
-		strings.Contains(msg, "401"), strings.Contains(msg, "oauth-personal"), strings.Contains(msg, "login"):
+		strings.Contains(msg, "401"), strings.Contains(msg, "oauth-personal"), strings.Contains(msg, "login"),
+		strings.Contains(msg, "sign-in"), strings.Contains(msg, "sign in"), strings.Contains(msg, "authentication"):
 		return fmt.Errorf("%w: %w", ErrAuth, err)
 	case strings.Contains(msg, "quota"), strings.Contains(msg, "429"), strings.Contains(msg, "rate_limit"):
 		return fmt.Errorf("%w: %w", ErrQuota, err)
