@@ -18,6 +18,7 @@ type writerCtx struct {
 	display    string
 	caps       providers.Capabilities
 	provider   string
+	model      string
 }
 
 // formatWriters maps a thinking format to the writer that emits its dialect.
@@ -155,13 +156,20 @@ func writeClaudeAdaptive(c *writerCtx) {
 		c.body["thinking"] = map[string]any{"type": "disabled"}
 		return
 	}
-	// Permanently adaptive models (e.g. Fable 5.1) take effort directly.
+	// Models that can disable thinking need the explicit adaptive switch.
+	// Permanently adaptive models such as Fable 5.1 accept effort directly. Claude
+	// ones still get the switch when it carries a requested display: display
+	// defaults to "omitted" there, so dropping it hides the thinking text. A
+	// thinking-off request (clamped to minimal) asks for no thinking text.
+	// Port of decolua/9router f3e1f716 thinkingUnified.js applyFormat claude-adaptive.
+	lvl := ToLevel(c.eff)
 	if c.canDisable {
 		c.body["thinking"] = withDisplay(map[string]any{"type": "adaptive"}, c.display)
+	} else if c.display != "" && lvl != "minimal" && strings.Contains(strings.ToLower(c.model), "claude") {
+		c.body["thinking"] = map[string]any{"type": "adaptive", "display": normalizeDisplay(c.display)}
 	} else {
 		delete(c.body, "thinking")
 	}
-	lvl := ToLevel(c.eff)
 	effort := "high"
 	switch lvl {
 	case "minimal":

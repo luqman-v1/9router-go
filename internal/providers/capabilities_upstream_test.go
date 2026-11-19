@@ -279,7 +279,7 @@ func TestGetThinkingLevels_ClaudeAdaptiveXHigh(t *testing.T) {
 		{provider: "claude", model: "claude-opus-5", want: []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{provider: "claude", model: "claude-sonnet-5", want: []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{provider: "kiro", model: "claude-sonnet-5", want: []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{provider: "kiro", model: "claude-opus-5.5", want: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{provider: "kiro", model: "claude-opus-5.5", want: []string{"low", "medium", "high", "xhigh", "max"}},
 		{provider: "claude", model: "claude-fable-5-1", want: []string{"low", "medium", "high", "xhigh", "max"}},
 		{provider: "claude", model: "claude-opus-4.6", want: []string{"none", "low", "medium", "high", "max"}},
 		{provider: "claude", model: "claude-opus-4-6", want: []string{"none", "low", "medium", "high", "max"}},
