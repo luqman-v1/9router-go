@@ -18,9 +18,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +27,6 @@ import (
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
-	"9router/proxy/internal/proxy"
 )
 
 // cloudflareMultipartModels are the FLUX.2 ids that reject JSON and require a
@@ -408,29 +405,16 @@ func openAIImageFromBinary(data []byte) ([]byte, error) {
 
 // resolveImageInput downloads a reference image URL and returns it as a
 // base64-encoded string. It uses r.Context(), requires a 200 response, and
-// refuses private/resolved IPs via proxy.IsPrivateIP (SSRF protection).
+// fetches through the vision bridge's connect-time guarded client, which
+// refuses private/loopback/metadata addresses regardless of
+// ALLOW_PRIVATE_NETWORKING and re-checks every redirect hop (DNS rebinding /
+// redirect SSRF, OmniRoute #20475).
 func (h *MediaHandler) resolveImageInput(ctx context.Context, imageURL string) (string, error) {
-	u, err := url.Parse(imageURL)
-	if err != nil {
-		return "", fmt.Errorf("parse image url: %w", err)
-	}
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	if ip == nil {
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-		if err != nil || len(ips) == 0 {
-			return "", fmt.Errorf("resolve image host %q: %w", host, err)
-		}
-		ip = ips[0]
-	}
-	if !proxy.IsPrivateNetworkingAllowed() && proxy.IsPrivateIP(ip) {
-		return "", fmt.Errorf("image host %q resolves to private IP %s", host, ip)
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create image request: %w", err)
 	}
-	resp, err := h.Client.Do(req)
+	resp, err := visionImageDownloadClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch image: %w", err)
 	}
