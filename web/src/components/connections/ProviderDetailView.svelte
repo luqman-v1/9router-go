@@ -320,7 +320,7 @@
       // model unreachable: correctly absent from /v1/models, and equally absent
       // from the one screen that could remove it. The row carries its kind so
       // delete addresses the right key.
-      const full = `${storageAlias}/${cm.id}`
+      const full = `${displayAlias()}/${cm.id}`
       if (seen.has(full)) continue
       seen.add(full)
       // The kv store carries no per-row timestamp, so the add date is the
@@ -2430,7 +2430,7 @@
   // Model actions
   function copyModelId(modelId: string) {
     const level = resolveThinkingSuffix(modelId)
-    const full = `${storageAlias}/${modelId}${level ? `(${level})` : ''}`
+    const full = `${displayAlias()}/${modelId}${level ? `(${level})` : ''}`
     copyToClipboard(full)
     copiedModelId = modelId
     setTimeout(() => (copiedModelId = null), 2000)
@@ -4816,7 +4816,7 @@
     <div class="flex flex-wrap gap-3">
       {#each gridModels as model (model.id)}
         {@const level = resolveThinkingSuffix(model.id)}
-        {@const fullModelId = `${storageAlias}/${model.id}${level ? `(${level})` : ''}`}
+        {@const fullModelId = `${displayAlias()}/${model.id}${level ? `(${level})` : ''}`}
         {@const rowCaps = modelCaps[model.id] ?? model.caps}
         {@const testStatus = modelTestStatuses[model.id]}
         {@const isTestingThis = testStatus === 'testing'}

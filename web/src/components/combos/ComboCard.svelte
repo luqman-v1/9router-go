@@ -7,7 +7,7 @@
     Wand2,
     X
   } from 'lucide-svelte'
-  import type { Combo } from '../../api/client'
+  import type { Combo, ProviderNode } from '../../api/client'
   import Card from '../../lib/ui/Card.svelte'
   import ComboActionsMenu from './ComboActionsMenu.svelte'
   import {
@@ -15,6 +15,7 @@
     BUDGET_WINDOW_HELP,
     budgetWindowMsToMinutes,
     comboStrategyOptions,
+    displayModelInCombo,
     effectiveComboStrategy,
     getComboModels,
     hasReasoning,
@@ -66,6 +67,8 @@
     } | null
     isSelected?: boolean
     onToggleSelect?: (combo: Combo) => void
+    /** Provider nodes used to resolve a custom node's display prefix on badges. */
+    providerNodes?: ProviderNode[]
   }
 
   let {
@@ -92,6 +95,7 @@
     testData = null,
     isSelected = false,
     onToggleSelect,
+    providerNodes = [],
   }: Props = $props()
 
   let expandedModels = $state(false)
@@ -223,7 +227,7 @@
                     {res.ok ? 'check_circle' : 'cancel'}
                   </span>
                 {/if}
-                <span>{model}</span>
+                <span>{displayModelInCombo(model, providerNodes)}</span>
                 {#if res?.ok}
                   <span class="text-[10px] opacity-75 font-sans font-normal">{res.latencyMs}ms</span>
                 {/if}

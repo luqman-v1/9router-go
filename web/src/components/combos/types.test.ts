@@ -4,6 +4,7 @@ import {
   clearJudgeModel,
   COMBO_SORT_OPTIONS,
   COMBO_STRATEGIES,
+  displayModelInCombo,
   effectiveComboStrategy,
   isComboSorted,
   MAX_BUDGET_CALLS,
@@ -25,6 +26,9 @@ import {
   type ComboStrategyInfo
 } from './types'
 import type { ModelMetaMap } from './types'
+import type { ProviderNode } from '../../api/client'
+
+const node = (id: string, prefix?: string): ProviderNode => ({ id, type: 'openai-compatible', name: id, prefix })
 
 const OPTION_VALUES = COMBO_STRATEGIES.map((s) => s.value)
 
@@ -447,5 +451,35 @@ describe('combo call budget', () => {
     expect(budgetWindowMsToMinutes(0)).toBe(60)
     expect(budgetWindowMsToMinutes(300000)).toBe(5)
     expect(budgetWindowMsToMinutes(90000)).toBe(2)
+  })
+})
+
+describe('displayModelInCombo (issue #1258)', () => {
+  it('renders a custom node model with its display prefix, not the row id', () => {
+    const nodes = [node('openai-compatible-chat-ocu-uuid', 'ocu')]
+    expect(displayModelInCombo('openai-compatible-chat-ocu-uuid/gpt-4o', nodes)).toBe('ocu/gpt-4o')
+  })
+
+  it('leaves a registered provider model untouched', () => {
+    const nodes = [node('openai-compatible-chat-ocu-uuid', 'ocu')]
+    expect(displayModelInCombo('deepseek/deepseek-v4.1-flash', nodes)).toBe('deepseek/deepseek-v4.1-flash')
+  })
+
+  it('falls back to the stored prefix when the node has no display prefix', () => {
+    const nodes = [node('openai-compatible-chat-abc')]
+    expect(displayModelInCombo('openai-compatible-chat-abc/gpt-4o', nodes)).toBe('openai-compatible-chat-abc/gpt-4o')
+  })
+
+  it('returns the model unchanged when no node map is supplied', () => {
+    expect(displayModelInCombo('openai-compatible-chat-ocu-uuid/gpt-4o')).toBe('openai-compatible-chat-ocu-uuid/gpt-4o')
+  })
+
+  it('returns a model with no slash unchanged', () => {
+    expect(displayModelInCombo('gpt-4o')).toBe('gpt-4o')
+  })
+
+  it('maps an anthropic-compatible node id to its prefix', () => {
+    const nodes = [node('anthropic-compatible-claude-node', 'cl')]
+    expect(displayModelInCombo('anthropic-compatible-claude-node/claude-sonnet', nodes)).toBe('cl/claude-sonnet')
   })
 })
