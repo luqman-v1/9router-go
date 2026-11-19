@@ -743,6 +743,7 @@ async function handleSetContextWindow(combo: Combo, contextWindow: number) {
             testData={comboTestResults[combo.id]}
             isSelected={selectedIds.has(combo.id)}
             onToggleSelect={toggleSelect}
+            {providerNodes}
           />
         {/each}
       </div>

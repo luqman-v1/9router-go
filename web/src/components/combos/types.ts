@@ -1,4 +1,4 @@
-import type { Combo, SmartRule, SmartRulePreview } from '../../api/client'
+import type { Combo, ProviderNode, SmartRule, SmartRulePreview } from '../../api/client'
 
 export interface ComboStrategyInfo {
   fallbackStrategy?: string
@@ -830,4 +830,23 @@ export function smartPolicyLabel(info: ComboStrategyInfo): string {
     return `Custom (≥${pct || 80}%)`
   }
   return 'Smart (≥80%)'
+}
+
+/**
+ * Combo members are stored as "<provider-or-node-id>/<model>". For a custom
+ * provider node that prefix is the SQLite row id ("openai-compatible-chat-<uuid>")
+ * or the user-chosen display prefix ("ocu"). When providerNodes is supplied,
+ * a node's own prefix replaces the raw id; otherwise the stored value is
+ * returned unchanged so nothing is hidden when the mapping is unavailable.
+ * Issue #1258: badges on combo cards were rendering the raw row id.
+ */
+export function displayModelInCombo(model: string, providerNodes?: ProviderNode[]): string {
+  const slash = model.indexOf('/')
+  if (slash <= 0) return model
+  const provider = model.slice(0, slash)
+  const rest = model.slice(slash + 1)
+  if (!provider || !rest) return model
+  const node = providerNodes?.find((n) => n.id === provider)
+  const display = node?.prefix || provider
+  return `${display}/${rest}`
 }
