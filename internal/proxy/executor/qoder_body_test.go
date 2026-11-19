@@ -36,7 +36,11 @@ func qoderSeedCatalog(t *testing.T, creds QoderCosyCreds, region QoderRegion, co
 	for key, config := range configs {
 		raw[key] = config
 	}
-	qoderCatalogs[qoderCatalogKey(creds, region)] = &qoderCatalog{rawConfigs: raw, expiresAt: time.Now().Add(time.Hour)}
+	qoderCatalogs[qoderCatalogKey(creds, region)] = &qoderCatalog{
+		rawConfigs: raw,
+		names:      qoderCatalogNames(raw),
+		expiresAt:  time.Now().Add(time.Hour),
+	}
 	t.Cleanup(func() {
 		qoderCatalogMu.Lock()
 		defer qoderCatalogMu.Unlock()

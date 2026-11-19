@@ -451,6 +451,9 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	conn := h.saveDeviceConnection(deviceCanonical(body.Provider), tokens)
+	// Fill the live model catalog while the fresh credential is in hand, so
+	// the first chat request after login resolves from a warm snapshot.
+	refreshQoderCatalogAfterDeviceLogin(r.Context(), deviceCanonical(body.Provider), tokens)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "authorized", "id": conn.id, "connectionId": conn.id,
 		"provider": body.Provider, "name": conn.name, "email": conn.email,
