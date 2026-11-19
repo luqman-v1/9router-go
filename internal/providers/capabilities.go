@@ -585,15 +585,48 @@ var providerCapabilities = map[string]map[string]Capabilities{
 	// agy-acp: models served by the local agy 1.5.9 CLI over ACP. The roster
 	// is explicit (no cross-provider aliasing); context window is agy's own
 	// 1M-token session window reported by session/new usage_update.
+	// agy-acp: full Antigravity roster served by the local agy CLI over ACP.
+	// Synced with internal/providers/registry_models.go. Context window is agy's
+	// own 1M-token session window; models an account cannot select still list
+	// here and fail with a clear error at session/new, not silently.
 	"agy-acp": {
+		"gemini-4-carbon-high":     {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-carbon-medium":   {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-carbon-low":      {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-carbon":          {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-argon-high":      {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-argon-medium":    {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-argon-low":       {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-argon":           {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-hydrogen-xhigh":  {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-hydrogen-high":   {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-hydrogen-medium": {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-hydrogen-low":    {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-4-hydrogen":        {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"gemini-3.8-flash-high":    {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"gemini-3.8-flash-medium":  {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"gemini-3.8-flash-low":     {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"gemini-3.8-flash":         {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-3.7-flash-high":    {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-3.7-flash-medium":  {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-3.7-flash-low":     {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-3.1-pro-high":      {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-pro-agent":         {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"gemini-3.1-pro-low":       {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-sonnet-5-5-high":   {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-sonnet-5-5-medium": {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-sonnet-5-5-low":    {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-sonnet-5-5":        {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-opus-5-5-high":     {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-opus-5-5-medium":   {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-opus-5-5-low":      {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-opus-5-5":          {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"claude-sonnet-4-6":        {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"claude-opus-4-6-thinking": {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"gpt-oss-120b-medium":      {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"gpt-oss-120b":             {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-sonnet":            {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
+		"claude-opus":              {Vision: true, Reasoning: true, Tools: true, ContextWindow: 1000000},
 	},
 	// MiniMax Code (mcode) credits lane — Anthropic messages on the mavis
 	// gateway, thinking as adaptive effort via output_config.effort

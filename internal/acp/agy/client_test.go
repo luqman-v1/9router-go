@@ -68,7 +68,9 @@ func TestResolveModel(t *testing.T) {
 	}{
 		{"gemini-3.8-flash-high", "gemini-3.8-flash-high", true},
 		{"claude-sonnet-4-6", "claude-sonnet-4-6", true},
-		{"gemini-3.8-flash", "gemini-3.8-flash-medium", true},
+		{"gemini-3.8-flash", "gemini-3.8-flash", true},
+		{"gemini-4-carbon-high", "gemini-4-carbon-high", true},
+		{"claude-opus-5-5", "claude-opus-5-5", true},
 		{"totally-unknown", "", false},
 		{"", "", false},
 	}
