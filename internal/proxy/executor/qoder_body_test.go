@@ -122,6 +122,39 @@ func qoderFixture(t *testing.T) QoderCosyCreds {
 // The core of issue #121: what reaches Qoder must be a Qoder payload, not the
 // client's OpenAI body. Every key here is one Qoder's router needs to match a
 // flow — missing any of them is the 400 the issue reports.
+// SRouter hoists both system and developer messages into Qoder's top-level
+// system field; leaving developer in messages makes the router reject the
+// turn. Keep the payload identical to the IDE's shape.
+func TestForwardQoder_HoistsDeveloperIntoSystem(t *testing.T) {
+	creds := qoderFixture(t)
+	srv, got := qoderCaptureServer(t, qoderSSE(qoderChunk(`{"content":"ok"}`, `"stop"`), "[DONE]"))
+
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      t.Context(),
+		Client:   srv.Client(),
+		Config:   &providers.ProviderConfig{BaseURL: srv.URL},
+		APIKey:   creds.AuthToken,
+		ConnData: map[string]any{"userId": creds.UserID, "machineId": creds.MachineID},
+		Body:     []byte(`{"model":"qd/qfmodel","messages":[{"role":"system","content":"SYS"},{"role":"developer","content":"DEV"},{"role":"user","content":"go"}],"stream":false,"max_tokens":10}`),
+	}
+	if err := ForwardQoder(rec, req); err != nil {
+		t.Fatalf("ForwardQoder: %v", err)
+	}
+	payload := qoderDecodeCaptured(t, got.Body)
+	system, _ := payload["system"].(string)
+	if !strings.Contains(system, "SYS") || !strings.Contains(system, "DEV") {
+		t.Errorf("system = %q, want both system and developer prompts", system)
+	}
+	messages, _ := payload["messages"].([]any)
+	for _, msg := range messages {
+		m, _ := msg.(map[string]any)
+		if role, _ := m["role"].(string); role == "system" || role == "developer" {
+			t.Errorf("messages still carries %q role", role)
+		}
+	}
+}
+
 func TestForwardQoder_SendsQoderPayloadNotOpenAIBody(t *testing.T) {
 	creds := qoderFixture(t)
 	srv, got := qoderCaptureServer(t, qoderSSE(qoderChunk(`{"content":"pong"}`, `"stop"`), "[DONE]"))

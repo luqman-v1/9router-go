@@ -32,7 +32,10 @@ const qoderDefaultMaxTokens = 32_768
 
 // qoderSystemRole is the OpenAI role that carries the system prompt, which
 // Qoder rejects inside `messages`.
-const qoderSystemRole = "system"
+const (
+	qoderSystemRole    = "system"
+	qoderDeveloperRole = "developer"
+)
 
 // content-block discriminators (open-sse/translator/schema/blocks.js).
 const (
@@ -340,7 +343,7 @@ func qoderNormalizedMessages(messages []any) ([]any, string) {
 		if !ok {
 			continue
 		}
-		if msg["role"] == qoderSystemRole {
+		if msg["role"] == qoderSystemRole || msg["role"] == qoderDeveloperRole {
 			if text := qoderTextOf(msg["content"]); text != "" {
 				systemParts = append(systemParts, text)
 			}
