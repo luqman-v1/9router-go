@@ -1,0 +1,3 @@
+### Fixed
+
+- Windows self-update no longer installs the tray companion over the server binary (#1229). `matchReleaseAsset` returned the first asset whose name contained the OS and arch substrings, and in the v1.9.16 release `9router-go-tray-windows-amd64.exe` is listed before `9router-go-windows-amd64.exe`, so the updater downloaded the tray app and replaced the server executable with it. Asset matching now skips companion assets whose name contains "tray", in both the OS/arch match loop and the non-checksum fallback loop. Regression coverage: the v1.9.16 asset order is now a case in `TestMatchReleaseAsset`.
