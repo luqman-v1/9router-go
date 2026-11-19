@@ -1,5 +1,271 @@
 # Changelog
 
+## [v1.9.17-exp.9] - 2026-11-19
+
+### Fixed
+
+- Multi-account failover now works when an agy account's credentials die: agy 1.5.x reports fatal faults ("⚠ failed to construct executor…", "⚠ needs sign-in…") as ordinary `agent_message_chunk` text with `stopReason: end_turn`, which the executor forwarded as a billed HTTP 200 — the fallback loop never advanced. `RunTurn` now buffers turn-leading text that could be a lone "⚠" banner and converts it into a classified error (auth/quota/policy/generic 502, all retryable), so the account loop moves to the next connection. Real model output streams unbuffered as soon as it diverges from the banner shape. Verified live: sabotaged account 1 + healthy account 2 → response served by account 2 (`usageHistory.connectionId`).
+
+### Verification
+
+- `go test ./internal/acp/agy/ ./internal/proxy/executor/` pass, including new banner regression tests (fatal banner → classified error with no text leaked to the client; normal output still streams; sign-in banner → ErrAuth; quota banner → ErrQuota).
+- Live proof against agy 1.5.11: account 1 with a sabotaged access token + healthy account 2 → the turn is served by account 2 (`usageHistory.connectionId`), response `PONG`.
+- `golangci-lint run --new-from-rev=origin/main ./internal/acp/agy/...` — 0 issues.
+
+### Added
+
+- `agy-acp` now has a real Google login in the dashboard, matching the `antigravity` add-account flow: "Connect Google Account" button → risk notice → Google consent popup → automatic callback exchange. Previously the provider fell through to the generic OAuth modal that only offered manual token paste, so adding an account never opened a Google login link.
+  - New endpoints `GET /api/oauth/agy-acp/authorize` and `POST /api/oauth/agy-acp/exchange` share the Google consumer OAuth client, scopes, and callback machinery with antigravity (refactored into `writeGoogleAuthorize` / `exchangeGoogleCode`), but store their **own** `agy-acp` connection rows (`agcpy-<hash>` ids) — a login never writes or mutates an antigravity row (§3 provider isolation). Credential sharing between the providers remains the explicit per-connection `sourceConnection` reference.
+  - `agy-acp` registered in `KnownOAuthConfigs` (standard Google refresher), `accessTokenOnlyProviders` (apiKey mirrors the access token), and `sensitiveProviders` (background refresh pacing), so its copied tokens refresh proactively and on reactive 401 like antigravity's.
+
+### Fixed
+
+- Every turn on a dashboard-logged-in `agy-acp` connection failed with HTTP 502 "connection carries no accessToken/refreshToken and no sourceConnection": the request path marshals `ConnectionData`, which has no `refreshToken` field, so copy mode never saw the stored token pair. `resolveACPCredentials` now falls back to the connection's stored DB row (`ownACPCredentials`), which also picks up tokens a background refresh has rotated. Regression test reproduces the exact request-path map.
+
+### Verification
+
+- `go test ./internal/handlers/oauth/ ./internal/proxy/oauth/ ./internal/providers/` pass, including new table-driven handler tests (authorize URL shape, exchange stores an agy-acp-only row, re-login upserts, error cases).
+- Live UI proof against a running gateway (isolated DB copy): Providers → Antigravity CLI (ACP) → Connect Google Account → risk notice → modal shows the `accounts.google.com` consent URL with the correct client id and `redirect_uri=http://localhost:20132/callback`; pasting a callback URL posts to `/api/oauth/agy-acp/exchange` (dummy code correctly surfaces Google's 400 as "token exchange returned status 400" instead of "Direct OAuth login is not supported").
+- `bun test src scripts` — 845 pass; `bun run ratchet:svelte` — 0 unresolved identifiers, baseline 74 unchanged; `bun run build` — dist 4.8 MB.
+- `golangci-lint run --new-from-rev=origin/main` on touched packages — 0 issues.
+
+### Fixed
+- **Qwen models published a 131k context window instead of their real one**
+  (`nous/qwen4-max` reported 131072 against the 1000000 the provider's own
+  `/v1/models` declares). The Go `*qwen*` pattern rows carried no
+  `ContextWindow`/`MaxOutput`, so every qwen id fell through to the substring
+  table's 131072/8192 floor. Synced the whole qwen family from upstream
+  `open-sse/providers/capabilities.js` (merged master `aba4c45d`..`1855aa44`,
+  v0.5.119): `*qwen*max*`/`*qwen*coder*`/`*qwen3.5–3.7*`/`*qwen*plus*` → 1M,
+  `*qwen*vl*`/`*qwen*omni*`/`*qwen*235b*`/`*qwen*` → 262144, `*qwq*` → 131072,
+  with upstream's `maxOutput` and the `*qwen*max*` vision flag. The Go-only
+  `*qwen3.8*` row keeps its unset thinking format (documented divergence) and
+  gains the family's 1M/65536 limits.
+- **"Import from /models" dropped the limits normalized catalogues declare.**
+  The import read only snake_case `context_length`/`max_completion_tokens`;
+  the nous/qoder/zed catalogues emit camelCase `contextLength`/
+  `maxOutputTokens`, so an imported `nous/qwen4-max` row saved no window and
+  `/v1/models` kept publishing the name guess. The import now reads both
+  spellings and persists them as the row's declared limits, which outrank
+  every static table.
+- **The provider's own /v1/models feed now drives published limits.** A new
+  live-catalog resolver reads the OpenAI-style models feed for every provider
+  that declares one (nous, openrouter, tokenharbor, sumopod, nvidia, …) and
+  publishes each entry's own `context_length`/`max_completion_tokens` (or the
+  camelCase equivalents) as authoritative limits on `/v1/models` and the combo
+  seat walk — the LLM provider is the source of truth for its windows, not a
+  static guess. The feed replaces the static catalog like the kiro/grok-cli
+  resolvers, so models newer than the registry snapshot are discoverable; on
+  any fetch failure the static registry remains the fallback. Cached 5 min
+  per credential with singleflight, bounded like every other live resolver.
+- **Custom (openai/anthropic-compatible) nodes now keep their feed's windows.**
+  `fetchCompatibleNodeModels` parsed ids only (`parseOpenAIStyleModelIDs`), so a
+  custom endpoint that declared `context_length`/`limit.context` still fell to
+  the static family guess. It now uses the same `parseModelsFeedLiveModels` the
+  provider feeds use, marking stated limits authoritative; a node that states
+  none keeps the static resolution. The node's own baseUrl is always the source
+  (the compatible dispatch case precedes the registry-feed case), never the
+  upstream provider's catalog. Pinned by
+  `TestFetchCompatibleNodeModelsKeepsDeclaredWindows`.
+- **Free-tier models published floor windows.** Every catalogued free model
+  was audited; the ones whose family pattern mis-guessed now carry their real
+  per-gateway limits: OpenCode free lane `ling-3.0-flash-fin-free` (262144),
+  `nemotron-3-ultra-free` (1M), `nemotron-3.5-lightning-free` (262144),
+  `hy4-flash-free` (1M/65536) — all were 128k/4096; Cloudflare Workers AI
+  `@cf/*` ids now publish the gateway's
+  truncated windows (qwen2.5-coder 32768, qwq 24000, r1-distill 80000,
+  llama-3.3-fp8 24000, gemma-4 256000, kimi-k2.6 262144) instead of the vendor
+  API window or the floor; NVIDIA `google/gemma-4-31b-it` (256000) and
+  `openai/gpt-oss-120b` (131072/131072). Sources: the provider's live feed
+  (nous), models.dev per-gateway entries (opencode/cloudflare/nvidia). Thinking
+  shapes stay on upstream's pattern resolution (fixture-pinned). Pinned by
+  `TestFreeModelContextWindows`.
+- **OpenCode Zen / Go now match the free lane's windows.** The live-feed
+  resolver reads the registry `modelsFetcher` too (zen `/zen/v1/models`, go
+  `/inference/go/v1/models`) and understands their `limit.context`/`limit.output`
+  shape, so a connected zen/go account publishes the provider's own per-model
+  windows. Static fallbacks pinned for the ids the family patterns mis-guess:
+  zen free `ling-3.0-flash-fin-free` (262144), `nemotron-3-ultra-free` (1M),
+  `nemotron-3.5-lightning-free` (262144), `hy4-flash-free` (1M/65536); go
+  `hy4-preview` (1024000), `hy4`/`hy4-flash-free` (1M/65536), `hy3`
+  (256000), `muse-spark-1.x-contributor` (1M/131k), `beam-free` (1M); and the
+  global `claude-fable-5` exact (1M/128k, was 128k/4096). Only windows are
+  pinned per lane — maxOutput/thinking stay on the upstream-synced family
+  resolution so the 1829-pair fixture stays green. Pinned by
+  `TestOpenCodeZenGoWindows` and `TestOpenCodeGoLiveFeedPublishesProviderWindow`.
+- **Full-catalog sweep (2309 provider×model entries).** Audited every published
+  entry against the provider's live feed, models.dev per-gateway entries, and
+  the upstream tables. Fixed the catalog reader (`GetCatalogLimits` normalized
+  ":" before "/" so `hf:openai/gpt-oss-120b` became `hf` and missed the key;
+  added `together→togetherai`, `github→github-copilot`, `kilo-gateway→kilo`,
+  `codex→openai` provider aliases). Pinned real windows for ~90 more entries
+  that sat at the 128k/4096 floor: gpt-oss (131072), Doubao Seed 2.0 family
+  (256000/262144 across ark/byteplus/sumopod), llama-3.3-70b / llama-3.2-3b
+  (131072 across hyperbolic/nebius/fireworks/cerebras/openadapter/kenari),
+  nemotron-3-super/super-vl/ultra-fp4 (262144/1M), dots-3-note-preview (512000),
+  Cursor claude-4.5/4.6 (200000/1M), perplexity-agent claude-sonnet-4-6 (1M),
+  muse-spark contributor (1M), hcnsec reseller models, pixtral-12b (128000),
+  Cloudflare llama-3.1 fast/awq (32000). Reasoning/thinking flags stay on the
+  upstream-synced resolution (1829-pair fixture green). Pinned by
+  `TestCatalogSweepNoFloorWhereSourceExists` / `TestCatalogLookupProviderAliases`.
+  Remaining floor entries are non-LLM (image/stt/tts/embedding/video — window
+  N/A), web-lane/router modes, ids whose floor IS the true window (gpt-4o,
+  sonar, claude-haiku-4.5), or ids no source publishes a window for yet.
+- **Whole-catalog token-limit sync from upstream v0.5.119.** The same
+  omitted-limits class affected every family whose Go pattern/exact/provider
+  rows declared no numbers: gemini-2/3/4 (1M), claude opus/sonnet 5.x and
+  4.6–4.8 exacts (1M/128k, plus PDF input), kimi-k3/k2 (1M/262k), glm-5.2 /
+  glm-5.3-flash exacts (1M/131k), deepseek-v4 family (1M/384k), minimax-m3 /
+  m2.x (1M/204800), mimo-v2.5/2.6 (1M/131k), grok-4.5/4.6 (500k), gpt-4.1
+  (1M/32768), gpt-5 generic (400k/128k), llama-4 (1M), laguna-s paid (1M),
+  muse-spark (1M/131k), hunyuan/hy3 (262144/262144), and the 128k floors for
+  mistral/command/sonar/step/nemotron/ling. Provider tables synced: nvidia
+  (13 rows incl. the missing nemotron/llama-guard/riva entries), kiro gpt-5.6
+  (272k/128k), codex `gpt-6.1-terra` (500k, was missing), poolside, ollama
+  cloud, opencode-go glm-5.3-flash, codebuddy-cn deepseek-v3-2-volc,
+  sensenova-intl (262144/65536 + the missing 6.7-flash-lite row). Added the
+  missing `claude-haiku-5-5` / dotted `claude-sonnet-5.5` / `union-alpha`
+  exacts and the `*gpt-6*image*` pattern; moved `*gpt-5*codex*` ahead of the
+  numbered tiers so `gpt-5.6-codex` publishes 400k, matching upstream order.
+  Deliberate Go divergences (grok-4.7 probe, fable adaptive, gemini-web,
+  codebuddy-cn EOL rows kept routable) are unchanged.
+  Contract tests that pinned the old guesses were updated to the synced
+  truth: combo seat-limit minima (deepseek-chat 128000, claude-sonnet-4-6
+  1M/128k, gpt-4o 16384 output) and the zed haiku-5-5 test — upstream
+  8aef7480 made that id adaptive-only globally, so the anthropic lane no
+  longer keeps the budget shape the old test asserted.
+
+### Verified
+- `go test ./internal/providers/ ./internal/handlers/... ./internal/translator/... ./internal/proxy/...` — green,
+  including the new `TestQwenFamilyWindows` / `TestQwenMaxVision` and the
+  1829-pair thinking-levels fixture (one documented post-v0.5.109 divergence:
+  nvidia nemotron openai levels, verified against upstream master).
+- `go test -tags=integration ./internal/integration/...` — green, including the
+  new `TestNousQwen4MaxPublishesRealWindow` (real router: imported row publishes
+  1000000/131072, undeclared sibling publishes the family 1000000/65536).
+- `cd web && bun run build`, `make vet-svelte` (0 unresolved, baseline 74),
+  `go test ./web/...`, `bun test src scripts` (845 pass).
+- Live-feed resolver: `TestParseModelsFeedLiveModels` /
+  `TestResolveLiveCatalogModelsFeed` (unit) and
+  `TestNousLiveFeedPublishesProviderWindow` (integration, fake provider feed:
+  `/v1/models` publishes the feed's 1000000/131072 with no import or custom row).
+- Live e2e against the real provider feeds (`9ROUTER_LIVE_TESTS=1`,
+  `TestLiveE2E_ModelsFeedWindow`): nous `qwen/qwen4-max` and `:free` resolve
+  1000000/131072 authoritative from the live `/v1/models`; opencode-zen
+  `mimo-v2.6-flash-free` resolves 200000/32000 with the operator's credential;
+  the static fallback cross-check publishes 1000000/65536. opencode-go skips
+  when no active connection is configured. Offline runs skip cleanly.
+
+### Deliberate divergence from upstream
+- Upstream `fetchCompatibleModelIds` returns ids only and
+  `LIVE_MODEL_RESOLVERS` covers a fixed provider set (kiro/qoder/github/
+  clinepass/cursor/zed/commandcode/…), deriving windows from
+  `getCapabilitiesForModel`. This port instead treats **the provider's own feed
+  as the window source** for every provider that publishes one (nous,
+  openrouter, tokenharbor, opencode zen/go, …) and for custom compatible nodes,
+  marking stated limits authoritative. The user's standing requirement is that
+  the LLM provider itself — not a static family guess — is the source of truth
+  for context windows; the static tables remain the fallback when a feed is
+  unreachable or states no limit.
+
+### RTK: fold ping echoes to the statistics a reader needs
+
+An agent's `ping` run is one summary paragraph buried under a wall of identical
+echo replies. The RTK (Reduce Token Kit) compressor now owns that shape instead
+of collapsing it with the generic fallback, so a 200-reply run reaches the model
+as its header, the round-trip statistics, and the packet counts.
+
+- **New `ping` filter** (`internal/tokensaver/filters/ping.json`), added to the
+  catalog of command-scoped filters the compressor already loads. It follows the
+  same data-driven shape as its neighbours — `match`, `rules`, and `preserve`
+  blocks, no new Go code — so the compression stays one mechanism rather than a
+  second hand-rolled compressor beside the pipeline.
+- **Command-scoped, like every filter that names a command.** A `ping` filter
+  claiming bodies on content alone would rewrite a file that merely mentions a
+  transcript; the catalog deliberately only matches content for filters that do
+  not name commands, and this one names both `ping` and `ping6`.
+- **The statistics survive; the echoes go.** The header line, the
+  `--- host ping statistics ---` block, the transmitted/received/loss counts, and
+  the `round-trip min/avg/max/mdev` line are all kept. Only the per-sequence echo
+  replies and blank padding are dropped, and the fold reports how many were.
+- **A failure is the one result never folded away.** `100% packet loss`,
+  `Network is unreachable`, and `Name or service not known` are declared as
+  preserved error patterns, so a dead host still reads as dead rather than as a
+  short-but-clean run.
+- **Reaches the request path with no command to key on.** Tool output rarely
+  carries its originating command, so the filter also declares content patterns
+  (`^PING `, the statistics line, the transmitted/received counts) so the shape
+  is recognised from the body itself.
+
+Verified: unit tests in `internal/tokensaver` — the filter resolves from its
+command, resolves from content alone while *not* claiming prose that merely
+mentions a ping, folds a 200-echo run down to its statistics while keeping the
+failure detail of an unreachable host, and keeps the existing command-scoped
+guard tests green. `go build ./...`, `go vet`, and `gofmt` clean;
+`golangci-lint --new-from-rev` on the base reports 0 issues.
+
+### Fixed
+
+- **Dashboard: custom provider node ID leak on model badges and combo cards** ([#1258](https://github.com/luqman-v1/9router-go/issues/1258), [#1259](https://github.com/luqman-v1/9router-go/pull/1259)): custom provider nodes stored under `openai-compatible-chat-<UUID>` / `anthropic-compatible-<UUID>` rendered the raw SQLite row id on model card badges (`openai-compatible-chat-<UUID>/<model>`) and on combo card model badges. `ProviderDetailView.svelte` now uses `displayAlias()` (the node's chosen prefix, falling back to the provider id) for the `fullModelId` badge, the `compatibleRows` dedup key, and the copy-model action, matching the header and copy action that already used it. `ComboCard.svelte` resolves a combo member's stored provider id to the node's display prefix via a new `displayModelInCombo()` helper (`internal` node map supplied through `providerNodes`), so combo badges read `ocu/<model>` instead of `openai-compatible-chat-<UUID>/<model>`. Registered providers pass through unchanged.
+
+### Bug Fixes
+
+- **Provider icon SVG fallback**: Kenari (`kenari`), RunCrate (`runcrate`), and other SVG-only providers (`atmorouter`, `codewhale`, `hcnsec`, `keenable`, `smelt`) now serve their `.svg` artwork when the frontend requests `/providers/<name>.png`, instead of returning HTTP 404. The embedded file handler in `web/embed.go` checks for an `.svg` sibling before the generic 404 response. (#1255)
+- **Kenari and RunCrate ship their official brand artwork**: both providers now embed the official 128x128 PNGs (`web/public/providers/kenari.png`, `web/public/providers/runcrate.png`), so `/providers/<name>.png` is answered with `image/png` instead of falling through to the SVG sibling. The SVG fallback keeps covering the providers that ship no PNG (`atmorouter`, `codewhale`, `hcnsec`, `keenable`, `smelt`). (#1257)
+
+### Fixed
+
+- Windows self-update no longer installs the tray companion over the server binary (#1229). `matchReleaseAsset` returned the first asset whose name contained the OS and arch substrings, and in the v1.9.16 release `9router-go-tray-windows-amd64.exe` is listed before `9router-go-windows-amd64.exe`, so the updater downloaded the tray app and replaced the server executable with it. Asset matching now skips companion assets whose name contains "tray", in both the OS/arch match loop and the non-checksum fallback loop. Regression coverage: the v1.9.16 asset order is now a case in `TestMatchReleaseAsset`.
+
+### ollama-local Phonon TTS
+
+Add speech synthesis to the `ollama-local` provider via the phonon family,
+matching merged upstream `decolua/9router@31a9d262` (v0.5.111):
+
+- **Registry**: 15 phonon tags (`phonon`, `phonon:latest`,
+  `phonon:multilingual`, `phonon:40m-multilingual`, and the per-language
+  `en`/`de`/`es`/`fr`/`pt` pairs) registered in
+  `ProviderModels["ollama-local"]` and classified `"tts"` in
+  `ProviderModelKinds`, so they stay out of the `/v1/models` LLM list and
+  publish `AudioOutput`.
+- **Provider config**: `TTSURL: http://localhost:11434/v1/audio/speech` on the
+  `ollama-local` entry, the OpenAI-compatible audio endpoint the local daemon
+  serves (upstream `ollama-local.js` `ttsConfig`, `format: "openai"`,
+  `authType: "apikey"`, `defaultModel: "phonon"`). A connection's custom
+  `baseUrl` still wins, deriving `/v1/audio/speech` from the configured host.
+- **Routing**: `/v1/audio/speech` requests for `ollama-local/phonon*` forward
+  the OpenAI TTS body verbatim to the configured Ollama host through the
+  existing `forwardMediaRequest` path, with `voice` and `response_format`
+  passed through and the audio body streamed back unchanged.
+
+Tests: table-driven `testing.T` coverage for registry classification
+(`GetProviderModelKind` + `AudioOutput` for every phonon tag) and for the
+media route (custom-base-URL and default-`TTSURL` subtests asserting the
+upstream path, the rewritten model id, and byte-for-byte audio passthrough).
+
+Sources: upstream `decolua/9router` `open-sse/providers/registry/ollama-local.js`
+at commit `31a9d262` (merged to `main`). This is a parity port — the phonon
+family is already merged upstream, not a speculative feature.
+
+### DeepRelay provider with wallet balance tracking
+
+Adds the DeepRelay pay-per-token inference provider (`deeprelay`, alias `dr`)
+on `api.deeprelay.ai/v1`.
+
+- Registers `deeprelay` in `KnownProviders` (`https://api.deeprelay.ai/v1/chat/completions`,
+  bearer `Authorization`), the `dr` alias, the `ForwardOpenAI` executor, the
+  model catalog (chat, embedding, image and video ids), provider metadata, and
+  media service kinds so non-chat models stay out of the LLM list.
+- Adds usage support for `deeprelay`: `GET /v1/billing/balance` reports the
+  org credit balance as a credit-balance quota row (`Wallet Balance`, currency
+  `$`, `isCreditBalance`), consistent with the runcrate wallet handling.
+- Probes `GET /v1/billing/balance` when validating a DeepRelay API key, so a
+  key without the `billing:read` scope is rejected before it can route traffic.
+
+Verified with unit tests for the balance fetcher (dollars path, cents fallback,
+rejected key, no credential), the validate probe (200, 401, alias `dr`), and
+the provider registry (auth, alias, catalog ids, media kinds).
+
 ## [v1.9.17-exp.8] - 2026-11-19
 
 ### Fixed

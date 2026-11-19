@@ -1,4 +1,0 @@
-### Bug Fixes
-
-- **Provider icon SVG fallback**: Kenari (`kenari`), RunCrate (`runcrate`), and other SVG-only providers (`atmorouter`, `codewhale`, `hcnsec`, `keenable`, `smelt`) now serve their `.svg` artwork when the frontend requests `/providers/<name>.png`, instead of returning HTTP 404. The embedded file handler in `web/embed.go` checks for an `.svg` sibling before the generic 404 response. (#1255)
-- **Kenari and RunCrate ship their official brand artwork**: both providers now embed the official 128x128 PNGs (`web/public/providers/kenari.png`, `web/public/providers/runcrate.png`), so `/providers/<name>.png` is answered with `image/png` instead of falling through to the SVG sibling. The SVG fallback keeps covering the providers that ship no PNG (`atmorouter`, `codewhale`, `hcnsec`, `keenable`, `smelt`). (#1257)
