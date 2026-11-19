@@ -67,8 +67,20 @@ func TestDashboard_HandleGetRTKFilters(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if len(res.Filters) != 55 {
-		t.Fatalf("expected 55 filters, got: %d", len(res.Filters))
+	if len(res.Filters) != 56 {
+		t.Fatalf("expected 56 filters, got: %d", len(res.Filters))
+	}
+	// The ping filter is the one this PR adds; pin it by id so its presence in
+	// the operator-facing catalog is asserted, not just the count.
+	found := false
+	for _, f := range res.Filters {
+		if f.ID == "ping" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ping filter missing from the RTK filter catalog")
 	}
 }
 
