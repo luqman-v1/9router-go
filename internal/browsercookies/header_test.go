@@ -7,6 +7,105 @@ import (
 	"testing"
 )
 
+// TestNormalizeCookieHeaderInput pins the Muse Web JSON-cookie normalization
+// contract ported from decolua/9router @0760c302
+// (open-sse/utils/webCookieAuth.js normalizeCookieHeaderInput).
+//
+// A Muse Web credential is the site's Cookie header (it carries hatch_sess).
+// Operators paste it as a plain header or as a Cookie-Editor JSON export (a
+// bare array of {name, value} objects or a {cookies: [...]} object). The
+// semicolon-delimited cookie parser only understood the header, so an exported
+// jar was rejected as a missing hatch_sess cookie. Normalization turns every
+// supported spelling into a Cookie header, preserves ordinary header strings
+// and '=' inside values, and rejects malformed or unsupported JSON before any
+// request is made.
+func TestNormalizeCookieHeaderInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "JSON array of cookie objects",
+			raw:  `[{"name":"hatch_sess","value":"abc==","domain":".muse.ai","path":"/"},{"name":"hatch_gw","value":"gw1"}]`,
+			want: "hatch_sess=abc==; hatch_gw=gw1",
+		},
+		{
+			name: "cookies object export",
+			raw:  `{"cookies":[{"name":"hatch_sess","value":"abc=="},{"name":"hatch_gw","value":"gw1"}]}`,
+			want: "hatch_sess=abc==; hatch_gw=gw1",
+		},
+		{
+			name: "ordinary header preserved",
+			raw:  "hatch_sess=abc==; hatch_gw=gw1",
+			want: "hatch_sess=abc==; hatch_gw=gw1",
+		},
+		{
+			name: "bearer prefix stripped",
+			raw:  "Bearer hatch_sess=abc==",
+			want: "hatch_sess=abc==",
+		},
+		{
+			name: "cookie label stripped",
+			raw:  "Cookie: hatch_sess=abc==",
+			want: "hatch_sess=abc==",
+		},
+		{
+			name: "empty array normalizes to empty header",
+			raw:  "[]",
+			want: "",
+		},
+		{
+			name: "empty cookies object normalizes to empty header",
+			raw:  `{"cookies":[]}`,
+			want: "",
+		},
+		{
+			name: "empty input stays empty",
+			raw:  "",
+			want: "",
+		},
+		{
+			name:    "malformed JSON rejected",
+			raw:     `[{"name":"hatch_sess","value":`,
+			wantErr: true,
+		},
+		{
+			name:    "cookies field not an array rejected",
+			raw:     `{"cookies":"not an array"}`,
+			wantErr: true,
+		},
+		{
+			name:    "cookie entry missing value rejected",
+			raw:     `{"cookies":[{"name":"hatch_sess"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "cookie entry missing name rejected",
+			raw:     `[{"value":"abc"}]`,
+			wantErr: true,
+		},
+		{
+			name:    "non-object entry rejected",
+			raw:     `["hatch_sess=abc"]`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NormalizeCookieHeaderInput(tt.raw)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NormalizeCookieHeaderInput(%q) error = %v, wantErr %v", tt.raw, err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
+				t.Errorf("NormalizeCookieHeaderInput(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBuildHeaderUsesTheCanonicalOrder pins the order of the header.
 //
 // The order is fixed by the reference bridge
