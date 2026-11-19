@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -89,5 +91,44 @@ func TestQoderCosyCreds_ReadsConnectionIdentity(t *testing.T) {
 func TestQoderCosyCreds_MissingUserIDStaysEmpty(t *testing.T) {
 	if got := qoderCosyCreds(map[string]any{"authMethod": "device"}, "dt-token"); got.UserID != "" {
 		t.Errorf("UserID = %q, want empty so signing fails loudly", got.UserID)
+	}
+}
+
+// SRouter uses one UUID for both the COSY payload and X-Request-Id. A second
+// UUID made the header disagree with the signed identity the server sees.
+func TestBuildQoderCosyHeaders_RequestIDMatchesPayload(t *testing.T) {
+	headers, err := BuildQoderCosyHeaders([]byte(`{"model":"qfmodel"}`),
+		"https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation",
+		QoderCosyCreds{UserID: "user-1", AuthToken: "jt-abc"})
+	if err != nil {
+		t.Fatalf("BuildQoderCosyHeaders: %v", err)
+	}
+	parts := strings.Split(strings.TrimPrefix(headers["Authorization"], "Bearer COSY."), ".")
+	if len(parts) != 2 {
+		t.Fatalf("malformed COSY bearer: %q", headers["Authorization"])
+	}
+	payloadJSON, err := base64.StdEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode COSY payload: %v", err)
+	}
+	var payload struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		t.Fatalf("unmarshal COSY payload: %v", err)
+	}
+	if payload.RequestID == "" {
+		t.Fatal("COSY payload has no requestId")
+	}
+	if got := headers["X-Request-Id"]; got != payload.RequestID {
+		t.Errorf("X-Request-Id = %q, payload requestId = %q", got, payload.RequestID)
+	}
+}
+
+func TestQoderApplyChatHeaders_UsesCLIUserAgent(t *testing.T) {
+	headers := map[string]string{}
+	qoderApplyChatHeaders(headers, qoderBuiltChat{QoderKey: "qfmodel"})
+	if got := headers["User-Agent"]; got != "qodercli/1.0.0" {
+		t.Errorf("User-Agent = %q, want qodercli/1.0.0", got)
 	}
 }
