@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,8 +60,8 @@ type ghClient struct {
 	token string
 }
 
-func (c *ghClient) get(url string, into any) error {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func (c *ghClient) get(ctx context.Context, url string, into any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("build request for %s: %w", url, err)
 	}
@@ -73,7 +74,10 @@ func (c *ghClient) get(url string, into any) error {
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body) // drain so the connection is reused
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, string(body))
@@ -86,12 +90,12 @@ func (c *ghClient) get(url string, into any) error {
 
 // fetchContributors returns the repository's contributors, paginated until the
 // API reports a short page.
-func (c *ghClient) fetchContributors(repo string) ([]contributor, error) {
+func (c *ghClient) fetchContributors(ctx context.Context, repo string) ([]contributor, error) {
 	var out []contributor
 	for page := 1; ; page++ {
 		var batch []contributor
 		url := fmt.Sprintf("https://api.github.com/repos/%s/contributors?per_page=100&page=%d", repo, page)
-		if err := c.get(url, &batch); err != nil {
+		if err := c.get(ctx, url, &batch); err != nil {
 			return nil, err
 		}
 		out = append(out, batch...)
@@ -104,9 +108,9 @@ func (c *ghClient) fetchContributors(repo string) ([]contributor, error) {
 
 // fetchName resolves a display name. A user with no name set falls back to
 // the login, which is what the card shows anyway.
-func (c *ghClient) fetchName(login string) (string, error) {
+func (c *ghClient) fetchName(ctx context.Context, login string) (string, error) {
 	var u ghUser
-	if err := c.get("https://api.github.com/users/"+login, &u); err != nil {
+	if err := c.get(ctx, "https://api.github.com/users/"+login, &u); err != nil {
 		return "", err
 	}
 	if u.Name == "" {
@@ -150,10 +154,12 @@ func card(c contributor, name string) string {
 // preserving everything up to the end of the owner card (the static head) and
 // everything from the "## Not listed" heading (the static tail).
 func generateTeam(repo string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 	token := os.Getenv("GITHUB_TOKEN")
 	client := &ghClient{http: &http.Client{Timeout: 30 * time.Second}, token: token}
 
-	contributors, err := client.fetchContributors(repo)
+	contributors, err := client.fetchContributors(ctx, repo)
 	if err != nil {
 		return fmt.Errorf("fetch contributors: %w", err)
 	}
@@ -195,7 +201,7 @@ func generateTeam(repo string) error {
 	// rate limit, and parallelism buys nothing but 429s.
 	names := make(map[string]string, len(people)+1)
 	for _, p := range append(people, *owner) {
-		name, err := client.fetchName(p.Login)
+		name, err := client.fetchName(ctx, p.Login)
 		if err != nil {
 			// A missing name must not lose the contributor: the login is the
 			// card's identity either way.
