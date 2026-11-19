@@ -22,6 +22,7 @@ func TestOpenCodeZenGoWindows(t *testing.T) {
 		{"opencode-zen", "nemotron-3.5-lightning-free", 262144},
 		{"opencode-zen", "muse-spark-1.3-contributor-free", 1048576},
 		{"opencode-zen", "mimo-v2.6-flash-free", 1048576},
+		{"opencode-zen", "hy4-flash-free", 1048576},
 		// Zen paid catalog — upstream-synced family windows.
 		{"opencode-zen", "claude-fable-5", 1000000},
 		{"opencode-zen", "claude-opus-5", 1000000},
@@ -29,6 +30,8 @@ func TestOpenCodeZenGoWindows(t *testing.T) {
 		{"opencode-zen", "gpt-6-astra", 1050000},
 		// Go lane — per-gateway windows the patterns mis-guess.
 		{"opencode-go", "hy4-preview", 1024000},
+		{"opencode-go", "hy4", 1048576},
+		{"opencode-go", "hy4-flash-free", 1048576},
 		{"opencode-go", "hy3", 256000},
 		{"opencode-go", "muse-spark-1.3-contributor", 1048576},
 		{"opencode-go", "muse-spark-1.2-contributor", 1048576},
@@ -42,6 +45,10 @@ func TestOpenCodeZenGoWindows(t *testing.T) {
 		// Short aliases resolve the same tables.
 		{"ocz", "ling-3.0-flash-fin-free", 262144},
 		{"ocg", "hy4-preview", 1024000},
+		{"oc", "hy4-flash-free", 1048576},
+		{"ocz", "hy4-flash-free", 1048576},
+		{"ocg", "hy4", 1048576},
+		{"ocg", "hy4-flash-free", 1048576},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {

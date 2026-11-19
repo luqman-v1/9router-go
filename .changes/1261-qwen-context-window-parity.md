@@ -39,8 +39,9 @@
 - **Free-tier models published floor windows.** Every catalogued free model
   was audited; the ones whose family pattern mis-guessed now carry their real
   per-gateway limits: OpenCode free lane `ling-3.0-flash-fin-free` (262144),
-  `nemotron-3-ultra-free` (1M), `nemotron-3.5-lightning-free` (262144) — all
-  were 128k/4096; Cloudflare Workers AI `@cf/*` ids now publish the gateway's
+  `nemotron-3-ultra-free` (1M), `nemotron-3.5-lightning-free` (262144),
+  `hy4-flash-free` (1M/65536) — all were 128k/4096; Cloudflare Workers AI
+  `@cf/*` ids now publish the gateway's
   truncated windows (qwen2.5-coder 32768, qwq 24000, r1-distill 80000,
   llama-3.3-fp8 24000, gemma-4 256000, kimi-k2.6 262144) instead of the vendor
   API window or the floor; NVIDIA `google/gemma-4-31b-it` (256000) and
@@ -54,7 +55,8 @@
   shape, so a connected zen/go account publishes the provider's own per-model
   windows. Static fallbacks pinned for the ids the family patterns mis-guess:
   zen free `ling-3.0-flash-fin-free` (262144), `nemotron-3-ultra-free` (1M),
-  `nemotron-3.5-lightning-free` (262144); go `hy4-preview` (1024000), `hy3`
+  `nemotron-3.5-lightning-free` (262144), `hy4-flash-free` (1M/65536); go
+  `hy4-preview` (1024000), `hy4`/`hy4-flash-free` (1M/65536), `hy3`
   (256000), `muse-spark-1.x-contributor` (1M/131k), `beam-free` (1M); and the
   global `claude-fable-5` exact (1M/128k, was 128k/4096). Only windows are
   pinned per lane — maxOutput/thinking stay on the upstream-synced family

@@ -476,6 +476,12 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"ling-3.0-flash-fin-free":     {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 32768},
 		"nemotron-3-ultra-free":       {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 128000},
 		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 262144},
+		// hy4 free ids: the provider's own zen feed (limit.context/output,
+		// probed live) and models.dev's opencode entry both file 1M/65536.
+		// Without a row hy4-flash-free fell to the 128k floor (no *hy4*
+		// pattern exists). Window pinned only; thinking stays on the family
+		// resolution (the fixture pins it).
+		"hy4-flash-free": {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 	},
 	"nvidia": {
 		"nvidia/nemotron-3.5-bolt-e4b":                  {Tools: true, ContextWindow: 128000, MaxOutput: 8192},
@@ -802,6 +808,8 @@ func init() {
 		// family resolution (the fixture pins those), and the live feed supplies
 		// the gateway's exact output cap when a connection exists.
 		"hy4-preview":                {Tools: true, ContextWindow: 1024000},
+		"hy4":                        {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
+		"hy4-flash-free":             {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 		"hy3":                        {Reasoning: true, Tools: true, ThinkingFormat: "hunyuan", ContextWindow: 256000},
 		"muse-spark-1.2-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
 		"muse-spark-1.3-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
@@ -817,6 +825,7 @@ func init() {
 		"ling-3.0-flash-fin-free":     {Reasoning: true, Tools: true, ContextWindow: 262144},
 		"nemotron-3-ultra-free":       {Reasoning: true, Tools: true, ContextWindow: 1000000},
 		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ContextWindow: 262144},
+		"hy4-flash-free":              {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 	}
 
 	providerCapabilities["nous"] = map[string]Capabilities{
