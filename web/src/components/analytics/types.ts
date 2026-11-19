@@ -226,9 +226,13 @@ export function cachedTokensFor(detail: RequestDetailItem): number {
 
 // Legacy Claude rows store 0 in the canonical columns, so a truthy `||`
 // (matching upstream tokenDisplay.js) falls through to the Claude pair instead
-// of rendering 0 for a request that did report usage.
+// of rendering 0 for a request that did report usage. Upstream then reports the
+// larger of prompt and cache-read, because a cache hit is already counted in
+// prompt_tokens and reporting only that would understate the request.
 export function getInputTokens(tokens?: RequestDetailItem['tokens']): number {
-  return (tokens?.prompt_tokens || tokens?.input_tokens) ?? 0
+  const prompt = (tokens?.prompt_tokens || tokens?.input_tokens) || 0
+  const cache = (tokens?.cached_tokens ?? tokens?.cache_read_input_tokens) || 0
+  return prompt < cache ? cache : prompt
 }
 
 export function getOutputTokens(tokens?: RequestDetailItem['tokens']): number {

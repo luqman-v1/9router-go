@@ -79,6 +79,11 @@ describe('getInputTokens and getOutputTokens — issue #3890', () => {
     expect(getInputTokens({ prompt_tokens: 0, input_tokens: 50 })).toBe(50)
     expect(getOutputTokens({ completion_tokens: 0, output_tokens: 100 })).toBe(100)
   })
+
+  it('reports the cache-read count when it exceeds the prompt count', () => {
+    // Upstream tokenDisplay.js returns `prompt < cache ? cache : prompt`.
+    expect(getInputTokens({ prompt_tokens: 0, input_tokens: 10, cache_read_input_tokens: 500 })).toBe(500)
+  })
 })
 
 describe('providerDisplayName', () => {
