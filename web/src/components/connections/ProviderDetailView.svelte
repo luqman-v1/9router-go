@@ -599,7 +599,7 @@
     return dashboardCallbackURL(dashboardOrigin())
   }
 
-  function antigravityCallback(): string {
+  function loopbackCallback(): string {
     if (typeof window === 'undefined') return 'http://localhost:8080/callback'
     return oauthLoopbackCallbackURL(window.location.port, window.location.protocol === 'https:')
   }
@@ -682,7 +682,7 @@
     }
     window.addEventListener('storage', onStorage)
     const onWindowMessage = (e: MessageEvent) => {
-      const trustedOrigin = e.origin === window.location.origin || e.origin === new URL(antigravityCallback()).origin
+      const trustedOrigin = e.origin === window.location.origin || e.origin === new URL(loopbackCallback()).origin
       if (!trustedOrigin) return
       if (e.data?.type === 'oauth_callback' && e.data?.data) {
         const data = e.data.data as {
@@ -1637,7 +1637,7 @@
     callbackInput = ''
     copiedAuthUrl = false
     try {
-      const redirectUri = antigravityCallback()
+      const redirectUri = loopbackCallback()
       const res =
         providerId === 'agy-acp'
           ? await api.getAGYACPAuthorizeUrl(redirectUri)
@@ -1665,7 +1665,14 @@
     try {
       // Codex cannot use the dashboard callback: OpenAI only accepts the
       // redirect URI registered for the Codex CLI client.
-      const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
+      // Claude's public client only registers loopback callbacks, so a custom
+      // domain /callback is refused ("Redirect URI ... is not supported").
+      const cb =
+        providerId === 'codex'
+          ? CODEX_REDIRECT_URI
+          : providerId === 'claude'
+            ? loopbackCallback()
+            : dashboardCallback()
       const res = await api.pkceAuthorize(
         providerId,
         providerId === 'gitlab'
@@ -2418,7 +2425,7 @@
       } catch {
         pending = null
       }
-      const exchangeRedirectUri = redirectUri || pending?.redirectUri || antigravityCallback()
+      const exchangeRedirectUri = redirectUri || pending?.redirectUri || loopbackCallback()
       const res =
         providerId === 'agy-acp'
           ? await api.agyACPExchange(code, exchangeRedirectUri, pending?.state)
