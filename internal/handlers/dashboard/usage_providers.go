@@ -73,6 +73,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 	switch provider {
 	case "deepseek":
 		return fetchDeepseekUsage(ctx, apiKey), true
+	case "deeprelay":
+		return fetchDeepRelayUsage(ctx, apiKey), true
 	case "groq":
 		return fetchGroqUsage(ctx, apiKey), true
 	case "commandcode", "commandcode-goat", "cmc-goat":
@@ -581,6 +583,55 @@ func fetchDeepseekUsage(ctx context.Context, apiKey string) usageResult {
 		plan = "DeepSeek (Insufficient Balance)"
 	}
 	return usageResult{plan: plan, quotas: quotas}
+}
+
+// ---------- deeprelay: GET /v1/billing/balance ----------
+
+// deeprelayBalanceURL is the wallet endpoint. It reports the organization's
+// remaining credit in both cents and dollars; the dashboard renders it as a
+// credit balance, not a percentage, because there is no spend cap to divide by.
+var deeprelayBalanceURL = "https://api.deeprelay.ai/v1/billing/balance"
+
+func fetchDeepRelayUsage(ctx context.Context, apiKey string) usageResult {
+	const plan = "DeepRelay"
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return usageResult{plan: plan, message: "DeepRelay API key not available. Add a key to view usage."}
+	}
+	status, _, out, err := usageGet(ctx, deeprelayBalanceURL, map[string]string{
+		"Authorization": "Bearer " + apiKey,
+		"Accept":        "application/json",
+	})
+	if err != nil {
+		return usageResult{plan: plan, message: fmt.Sprintf("DeepRelay error: %v", err)}
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return usageResult{plan: plan, message: "DeepRelay rejected the API key. A key needs the billing:read scope to read the wallet."}
+	}
+	if status < 200 || status >= 300 {
+		return usageResult{plan: plan, message: fmt.Sprintf("DeepRelay balance API error (%d).", status)}
+	}
+	data := usageJSON(out)
+	if data == nil {
+		return usageResult{plan: plan, message: "DeepRelay balance response was not JSON."}
+	}
+
+	// balance_dollars is the documented figure; balance_cents is the same value
+	// in the smallest unit and is used when the dollars field is absent.
+	balance, ok := usageFiniteNum(data["balance_dollars"])
+	if !ok {
+		if cents, centsOK := usageFiniteNum(data["balance_cents"]); centsOK {
+			balance, ok = cents/100, true
+		}
+	}
+	if !ok {
+		return usageResult{plan: plan, message: "DeepRelay balance response did not contain a balance."}
+	}
+
+	quota := usageQuota(0, math.Max(0, balance), "")
+	quota["isCreditBalance"] = true
+	quota["currency"] = "$"
+	return usageResult{plan: plan, quotas: map[string]any{"Wallet Balance": quota}}
 }
 
 func firstNonEmptyAny(vals ...any) any {

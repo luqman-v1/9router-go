@@ -500,6 +500,23 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 			return validateOutcome{supported: true, message: fmt.Sprintf("Runcrate API error (%d)", status)}
 		}
 		return validateOutcome{valid: true, supported: true}
+	case "deeprelay":
+		// The wallet endpoint proves both the key and the billing:read scope the
+		// quota tracker needs, without spending a token on a completion.
+		headers := validateAuthHeaders(cfg, apiKey)
+		headers["Accept"] = "application/json"
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			deeprelayBalanceURL, headers, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("DeepRelay API error (%d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	case "v1m":
 		return validateV1M(ctx, apiKey)
 	case "nace":
