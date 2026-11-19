@@ -302,34 +302,44 @@ func TestWikiTemplateRendersGroupedSidebar(t *testing.T) {
 // owner distinguished, and every card carrying a clickable GitHub username. A
 // page that renders the prose but drops the grid would still build and would
 // quietly stop crediting the people who did the work.
+//
+// The card count is deliberately not pinned. It moves every time someone lands
+// their first commit, and pinning it is how the page went stale: the test kept
+// passing on a roster that had fallen behind. The count the test can pin is the
+// internal one — cards, profile links, and avatars must agree with each other.
 func TestTeamPageCreditsEveryContributor(t *testing.T) {
 	if teamMarkdown == "" {
 		t.Skip("team.md not readable from this checkout")
 	}
 	body := teamMarkdown
 
-	// 24 people: the owner plus 23 contributors the API reports. The bot account
-	// is deliberately excluded — it is not a person.
-	if got := strings.Count(body, `class="contrib-card`); got != 24 {
-		t.Errorf("got %d contributor cards, want 24", got)
+	cards := strings.Count(body, `class="contrib-card`)
+	links := strings.Count(body, `href="https://github.com/`)
+	lazy := strings.Count(body, `loading="lazy"`)
+	decoding := strings.Count(body, `decoding="async"`)
+	sized64 := strings.Count(body, `width="64" height="64"`)
+
+	if cards == 0 {
+		t.Fatal("the contributors grid is empty: the page renders the prose and credits no one")
 	}
 	if got := strings.Count(body, "contrib-card owner"); got != 1 {
 		t.Errorf("got %d owner cards, want exactly 1", got)
 	}
 	// Each card must link to the person's own profile, not a generic repo link.
-	if got := strings.Count(body, `href="https://github.com/`); got != 24 {
-		t.Errorf("got %d GitHub profile links, want 24", got)
+	if links != cards {
+		t.Errorf("got %d GitHub profile links for %d cards; every card must carry one", links, cards)
 	}
-	// Every avatar must be lazy and carry a size, or 24 external requests block
-	// the article before it renders.
-	if got := strings.Count(body, `loading="lazy"`); got != 24 {
-		t.Errorf("got %d lazy avatars, want 24", got)
+	// Every avatar must be lazy and sized, or N external requests block the
+	// article before it renders.
+	if lazy != cards {
+		t.Errorf("got %d lazy avatars for %d cards", lazy, cards)
 	}
-	if got := strings.Count(body, `decoding="async"`); got != 24 {
-		t.Errorf("got %d async avatars, want 24", got)
+	if decoding != cards {
+		t.Errorf("got %d async avatars for %d cards", decoding, cards)
 	}
-	if got := strings.Count(body, `width="64" height="64"`); got != 23 {
-		t.Errorf("got %d sized contributor avatars, want 23", got)
+	// The owner's avatar is larger; the rest are the contributor size.
+	if got := cards - 1; sized64 != got {
+		t.Errorf("got %d sized contributor avatars, want %d (one per non-owner card)", sized64, got)
 	}
 	// The owner's avatar is larger, and must be sized too.
 	if !strings.Contains(body, `width="88" height="88"`) {
