@@ -327,6 +327,12 @@ func TestScanPEMPatternLinear(t *testing.T) {
 	// quadratic pattern.
 	repeated := strings.Repeat(begin, 1<<20/len(begin))
 
+	// Go RE2 scans 1 MB in well under 50ms. The bound is 10s rather than 2s
+	// because the race detector adds 5-10x overhead (measured 4.35s on a
+	// GitHub Actions runner); a quadratic implementation takes minutes, so the
+	// regression is still caught.
+	const budget = 10 * time.Second
+
 	engine := NewEngine([]string{"pii"}, ActionBlock)
 	start := time.Now()
 	d := engine.Scan(repeated)
@@ -335,9 +341,7 @@ func TestScanPEMPatternLinear(t *testing.T) {
 	if len(d.Findings) != 0 {
 		t.Errorf("expected no findings for unpaired BEGIN headers, got %d: %+v", len(d.Findings), d.Findings)
 	}
-	// Generous bound: Go RE2 scans 1 MB in well under 50ms; 2s leaves room for
-	// a loaded CI box while still failing a quadratic implementation.
-	if elapsed > 2*time.Second {
-		t.Errorf("scan of %d bytes took %v, want < 2s (quadratic/ReDoS regression)", len(repeated), elapsed)
+	if elapsed > budget {
+		t.Errorf("scan of %d bytes took %v, want < %v (quadratic/ReDoS regression)", len(repeated), elapsed, budget)
 	}
 }
