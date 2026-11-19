@@ -433,6 +433,15 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, fmt.Errorf("no connection for provider %s has model %s enabled", provider, model)
 		}
 
+		// Qoder has no refresh grant: an expired device token is terminal, so a
+		// credential past its persisted expiresAt must be skipped here rather
+		// than handed to the executor to fail upstream. Only qoder/qoder-cn are
+		// affected; a legacy row with a null expiry stays usable.
+		connections = filterExpiredQoderConnections(provider, connections)
+		if len(connections) == 0 {
+			return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
+		}
+
 		// Service-kind and media eligibility filter: connections with
 		// media disabled are excluded from media requests (image, video,
 		// tts, stt, embedding, search, fetch). Text chat requests (empty
@@ -771,6 +780,33 @@ func filterConnectionsByEnabledModels(provider string, conns []*models.ProviderC
 		if codexAccountServesModel(c, model) {
 			kept = append(kept, c)
 		}
+	}
+	return kept
+}
+
+// filterExpiredQoderConnections drops qoder/qoder-cn connections whose persisted
+// token expiry has passed. Qoder device tokens carry no refresh grant, so an
+// expired credential is terminal and must not be selected for a request. Rows
+// with no expiry (legacy logins) are kept; every other provider is untouched.
+func filterExpiredQoderConnections(provider string, conns []*models.ProviderConnection) []*models.ProviderConnection {
+	if provider != "qoder" && provider != "qoder-cn" {
+		return conns
+	}
+	kept := make([]*models.ProviderConnection, 0, len(conns))
+	for _, c := range conns {
+		if c == nil {
+			continue
+		}
+		var data map[string]any
+		if err := json.Unmarshal([]byte(c.Data), &data); err != nil {
+			// Unreadable blob: keep the row rather than drop it on a parse error.
+			kept = append(kept, c)
+			continue
+		}
+		if oc := providers.ParseOAuthConnection(data); oc != nil && oc.IsExpired() {
+			continue
+		}
+		kept = append(kept, c)
 	}
 	return kept
 }
