@@ -91,6 +91,7 @@ func quotaMessage(body []byte) string {
 	}
 	return ""
 }
+
 // isMinimaxLease reports whether the request rides the desktop app's sign-in
 // (authType "mcode-lease"). Auth mode lives in the connections.authType DB
 // column, forwarded through req.AuthType; the ConnData branch keeps old
