@@ -263,6 +263,35 @@ func TestMatchReleaseAsset(t *testing.T) {
 	if url := matchReleaseAsset(assets, "windows", "amd64"); url != "url-windows-amd64" {
 		t.Errorf("expected url-windows-amd64, got %s", url)
 	}
+
+	// Regression for #1229: in the v1.9.16 release the Windows tray
+	// companion asset is listed before the server binary, and its name
+	// also contains the "windows" and "amd64" substrings — the server
+	// binary must still win, in the OS/arch match and in the fallback.
+	v1916 := []releaseAsset{
+		{Name: "9router-go-tray-windows-amd64.exe", BrowserDownloadURL: "url-tray-windows-amd64"},
+		{Name: "9router-go-windows-amd64.exe", BrowserDownloadURL: "url-server-windows-amd64"},
+		{Name: "9router-go-linux-amd64", BrowserDownloadURL: "url-server-linux-amd64"},
+		{Name: "SHA256SUMS.txt", BrowserDownloadURL: "url-checksums"},
+	}
+	cases := []struct {
+		name       string
+		assets     []releaseAsset
+		targetOS   string
+		targetArch string
+		want       string
+	}{
+		{"tray listed first, server wins", v1916, "windows", "amd64", "url-server-windows-amd64"},
+		{"fallback skips tray companion", v1916, "freebsd", "amd64", "url-server-windows-amd64"},
+		{"other platforms unaffected", v1916, "linux", "amd64", "url-server-linux-amd64"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if url := matchReleaseAsset(tc.assets, tc.targetOS, tc.targetArch); url != tc.want {
+				t.Errorf("expected %s, got %s", tc.want, url)
+			}
+		})
+	}
 }
 
 func TestAutoUpdate_StatusAndToggle(t *testing.T) {
