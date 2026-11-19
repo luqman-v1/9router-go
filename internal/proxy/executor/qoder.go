@@ -504,7 +504,7 @@ func qoderResolveCredential(ctx context.Context, do QoderDoer, creds QoderCosyCr
 	if !IsQoderPAT(creds.AuthToken) {
 		return creds, nil
 	}
-	endpoints := QoderEndpointsFor(string(region))
+	endpoints := QoderEndpointsFor(qoderProviderIDForRegion(region))
 	token, err := ExchangeQoderJobToken(ctx, do, endpoints.JobTokenExchangeURL, creds.AuthToken)
 	if err != nil {
 		return creds, &proxy.UpstreamError{
