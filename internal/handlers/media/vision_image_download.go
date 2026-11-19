@@ -49,7 +49,7 @@ var visionImageDownloadClient = sync.OnceValue(func() *http.Client {
 		},
 	}
 	return &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			DialContext:           dialer.DialContext,
 			TLSHandshakeTimeout:   10 * time.Second,
