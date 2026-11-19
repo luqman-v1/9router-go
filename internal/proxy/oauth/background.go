@@ -32,6 +32,7 @@ const (
 var sensitiveProviders = map[string]bool{
 	"antigravity": true,
 	"gemini-cli":  true,
+	"agy-acp":     true,
 }
 
 var (

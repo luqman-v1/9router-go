@@ -43,6 +43,14 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "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"),
 		TokenURL:     "https://oauth2.googleapis.com/token",
 	},
+	// agy-acp signs in with the same Google OAuth client as antigravity: the
+	// agy CLI accepts those consumer tokens. Its own entry keeps refresh
+	// working for agy-acp connections without touching antigravity rows.
+	"agy-acp": {
+		ClientID:     envOr("ANTIGRAVITY_OAUTH_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"),
+		ClientSecret: envOr("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "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"),
+		TokenURL:     "https://oauth2.googleapis.com/token",
+	},
 	"xai": {
 		ClientID:     envOr("XAI_OAUTH_CLIENT_ID", "b1a00492-073a-47ea-816f-4c329264a828"),
 		ClientSecret: envOr("XAI_OAUTH_CLIENT_SECRET", ""),
