@@ -174,6 +174,14 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchAnthropicLiveCatalog(ctx, conn, connData, token)
 		}
+	case providers.ModelsListURL(providerID) != "" || providerHasModelsFetcher(providerID):
+		// Providers that publish an OpenAI-style models feed with per-model
+		// limits (nous, openrouter, tokenharbor, opencode zen/go, …). The feed
+		// is the provider's own declaration of each window, so it outranks the
+		// static tables.
+		fetch = func(ctx context.Context, token string) []LiveModel {
+			return h.fetchModelsFeedLiveCatalog(ctx, conn, connData, providerID, token)
+		}
 	default:
 		return nil
 	}

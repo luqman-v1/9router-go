@@ -1628,7 +1628,7 @@ export const api = {
     ),
   /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
   getConnectionModels: (connectionId: string) =>
-    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string } | string> }>(
+    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string; context_length?: number; contextLength?: number; max_completion_tokens?: number; maxOutputTokens?: number; capabilities?: { vision?: boolean; reasoning?: boolean } } | string> }>(
       `/api/providers/${encodeURIComponent(connectionId)}/models`,
     ),
 

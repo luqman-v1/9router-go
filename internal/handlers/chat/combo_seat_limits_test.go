@@ -76,8 +76,8 @@ func wantAbsent(t *testing.T, field string, got *int) {
 func TestHandleModels_ComboPublishesSmallestSeatContext(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// 131072 for deepseek/deepseek-chat and 200000 for anthropic/claude-sonnet-4-6
-	// per the ports' capability tables; the combo must publish the smaller.
+	// 128000 for deepseek/deepseek-chat (upstream *deepseek-chat* row) and
+	// 1000000 for anthropic/claude-sonnet-4-6; the combo must publish the smaller.
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
 		('c-limits', 'limits-combo', 'llm', '["deepseek/deepseek-chat","anthropic/claude-sonnet-4-6"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("seed combo: %v", err)
@@ -88,7 +88,7 @@ func TestHandleModels_ComboPublishesSmallestSeatContext(t *testing.T) {
 	if entry.OwnedBy != "combo" {
 		t.Fatalf("owned_by = %q, want \"combo\"", entry.OwnedBy)
 	}
-	wantLimit(t, "context_length", entry.ContextLength, 131072)
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
 }
 
@@ -97,7 +97,7 @@ func TestHandleModels_ComboPublishesSmallestSeatContext(t *testing.T) {
 func TestHandleModels_NestedComboPublishesSmallestLeafLimit(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// inner holds the two windows (200000 for anthropic/claude-sonnet-4-6 and
+	// inner holds the two windows (1000000 for anthropic/claude-sonnet-4-6 and
 	// 128000 for openai/gpt-4o); outer adds groq/llama-3-70b at its own 4096
 	// max output, so the tree minimum is the inner pair's 128000 window with
 	// outer's 4096 output — the numbers only line up if the nested seats are
@@ -120,7 +120,7 @@ func TestHandleModels_NestedComboPublishesSmallestLeafLimit(t *testing.T) {
 	wantLimit(t, "outer context_length", outer.ContextLength, 128000)
 	wantLimit(t, "outer max_completion_tokens", outer.MaxCompletionTokens, 4096)
 	wantLimit(t, "inner context_length", inner.ContextLength, 128000)
-	wantLimit(t, "inner max_completion_tokens", inner.MaxCompletionTokens, 8192)
+	wantLimit(t, "inner max_completion_tokens", inner.MaxCompletionTokens, 16384)
 }
 
 // A combo that (transitively) lists itself has no defined seat set. Listing
@@ -149,7 +149,7 @@ func TestHandleModels_SelfReferencingComboTerminates(t *testing.T) {
 	entries := comboModelsResponse(t, NewChatHandler(db.NewRepo(database)))
 
 	// The concrete leaf beside the recursive seat still sets the window.
-	wantLimit(t, "self-combo context_length", comboEntry(t, entries, "self-combo").ContextLength, 131072)
+	wantLimit(t, "self-combo context_length", comboEntry(t, entries, "self-combo").ContextLength, 128000)
 	// loop-combo reaches mutual-combo, whose own concrete seat is still
 	// reachable across the cycle: cutting it must not swallow that leaf.
 	wantLimit(t, "loop-combo context_length", comboEntry(t, entries, "loop-combo").ContextLength, 128000)
@@ -192,7 +192,7 @@ func TestHandleModels_WebSeatDoesNotDragMinimumDown(t *testing.T) {
 
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "mixed-combo")
 
-	wantLimit(t, "context_length", entry.ContextLength, 131072)
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
 }
 
@@ -255,9 +255,9 @@ func TestHandleModels_ComboMaxModeAdvertisesWidestWindow(t *testing.T) {
 	}
 
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "max-combo")
-	// min would publish 131072 (deepseek/chadeepseek-chat's narrower window);
-	// max publishes 200000 from claude-sonnet-4-6.
-	wantLimit(t, "context_length", entry.ContextLength, 200000)
+	// min would publish 128000 (deepseek-chat's narrower window);
+	// max publishes 1000000 from claude-sonnet-4-6.
+	wantLimit(t, "context_length", entry.ContextLength, 1000000)
 }
 
 // custom mode advertises the operator-declared window regardless of what the
@@ -318,5 +318,5 @@ func TestHandleModels_ComboInvalidModeResolvesToMin(t *testing.T) {
 	}
 
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "bad-mode-combo")
-	wantLimit(t, "context_length", entry.ContextLength, 131072)
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
 }

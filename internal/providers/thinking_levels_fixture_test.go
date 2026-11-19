@@ -48,6 +48,15 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"kimi-k2.7":           {"minimal", "low", "medium", "high", "xhigh"},
 		"kimi-k2.6":           {"minimal", "low", "medium", "high", "xhigh"},
 	},
+	// The nvidia provider rows (nemotron reasoning models on the openai wire)
+	// landed upstream after the v0.5.109 capture: the tag had no nvidia block,
+	// so the fixture recorded the *nemotron* pattern's base set. Master
+	// v0.5.119 declares thinkingFormat "openai" for these ids and resolves the
+	// full openai set — verified by running upstream getThinkingLevels. Go
+	// mirrors master; the exemption goes away at the next fixture re-capture.
+	"nvidia": {
+		"nvidia/nemotron-3-ultra-550b-a55b": {"none", "minimal", "low", "medium", "high", "xhigh"},
+	},
 	// Upstream has no agnes entry in capabilities.js at all, so it publishes
 	// no reasoning levels for the provider. Go declares agnes-3.0-pro and
 	// agnes-3.0-flash as reasoning models (they stream reasoning_content), so

@@ -105,6 +105,12 @@ var ProviderAliases = map[string]string{
 	"hunyuan":       "tencent",
 	"doubao":        "volcengine",
 	"cloudflare-ai": "cloudflare-workers-ai",
+	// models.dev files Together under "togetherai" and the Codex OAuth lane
+	// serves OpenAI's own catalog (gpt-daybreak-* carry their API windows there).
+	"together":     "togetherai",
+	"codex":        "openai",
+	"kilo-gateway": "kilo",
+	"github":       "github-copilot",
 	// OpenCode's free tier ships as a user-created "openai-compatible-chat-*"
 	// node, so the catalog lookup is keyed by that generated id. models.dev
 	// files the same weights under `opencode`, and without this mapping every
@@ -211,22 +217,25 @@ func GetCatalogLimits(provider, model string) (contextWindow, maxOutput int) {
 	if model == "" {
 		return 0, 0
 	}
-	base := strings.ToLower(model)
-	if idx := strings.Index(base, ":"); idx != -1 {
-		base = base[:idx]
+	// Normalize exactly like catalogBaseID (the writer): strip the vendor
+	// namespace first, then the ":suffix". Doing ":" first turned
+	// "hf:openai/gpt-oss-120b" into "hf" and missed the catalog key.
+	base := catalogBaseID(model)
+	// The writer keys entries by catalogBaseID (vendor namespace stripped),
+	// but a catalog written by upstream's sync.js keeps slash-bearing ids
+	// verbatim (`meta-llama/Llama-3.3-70B-Instruct-Turbo`). Try the bare id
+	// first, then the lowercased full id with its ":suffix" removed, then the
+	// id minus its first segment, so both writers' keys resolve.
+	full := strings.ToLower(model)
+	if idx := strings.Index(full, ":"); idx != -1 {
+		full = full[:idx]
 	}
-	// A model id can carry more than one qualifier: the published
-	// `nvidia/z-ai/glm-5.3` has both the provider alias and the vendor
-	// namespace, while the catalog files it under the bare `glm-5.3`. Try the
-	// id minus its first segment first, because catalog keys may themselves
-	// contain a slash (`deepseek-ai/deepseek-v4.1-flash`), then fall back to
-	// the last segment alone.
 	candidates := []string{base}
-	if idx := strings.Index(base, "/"); idx != -1 {
-		candidates = append(candidates, base[idx+1:])
+	if full != base {
+		candidates = append(candidates, full)
 	}
-	if idx := strings.LastIndex(base, "/"); idx != -1 && base[idx+1:] != candidates[len(candidates)-1] {
-		candidates = append(candidates, base[idx+1:])
+	if idx := strings.Index(full, "/"); idx != -1 && full[idx+1:] != base {
+		candidates = append(candidates, full[idx+1:])
 	}
 
 	catalogMu.RLock()

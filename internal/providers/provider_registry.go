@@ -1502,7 +1502,8 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "terminal",
 		ServiceKinds: []string{"llm", "image", "video", "embedding"},
 		Website:      "https://opencode.ai/auth",
-		Notice:       &Notice{Text: "OpenCode Go subscription: $5/mo (then 10/mo). Access to Kimi, GLM, Qwen, MiMo, MiniMax models.", APIKeyURL: "https://opencode.ai/auth"},
+		Notice:        &Notice{Text: "OpenCode Go subscription: $5/mo (then 10/mo). Access to Kimi, GLM, Qwen, MiMo, MiniMax models.", APIKeyURL: "https://opencode.ai/auth"},
+		ModelsFetcher: &Fetcher{URL: "https://opencode.ai/inference/go/v1/models", Type: "opencode-go"},
 	},
 	"opencode-zen": {
 		ID:                "opencode-zen",
