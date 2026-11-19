@@ -93,7 +93,7 @@ func (h *ChatHandler) fetchModelsFeedLiveCatalog(ctx context.Context, conn *mode
 		log.Warn("models", "models feed catalog fetch failed", "provider", providerID, "conn", conn.ID, "error", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
