@@ -323,7 +323,7 @@ func (h *MediaHandler) lockCodexSTTAccount(r *http.Request, status int, respBody
 	if handlerutil.IsProbeContext(r.Context()) {
 		return
 	}
-	if classification := providers.ClassifyError(status, string(respBody), h.Repo.GetConnectionBackoffLevel(conn.ID)); classification.ShouldFallback {
+	if classification := providers.ClassifyError(status, string(respBody), h.Repo.GetConnectionBackoffLevel(conn.ID), respBody); classification.ShouldFallback {
 		cooldownSec := max(classification.CooldownMs/1000, 1)
 		_ = h.Repo.LockConnectionModel(conn.ID, codexSTTModel, cooldownSec, classification.NewBackoffLevel)
 	}

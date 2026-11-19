@@ -253,7 +253,7 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
 			if !handlerutil.IsProbeContext(r.Context()) {
-				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
+				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody); classification.ShouldFallback {
 					cooldownSec := max(classification.CooldownMs/1000, 1)
 					_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 				}

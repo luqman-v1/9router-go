@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"9router/proxy/internal/errclass"
 )
 
 // ErrorRule classifies an upstream error by text match or status code.
@@ -72,7 +74,7 @@ var ErrorRules = []ErrorRule{
 	{Text: "model_not_in_plan", CooldownMs: cooldownLong},
 	{Text: "当前账号类型暂不支持该模型", CooldownMs: cooldownLong},
 	{Text: "14018", CooldownMs: cooldownLong},
-	{Text: "额度已用尽", CooldownMs: cooldownLong},
+	{Text: "额度已用尽", CooldownMs: cooldownLong, Quota: true},
 	{Text: "11140", CooldownMs: cooldownAddressRefused},
 	{Text: "account has been restricted due to unusual activity", CooldownMs: cooldownAddressRefused},
 	{Text: "账号存在异常行为", CooldownMs: cooldownAddressRefused},
@@ -121,11 +123,11 @@ var ErrorRules = []ErrorRule{
 	// ban carries the "disabled in this account" sentence above plus the
 	// cloudcode-pa domain, which is what parks the account for 24h.
 	{Text: "rate_limit_exceeded", CooldownMs: cooldownShort},
-	{Text: "creditlimitexceeded", CooldownMs: cooldownLong},
-	{Text: "insufficient_quota", CooldownMs: cooldownLong},
-	{Text: "billing_error", CooldownMs: cooldownLong},
-	{Text: "budgetlimiterror", CooldownMs: cooldownLong},
-	{Text: "gousagelimiterror", CooldownMs: cooldownLong},
+	{Text: "creditlimitexceeded", CooldownMs: cooldownLong, Quota: true},
+	{Text: "insufficient_quota", CooldownMs: cooldownLong, Quota: true},
+	{Text: "billing_error", CooldownMs: cooldownLong, Quota: true},
+	{Text: "budgetlimiterror", CooldownMs: cooldownLong, Quota: true},
+	{Text: "gousagelimiterror", CooldownMs: cooldownLong, Quota: true},
 	{Text: "free_pi_token_expired", CooldownMs: cooldownAuthDead},
 
 	{Text: "no credentials", CooldownMs: cooldownLong},
@@ -213,6 +215,14 @@ func LooksLikeQuotaExhausted(errorText string) bool {
 		}
 	}
 	return false
+}
+
+// LooksLikeCreditCode reports whether a raw upstream body carries a structured
+// credit code (error.code or code). A code is the upstream's own verdict and
+// cannot be the caller's input quoted back, which is why it is the only signal
+// that admits a quota reading on an HTTP 400.
+func LooksLikeCreditCode(body []byte) bool {
+	return errclass.LooksLikeCreditErrorCode(body)
 }
 
 // rateLimitPatterns mark a throttle: the account is fine, it is being asked to
@@ -442,17 +452,77 @@ type ErrorClassification struct {
 	NewBackoffLevel int // only meaningful when the matched rule has Backoff=true
 }
 
-// ClassifyError classifies an upstream error by matching text and status against ErrorRules.
-// Returns the cooldown duration and new backoff level.
+// ClassifyError classifies an upstream error by matching text and status against
+// ErrorRules. Returns the cooldown duration and new backoff level. The body is
+// the raw upstream payload; pass it whenever it is at hand so a 400 can be
+// judged on the upstream's own code instead of on prose (see
+// ClassifyErrorForProvider). errorText alone is the extracted message, which is
+// what the rule table matches.
 // Matches Next.js checkFallbackError() in open-sse/services/accountFallback.js.
-func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClassification {
-	return ClassifyErrorForProvider(statusCode, errorText, backoffLevel, "")
+func ClassifyError(statusCode int, errorText string, backoffLevel int, body ...[]byte) ErrorClassification {
+	return classifyError(statusCode, errorText, backoffLevel, "", body...)
 }
 
 // ClassifyErrorForProvider is ClassifyError with provider-scoped rules
 // applied: provider is the canonical provider id the request routed to
 // (aliases are resolved here, so `cbai` matches the codebuddy-intl rules).
-func ClassifyErrorForProvider(statusCode int, errorText string, backoffLevel int, provider string) ErrorClassification {
+func ClassifyErrorForProvider(statusCode int, errorText string, backoffLevel int, provider string, body ...[]byte) ErrorClassification {
+	return classifyError(statusCode, errorText, backoffLevel, provider, body...)
+}
+
+// classifyError is the body-aware core both exported entry points call. body is
+// optional because most callers only ever had errorText; when it is supplied it
+// is the raw upstream envelope, and the only thing read from it is the
+// structured error code.
+//
+// On a 400 a quota verdict is a spent balance only when that code says so. A
+// 400 is how an upstream rejects the caller's own input and many quote it back
+// ("Unknown parameter: '<x>'", "Invalid value '<x>' for model"), so a credit
+// phrase in errorText can be the caller's words rather than the account's state.
+// Parking on that took a shared connection out of rotation for an hour on
+// every user's request. The prose rules still fire on a 400 for everything that
+// is not a quota reading — codebuddy's "request illegal" block, the numeric
+// codes, "invalid api key" — and the status guard below still answers the rest.
+func classifyError(statusCode int, errorText string, backoffLevel int, provider string, body ...[]byte) ErrorClassification {
+	var raw []byte
+	if len(body) > 0 {
+		raw = body[0]
+	}
+	quotaOn400 := statusCode != 400 || LooksLikeCreditCode(raw) || creditMessageOnlyProvider(provider)
+	return classifyErrorWithQuotaGate(statusCode, errorText, backoffLevel, provider, quotaOn400)
+}
+
+// creditMessageOnlyProviders are providers whose upstreams do answer a spent
+// balance with a 400 and no structured code (OmniRoute PR #20567). Ids are
+// canonical: ResolveAlias maps commandcode's `cmc` and bai's `b-ai` here.
+var creditMessageOnlyProviders = map[string]bool{
+	"commandcode": true,
+	"bai":         true,
+}
+
+// creditMessageOnlyProvider reports whether provider is allowed to earn a quota
+// verdict on a 400 from its message alone. An openai-compatible node qualifies
+// by prefix only — never by substring, so "my-openai-compatible-clone" does not.
+func creditMessageOnlyProvider(provider string) bool {
+	if provider == "" {
+		return false
+	}
+	provider = ResolveAlias(provider)
+	if creditMessageOnlyProviders[provider] {
+		return true
+	}
+	for nodeType := range CompatibleNodeWires {
+		if strings.HasPrefix(provider, nodeType+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyErrorWithQuotaGate is the rule loop, with the 400 quota reading
+// already decided: when quotaOn400 is false the Quota rules are skipped for
+// this status and the loop can only answer with a non-quota rule.
+func classifyErrorWithQuotaGate(statusCode int, errorText string, backoffLevel int, provider string, quotaOn400 bool) ErrorClassification {
 	if provider != "" {
 		provider = ResolveAlias(provider)
 	}
@@ -465,6 +535,11 @@ func ClassifyErrorForProvider(statusCode int, errorText string, backoffLevel int
 		// Text-based match (substring, case-insensitive)
 		if rule.Text != "" && lowerError != "" && strings.Contains(lowerError, rule.Text) {
 			if rule.Provider != "" && rule.Provider != provider {
+				continue
+			}
+			if rule.Quota && !quotaOn400 {
+				// A quota reading at a 400 with no credit code (or allow-listed
+				// provider): prose here is request text, not the account's state.
 				continue
 			}
 			if rule.Backoff {
