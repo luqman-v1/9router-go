@@ -273,14 +273,20 @@ separately and are never offered to a normal install:
   `9router-go update` falls back to — keeps pointing at the stable version.
 - Docker Hub tags them `exp` (`luqmenul/9router-go:exp`), never `latest`.
 
+One-line install of the newest experimental build (no Docker, no build):
+
 ```bash
-docker pull luqmenul/9router-go:exp
+curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh \
+  | VERSION=exp bash
+# CPU without AVX? add VARIANT=noavx, or use install-noavx.sh with VERSION=exp.
 ```
 
+`VERSION=exp` resolves the newest pre-release tag via the GitHub API, so the
+command keeps working as new experimental builds are published. Pin an exact
+tag (`VERSION=v1.9.17-exp.10`) if you need reproducibility.
+
 Opt in only if you want to help shake out bugs. `9router-go update` will not
-install one over a stable release — grab the asset for your platform from the
-[pre-releases page](https://github.com/luqman-v1/9router-go/releases) and
-replace the running binary with it.
+install one over a stable release.
 
 ### Build from source
 
