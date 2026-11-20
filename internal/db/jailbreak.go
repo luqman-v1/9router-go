@@ -57,6 +57,12 @@ type JailbreakDoc struct {
 	// means "unsorted" and falls back to id order, so a preset written by an
 	// older build (or by import) keeps its place without a migration.
 	Order int `json:"order,omitempty"`
+	// APIKeyID scopes this preset to one client API key (the id from
+	// requestKeyFromContext). Empty means every key; a non-empty value makes
+	// the preset visible only to requests that present that key. The resolver
+	// prefers a key-scoped match over the global one, so a key can carry its
+	// own persona without touching what the rest of the instance sees.
+	APIKeyID string `json:"apiKeyId,omitempty"`
 	// CreatedAt / UpdatedAt are RFC3339 UTC stamps the store fills on write.
 	// They let the dashboard sort by newest or recently-touched, which is how
 	// an operator finds the preset they just edited in a long library.
