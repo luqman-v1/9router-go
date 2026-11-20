@@ -243,6 +243,8 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/tunnel/tailscale-disable", h.HandleTailscaleDisable)
 		// Qoder daily-credit check-in state (read-only).
 		r.Get("/qoder/checkins", h.HandleGetQoderCheckins)
+		r.Get("/minimax/checkins", h.HandleGetMiniMaxCheckins)
+		r.Post("/minimax/checkins/{connectionId}", h.HandleMiniMaxCheckinNow)
 		// Usage & Quotas
 		r.Get("/usage/providers", h.HandleGetUsageProviders)
 		// Usage per client API key. Registered before the {connectionId}

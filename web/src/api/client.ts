@@ -348,6 +348,8 @@ export interface Settings {
   headroomKompress?: boolean
   /** Qoder / Qoder CN daily-credit check-in. */
   qoderCheckin?: boolean
+  /** MiniMax Code daily check-in (每日签到). */
+  minimaxCheckin?: boolean
   semanticCacheEnabled?: boolean
   semanticCacheTTL?: number
   // Prompt-cache window 9router pins on Claude head anchors: "5m" (default) or "1h".
@@ -1440,6 +1442,19 @@ export function normalizeConnection(c: ProviderConnection): ProviderConnection {
   } as ProviderConnection
 }
 
+// One MiniMax Code account's last daily check-in outcome, as the background
+// loop records it. Mirrors internal/minimaxcheckin.Result.
+export interface MiniMaxCheckinResult {
+  outcome: 'claimed' | 'done' | 'inactive' | 'ineligible' | 'failed'
+  credit: number
+  streak: number
+  message?: string
+  provider: string
+  account: string
+  accountId: string
+  checkedAt: string
+}
+
 // Connections API
 export const api = {
   // Connections
@@ -2016,6 +2031,14 @@ export const api = {
     request<Record<string, unknown>>('/api/settings', {
       method: 'PATCH',
       body: JSON.stringify(settings),
+    }),
+  // MiniMax Code daily check-in: the last outcome per account, and an
+  // immediate claim for one connection (magpie's "Check in now").
+  getMiniMaxCheckins: () =>
+    request<{ checkins: Record<string, MiniMaxCheckinResult> }>('/api/minimax/checkins'),
+  miniMaxCheckinNow: (connectionId: string) =>
+    request<MiniMaxCheckinResult>(`/api/minimax/checkins/${encodeURIComponent(connectionId)}`, {
+      method: 'POST',
     }),
   /**
    * Reads live USD rates for the requested codes and overlays them on the

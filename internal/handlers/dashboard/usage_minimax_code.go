@@ -44,10 +44,18 @@ type miniMaxCodeSite struct {
 	agent    string
 	platform string
 	lang     string
+	// agentFallback is the China site's second account host. magpie's
+	// accountCall retries agent.minimax.cn once when agent.minimaxi.com gets
+	// no HTTP answer at all (a TLS/DNS/refused-connection failure), because
+	// the .com chain failed on some Windows machines while .cn verified
+	// (plugins#757). A 401, any other status, a business error, a redirect or
+	// a timeout is an answer and is never sent twice. The global site has no
+	// fallback.
+	agentFallback string
 }
 
 var miniMaxCodeSites = map[string]miniMaxCodeSite{
-	"minimax-code":        {agent: "https://agent.minimaxi.com", platform: "https://www.minimaxi.com", lang: "zh"},
+	"minimax-code":        {agent: "https://agent.minimaxi.com", platform: "https://www.minimaxi.com", lang: "zh", agentFallback: "https://agent.minimax.cn"},
 	"minimax-code-global": {agent: "https://agent.minimax.io", platform: "https://platform.minimax.io", lang: "en"},
 }
 
@@ -55,6 +63,29 @@ var miniMaxCodeSites = map[string]miniMaxCodeSite{
 // (401/403, or statusInfo 1000048). The quota route force-refreshes and retries
 // once on that, unlike any other failure.
 var errMiniMaxCodeRefused = errors.New("MiniMax Code sign-in refused")
+
+// errMiniMaxCodeUnauthorized is the 401 subset of a refusal. The daily check-in
+// hook renews the sign-in only on a 401 (magpie plugins#765 `e.status === 401`);
+// a 403 or a business 1000048 is a refusal but not an expired token, so spending
+// the single-use refresh token on it would be wrong.
+var errMiniMaxCodeUnauthorized = errors.New("MiniMax Code sign-in unauthorized")
+
+// miniMaxCodeRefusalError carries the HTTP status of a 401/403 refusal so the
+// check-in hook can tell a 401 (renew) from a 403 (fail) without parsing the
+// message. It satisfies errors.Is for errMiniMaxCodeRefused always, and for
+// errMiniMaxCodeUnauthorized only on a 401.
+type miniMaxCodeRefusalError struct {
+	status int
+	what   string
+}
+
+func (e *miniMaxCodeRefusalError) Error() string {
+	return fmt.Sprintf("MiniMax Code sign-in refused (%s: HTTP %d)", e.what, e.status)
+}
+
+func (e *miniMaxCodeRefusalError) Is(target error) bool {
+	return target == errMiniMaxCodeRefused || (e.status == http.StatusUnauthorized && target == errMiniMaxCodeUnauthorized)
+}
 
 // accountRefused reports whether err means the sign-in was refused.
 func accountRefused(err error) bool { return errors.Is(err, errMiniMaxCodeRefused) }
@@ -366,17 +397,42 @@ func pickMiniMaxCodeField(e, data map[string]any, key string) any {
 // miniMaxCodeAccountCall performs one signed account-API request and checks the
 // answer's own status envelope.
 func miniMaxCodeAccountCall(ctx context.Context, site miniMaxCodeSite, path, access, userID string, body map[string]any, what string) (map[string]any, error) {
-	rawURL, headers, method, payload := signedMiniMaxCodeRequest(site, path, access, userID, body, time.Now())
-	if payload != nil {
-		headers["Content-Length"] = strconv.Itoa(len(payload))
+	return miniMaxCodeAccountCallQuery(ctx, site, path, access, userID, body, nil, what)
+}
+
+// miniMaxCodeAccountCallQuery sends one signed account call, with extra query
+// parameters merged over the mcode defaults and the China site's transport
+// fallback. A call that gets no HTTP answer at all (TLS/DNS/refused connection,
+// but not a timeout or cancellation) is retried once against agentFallback,
+// matching magpie's accountCall. Any HTTP status, business error or timeout is
+// an answer and is never sent twice.
+func miniMaxCodeAccountCallQuery(ctx context.Context, site miniMaxCodeSite, path, access, userID string, body map[string]any, extra url.Values, what string) (map[string]any, error) {
+	send := func(origin string) (int, []byte, error) {
+		s := site
+		s.agent = origin
+		rawURL, headers, method, payload := signedMiniMaxCodeRequestQuery(s, path, access, userID, body, extra, time.Now())
+		if payload != nil {
+			headers["Content-Length"] = strconv.Itoa(len(payload))
+		}
+		status, _, out, err := usageDo(ctx, method, rawURL, headers, payload)
+		return status, out, err
 	}
 
-	status, _, out, err := usageDo(ctx, method, rawURL, headers, payload)
+	status, out, err := send(site.agent)
+	if err != nil && status == 0 && site.agentFallback != "" && site.agentFallback != site.agent &&
+		!errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		var fallbackErr error
+		status, out, fallbackErr = send(site.agentFallback)
+		if fallbackErr != nil && status == 0 {
+			return nil, fmt.Errorf("%s: %s couldn't be reached (%w), nor %s (%w)", what, site.agent, err, site.agentFallback, fallbackErr)
+		}
+		err = fallbackErr
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return nil, fmt.Errorf("%w (%s: HTTP %d)", errMiniMaxCodeRefused, what, status)
+		return nil, &miniMaxCodeRefusalError{status: status, what: what}
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("%s: HTTP %d", what, status)
@@ -552,6 +608,15 @@ func miniMaxCodeStatusText(env map[string]any, code float64) string {
 // one: `yy` over the encoded path+query, the JSON body ("{}" for a GET) and
 // md5(now); `x-signature` over ts (and the body of a POST).
 func signedMiniMaxCodeRequest(site miniMaxCodeSite, path, access, userID string, body map[string]any, now time.Time) (string, map[string]string, string, []byte) {
+	return signedMiniMaxCodeRequestQuery(site, path, access, userID, body, nil, now)
+}
+
+// signedMiniMaxCodeRequestQuery is signedMiniMaxCodeRequest with extra query
+// parameters merged over the mcode defaults. The daily check-in asks as the
+// desktop client (device_platform web, is_desktop 1, desktop_version 0.6.12)
+// rather than as mcode, exactly as magpie's CHECKIN_QUERY does; every other
+// default (biz_id, app_id, version_code, user_id, client) stays the same.
+func signedMiniMaxCodeRequestQuery(site miniMaxCodeSite, path, access, userID string, body map[string]any, extra url.Values, now time.Time) (string, map[string]string, string, []byte) {
 	_, offsetSeconds := now.Zone()
 	q := url.Values{
 		"device_platform": {miniMaxCodeBrowserName},
@@ -567,6 +632,9 @@ func signedMiniMaxCodeRequest(site miniMaxCodeSite, path, access, userID string,
 		"browser_name":    {miniMaxCodeBrowserName},
 		"user_id":         {firstNonEmptyStr(strings.TrimSpace(userID), "0")},
 		"client":          {miniMaxCodeBrowserName},
+	}
+	for k, vs := range extra {
+		q[k] = vs
 	}
 	rawURL := site.agent + path + "?" + q.Encode()
 	at := path + "?" + q.Encode()

@@ -241,6 +241,7 @@
   let comboStrategy = $state('first-model')
   let forceFallback = $state(false)
   let qoderCheckin = $state(false)
+  let minimaxCheckin = $state(false)
 
   // Feature Visibility: ids of the sidebar entries this deployment hides. The
   // entry list itself lives in web/src/lib/nav.ts, shared with the sidebar.
@@ -318,6 +319,7 @@
       if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
       if (typeof settings.forceFallback === 'boolean') forceFallback = settings.forceFallback
       if (typeof settings.qoderCheckin === 'boolean') qoderCheckin = settings.qoderCheckin
+      if (typeof settings.minimaxCheckin === 'boolean') minimaxCheckin = settings.minimaxCheckin
 
       // Global system prompt
       enableSystemPrompt = !!settings.systemPromptEnabled
@@ -532,6 +534,7 @@
         comboStrategy,
         forceFallback,
         qoderCheckin,
+        minimaxCheckin,
         systemPromptEnabled: enableSystemPrompt,
         systemPromptPrefix,
         systemPromptSuffix,
@@ -1153,6 +1156,17 @@
         <p class="text-[11px] text-text-subtle">
           Claim Qoder and Qoder CN daily credits automatically every 30 minutes.
           Last result per account is available at <code>GET /api/qoder/checkins</code>.
+        </p>
+
+        <Toggle
+          checked={minimaxCheckin}
+          size="sm"
+          label="MiniMax Code daily check-in"
+          onChange={(v: boolean) => (minimaxCheckin = v)}
+        />
+        <p class="text-[11px] text-text-subtle">
+          Claim MiniMax Code daily check-in credits automatically every 30 minutes.
+          Last result per account is available at <code>GET /api/minimax/checkins</code>.
         </p>
 
       </div>
