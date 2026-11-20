@@ -2357,6 +2357,7 @@ func bodySpeaksClaudeMessages(body []byte) bool {
 			if !ok {
 				continue
 			}
+			role, _ := msg["role"].(string)
 			blocks, ok := msg["content"].([]any)
 			if !ok {
 				continue
@@ -2366,10 +2367,19 @@ func bodySpeaksClaudeMessages(body []byte) bool {
 				if !ok {
 					continue
 				}
+				// Paired with the role the Messages API requires, so content a
+				// Chat request happens to shape this way cannot steer the
+				// conversion: a tool_use belongs to an assistant turn and a
+				// tool_result to a user turn.
 				switch block["type"] {
-				case "tool_use", "tool_result", "thinking", "redacted_thinking",
-					"server_tool_use", "web_search_tool_result", "document":
-					return true
+				case "tool_use", "thinking", "redacted_thinking", "server_tool_use":
+					if role == "assistant" {
+						return true
+					}
+				case "tool_result", "web_search_tool_result", "document":
+					if role == "user" {
+						return true
+					}
 				}
 			}
 		}

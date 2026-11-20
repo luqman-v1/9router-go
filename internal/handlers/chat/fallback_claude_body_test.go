@@ -109,6 +109,10 @@ func TestBodySpeaksClaudeMessages(t *testing.T) {
 		{"system field", `{"system":"s","messages":[]}`, true},
 		{"input_schema tools", `{"tools":[{"name":"Bash","input_schema":{}}]}`, true},
 		{"tool_result block", `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]}]}`, true},
+		{"tool_use on an assistant turn", `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{}}]}]}`, true},
+		// Role-paired: content shaped this way cannot steer the conversion.
+		{"tool_use on a user turn", `{"messages":[{"role":"user","content":[{"type":"tool_use","id":"t","name":"Bash","input":{}}]}]}`, false},
+		{"tool_result on an assistant turn", `{"messages":[{"role":"assistant","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]}]}`, false},
 		{"chat tool_calls", openAIChatBody, false},
 		{"responses input", `{"input":[{"type":"message","role":"user","content":"hi"}]}`, false},
 	}
