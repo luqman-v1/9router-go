@@ -16,6 +16,10 @@ import (
 
 // GeminiStreamState holds translation state for Gemini stream chunks.
 type GeminiStreamState struct {
+	// RoleSent tracks whether the deferred `role: "assistant"` delta has been
+	// merged into the first real content/reasoning/tool_call delta. Empty
+	// prefill frames must not fabricate an assistant turn.
+	RoleSent         bool
 	MessageStartSent bool
 	MessageId        string
 	// SessionID is the conversation this stream belongs to, taken from the
@@ -896,10 +900,8 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 			"model":   state.Model,
 			"choices": []map[string]any{
 				{
-					"index": 0,
-					"delta": map[string]any{
-						"role": "assistant",
-					},
+					"index":         0,
+					"delta":         map[string]any{},
 					"finish_reason": nil,
 				},
 			},
@@ -965,6 +967,10 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					state.ToolCallCount++
 				}
 				if len(delta) > 0 {
+					if !state.RoleSent {
+						delta["role"] = "assistant"
+						state.RoleSent = true
+					}
 					results = append(results, map[string]any{
 						"id":      state.MessageId,
 						"object":  "chat.completion.chunk",
@@ -1013,8 +1019,15 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				"model":   state.Model,
 				"choices": []map[string]any{
 					{
-						"index":         0,
-						"delta":         map[string]any{},
+						"index": 0,
+						"delta": func() map[string]any {
+							d := map[string]any{}
+							if !state.RoleSent {
+								d["role"] = "assistant"
+								state.RoleSent = true
+							}
+							return d
+						}(),
 						"finish_reason": openAIStop,
 					},
 				},
