@@ -1597,6 +1597,19 @@ var RetryableStatusCodes = map[int]bool{
 	http.StatusGatewayTimeout:     true, // 504
 }
 
+// RetryModelScopedError reports whether a failure outside
+// RetryableStatusCodes still carries a model-scoped verdict that the caller
+// must act on: lock this provider/model pair and leave the credential alone.
+// NVIDIA NIM answers 400 "degraded" for an unhealthy cluster behind one model
+// (upstream decolua@2275bc0d) — a 400 is otherwise request-scoped, so without
+// this the degraded model is re-dialled on every request and the account is
+// never told the cluster is sick. Keyed off the rule table, not off a
+// provider literal, so any provider-scoped modelScoped rule gets the same
+// handling.
+func RetryModelScopedError(statusCode int, errorText, provider string) bool {
+	return ClassifyErrorForProvider(statusCode, errorText, 0, provider).ModelScoped
+}
+
 // PreservesCacheControl reports whether a provider keeps the cache_control
 // markers on its content blocks (upstream's quirks.preserveCacheControl).
 func PreservesCacheControl(provider string) bool {

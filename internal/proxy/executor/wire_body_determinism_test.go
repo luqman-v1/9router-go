@@ -154,10 +154,10 @@ func TestWireBodiesAreDeterministic(t *testing.T) {
 			},
 		},
 		{
-			name:    "nvidia normalizeNvidiaReasoning",
+			name:    "nvidia sanitizeNIMBody",
 			wantKey: "reasoning_content",
 			call: func(t *testing.T) ([]byte, error) {
-				return normalizeNvidiaReasoning([]byte(`{
+				return sanitizeNIMBody([]byte(`{
 					"model": "meta/llama-3.1-70b-instruct",
 					"messages": [
 						{"role": "assistant", "reasoning": "thought", "content": "answer"},

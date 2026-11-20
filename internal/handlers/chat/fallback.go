@@ -323,7 +323,8 @@ func (h *ChatHandler) handleAccountFallback(
 		if errors.As(lastErr, &ue) {
 			h.recordModelCooldown(ctx, provider, model, connObj.ID, ue)
 		}
-		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
+		modelScoped := errors.As(lastErr, &ue) && providers.RetryModelScopedError(ue.StatusCode, extractErrorText(ue.Body), provider)
+		if modelScoped || (errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode]) {
 			if handlerutil.IsProbeContext(ctx) {
 				excludeIDs = append(excludeIDs, connObj.ID)
 				continue
@@ -376,8 +377,10 @@ func (h *ChatHandler) handleAccountFallback(
 			// Account-scoped cooldown alongside the per-model locks, so the
 			// selector can skip this account before spending a request
 			// (upstream applyErrorState). Only lock if error is account-scoped,
-			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
-			if isModelScopedError(ue.StatusCode, errorText, model, ue.Body) {
+			// not model-scoped (e.g. 401 auth issues, or a rule that said so
+			// itself such as an NVIDIA NIM degraded cluster), so unrelated
+			// models stay available.
+			if classification.ModelScoped || isModelScopedError(ue.StatusCode, errorText, model, ue.Body) {
 				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}

@@ -1,0 +1,11 @@
+### fix(nvidia): harden NIM parameter sanitization and degraded cluster cooldown (Closes #1285)
+
+Port of upstream `decolua/9router` `2275bc0d` + `ced0cf6e6` (both merged on upstream `master`, v0.5.119).
+
+- **NIM parameter sanitization** (`internal/proxy/executor/nvidia.go`): NVIDIA NIM answers 400 for client-sent params instead of ignoring them. `sanitizeNIMBody` strips `client_metadata`, `prompt_cache_key`, `service_tier`, `anthropic_beta`, `thinking_budget`, `user_id`, `custom_field` (upstream paramSupport nvidia `drop` rule, decolua@2275bc0d) before forwarding. A body with nothing to change is returned byte-for-byte.
+- **Reasoning alias normalization** (same file): assistant-turn `reasoning` is renamed to `reasoning_content` (NIM treats them as aliases of one field — replaying both makes its deserializer fail on a duplicate field). An explicit canonical `reasoning_content` wins; the alias is dropped (behavior from ced0cf6e6, folded into the same single-pass sanitizer).
+- **Degraded-cluster model-scoped cooldown, no API-key lock**: new `{Provider: "nvidia", Text: "degraded", CooldownMs: 15m, ModelScoped: true}` rule in `internal/providers/errorclassify.go` (upstream `modelScoped`), `KindModelUnavailable`/`ScopeModel` classification in `internal/errclass`, and lock-path handling in `internal/handlers/chat/{fallback,combo}.go`: a model-scoped verdict locks only `modelLock_<model>` for 15 minutes and records a scoped error — the account-scoped `rateLimitedUntil` cooldown is NOT set, so sibling models on the same key keep serving. `providers.RetryModelScopedError` routes a model-scoped verdict on a non-retryable status (NIM's degraded arrives as 400, otherwise request-scoped) into the lock path.
+- **Upstream divergence**: upstream's registry also adds the NIM model catalog and a transport timeout quirk in the same commit; the Go port's catalog already carries the Nemotron/GLM/DeepSeek entries, and the model-list/timeout portion is out of scope for the three requested behaviors.
+- Verified: `go test ./internal/translator/... ./internal/errclass/... ./internal/providers/...` plus `./internal/handlers/chat/...` and `./internal/proxy/...` all pass; `CHANGELOG.md` untouched.
+
+<!-- fragment: 1290 nvidia-nim-hardening -->
