@@ -23,7 +23,7 @@ score.
       <p class="contrib-name"><a href="https://github.com/luqman-v1">Luqmannul Hakim</a></p>
       <p class="contrib-login">@luqman-v1</p>
       <p class="contrib-count">Backend Engineer with Positive Mental Attitude</p>
-      <p class="contrib-count">692 commits · repository owner</p>
+      <p class="contrib-count">696 commits · repository owner</p>
     </div>
   </div>
 
@@ -31,21 +31,21 @@ score.
     <img src="https://avatars.githubusercontent.com/u/64591494?v=4&s=200" alt="M Riyadh Azhar" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/mriazh">M Riyadh Azhar</a></p>
     <p class="contrib-login">@mriazh</p>
-    <p class="contrib-count">177 commits</p>
+    <p class="contrib-count">182 commits</p>
   </div>
 
   <div class="contrib-card">
     <img src="https://avatars.githubusercontent.com/u/121752948?v=4&s=200" alt="KunN21" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/KunN-21">KunN21</a></p>
     <p class="contrib-login">@KunN-21</p>
-    <p class="contrib-count">102 commits</p>
+    <p class="contrib-count">103 commits</p>
   </div>
 
   <div class="contrib-card">
     <img src="https://avatars.githubusercontent.com/u/20932301?v=4&s=200" alt="Helmi Amirudin" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/helmiau">Helmi Amirudin</a></p>
     <p class="contrib-login">@helmiau</p>
-    <p class="contrib-count">75 commits</p>
+    <p class="contrib-count">77 commits</p>
   </div>
 
   <div class="contrib-card">
@@ -122,6 +122,13 @@ score.
     <img src="https://avatars.githubusercontent.com/u/98071117?v=4&s=200" alt="Alfiansa" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/fiandev">Alfiansa</a></p>
     <p class="contrib-login">@fiandev</p>
+    <p class="contrib-count">2 commits</p>
+  </div>
+
+  <div class="contrib-card">
+    <img src="https://avatars.githubusercontent.com/u/66246006?v=4&s=200" alt="Yi Zheng Wu" loading="lazy" decoding="async" width="64" height="64" />
+    <p class="contrib-name"><a href="https://github.com/forggy0113">Yi Zheng Wu</a></p>
+    <p class="contrib-login">@forggy0113</p>
     <p class="contrib-count">2 commits</p>
   </div>
 
