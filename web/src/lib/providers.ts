@@ -20,6 +20,14 @@ export interface ProviderCatalogItem {
   name: string
   category: 'oauth' | 'free' | 'freeTier' | 'apikey' | 'webCookie' | 'custom'
   alias?: string
+  /**
+   * The prefix this provider's model ids are published under — what
+   * /v1/models serves and what the copy button hands out. It is the
+   * gateway's own answer, so it always round-trips. It differs from
+   * `alias` for a few providers (`freebuff` publishes as "freebuff", its
+   * upstream alias is "fb"), so the two are not interchangeable.
+   */
+  modelPrefix?: string
   color?: string
   icon?: string
   noAuth?: boolean

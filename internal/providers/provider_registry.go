@@ -9,9 +9,23 @@ package providers
 
 // ProviderMeta is the display metadata for one provider.
 type ProviderMeta struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Alias       string   `json:"alias,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Alias is the provider's upstream alias (the registry entry's
+	// `uiAlias || alias`).
+	Alias string `json:"alias,omitempty"`
+	// ModelPrefix is the prefix this provider's model ids are PUBLISHED
+	// under — what /v1/models serves and what a client pastes. It is
+	// GetProviderAlias(id), which for most providers is the alias but not
+	// for all: `freebuff` publishes as "freebuff" while its upstream alias
+	// is "fb", and `sumopod` publishes as "sp" while its upstream alias is
+	// "sumopod".
+	//
+	// The dashboard's copy button used the provider id, so it handed out
+	// "opencode/<model>" where the gateway serves "oc/<model>" — an id the
+	// router does not resolve. The published prefix is the only value that
+	// is guaranteed to round-trip.
+	ModelPrefix string   `json:"modelPrefix,omitempty"`
 	Category    Category `json:"category"`
 	AuthType    string   `json:"authType"`
 	Color       string   `json:"color,omitempty"`
