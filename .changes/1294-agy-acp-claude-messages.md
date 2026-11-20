@@ -1,0 +1,5 @@
+### agy-acp: fix `/v1/messages` (Anthropic mode) responses
+
+- Fixed the agy-acp provider erroring when used through `/v1/messages` (Claude / Anthropic mode). The executor wrote OpenAI Chat Completions bodies and SSE frames straight to the client, ignoring the Claude-client translation flag, so a Messages client received a Chat body it could not parse ("HTTP 200 … body is JSON but not a Message").
+- The answer is now routed through the shared translation paths (mirroring the gemini-web emitter): `jsonResponse` with `TranslateResp` for non-stream, and `TranslateOpenAIToClaudeStreamSession` per chunk for stream, with the Responses bridge for `/v1/responses` clients and proper Claude `message_stop` closure / in-band error framing. OpenAI Chat Completions clients are unchanged.
+- Stream session keys use `translator.NewSessionKey` (the convention enforced by `TestNoSessionKeyFromTimestampAlone`). Added non-stream and stream Claude tests using the existing fake-AGY harness. Verified: `go build ./...`, `go test ./...` (73 ok, 0 FAIL), `go vet`, `golangci-lint --new-from-rev=origin/main` (0 issues).
