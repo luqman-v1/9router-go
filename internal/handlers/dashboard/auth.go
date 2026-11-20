@@ -160,6 +160,14 @@ func (h *DashboardHandler) HandleAuthStatus(w http.ResponseWriter, r *http.Reque
 		"samlName":       samlName,
 		"samlEmail":      samlEmail,
 		"samlLogin":      samlLogin,
+		// White-label branding: the login screen reads these the same way the
+		// sidebar reads the settings row, so an operator's name, tagline and
+		// login logo appear before authentication too. Empty values are sent as
+		// empty strings rather than omitted, so the client can use "|| default"
+		// without a separate "is the key present" check.
+		"appName":    stringOr(raw, appNameSettingKey, ""),
+		"appTagline": stringOr(raw, appTaglineSettingKey, ""),
+		"loginLogo":  stringOr(raw, loginLogoSettingKey, ""),
 	})
 }
 
