@@ -5,6 +5,7 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { api, type CustomModelBatchEntry } from '../../api/client'
   import { parseModelIds, summarizeBulkModels } from '../../lib/bulk-models'
+  import { MODEL_TYPE_OPTIONS, type CustomModelType } from './modelTypeOptions'
 
   export interface ModelCaps {
     vision: boolean
@@ -22,7 +23,12 @@
     isOpen: boolean
     /** Storage alias of the provider (e.g. "oc") — used to strip the alias prefix and to test. */
     providerAlias: string
-    onSave: (modelId: string, caps: ModelCaps, limits: ModelLimits) => Promise<void> | void
+    onSave: (
+      modelId: string,
+      caps: ModelCaps,
+      limits: ModelLimits,
+      modelType: CustomModelType,
+    ) => Promise<void> | void
     /** Called after a bulk save, so the parent reloads the list the paste changed. */
     onBulkSaved?: () => void
     onClose: () => void
@@ -43,6 +49,11 @@
   let modelId = $state('')
   let caps = $state<ModelCaps>(defaultCaps())
   let limits = $state<ModelLimits>(defaultLimits())
+  // What the model is, not what it can do: the row's `type` decides which lane
+  // serves it and which key the dashboard stores it under (upstream
+  // decolua/9router@850eb573). Guessing it from the id filed a transcription
+  // model whose name carries no hint as chat.
+  let modelType = $state<CustomModelType>('llm')
   let testStatus = $state<'testing' | 'ok' | 'error' | null>(null)
   let testError = $state('')
   let saving = $state(false)
@@ -70,9 +81,10 @@
 
   // max_output_tokens is drawn from the same window, so declaring both with
   // the output larger than the window is a contradiction rather than a value
-  // the gateway can publish.
+  // the gateway can publish — but only a chat model is sized by a window at
+  // all, and a row that carries neither field cannot contradict itself.
   let limitsError = $derived(
-    limits.contextWindow > 0 && limits.maxOutput > limits.contextWindow
+    modelType === 'llm' && limits.contextWindow > 0 && limits.maxOutput > limits.contextWindow
       ? 'Max output cannot exceed the context window.'
       : '',
   )
@@ -83,6 +95,7 @@
       modelId = ''
       caps = defaultCaps()
       limits = defaultLimits()
+      modelType = 'llm'
       testStatus = null
       testError = ''
       bulkResult = null
@@ -103,7 +116,7 @@
     testStatus = 'testing'
     testError = ''
     try {
-      const data = await api.testModel(`${providerAlias}/${cleanId}`)
+      const data = await api.testModel(`${providerAlias}/${cleanId}`, modelType)
       testStatus = data.ok ? 'ok' : 'error'
       testError = data.error || ''
     } catch (err) {
@@ -128,7 +141,11 @@
         // (D10), and the endpoint stays general for a caller that does not.
         bulkResult = await api.saveCustomModelsBulk({
           providerAlias,
-          models: plan.ids.map((id): CustomModelBatchEntry => ({ id, ...caps, ...limits })),
+          type: modelType,
+          models: plan.ids.map(
+            (id): CustomModelBatchEntry =>
+              modelType === 'llm' ? { id, type: modelType, ...caps, ...limits } : { id, type: modelType },
+          ),
         })
         onBulkSaved?.()
       } catch (err) {
@@ -142,7 +159,7 @@
     if (!cleanId || saving) return
     saving = true
     try {
-      await onSave(cleanId, { ...caps }, { ...limits })
+      await onSave(cleanId, { ...caps }, { ...limits }, modelType)
     } finally {
       saving = false
     }
@@ -158,6 +175,29 @@
 
 <Modal {isOpen} {onClose} title="Add Custom Model">
   <div class="flex flex-col gap-4">
+    <div>
+      <label class="text-sm font-medium mb-1.5 block" for="add-custom-model-type">Model type</label>
+      <select
+        id="add-custom-model-type"
+        value={modelType}
+        disabled={saving || bulkSaving || testStatus === 'testing'}
+        onchange={(e) => {
+          modelType = (e.target as HTMLSelectElement).value as CustomModelType
+          testStatus = null
+          testError = ''
+        }}
+        class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {#each MODEL_TYPE_OPTIONS as option (option.value)}
+          <option value={option.value}>{option.label}</option>
+        {/each}
+      </select>
+      <p class="text-xs text-text-muted mt-1">
+        Stored as the model's kind, which is what decides the endpoint a client is
+        forwarded to. Leave it on Chat / LLM unless the id would be misread.
+      </p>
+    </div>
+
     <div>
       <label class="text-sm font-medium mb-1.5 block" for="add-custom-model-id">Model ID</label>
       <div class="flex gap-2">
@@ -239,72 +279,74 @@
       <p class="text-xs text-red-600 dark:text-red-400" role="alert">{bulkError}</p>
     {/if}
 
-    <div>
-      <label class="text-sm font-medium mb-1.5 block">Capabilities</label>
-      <div class="flex flex-wrap gap-4">
-        {#each Object.entries(CAPACITY_META) as [key, meta]}
-          <div class="flex items-center gap-2">
-            <Toggle
-              checked={caps[key as keyof ModelCaps]}
-              onchange={(v: boolean) => {
-                caps = { ...caps, [key]: v }
-              }}
-              label={meta.label}
-              size="sm"
-            />
-            <div class="leading-tight">
-              <div class="text-sm">{meta.label}</div>
-              <div class="text-xs text-text-muted">{meta.desc}</div>
+    {#if modelType === 'llm'}
+      <div>
+        <label class="text-sm font-medium mb-1.5 block">Capabilities</label>
+        <div class="flex flex-wrap gap-4">
+          {#each Object.entries(CAPACITY_META) as [key, meta]}
+            <div class="flex items-center gap-2">
+              <Toggle
+                checked={caps[key as keyof ModelCaps]}
+                onchange={(v: boolean) => {
+                  caps = { ...caps, [key]: v }
+                }}
+                label={meta.label}
+                size="sm"
+              />
+              <div class="leading-tight">
+                <div class="text-sm">{meta.label}</div>
+                <div class="text-xs text-text-muted">{meta.desc}</div>
+              </div>
             </div>
-          </div>
-        {/each}
+          {/each}
+        </div>
       </div>
-    </div>
 
-    <div>
-      <label class="text-sm font-medium mb-1.5 block">Token limits (optional)</label>
-      <div class="grid gap-3 sm:grid-cols-2">
-        <div>
-          <label class="text-xs text-text-muted mb-1 block" for="add-custom-model-ctx">Context window</label>
-          <input
-            id="add-custom-model-ctx"
-            type="text"
-            inputmode="numeric"
-            placeholder="e.g. 131072"
-            value={limits.contextWindow || ''}
-            oninput={(e) => {
-              limits = { ...limits, contextWindow: parseLimit((e.target as HTMLInputElement).value) }
-            }}
-            class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-          />
+      <div>
+        <label class="text-sm font-medium mb-1.5 block">Token limits (optional)</label>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="text-xs text-text-muted mb-1 block" for="add-custom-model-ctx">Context window</label>
+            <input
+              id="add-custom-model-ctx"
+              type="text"
+              inputmode="numeric"
+              placeholder="e.g. 131072"
+              value={limits.contextWindow || ''}
+              oninput={(e) => {
+                limits = { ...limits, contextWindow: parseLimit((e.target as HTMLInputElement).value) }
+              }}
+              class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+            />
+          </div>
+          <div>
+            <label class="text-xs text-text-muted mb-1 block" for="add-custom-model-out">Max output</label>
+            <input
+              id="add-custom-model-out"
+              type="text"
+              inputmode="numeric"
+              placeholder="e.g. 8192"
+              value={limits.maxOutput || ''}
+              oninput={(e) => {
+                limits = { ...limits, maxOutput: parseLimit((e.target as HTMLInputElement).value) }
+              }}
+              aria-describedby={limitsError ? 'add-custom-model-limits-error' : undefined}
+              aria-invalid={limitsError ? 'true' : undefined}
+              class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+            />
+          </div>
         </div>
-        <div>
-          <label class="text-xs text-text-muted mb-1 block" for="add-custom-model-out">Max output</label>
-          <input
-            id="add-custom-model-out"
-            type="text"
-            inputmode="numeric"
-            placeholder="e.g. 8192"
-            value={limits.maxOutput || ''}
-            oninput={(e) => {
-              limits = { ...limits, maxOutput: parseLimit((e.target as HTMLInputElement).value) }
-            }}
-            aria-describedby={limitsError ? 'add-custom-model-limits-error' : undefined}
-            aria-invalid={limitsError ? 'true' : undefined}
-            class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-          />
-        </div>
-      </div>
-      <p class="text-xs text-text-muted mt-1">
-        Published to <code class="font-mono bg-sidebar px-1 rounded">/v1/models</code> instead of a guessed
-        value. Leave blank to keep the default.
-      </p>
-      {#if limitsError}
-        <p id="add-custom-model-limits-error" class="text-xs text-red-600 dark:text-red-400 mt-1" role="alert">
-          {limitsError}
+        <p class="text-xs text-text-muted mt-1">
+          Published to <code class="font-mono bg-sidebar px-1 rounded">/v1/models</code> instead of a guessed
+          value. Leave blank to keep the default.
         </p>
-      {/if}
-    </div>
+        {#if limitsError}
+          <p id="add-custom-model-limits-error" class="text-xs text-red-600 dark:text-red-400 mt-1" role="alert">
+            {limitsError}
+          </p>
+        {/if}
+      </div>
+    {/if}
 
     {#if testStatus === 'ok'}
       <div class="flex items-center gap-2 text-sm text-green-600">
