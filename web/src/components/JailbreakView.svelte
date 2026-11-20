@@ -10,6 +10,7 @@
   import Card from '../lib/ui/Card.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Toggle from '../lib/ui/Toggle.svelte'
+  import JailbreakPlayground from './jailbreak/JailbreakPlayground.svelte'
   // Preset library.
   let presets = $state<JailbreakDoc[]>([])
   let loading = $state(false)
@@ -1409,6 +1410,12 @@
       />
     {/if}
       {/if}
+  </Card>
+
+  <!-- Resolves one id under both scopes so a key-scoped binding is seen
+       outranking the global one, instead of being trusted unread. -->
+  <Card padding="md">
+    <JailbreakPlayground presets={presets} />
   </Card>
 </div>
 

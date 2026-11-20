@@ -1154,6 +1154,24 @@ export interface JailbreakDoc {
   excludes?: JailbreakKeyword[]
   /** Operator arrangement position in the preset list. */
   order?: number
+  /**
+   * Where the prompt lands in the outbound body. "" and "system" prepend it as
+   * the system prompt (the default a legacy or imported preset keeps);
+   * "append" places it after the original content.
+   */
+  position?: string
+  /**
+   * What kind of turn the prompt travels as. "" sends it as a system prompt;
+   * "chat" sends it as a scripted trailing user turn for endpoints with no
+   * system prompt slot.
+   */
+  mode?: string
+  /**
+   * Scope of one client API key: empty is every key, a non-empty id makes this
+   * preset visible only to requests that present that key. The resolver
+   * prefers a key-scoped match over the global one.
+   */
+  apiKeyId?: string
   /** RFC3339 UTC stamp the store filled on first write. */
   createdAt?: string
   /** RFC3339 UTC stamp of the last write. */
@@ -1173,6 +1191,8 @@ export interface JailbreakKeyword {
 export interface JailbreakModelConfig {
   enabled: boolean
   presetId: string
+  /** Empty is every key; a key-scoped binding outranks the same model's global one. */
+  apiKeyId?: string
 }
 
 /** The global exclude list: models matching these rules are never injected. */
@@ -1207,7 +1227,7 @@ export interface JailbreakImportResult {
 /** Why one model id resolved (or did not resolve) to a preset. */
 export interface JailbreakMatch {
   injected: boolean
-  /** global-exclude | exact-binding | keyword | preset-exclude | no-match */
+  /** global-exclude | exact-binding | key-binding | keyword | preset-exclude | no-match */
   reason: string
   presetId?: string
   presetName?: string
@@ -2906,6 +2926,24 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ id, presetId, enabled }),
     }),
+  // One API key's bindings, already filtered to that key: the map is keyed by
+  // the bare model id, so a row here is the key's own override of whatever the
+  // global binding above says.
+  listJailbreakKeyBindings: (keyId: string) =>
+    request<Record<string, JailbreakModelConfig>>(
+      `/api/jailbreak/keys/bindings?keyId=${encodeURIComponent(keyId)}`,
+    ),
+  // Arm a preset for one model under one key only. The same `enabled` toggle
+  // convention the global write uses: omitted arms it, presetId "off"/"none"
+  // means turn it off rather than delete the row.
+  setJailbreakKeyModel: (keyId: string, id: string, presetId: string, enabled: boolean) =>
+    request<{ ok: boolean; keyId: string; id: string; enabled: boolean; presetId: string }>(
+      '/api/jailbreak/keys/model',
+      {
+        method: 'POST',
+        body: JSON.stringify({ keyId, id, presetId, enabled }),
+      },
+    ),
   deleteJailbreakModel: (id: string) =>
     request<{ ok: boolean; id: string }>('/api/jailbreak/models', {
       method: 'DELETE',
@@ -2951,10 +2989,13 @@ export const api = {
     request<{ models: string[] }>('/api/jailbreak/models/catalog'),
   getJailbreakUsage: () =>
     request<{ usage: Record<string, number> }>('/api/jailbreak/usage'),
-  explainJailbreak: (id: string) =>
+  // The scope is the second resolver argument: passing one client key's id
+  // re-runs the same resolution under that key, so a key-scoped binding can be
+  // shown winning over the same model's global binding.
+  explainJailbreak: (id: string, apiKeyId = '') =>
     request<JailbreakMatch>('/api/jailbreak/resolve', {
       method: 'POST',
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, apiKeyId }),
     }),
   duplicateJailbreakPreset: (id: string, newId?: string) =>
     request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {
