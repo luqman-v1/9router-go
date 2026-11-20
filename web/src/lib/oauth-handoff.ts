@@ -171,3 +171,21 @@ export function oauthLoopbackCallbackURL(port: string, secure: boolean): string 
  * with the wrong path. The loopback server behind it is started by
  * `POST /api/oauth/codex/start-proxy`. */
 export const CODEX_REDIRECT_URI = 'http://localhost:1455/auth/callback'
+
+/** Authorize-step redirect URI for a PKCE provider.
+ *
+ * Codex pins its one registered loopback URI. Claude's public OAuth client
+ * (claude.ai/oauth/authorize) only accepts loopback callbacks (RFC 8252), so a
+ * dashboard served on a custom domain must still authorize against
+ * http://localhost:<port>/callback — the same shape Antigravity uses
+ * (oauthLoopbackCallbackURL). Sending the dashboard origin there makes Claude
+ * reject the authorize step with "Redirect URI ... is not supported by client"
+ * (issue #1266). The server honors this value (oauth/redirect.go) and the
+ * exchange step echoes it back, so both legs agree. Every other PKCE provider
+ * keeps following the dashboard origin.
+ */
+export function pkceCallbackURL(providerId: string, origin: string, port: string, secure: boolean): string {
+  if (providerId === 'codex') return CODEX_REDIRECT_URI
+  if (providerId === 'claude') return oauthLoopbackCallbackURL(port, secure)
+  return dashboardCallbackURL(origin)
+}

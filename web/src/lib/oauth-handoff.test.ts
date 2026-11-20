@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   clearCallback,
   clearPending,
+  CODEX_REDIRECT_URI,
   dashboardCallbackURL,
   loadPendings,
   matchPending,
@@ -9,6 +10,7 @@ import {
   OAUTH_PENDING_KEY,
   oauthLoopbackCallbackURL,
   parseCallbackURL,
+  pkceCallbackURL,
   readCallback,
   savePending,
   writeCallback,
@@ -133,6 +135,25 @@ describe('oauthLoopbackCallbackURL', () => {
     expect(oauthLoopbackCallbackURL('20130', false)).toBe('http://localhost:20130/callback')
     expect(oauthLoopbackCallbackURL('', false)).toBe('http://localhost:80/callback')
     expect(oauthLoopbackCallbackURL('', true)).toBe('http://localhost:443/callback')
+  })
+})
+
+describe('pkceCallbackURL', () => {
+  test('Claude uses a loopback callback even on a custom domain (issue #1266)', () => {
+    // https custom domain (default port) must NOT send the dashboard origin.
+    expect(pkceCallbackURL('claude', 'https://dash.example.com', '', true)).toBe('http://localhost:443/callback')
+    // http custom domain on an explicit port keeps that port.
+    expect(pkceCallbackURL('claude', 'http://dash.example.com:8080', '8080', false)).toBe('http://localhost:8080/callback')
+    // localhost dashboard is unchanged: loopback equals the dashboard callback.
+    expect(pkceCallbackURL('claude', 'http://localhost:20130', '20130', false)).toBe('http://localhost:20130/callback')
+  })
+  test('Codex keeps its single registered loopback URI', () => {
+    expect(pkceCallbackURL('codex', 'https://dash.example.com', '', true)).toBe(CODEX_REDIRECT_URI)
+    expect(pkceCallbackURL('codex', 'http://localhost:20130', '20130', false)).toBe(CODEX_REDIRECT_URI)
+  })
+  test('other PKCE providers keep following the dashboard origin', () => {
+    expect(pkceCallbackURL('gitlab', 'https://dash.example.com', '', true)).toBe('https://dash.example.com/callback')
+    expect(pkceCallbackURL('xai', 'http://localhost:20130', '20130', false)).toBe('http://localhost:20130/callback')
   })
 })
 

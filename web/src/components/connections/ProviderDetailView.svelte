@@ -26,6 +26,7 @@
     readCallback,
     savePending,
     oauthLoopbackCallbackURL,
+    pkceCallbackURL,
     writeCallback,
   } from '../../lib/oauth-handoff'
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
@@ -602,6 +603,14 @@
   function antigravityCallback(): string {
     if (typeof window === 'undefined') return 'http://localhost:8080/callback'
     return oauthLoopbackCallbackURL(window.location.port, window.location.protocol === 'https:')
+  }
+
+  // PKCE authorize redirect: Claude only accepts a loopback callback, so a
+  // custom-domain dashboard must not send its own origin (issue #1266).
+  function pkceCallback(): string {
+    const port = typeof window !== 'undefined' ? window.location.port : ''
+    const secure = typeof window !== 'undefined' && window.location.protocol === 'https:'
+    return pkceCallbackURL(providerId, dashboardOrigin(), port, secure)
   }
 
   function rememberPending(p: { state: string; verifier?: string; redirectUri?: string; extra?: Record<string, string> }) {
@@ -1664,8 +1673,10 @@
     copiedAuthUrl = false
     try {
       // Codex cannot use the dashboard callback: OpenAI only accepts the
-      // redirect URI registered for the Codex CLI client.
-      const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
+      // redirect URI registered for the Codex CLI client. Claude only accepts
+      // loopback callbacks, so a custom-domain dashboard must not send its own
+      // origin either (issue #1266). pkceCallback() picks per provider.
+      const cb = pkceCallback()
       const res = await api.pkceAuthorize(
         providerId,
         providerId === 'gitlab'
