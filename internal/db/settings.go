@@ -221,6 +221,18 @@ type SettingsData struct {
 	UptimeKumaEnabled  bool   `json:"uptimeKumaEnabled,omitempty"`
 	UptimeKumaPushURL  string `json:"uptimeKumaPushUrl,omitempty"`
 	UptimeKumaInterval int    `json:"uptimeKumaInterval,omitempty"`
+	// White-label branding (Settings > White-label branding card). Empty means
+	// the project default: the sidebar and login screen fall back to the
+	// built-in name and favicon. LoginLogo and TrayIcon stay separate from
+	// AppLogoUrl because the login tile and the tray render at different sizes
+	// and may be a different mark entirely.
+	AppName        string `json:"appName,omitempty"`
+	AppLogoURL     string `json:"appLogoUrl,omitempty"`
+	AppDescription string `json:"appDescription,omitempty"`
+	AppTagline     string `json:"appTagline,omitempty"`
+	LoginLogoURL   string `json:"loginLogo,omitempty"`
+	TrayAppName    string `json:"trayAppName,omitempty"`
+	TrayIconURL    string `json:"trayIcon,omitempty"`
 }
 
 // ProviderThinking is one provider's operator reasoning override, mirroring

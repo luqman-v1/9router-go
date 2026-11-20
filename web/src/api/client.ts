@@ -315,6 +315,11 @@ export interface Settings {
   appName?: string
   appLogoUrl?: string
   requireApiKey?: boolean
+  appDescription?: string
+  appTagline?: string
+  loginLogo?: string
+  trayAppName?: string
+  trayIcon?: string
   tunnelDashboardAccess?: boolean
   tunnelWatchdogEnabled?: boolean
   tailscaleWatchdogEnabled?: boolean

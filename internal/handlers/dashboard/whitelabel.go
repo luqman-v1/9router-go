@@ -5,24 +5,38 @@ import (
 	"strings"
 )
 
-// appNameSettingKey and appLogoUrlSettingKey are the white-label keys the
-// Settings > White-label branding card writes and the sidebar reads. The
-// sidebar renders whatever they hold, so the stored shape is kept honest here
-// rather than trusted from the client.
+// White-label branding keys written by Settings > White-label branding card and
+// read by the sidebar / login screen / tray companion.
 const (
-	appNameSettingKey    = "appName"
-	appLogoUrlSettingKey = "appLogoUrl"
+	appNameSettingKey        = "appName"
+	appLogoUrlSettingKey     = "appLogoUrl"
+	appDescriptionSettingKey = "appDescription"
+	appTaglineSettingKey     = "appTagline"
+	loginLogoSettingKey      = "loginLogo"
+	trayAppNameSettingKey    = "trayAppName"
+	trayIconSettingKey       = "trayIcon"
 )
 
-// maxAppNameRunes caps the stored product name. The sidebar renders it inside a
-// fixed-width brand block next to a 36px logo tile, so a longer string would
-// either wrap the header or push the version line out of the aside.
+// maxAppNameRunes caps the stored product name.
 const maxAppNameRunes = 60
 
-// maxAppLogoURLLen caps the stored logo URL. A logo is a URL, not an asset:
-// the sidebar points an <img> at it, so the value has to stay short enough to
-// sit in a settings row and a JSON response.
+// maxAppLogoURLLen caps the stored logo URL.
 const maxAppLogoURLLen = 500
+
+// maxAppDescriptionRunes caps the stored product description.
+const maxAppDescriptionRunes = 200
+
+// maxAppTaglineRunes caps the stored tagline.
+const maxAppTaglineRunes = 80
+
+// maxLoginLogoURLLen caps the stored login logo URL.
+const maxLoginLogoURLLen = 500
+
+// maxTrayAppNameRunes caps the stored tray app name.
+const maxTrayAppNameRunes = 60
+
+// maxTrayIconURLLen caps the stored tray icon URL.
+const maxTrayIconURLLen = 500
 
 // normalizeAppName coerces a client payload into the stored product name:
 // trimmed, and capped at maxAppNameRunes. The second result reports whether the
@@ -52,12 +66,63 @@ func normalizeAppName(value any) (string, bool) {
 //
 // An empty value clears the logo, which is how the default favicon comes back.
 func normalizeAppLogoUrl(value any) (string, bool) {
+	return normalizeAppLogoUrlWithMax(value, maxAppLogoURLLen)
+}
+
+// normalizeAppDescription coerces a client payload into a stored description.
+func normalizeAppDescription(value any) (string, bool) {
+	desc, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	desc = strings.TrimSpace(desc)
+	if len([]rune(desc)) > maxAppDescriptionRunes {
+		desc = string([]rune(desc)[:maxAppDescriptionRunes])
+	}
+	return desc, true
+}
+
+// normalizeAppTagline coerces a client payload into a stored tagline.
+func normalizeAppTagline(value any) (string, bool) {
+	tag, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	tag = strings.TrimSpace(tag)
+	if len([]rune(tag)) > maxAppTaglineRunes {
+		tag = string([]rune(tag)[:maxAppTaglineRunes])
+	}
+	return tag, true
+}
+
+// normalizeLoginLogoUrl coerces a client payload into a stored login logo URL.
+func normalizeLoginLogoUrl(value any) (string, bool) {
+	return normalizeAppLogoUrlWithMax(value, maxLoginLogoURLLen)
+}
+
+func normalizeTrayAppName(value any) (string, bool) {
+	name, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	name = strings.TrimSpace(name)
+	if len([]rune(name)) > maxTrayAppNameRunes {
+		name = string([]rune(name)[:maxTrayAppNameRunes])
+	}
+	return name, true
+}
+
+func normalizeTrayIconUrl(value any) (string, bool) {
+	return normalizeAppLogoUrlWithMax(value, maxTrayIconURLLen)
+}
+
+func normalizeAppLogoUrlWithMax(value any, maxLen int) (string, bool) {
 	logo, ok := value.(string)
 	if !ok {
 		return "", false
 	}
 	logo = strings.TrimSpace(logo)
-	if len(logo) > maxAppLogoURLLen {
+	if len(logo) > maxLen {
 		return "", false
 	}
 	if logo == "" {
@@ -74,13 +139,13 @@ func normalizeAppLogoUrl(value any) (string, bool) {
 	return logo, true
 }
 
-// applyWhitelabelUpdate normalizes the two branding keys in
+// applyWhitelabelUpdate normalizes the white-label branding keys in
 // HandleUpdateSettings' payload.
 //
 // An unparsable value is stored as an explicit null rather than deleted:
-// UpdateSettingsRaw merges into the stored row, so dropping the map entry would
-// leave the previous name or logo in place and the sidebar would keep showing
-// the branding the operator just tried to clear.
+// UpdateSettingsRaw merges into the stored row, so dropping the map entry
+// would leave the previous name or logo in place and the sidebar would keep
+// showing the branding the operator just tried to clear.
 func applyWhitelabelUpdate(updates map[string]any) {
 	if value, ok := updates[appNameSettingKey]; ok {
 		name, valid := normalizeAppName(value)
@@ -96,6 +161,46 @@ func applyWhitelabelUpdate(updates map[string]any) {
 			updates[appLogoUrlSettingKey] = nil
 		} else {
 			updates[appLogoUrlSettingKey] = logo
+		}
+	}
+	if value, ok := updates[appDescriptionSettingKey]; ok {
+		desc, valid := normalizeAppDescription(value)
+		if !valid {
+			updates[appDescriptionSettingKey] = nil
+		} else {
+			updates[appDescriptionSettingKey] = desc
+		}
+	}
+	if value, ok := updates[appTaglineSettingKey]; ok {
+		tag, valid := normalizeAppTagline(value)
+		if !valid {
+			updates[appTaglineSettingKey] = nil
+		} else {
+			updates[appTaglineSettingKey] = tag
+		}
+	}
+	if value, ok := updates[loginLogoSettingKey]; ok {
+		logo, valid := normalizeLoginLogoUrl(value)
+		if !valid {
+			updates[loginLogoSettingKey] = nil
+		} else {
+			updates[loginLogoSettingKey] = logo
+		}
+	}
+	if value, ok := updates[trayAppNameSettingKey]; ok {
+		name, valid := normalizeTrayAppName(value)
+		if !valid {
+			updates[trayAppNameSettingKey] = nil
+		} else {
+			updates[trayAppNameSettingKey] = name
+		}
+	}
+	if value, ok := updates[trayIconSettingKey]; ok {
+		icon, valid := normalizeTrayIconUrl(value)
+		if !valid {
+			updates[trayIconSettingKey] = nil
+		} else {
+			updates[trayIconSettingKey] = icon
 		}
 	}
 }
@@ -119,6 +224,46 @@ func sanitizeWhitelabel(settings map[string]any) {
 			delete(settings, appLogoUrlSettingKey)
 		} else {
 			settings[appLogoUrlSettingKey] = logo
+		}
+	}
+	if value, ok := settings[appDescriptionSettingKey]; ok {
+		desc, valid := normalizeAppDescription(value)
+		if !valid || desc == "" {
+			delete(settings, appDescriptionSettingKey)
+		} else {
+			settings[appDescriptionSettingKey] = desc
+		}
+	}
+	if value, ok := settings[appTaglineSettingKey]; ok {
+		tag, valid := normalizeAppTagline(value)
+		if !valid || tag == "" {
+			delete(settings, appTaglineSettingKey)
+		} else {
+			settings[appTaglineSettingKey] = tag
+		}
+	}
+	if value, ok := settings[loginLogoSettingKey]; ok {
+		logo, valid := normalizeLoginLogoUrl(value)
+		if !valid || logo == "" {
+			delete(settings, loginLogoSettingKey)
+		} else {
+			settings[loginLogoSettingKey] = logo
+		}
+	}
+	if value, ok := settings[trayAppNameSettingKey]; ok {
+		name, valid := normalizeTrayAppName(value)
+		if !valid || name == "" {
+			delete(settings, trayAppNameSettingKey)
+		} else {
+			settings[trayAppNameSettingKey] = name
+		}
+	}
+	if value, ok := settings[trayIconSettingKey]; ok {
+		icon, valid := normalizeTrayIconUrl(value)
+		if !valid || icon == "" {
+			delete(settings, trayIconSettingKey)
+		} else {
+			settings[trayIconSettingKey] = icon
 		}
 	}
 }
