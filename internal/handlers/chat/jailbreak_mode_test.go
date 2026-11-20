@@ -222,7 +222,6 @@ func TestInjectJailbreakPromptUnarmedModelUntouched(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save preset: %v", err)
 	}
-	const armed = "wal/glm-5.3-flash"
 	const unarmed = "wal/glm-5.3-flash-turbo"
 	if err := repo.SetJailbreakModelPreset(unarmed, "chat-mode", false); err != nil {
 		t.Fatalf("unbind model: %v", err)
