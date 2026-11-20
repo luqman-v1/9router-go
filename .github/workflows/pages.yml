@@ -25,7 +25,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # contents: write lets the build commit a regenerated wiki/team.md back to
+  # main when the contributors list moved. The push carries GITHUB_TOKEN, which
+  # by design does not re-trigger workflows, so this cannot loop.
+  contents: write
 
 concurrency:
   group: pages-${{ github.ref }}
@@ -48,6 +51,35 @@ jobs:
       # 404s.
       - name: Test site generator
         run: go test ./tools/sitegen/...
+
+      # The contributors page is data, not prose. Regenerate it from the GitHub
+      # API before the site builds, so the deployed roster is the current one
+      # rather than the last time someone remembered to refresh it. The
+      # GITHUB_TOKEN here is what makes this reliable: unauthenticated, the API
+      # allows 60 requests an hour per IP, which a shared runner can exhaust;
+      # authenticated, the whole regeneration costs about thirty.
+      - name: Regenerate contributors page
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go run ./tools/sitegen -gen-team
+
+      # Bookkeeping, not the deploy: the run above already built the fresh
+      # roster into the site. Committing the regenerated page keeps the
+      # checkout's wiki/team.md — what a local build, a fork, and the drift
+      # tests read — from falling behind the deployed one. No diff, no commit.
+      - name: Commit regenerated contributors page
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          if git diff --quiet wiki/team.md; then
+            echo "team.md already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wiki/team.md
+          git commit -m "wiki: refresh the contributors roster"
+          git push
 
       - name: Generate site
         run: go run ./tools/sitegen -out _site
@@ -200,22 +232,22 @@ jobs:
           # the prose but loses the grid would still build, and would quietly
           # stop crediting people.
           if [ -f _site/team.html ]; then
+            # The card count moves as people contribute, so the assertions pin
+            # the internal consistency, not a frozen roster: one link and one
+            # avatar per card, exactly one owner.
             cards=$(grep -o 'class="contrib-card' _site/team.html | wc -l)
-            [ "$cards" -eq 24 ] || {
-              echo "::error::team page has $cards contributor cards, want 24 (owner + 23)"
+            [ "$cards" -gt 0 ] || {
+              echo "::error::team page has no contributor cards"
               exit 1
             }
-            # Exactly one owner card: a second one would make the owner ambiguous.
             owners=$(grep -o 'contrib-card owner' _site/team.html | wc -l)
             [ "$owners" -eq 1 ] || {
               echo "::error::team page has $owners owner cards, want exactly 1"
               exit 1
             }
-            # Every card needs a link to the person's GitHub profile — the page's
-            # whole point is that the username is real and clickable.
             links=$(grep -o 'href="https://github.com/[a-zA-Z0-9-]*"' _site/team.html | wc -l)
-            [ "$links" -eq 24 ] || {
-              echo "::error::team page has $links GitHub profile links, want 24"
+            [ "$links" -eq "$cards" ] || {
+              echo "::error::team page has $links GitHub profile links for $cards cards"
               exit 1
             }
             # Avatars are the first external assets the wiki loads, so they must

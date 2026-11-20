@@ -53,7 +53,19 @@ func main() {
 	// described a release nobody had. When this is empty the build version is
 	// used, so a one-off local run without the manifest still shows one.
 	stable := flag.String("stable-version", "", "release the wiki documents, read from version.json; empty falls back to -version")
+	genTeam := flag.Bool("gen-team", false, "regenerate wiki/team.md from the GitHub API, then exit (GITHUB_TOKEN is used when set)")
 	flag.Parse()
+
+	// The contributors page is data, not prose, so it is regenerated before
+	// the site builds. A run without a token still reaches the API unauthenticated,
+	// which is fine for a local check; the Pages workflow always has a token.
+	if *genTeam {
+		if err := generateTeam(*repo); err != nil {
+			fmt.Fprintln(os.Stderr, "sitegen:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := generate(*readmePath, *assetsDir, *outDir, *repo); err != nil {
 		fmt.Fprintln(os.Stderr, "sitegen:", err)
