@@ -1,6 +1,6 @@
 import { api, getAuthHeaders, type ProviderConnection } from '../../api/client'
 import { parseCustomModelsResponse, parseDisabledModelsMap } from '../../lib/customModels'
-import { getModelCaps, getModelKind } from '../../lib/models'
+import { getModelCaps, getModelKind, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
 import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
 import { isBannedConnection } from '../../lib/ban'
 
@@ -10,6 +10,29 @@ export const MEDIA_KINDS: Record<string, true> = {
   stt: true,
   embedding: true,
   video: true,
+}
+
+/**
+ * The prefix a provider's model ids are published under.
+ *
+ * A registered provider publishes the prefix the gateway serves it under
+ * ("oc" for opencode, "cmc" for commandcode); a compatible node publishes the
+ * prefix the operator chose for it. Upstream resolves this the same way
+ * (providers/[id]/page.js:217): `isCompatible ? (providerNode?.prefix ||
+ * providerId) : providerAlias`.
+ *
+ * Returning the provider's internal id instead published "opencode/<model>"
+ * where the gateway serves "oc/<model>", so a copied model id did not resolve
+ * at the router. The published prefix is what /v1/models serves, so it is
+ * what a copied id has to be.
+ */
+export function providerDisplayPrefix(
+  providerId: string,
+  node?: { prefix?: string } | undefined,
+  publishedPrefix?: string | undefined,
+): string {
+  if (node) return node.prefix || providerId
+  return publishedPrefix || PROVIDER_ID_TO_ALIAS[providerId] || providerId
 }
 
 export function isChatModel(m: unknown): boolean {

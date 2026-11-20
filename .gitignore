@@ -8,6 +8,10 @@ web/dist/
 web/.dist-stamp
 _site/
 
+# A locally built gateway binary must never enter a commit. One slipped in
+# through a pull request once (66 MB); the entry keeps it out.
+/gw-head
+
 # Test binaries
 *.test
 *.out

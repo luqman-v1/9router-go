@@ -51,6 +51,7 @@
     getIconPath,
     isChatModel,
     isConnectionError,
+    providerDisplayPrefix,
     type CustomModelData,
     type ModelItem,
     type SuggestedModel
@@ -2647,8 +2648,17 @@
   }
 
   // Compatible nodes: upstream CompatibleModelsSection handlers.
+  //
+  // The prefix a model id is published under, not the provider's internal id.
+  // Upstream (providers/[id]/page.js:217) resolves it as
+  // `isCompatible ? (providerNode?.prefix || providerId) : providerAlias`,
+  // where providerAlias is the registry alias ("oc" for opencode). Returning
+  // the raw id here published "opencode/nemotron-3-ultra-free" where the
+  // gateway serves "oc/nemotron-3-ultra-free", so the copy button handed out
+  // an id the router does not resolve. The published prefix is what
+  // /v1/models serves, so it is what a copied id has to be.
   function displayAlias(): string {
-    return selectedNode?.prefix || providerId
+    return providerDisplayPrefix(providerId, selectedNode, selectedCatalogItem?.modelPrefix)
   }
 
   async function refreshCompatibleModels() {
