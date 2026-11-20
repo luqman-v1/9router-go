@@ -4,8 +4,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash
 #
-# Env overrides: VERSION (e.g. v1.9.2, default: latest), BINDIR (default:
-# /usr/local/bin, falls back to ~/.local/bin).
+# Env overrides: VERSION (e.g. v1.9.2, default: latest; "exp" installs the
+# newest experimental pre-release), BINDIR (default: /usr/local/bin, falls
+# back to ~/.local/bin).
 set -euo pipefail
 
 REPO="${REPO:-luqman-v1/9router-go}"
@@ -43,6 +44,23 @@ esac
 ASSET="9router-go-${OS}-${ARCH}${VARIANT:+-${VARIANT}}"
 if [ "$VERSION" = "latest" ]; then
   URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+elif [ "$VERSION" = "exp" ] || [ "$VERSION" = "experimental" ]; then
+  # Experimental builds are GitHub pre-releases, which releases/latest skips.
+  # The API orders by created_at, not published_at — an old draft published
+  # late can come first — so pick the newest by publish date. No jq
+  # dependency: expand JSON commas to newlines and scan key/value lines.
+  # awk consumes the whole stream (no `exit`), because closing the pipe early
+  # trips curl error 23 under `set -o pipefail`. ISO dates sort lexically.
+  info "resolving newest experimental pre-release ..."
+  TAG="$(curl -fsSL --retry 3 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+    | tr ',' '\n' | awk -F'"' '
+        /"tag_name":/        {tag=$4; pre=0}
+        /"prerelease": *true/ {pre=1}
+        /"published_at":/    {if (pre && $4 > best) {best=$4; besttag=tag}}
+        END {print besttag}')"
+  [ -n "$TAG" ] || fatal "no experimental pre-release found — check https://github.com/$REPO/releases"
+  info "newest experimental release: $TAG"
+  URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
 else
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 fi

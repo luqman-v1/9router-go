@@ -6,7 +6,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install-noavx.sh | bash
 #
-# Env overrides are the ones install.sh accepts: VERSION, BINDIR, REPO.
+# Env overrides are the ones install.sh accepts: VERSION (incl. "exp" for the
+# newest experimental pre-release), BINDIR, REPO.
 #
 # This is a thin wrapper so the asset name, the sudo fallback and the
 # post-install version check live in exactly one place.
