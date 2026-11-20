@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 
 	"9router/proxy/internal/acp/agy"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 // ForwardAGYACP serves OpenAI Chat Completions through the official agy CLI
@@ -103,17 +105,66 @@ func ForwardAGYACP(w http.ResponseWriter, req *Request) error {
 	}
 
 	if req.IsStream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		flusher, _ := w.(http.Flusher)
+		// The chunks this executor builds are OpenAI chunks. A Chat
+		// Completions client reads them as they are; a /v1/messages client
+		// cannot, so they are translated into Claude events on the way out
+		// (req.TranslateResp), and a /v1/responses client gets the Responses
+		// bridge. Without this routing a Claude client received OpenAI frames
+		// it cannot parse — the same wrong-format turn gemini-web guards
+		// against (gemini_web_stream.go:144-152).
+		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
+		var flusher http.Flusher
+		opened := false
+		open := func() {
+			if !opened {
+				opened = true
+				flusher = proxy.WriteSSEHeaders(hw)
+			}
+		}
+		sessionKey := translator.NewSessionKey("agy-acp-stream")
+		claude := req.TranslateResp
+		var bridge *ResponsesBridge
+		if translator.NeedsResponsesBridge(req.Ctx) {
+			bridge = NewResponsesBridge(
+				translator.RequestedModelFromContext(req.Ctx),
+				translator.CustomToolNamesFrom(req.Ctx),
+				func(frame []byte) error {
+					open()
+					if req.ResponseBuf != nil {
+						_, _ = req.ResponseBuf.Write(frame)
+					}
+					if _, err := hw.Write(frame); err != nil {
+						return err
+					}
+					if flusher != nil {
+						flusher.Flush()
+					}
+					return nil
+				},
+			)
+		}
 		emit := func(chunk map[string]any) error {
 			markTTFT(req, req.StartTime)
 			b, jerr := json.Marshal(chunk)
 			if jerr != nil {
 				return jerr
 			}
-			if _, werr := w.Write([]byte("data: " + string(b) + "\n\n")); werr != nil {
+			if bridge != nil {
+				bridge.Feed(b)
+				return bridge.Err()
+			}
+			frame := fmt.Appendf(nil, "data: %s\n\n", b)
+			if claude {
+				translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, b)
+				if terr != nil {
+					return terr
+				}
+				if translated != nil {
+					frame = translated
+				}
+			}
+			open()
+			if _, werr := hw.Write(frame); werr != nil {
 				return werr
 			}
 			if flusher != nil {
@@ -147,10 +198,22 @@ func ForwardAGYACP(w http.ResponseWriter, req *Request) error {
 			}
 		})
 		if streamErr != nil {
-			chunk := base(nil)
-			chunk["error"] = map[string]any{"message": streamErr.Error(), "type": "api_error"}
-			_ = emit(chunk)
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			if !opened {
+				// Nothing is on the wire yet, so the failure can still be a
+				// status the router can act on instead of a 200 carrying nothing.
+				_ = hw.Close()
+				return acpError(streamErr)
+			}
+			status, message := proxy.ClassifyStreamAbort(streamErr)
+			format := proxy.SSEFormatOpenAI
+			if claude {
+				format = proxy.SSEFormatClaude
+			}
+			_, _ = hw.Write(proxy.BuildStreamErrorBytes(status, message, format))
+			if claude {
+				translator.ClearStreamState(sessionKey)
+			}
+			_ = hw.Close()
 			return nil // error already delivered in-band
 		}
 		finish := "stop"
@@ -167,8 +230,31 @@ func ForwardAGYACP(w http.ResponseWriter, req *Request) error {
 		if err := emit(base([]map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}})); err != nil {
 			return err
 		}
-		_, err = w.Write([]byte("data: [DONE]\n\n"))
-		return err
+		if bridge != nil {
+			// A Responses client waits for response.completed, not [DONE].
+			bridge.StopCompletionWatchdog()
+			bridge.Close()
+			return hw.Close()
+		}
+		if claude {
+			// The Claude stream ends with message_delta and message_stop, which
+			// the translator emits with the finish reason. Ensure closure even
+			// if no finish chunk carried one, or the client waits forever.
+			if end := translator.EnsureStreamClosed(sessionKey); len(end) > 0 {
+				if _, err := hw.Write(end); err != nil {
+					return err
+				}
+			}
+			translator.ClearStreamState(sessionKey)
+			return hw.Close()
+		}
+		if _, err := hw.Write([]byte("data: [DONE]\n\n")); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return hw.Close()
 	}
 
 	// Non-streaming: accumulate the turn and return one chat.completion.
@@ -192,8 +278,11 @@ func ForwardAGYACP(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(b)
-	return err
+	// Route the Chat Completions body through the shared write path so a
+	// /v1/messages client gets a Claude Message (req.TranslateResp) instead of
+	// a Chat body it cannot parse. onEvent already mirrored the answer text
+	// into req.ResponseBuf, so pass a nil buffer here to avoid double-counting.
+	return jsonResponse(req.Ctx, w, bytes.NewReader(b), req.TranslateResp, nil)
 }
 
 func acpAccountRoot(req *Request) string {
