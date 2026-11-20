@@ -319,6 +319,10 @@ Use `net/http/httptest` (`httptest.NewRecorder()`, `httptest.NewRequest()`, and 
    - Tag live/upstream-dependent network tests clearly (e.g. `live_e2e_test.go` or guard with env checks) so that standard unit tests pass completely offline.
 4. **Deterministic & Isolated**:
    - Tests must clean up temporary database files or use in-memory SQLite (`:memory:`) where applicable.
+5. **An existing assertion is a contract; rewriting it to match the new code is not verification.**
+   - When a PR removes or changes an assertion in an existing test, it is changing a contract the old test pinned. That is only acceptable when the PR **states which contract changed and why**, with a source of truth (an upstream merged commit, a cited issue, or a live reproduction that disproves the old expectation). A PR body that says "tests updated" is not a justification.
+   - A test that only asserts the *new* behaviour is a recording of the new behaviour, not proof that the old behaviour was correct. Keep a failing-on-base check for the regression whenever a prior contract is replaced: before the fix, the new assertion must fail; after it, it must pass. Show both in the PR.
+   - Deleting a test that asserted a still-valid contract is a regression hidden behind a green suite. Reviewers must ask why the old expectation was wrong, not accept "the behavior changed". `TestApplyOpenAIKeepsAuto` → `TestApplyOpenAIResolvesAutoToHigh` in PR #1106 is the acceptable shape: upstream PR #5603 was cited as the reason the literal `auto` was the bug.
 
 ### D. Feature Integration Tests (`internal/integration`, `integration` build tag)
 
@@ -535,6 +539,20 @@ The `Connecting to 9router-go Localhost Gateway (:20130)...` spinner is a **full
 - It is a symptom, not a diagnosis. The message names the gateway, so an operator blames the gateway — when the cause was the browser's download. Do not "fix" a slow dashboard by making the spinner more informative; measure where the time goes first.
 
 The screen stays for as long as the boot requests take, and the boot requests are `Promise.all`-ed, so it is bounded by the slowest one — but only once the *bundle* has loaded. The bundle is the long pole.
+
+---
+
+### H. Live UI Regression Gate (`web/e2e/` — MANDATORY for behaviour changes)
+
+A change to what the dashboard **shows, copies, submits, or names** is not verified by a unit test, a screenshot of one state, or a green type-check. Those gates read source or assert a helper; they never render the component in a browser. The regression this rule exists for shipped in PR #1259 (`929acc66`): `copyModelId()` was switched to a helper that returned the raw provider id for every registered provider, so the button produced `opencode/<model>` where the gateway serves `oc/<model>`. `bun test src scripts` stayed green, the ratchet stayed green, the PR carried screenshots — of a *different* part of the same page. Only a live browser could have caught it.
+
+1. **Any PR that changes a user-visible string, a value handed to the clipboard, a form submission, or the rendering of a list item MUST add or update a test in `web/e2e/`** that drives the real gateway binary in Chromium (`startDashboard` in `web/e2e/harness.ts`) and asserts the observable result — the rendered text, the clipboard contents, the submitted request. A source-scanning unit test (`iconGlyphText.test.ts`, `providerDisplayPrefix.test.ts`) is a useful fast companion, never the gate itself.
+2. **Prove the test fails on the base.** Before the fix, revert only the line(s) under change in a scratch worktree, rebuild the bundle and binary, and run the new e2e test: it must fail. Then restore the fix and show it pass. Both results belong in the PR body. A newly added test that passes on base proves nothing about the change.
+3. **Screenshots must capture the element that changed**, not just the surrounding view. Capture before and after from the same route and viewport, element-scoped where possible (`Page.captureScreenshot` with a clip around the changed element), and attach both to the PR. A screenshot of a sibling component does not discharge this rule.
+4. **Keep the display value and the storage key separate.** Upstream holds them in two variables (`providerDisplayAlias` for what the operator sees and copies, `providerStorageAlias` for the key rows are saved under — `providers/[id]/page.js:194-219`). Conflating them is what made the copy button emit an unroutable id. When a PR touches either alias, the e2e test must assert the copied value resolves through the gateway's alias map, not just that it "looks right" on screen.
+5. **A changed unit test is a question, not an answer.** Reviewers must ask why an old expectation was removed before approving; see §5.C.5. Green CI after a test edit is not evidence that the behaviour stayed correct.
+
+Run the suite with `cd web && bun run e2e` (needs a built `9router-go` at the repo root). CI runs it in the `test` job on every PR.
 
 ---
 
