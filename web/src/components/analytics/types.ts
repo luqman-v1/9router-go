@@ -108,6 +108,10 @@ export interface RequestDetailItem {
     completion_tokens?: number
     cached_tokens?: number
     cache_read_input_tokens?: number
+    // Translators store usage in either OpenAI field names or Claude field
+    // names (input_tokens/output_tokens) — upstream issue #3890.
+    input_tokens?: number
+    output_tokens?: number
     cache_creation_input_tokens?: number
     // Anthropic reports the cache-write split per window; absent when the
     // upstream does not send the cache_creation object.
@@ -218,6 +222,21 @@ export function fmt(n?: number): string {
 
 export function cachedTokensFor(detail: RequestDetailItem): number {
   return detail.tokens?.cached_tokens ?? detail.tokens?.cache_read_input_tokens ?? 0
+}
+
+// Legacy Claude rows store 0 in the canonical columns, so a truthy `||`
+// (matching upstream tokenDisplay.js) falls through to the Claude pair instead
+// of rendering 0 for a request that did report usage. Upstream then reports the
+// larger of prompt and cache-read, because a cache hit is already counted in
+// prompt_tokens and reporting only that would understate the request.
+export function getInputTokens(tokens?: RequestDetailItem['tokens']): number {
+  const prompt = (tokens?.prompt_tokens || tokens?.input_tokens) || 0
+  const cache = (tokens?.cached_tokens ?? tokens?.cache_read_input_tokens) || 0
+  return prompt < cache ? cache : prompt
+}
+
+export function getOutputTokens(tokens?: RequestDetailItem['tokens']): number {
+  return (tokens?.completion_tokens || tokens?.output_tokens) ?? 0
 }
 
 export function timeAgo(timestamp?: string): string {
