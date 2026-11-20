@@ -1,7 +1,0 @@
-### MiniMax Code daily check-in (每日签到)
-
-- Ported the merged magpie plugin's MiniMax Code daily check-in (`packages/minimax/index.mjs:861-905,1201-1228` at `afe4c08`) into the gateway: a 30-minute background loop reads the seven-day signin panel and claims today's credits when claimable, with a per-account JSON ledger under `DATA_DIR/minimax-checkin.json` and a manual "Check in now" action (`POST /api/minimax/checkins/{connectionId}`).
-- The check-in reuses the signed MiniMax account client asked as the desktop client, resolves `realUserID` when login didn't keep it, and renews the sign-in **only on a 401** (magpie `plugins#765`); a 403 or business `1000048` refusal no longer spends the single-use refresh token. The quota route's refusal contract is unchanged.
-- China transport fallback `agent.minimaxi.com → agent.minimax.cn` applies only to no-answer failures; `minimax-code` and `minimax-code-global` never share credentials or host.
-- Added a `minimaxCheckin` toggle in Profile Settings (default off, read every tick so it takes effect without a restart) and a per-row check-in button in Quota Tracker showing `+credit` / outcome with the streak. `GET /api/minimax/checkins` returns the last outcome per account keyed by connection id.
-- Verified: `go build ./...`, `go test ./...` (74 ok), `go vet`, svelte-check ratchet (74 = baseline), `bun run build`, `go test ./web/...`, and a live smoke boot on a scratch `DATA_DIR` (route 200, UI renders the result).

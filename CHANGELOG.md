@@ -1,5 +1,187 @@
 # Changelog
 
+## [v1.9.17-exp.10] - 2026-11-20
+
+### agy-acp: fix `/v1/messages` (Anthropic mode) responses
+
+- Fixed the agy-acp provider erroring when used through `/v1/messages` (Claude / Anthropic mode). The executor wrote OpenAI Chat Completions bodies and SSE frames straight to the client, ignoring the Claude-client translation flag, so a Messages client received a Chat body it could not parse ("HTTP 200 … body is JSON but not a Message").
+- The answer is now routed through the shared translation paths (mirroring the gemini-web emitter): `jsonResponse` with `TranslateResp` for non-stream, and `TranslateOpenAIToClaudeStreamSession` per chunk for stream, with the Responses bridge for `/v1/responses` clients and proper Claude `message_stop` closure / in-band error framing. OpenAI Chat Completions clients are unchanged.
+- Stream session keys use `translator.NewSessionKey` (the convention enforced by `TestNoSessionKeyFromTimestampAlone`). Added non-stream and stream Claude tests using the existing fake-AGY harness. Verified: `go build ./...`, `go test ./...` (73 ok, 0 FAIL), `go vet`, `golangci-lint --new-from-rev=origin/main` (0 issues).
+
+### Fixed
+
+- Qoder CN PAT exchange now reaches the CN deployment. `qoderResolveCredential`
+  passed the raw region string (`"cn"`) to the provider-keyed endpoint table,
+  which silently fell through to the intl gateway and sent CN credentials to
+  `openapi.qoder.sh`. It now maps the region back to a provider id
+  (`qoderProviderIDForRegion`), so a CN Personal Access Token exchanges at
+  `openapi.qoder.com.cn` and resolves userinfo there (AGENTS.md §3.A). This is
+  the same region-string bug fixed for the catalog fetch in #1274, applied to
+  the PAT-exchange path. Local compatibility fix; no upstream citation.
+
+### Verification
+
+- `TestQoderResolveCredential_CNPATUsesCNEndpoints` fails on base (CN credential
+  sent to `openapi.qoder.sh`) and passes with the fix; intl and device-token
+  pass-through guards also covered.
+- `gofmt` / `go vet` clean on the touched package.
+
+### Qoder catalog & model-name compatibility
+
+- Friendly model names now resolve on the Qoder chat path: a deterministic
+  alias table (`qwen3.8-flash` → `qfmodel`, `glm-5.2` → `gm51model`,
+  `kimi-k2.7` → `kmodel`, …) covers the window before the first catalog fetch,
+  and once the live `model/list` snapshot lands its sanitized `display_name`
+  ids resolve first — the account's own catalog outranks the static table.
+  Resolution is case-insensitive, strips `qoder/`/`qd/` qualifiers, and the
+  built payload stamps the raw key everywhere Qoder routes by it
+  (`model_config.key`, `chat_context.extra.modelConfig.key`, `X-Model-Key`).
+  Unknown ids still pass through to the catalog lookup. Local compatibility
+  fix, not an upstream `decolua/9router` port.
+- The dashboard's Qoder model list (`GET /api/providers/{id}/models`) now
+  advertises each enabled key under its sanitized `display_name` as a second
+  id, so `qd/qfmodel` and `qd/qwen3.8-flash` import as one model's two names.
+  Names are weighed in raw-key order, never override a live key or an earlier
+  name, and unusable names (punctuation, non-ASCII, over-long, key-equal)
+  advertise only the key.
+- A successful Qoder/Qoder CN device login now fills the live model catalog
+  immediately (bounded, best-effort, rides the device flow's own transport),
+  so the first chat request after login resolves from a warm snapshot instead
+  of paying for the fetch. A catalog failure never fails the login.
+- Failed catalog fetches for a credential with no live snapshot now hold
+  non-forced fetches off for 30 s, so an unreachable catalog no longer makes
+  every request queue behind a fresh fetch and its timeout. Forced fetches
+  (chat's last resort, the post-login fill) ignore the window, and a failed
+  refresh never empties a landed snapshot. The 1-hour per-credential TTL is
+  deliberately kept: it matches upstream's `CACHE_TTL_MS` (AGENTS.md §1), and
+  chat already force-refreshes when a model is missing, so a tighter snapshot
+  loop would only multiply upstream GETs.
+- Fixed a provider-isolation bug in the catalog fetch: the region string was
+  handed to the provider-keyed endpoint table, so a Qoder CN catalog fetch
+  silently fell through to the intl gateway (`api3.qoder.sh`). CN credentials
+  now reach `gateway.qoder.com.cn`. (The same pattern in the PAT-exchange path
+  of `qoder.go` is owned by the auth-parity work and left untouched.)
+- Verified: new regression tests fail on `origin/main` and pass with the fix;
+  `gofmt`, `go vet`, `go test` clean on `internal/proxy/executor`,
+  `internal/handlers/oauth`, `internal/handlers/dashboard`.
+
+### MiniMax Code daily check-in (每日签到)
+
+- Ported the merged magpie plugin's MiniMax Code daily check-in (`packages/minimax/index.mjs:861-905,1201-1228` at `afe4c08`) into the gateway: a 30-minute background loop reads the seven-day signin panel and claims today's credits when claimable, with a per-account JSON ledger under `DATA_DIR/minimax-checkin.json` and a manual "Check in now" action (`POST /api/minimax/checkins/{connectionId}`).
+- The check-in reuses the signed MiniMax account client asked as the desktop client, resolves `realUserID` when login didn't keep it, and renews the sign-in **only on a 401** (magpie `plugins#765`); a 403 or business `1000048` refusal no longer spends the single-use refresh token. The quota route's refusal contract is unchanged.
+- China transport fallback `agent.minimaxi.com → agent.minimax.cn` applies only to no-answer failures; `minimax-code` and `minimax-code-global` never share credentials or host.
+- Added a `minimaxCheckin` toggle in Profile Settings (default off, read every tick so it takes effect without a restart) and a per-row check-in button in Quota Tracker showing `+credit` / outcome with the streak. `GET /api/minimax/checkins` returns the last outcome per account keyed by connection id.
+- Verified: `go build ./...`, `go test ./...` (74 ok), `go vet`, svelte-check ratchet (74 = baseline), `bun run build`, `go test ./web/...`, and a live smoke boot on a scratch `DATA_DIR` (route 200, UI renders the result).
+
+### Fixed
+
+- Qoder device login now fails fast with a clear `MISSING_UID` error when neither the token poll nor userinfo yields a user id, instead of storing a credential that every later request signs with a placeholder (Qoder answers `403 {"code":"105","message":"Login expired"}`). The user id is resolved from the poll body (`user_id`/`id`) and then userinfo (`id`/`userId`/`user_id`), as a string or a number.
+- The persisted Qoder machine id is now derived deterministically from the account's user id — the same `QoderDeriveMachineID` derivation the COSY signer uses — instead of the fresh random UUID minted at device-start, so a re-login no longer presents a brand-new device to the per-client queue.
+- Qoder token expiry is now persisted from the poll's `expires_in` (with a bounded 30-day fallback when it is omitted) rather than `expiresAt=null`, and an expired `qoder`/`qoder-cn` credential is skipped at connection selection instead of being dialled upstream. Qoder device tokens carry no refresh grant, so no OAuth refresher is registered; a legacy row with a null expiry stays usable.
+- The Qoder device poll now treats a `200` body carrying `errorCode` `NotFound` / `DeviceTokenNonceRequired` as still-pending (it previously ignored `errorCode` and reported a hard `poll_failed: no token`); any other `errorCode` is a real poll failure.
+
+### Why
+
+A Qoder grant without a user id cannot sign requests; a per-login random machine id resets the per-client queue on every re-login; an expired grant with no refresh path should not be dialled; and "still authorizing" must not surface to the client as a login error. These are local compatibility fixes to the Qoder auth/credential path.
+
+### Verification
+
+- New regression tests fail on the base commit and pass with the fix: `TestQoderPoll_MissingUIDFailsLogin`, `TestQoderPoll_StableMachineIDFromUID`, `TestQoderPoll_PersistsTokenExpiry` (expires_in + 30-day fallback), `TestQoderPoll_ErrorCodePending` (`internal/handlers/oauth`), and `TestQoderExpiredConnectionSkippedOnUse`, `TestQoderExpiredConnectionSkippedInFavorOfLive`, `TestQoderNullExpiryConnectionStillUsable` (`internal/handlers/chat`).
+- `gofmt -l`, `go vet`, and `go test` are clean for `internal/handlers/oauth` and `internal/handlers/chat`.
+
+### Fixed
+
+- Qoder chat requests now match the working client's wire contract: the `X-Request-Id` header is the same UUID signed into the COSY payload, the chat request sends `User-Agent: qodercli/1.0.0`, and `developer` messages are hoisted into the top-level `system` field alongside `system` instead of being left in `messages`.
+
+### Verification
+
+- `go test ./internal/proxy/executor/ -run 'TestBuildQoderCosyHeaders_RequestIDMatchesPayload|TestQoderApplyChatHeaders_UsesCLIUserAgent|TestForwardQoder_HoistsDeveloperIntoSystem' -count=1` fails on base and passes with the fix.
+
+### Added
+
+- The wiki's provider page now lists every visible registry provider — 150+, grouped under the same four sections the dashboard renders, each with its wire ID — and the API page documents three routes that shipped after the wiki was written: `GET /api/keys/{id}/budget`, `POST /api/cache/semantic/invalidate`, and the Gemini-native `GET /v1beta/models` / `POST /v1beta/models/{model}`. The drift ratchet's baseline drops from 122 to 0, so the next provider added without a wiki mention fails the deploy immediately.
+
+### Fixed
+
+- Claude OAuth login now sends a loopback `redirect_uri` (`http://localhost:<port>/callback`) instead of the dashboard origin, so it no longer fails with "Redirect URI ... is not supported by client" when the dashboard runs on a custom domain (#1266).
+
+### Fixed
+
+- Claude connections no longer fail with HTTP 400 `Unexpected role "developer"`: `developer` messages are now folded into the top-level `system` prompt, like `system` (#1265).
+
+### Added
+
+- The wiki now fails the deploy when it drifts from the code. Three tests in `tools/sitegen` run in the Pages workflow's existing `go test ./tools/sitegen/...` step, before the site is generated, so a wiki that no longer matches the gateway fails the deploy instead of publishing stale docs. `TestWikiMentionsProviders` is a ratchet (`tools/sitegen/wiki-baseline.json`, currently 122) that counts visible registry providers no wiki page mentions by ID or display name — a provider added without a wiki mention fails, and the baseline may only shrink. `TestWikiRoutesExistInCode` fails when `wiki/api.md` documents a route the gateway does not register, with parameter segments normalized so the wiki's per-provider generalizations and chi's wildcards match. `TestWikiProviderCountMatchesRegistry` requires the "N+ providers" claim to be at least the visible registry count.
+
+### Why
+
+Nothing forced the wiki and the code to agree. Since the wiki shipped (PR #908), 267 commits landed on main — 20 PRs, 69 feature commits, 10 new providers — and the wiki still describes 1.9.14: "supports 40+ providers" against a registry of 152 visible, no mention of `opendesign`, `kenari`, `keenable`, `free-pi`, `agy-acp`, `commandcode-goat`, `sensenova-intl`, `synthetic`, `mistral`, or `anthropic`, no `POST /api/cache/semantic/invalidate`, no `GET /api/keys/{id}/budget`, no Gemini `/v1beta` surface. Nothing failed, so nothing got fixed.
+
+### Verification
+
+- `go test ./tools/sitegen/` passes (12 tests, 3 new); `gofmt -l tools/sitegen/` and `go vet ./tools/sitegen/` are clean.
+- All three tests were verified against negative controls before landing: a fake provider injected into the registry raises the ratchet count and fails; a fake route in `api.md` fails the route test; an inflated provider count fails the count test. The injected states were reverted.
+- The registry parser strips the line comments the generated file places between a map key and its fields — two entries (`sensenova-intl`, `synthetic`) carry them, and without the strip they silently dropped out of the count.
+- Release targets still cross-compile with CGO disabled; `go.mod` is unchanged.
+
+### Buyer keys: issue one with a preset instead of a dozen fields
+
+- **What changed.** The create-key dialog gained an "Issue with" picker holding three resale shapes: chat-only capped at $10/month with a hard stop, chat-only with no cap, and all models for 30 days. Selecting one stamps the cap, the period, the hard cutoff, the 30-day expiry, the resale metadata and the model allowlist onto the key at mint time. Every field stays editable afterwards in the key's policy dialog, so a preset is a starting point rather than a second policy mechanism — it pre-fills only what the existing routes already write.
+- **Why.** This is the operator side of reselling a key. The dashboard already exposed every field a buyer key needs, but as separate controls spread across a policy dialog and an allowlist editor, so handing a key to one buyer was a dozen clicks and an easy place to misconfigure. A preset turns it into one choice.
+- **The mint writes the budget first, and that order is deliberate.** `POST /api/keys` accepts no policy fields, so the key is minted and then issued its policy across two writes. Budget first: a failure in the allowlist write then leaves a key that is capped but unrestricted, not one that is restricted but unbounded — the second is the larger exposure. The two cannot be one request, because the policy route's own `access` object takes exact model ids only and refuses the wildcard patterns these presets are built from; the allowlist therefore goes through the models route, which speaks the pattern language.
+- **Metadata uses the resale vocabulary that already exists** (`customerId`, `notes`, `priceCents`, `billingCycle`) rather than inventing a key. `apiKeys.metadata` refuses an unknown key at the write, so an invented one would fail the whole policy request rather than store a label.
+- **`APIKeyPolicy` gained the F-2 budget fields** (`limitMicros`, `limitTokens`, `budgetPeriod`, `alertPct`, `hardCutoff`, `access`) that the route has accepted all along. The TypeScript shape previously under-stated what could be written, which is how a client could believe a field was unavailable when the server took it.
+- **Verification.** `internal/handlers/dashboard/apikeys_preset_test.go` pins the full mint sequence: mint, budget write, allowlist write, then read every column and every allowlist row back out of the store, plus a second read through the route so the dashboard cannot show a policy the store does not hold. `web/src/components/keys/buyerKeyPresets.test.ts` covers the pure preset rules, including that an unknown id falls back to the default instead of minting an unrestricted key, and that the stamped expiry survives a month boundary rather than overflowing into March. Browser verification booted the real binary on a throwaway data directory, logged in through the dashboard, created a key with the strictest preset, and read the row back from SQLite: `limitMicros=10000000, budgetPeriod=monthly, hardCutoff=1, expiresAt=+30d` and all three allowlist patterns present.
+
+### Key model restriction: dashboard routes tested end to end, and a write to an unknown key now answers 404
+
+- **What changed.** Two suites now exercise the per-key model restriction the dashboard exposes: `internal/handlers/dashboard/apikeys_models_test.go` covers `GET`/`PUT /api/keys/{id}/models` (round trip, replace-not-append on a second write, clear-restores-allow-all), and `internal/integration/key_model_access_test.go` boots the real router to prove a restricted key is refused with `403` on a model it does not own *and* still reaches upstream on the model it does, that the denied call never leaves the gateway, and that `GET /v1/models` lists exactly what dispatch allows — in both directions, so the filter cannot hide the key's own model either.
+- **Why.** This is the operator side of reselling a key: a buyer's key is only as good as the restriction actually holding, and the feature was reachable only through `internal/db/modelaccess.go`, where nothing proved the route wired it up. A restriction nobody can set is not a restriction, and one that is set but never enforced is worse.
+- **Fixed while testing it: `PUT /api/keys/{id}/models` answered `200` for an id that does not exist.** The allowlist table carries no foreign key, so the `DELETE` then `INSERT` sequence commits cleanly against a non-existent key: rows land for a key that is not there, and the operator is told the restriction was saved. Every sibling key route resolves the row first and answers `404 api key not found`; this route now does the same. A typo in the panel previously restricted nothing while reporting success.
+- **Verification.** `go test ./internal/handlers/... ./internal/db/...` green (`TestSetupServerRouter_SPARoutes` fails identically with these changes stashed — pre-existing, unrelated). Both new suites were mutated to confirm they bite: flipping the expected `403` to `200` fails, and flipping the fixture's allowlist to a model the connection does not list hides every model, which the listing test catches. `golangci-lint` adds no new finding in either new file.
+
+### fix(dashboard): make custom model type explicit
+
+- Adds explicit model type selection (`llm`, `embedding`, `image`, `stt`, `tts`) in `AddCustomModelModal`, matching merged upstream `decolua/9router@850eb573`.
+- Prevents non-chat custom models from defaulting to LLM.
+
+### fix(usage): display Claude output_tokens in request details
+
+- Normalizes token display in RequestDetailsTab to fall back to `output_tokens` and `input_tokens` when `completion_tokens` or `prompt_tokens` are unset, matching merged upstream `decolua/9router@fe0d1a29`.
+- Ensures accurate completion token counts and TPS calculations for Claude Messages API requests.
+
+### Chat Completions / Messages: respect the caller's `anthropic-version`
+
+Forward the caller's `anthropic-version` request header on `claude` and `anthropic` providers instead of always overwriting it with the registry default `2023-06-01`.
+
+- `handlerutil.WithClientAnthropicVersion` / `GetClientAnthropicVersion` carry the caller's header on the request context (same plumbing used for `anthropic-beta`).
+- Captured in `HandleChatCompletions`, `HandleMessages`, and `newResponsesContext` (`/responses`), so every entry lane carries it.
+- `tryForwardWithConnection` merges the caller's value into the request-local `StaticHeaders` copy for provider ids `claude` and `anthropic` (never `minimax-code`, which pins its own version), so an overwriting `2023-06-01` is replaced only when the client actually sent one.
+- Regression test `TestHandleMessages_AnthropicVersionPassthrough` asserts pin-through (`2024-11-05` stays `2024-11-05`) and default retention (`2023-06-01` when the client sends nothing).
+
+Verification: `go test ./internal/handlers/chat/... ./internal/handlerutil/...` passes.
+
+### Antigravity: defer `role: assistant` until real stream content
+
+`TranslateGeminiChunkToOpenAI` (the Antigravity / Gemini path) no longer emits an
+unconditional `role: "assistant"` chunk on the first frame. Empty prefill frames
+now carry `delta: {}` so the client is not handed a fabricated assistant turn
+before any content, reasoning, or tool call arrives.
+
+The deferred `role: "assistant"` is merged into the first real content,
+`reasoning_content`, or `tool_calls` delta, guarded by `GeminiStreamState.RoleSent`
+so it appears exactly once. When a stream ends without any content (premature
+EOF / empty prefill), the terminal finish chunk synthesizes `role: "assistant"`
+to prevent clients from hanging on a turn that never opened an assistant message.
+
+The Claude translator is untouched.
+
+### fix(translator): harden tool_choice normalization for flat and none shapes
+
+- `normalizeToolChoice` now maps a flat Responses-style `{"type": "function", "name": "..."}` (or Claude-shaped `{"type": "tool", "name": ...}`) into the nested OpenAI Chat form `{"type": "function", "function": {"name": "..."}}`, and leaves a choice that already carries a `function` map untouched.
+- A Claude `{"type": "none"}` choice is normalized to the OpenAI string `"none"`, so a request that forbids tool calls is not silently demoted to `"auto"`.
+- Local protocol hardening only: no upstream commit, PR, or issue is cited, and the change is verified by unit tests in `internal/translator/openai_filter_test.go`.
+
 ## [v1.9.17-exp.9] - 2026-11-19
 
 ### Fixed
