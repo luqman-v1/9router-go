@@ -71,6 +71,9 @@ func TestClaudeBodyForNonClaudeUpstreamLeavesOtherShapesAlone(t *testing.T) {
 	}{
 		{"claude upstream keeps Messages body", claudeToolBody, true},
 		{"already-chat body untouched", openAIChatBody, false},
+		// A Chat body that also carries a Claude-shaped user block must not be
+		// rebuilt: its system turn lives in messages and would be dropped.
+		{"chat body with a stray document block untouched", `{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AA"}}]}],"tools":[{"type":"function","function":{"name":"Bash","parameters":{}}}]}`, false},
 		{"responses body untouched", `{"model":"gpt-6.2-astra","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`, false},
 		{"plain text Messages body untouched", `{"model":"x","messages":[{"role":"user","content":"hi"}]}`, false},
 	}

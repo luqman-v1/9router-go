@@ -2293,7 +2293,11 @@ func bodySpeaksOpenAIChat(body []byte) bool {
 // minimax-code, opencode-zen's Claude lane — must keep receiving Messages, so
 // only the providers that do not are converted here.
 func claudeBodyForNonClaudeUpstream(body []byte, upstreamSpeaksClaude bool) []byte {
-	if upstreamSpeaksClaude || !bodySpeaksClaudeMessages(body) {
+	// A body that already speaks Chat is never converted, whatever blocks its
+	// user content happens to carry: converting it again would rebuild the
+	// conversation from fields Chat does not use and drop the system turn it
+	// keeps inside messages. The two probes are exclusive by construction.
+	if upstreamSpeaksClaude || bodySpeaksOpenAIChat(body) || !bodySpeaksClaudeMessages(body) {
 		return body
 	}
 	var src map[string]any
