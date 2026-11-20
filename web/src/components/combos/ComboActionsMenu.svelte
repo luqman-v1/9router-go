@@ -106,8 +106,8 @@
     onkeydown={onKeydown}
     class="inline-flex h-11 sm:h-8 w-11 sm:w-8 items-center justify-center rounded-lg border border-border bg-surface-2 text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 cursor-pointer"
   >
-    <span class="material-symbols-outlined text-[18px]" aria-hidden="true">
-      {isTesting ? 'progress_activity animate-spin' : 'more_vert'}
+    <span class="material-symbols-outlined text-[18px] {isTesting ? 'animate-spin' : ''}" aria-hidden="true">
+      {isTesting ? 'progress_activity' : 'more_vert'}
     </span>
   </button>
 
