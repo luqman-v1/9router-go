@@ -103,6 +103,31 @@ func TestClaudeBodyForNonClaudeUpstreamKeepsStreamFlag(t *testing.T) {
 	}
 }
 
+// The operator prompt (persona, prefix/suffix) is injected into the Claude
+// top-level `system` before this conversion runs, and buildResponsesBody maps a
+// `system` message back to the Responses `instructions` field. Guard the middle
+// hop: a converted body must still carry that text in a system role.
+func TestClaudeBodyForNonClaudeUpstreamKeepsOperatorSystemPrompt(t *testing.T) {
+	body := []byte(strings.Replace(claudeToolBody, `"system":"be brief"`, `"system":"OPERATOR-RULES-CANARY"`, 1))
+	out := claudeBodyForNonClaudeUpstream(body, false)
+	var parsed struct {
+		System   any `json:"system"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("converted body does not parse: %v\n%s", err, out)
+	}
+	for _, m := range parsed.Messages {
+		if m.Role == "system" && strings.Contains(m.Content, "OPERATOR-RULES-CANARY") {
+			return
+		}
+	}
+	t.Errorf("operator prompt did not survive as a system turn: %s", out)
+}
+
 func TestBodySpeaksClaudeMessages(t *testing.T) {
 	cases := []struct {
 		name string
