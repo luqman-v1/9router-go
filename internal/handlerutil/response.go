@@ -282,3 +282,26 @@ func GetClientAnthropicBeta(ctx context.Context) string {
 	}
 	return ""
 }
+
+type clientAnthropicVersionKey struct{}
+
+// WithClientAnthropicVersion carries the caller's own anthropic-version header
+// on the context, so a caller that pins a version keeps it instead of being
+// rewritten to the registry default.
+func WithClientAnthropicVersion(ctx context.Context, version string) context.Context {
+	if version == "" || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, clientAnthropicVersionKey{}, version)
+}
+
+// GetClientAnthropicVersion returns the caller's anthropic-version, or "".
+func GetClientAnthropicVersion(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if val, ok := ctx.Value(clientAnthropicVersionKey{}).(string); ok {
+		return val
+	}
+	return ""
+}

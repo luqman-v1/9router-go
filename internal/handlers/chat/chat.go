@@ -114,6 +114,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// outlive the request (docs/provider-limits-plan.md D7).
 	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
+	ctx = handlerutil.WithClientAnthropicVersion(ctx, r.Header.Get("anthropic-version"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
 	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
 	// The operator's providerThinking overrides are read once here, not once
@@ -464,6 +465,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		ctx = WithTokenSaverBypass(ctx)
 	}
 	ctx = withProviderLimitState(ctx)
+	ctx = handlerutil.WithClientAnthropicVersion(ctx, r.Header.Get("anthropic-version"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
 	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
 	// The operator's providerThinking overrides are read once here, not once
