@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"encoding/json"
 	"math"
 	"net/http"
 	"strings"
@@ -223,6 +224,69 @@ func LooksLikeQuotaExhausted(errorText string) bool {
 // that admits a quota reading on an HTTP 400.
 func LooksLikeCreditCode(body []byte) bool {
 	return errclass.LooksLikeCreditErrorCode(body)
+}
+
+// LooksLikeCreditCodeText reports whether already-extracted error text is one of
+// the six structured credit codes (chat.extractErrorText folds error.code into
+// the text it hands the classifier). The body-based variant reads the envelope
+// itself; a caller holding only the extracted text needs this one, and matching
+// the whole string is what keeps a 400 that merely quotes the phrase as request
+// text out of the quota bucket.
+func LooksLikeCreditCodeText(errorText string) bool {
+	return errclass.LooksLikeCreditErrorCodeString(errorText)
+}
+
+// creditCodeIn returns the structured credit code carried by the body or already
+// folded into the extracted text, and "" when neither carries one.
+func creditCodeIn(body []byte, errorText string) string {
+	for _, v := range creditCodeValues(body, errorText) {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// creditCodeValues lists the code carriers, body envelope first.
+func creditCodeValues(body []byte, errorText string) []string {
+	var env struct {
+		Code  any `json:"code"`
+		Error *struct {
+			Code any `json:"code"`
+		} `json:"error"`
+	}
+	var fromBody []string
+	if len(body) > 0 && json.Unmarshal(body, &env) == nil {
+		if env.Error != nil {
+			fromBody = append(fromBody, codeString(env.Error.Code))
+		}
+		fromBody = append(fromBody, codeString(env.Code))
+	}
+	return append(fromBody, extractedCode(errorText))
+}
+
+// extractedCode picks the structured code out of extracted error text. Only a
+// text that IS the code counts — chat.extractErrorText appends the code to the
+// message, but anything else here is prose, and a code quoted inside prose is
+// the caller's own words rather than the upstream's verdict.
+func extractedCode(errorText string) string {
+	if LooksLikeCreditCodeText(errorText) {
+		return strings.TrimSpace(errorText)
+	}
+	return ""
+}
+
+// codeString renders a code that is a JSON string and nothing else. A numeric
+// code is an HTTP status, not a billing verdict.
+func codeString(v any) string {
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	if LooksLikeCreditCodeText(s) {
+		return strings.TrimSpace(s)
+	}
+	return ""
 }
 
 // rateLimitPatterns mark a throttle: the account is fine, it is being asked to
@@ -475,20 +539,30 @@ func ClassifyErrorForProvider(statusCode int, errorText string, backoffLevel int
 // is the raw upstream envelope, and the only thing read from it is the
 // structured error code.
 //
-// On a 400 a quota verdict is a spent balance only when that code says so. A
-// 400 is how an upstream rejects the caller's own input and many quote it back
-// ("Unknown parameter: '<x>'", "Invalid value '<x>' for model"), so a credit
-// phrase in errorText can be the caller's words rather than the account's state.
-// Parking on that took a shared connection out of rotation for an hour on
-// every user's request. The prose rules still fire on a 400 for everything that
-// is not a quota reading — codebuddy's "request illegal" block, the numeric
-// codes, "invalid api key" — and the status guard below still answers the rest.
+// A structured credit code is a verdict on its own: whichever of the six codes
+// (insufficient_quota, insufficient_user_quota, insufficient_balance,
+// billing_hard_limit_reached, credit_balance_too_low, credit_balance_exhausted)
+// arrives, the account's budget is spent and it earns the quota cooldown. A 400
+// is where that matters most — openai, azure and the new-api family report a
+// spent balance as a 400 with a terse or localized message, so the prose table
+// never sees it. The code is also the only signal that cannot be the caller's
+// words quoted back: prose alone on a 400 stays request-scoped (the guard
+// below), because a 400 that echoes "insufficient_quota" as request text would
+// otherwise park a healthy shared connection for an hour.
 func classifyError(statusCode int, errorText string, backoffLevel int, provider string, body ...[]byte) ErrorClassification {
 	var raw []byte
 	if len(body) > 0 {
 		raw = body[0]
 	}
-	quotaOn400 := statusCode != 400 || LooksLikeCreditCode(raw) || creditMessageOnlyProvider(provider)
+	creditCode := creditCodeIn(raw, errorText)
+	if statusCode == 400 && creditCode != "" {
+		return ErrorClassification{
+			ShouldFallback:  true,
+			CooldownMs:      QuotaExhaustedCooldownMs,
+			NewBackoffLevel: backoffLevel,
+		}
+	}
+	quotaOn400 := statusCode != 400 || creditCode != "" || creditMessageOnlyProvider(provider)
 	return classifyErrorWithQuotaGate(statusCode, errorText, backoffLevel, provider, quotaOn400)
 }
 

@@ -75,14 +75,19 @@ func classifyType(lowerType string) (Kind, Scope, int, bool) {
 // fires when both halves ("model" + not found/unavailable) are present so a
 // stray "model" in an unrelated message cannot misfire.
 //
-// quotaReadsAsExhausted reports whether this prose is a spent-balance verdict
-// for the status it arrived with. It is false for a 400 whose only credit
-// evidence is the message, because a 400 is how an upstream rejects the
-// caller's input and many quote that input back — a credit phrase inside such
-// an echo is request text, not a billing verdict (creditsExhaustedForStatus).
-// A message-only verdict at that status is therefore skipped, and the numeric
-// status decides instead.
-func classifyMessage(lowerMsg string, quotaReadsAsExhausted bool) (Kind, Scope, bool) {
+// creditCodeAdmitted reports whether the structured credit code admitted this
+// reading (creditsExhaustedForStatus); when it did, the code alone carries the
+// verdict. The prose is not consulted in that case: a spent balance phrased in a
+// language the phrase table does not read still says nothing a request-scoped
+// 400 could contradict, and the code is the upstream's own verdict.
+//
+// Without an admitted code the prose must hit the phrase table: quotaReadsAsExhausted
+// is false for a 400 whose only credit evidence is the message, because a 400 is
+// how an upstream rejects the caller's input and many quote that input back — a
+// credit phrase inside such an echo is request text, not a billing verdict
+// (creditsExhaustedForStatus). A message-only verdict at that status is therefore
+// skipped, and the numeric status decides instead.
+func classifyMessage(lowerMsg string, quotaReadsAsExhausted, creditCodeAdmitted bool) (Kind, Scope, bool) {
 	switch {
 	case LooksLikeContextWindow(lowerMsg):
 		return KindContextWindow, ScopeModel, true
@@ -96,7 +101,7 @@ func classifyMessage(lowerMsg string, quotaReadsAsExhausted bool) (Kind, Scope, 
 		// the status map and lands in the upstream/retry bucket, rotating a dead
 		// key back in instead of retiring it.
 		return KindAuth, ScopeAccount, true
-	case quotaReadsAsExhausted && LooksLikeCreditsExhausted(lowerMsg):
+	case creditCodeAdmitted || (quotaReadsAsExhausted && LooksLikeCreditsExhausted(lowerMsg)):
 		// A spent balance, not a throttle: waiting does not help, only a top-up
 		// does, so this is quota exhaustion rather than a rate limit.
 		return KindQuotaExhausted, ScopeAccount, true
@@ -171,11 +176,12 @@ func ClassifyDetail(errType string, code int, status, message string) Classifica
 		}
 		return c
 	}
-	// A 400 whose only credit evidence is prose is a request rejection, not a
-	// spent balance: the message branch skips the quota verdict so the numeric
-	// status decides (creditsExhaustedForStatus).
-	if kind, scope, ok := classifyMessage(strings.ToLower(message),
-		creditsExhaustedForStatus(c.StatusCode, message, nil)); ok {
+	// On a 400 a structured credit code is the only admitted verdict: the code is
+	// the upstream's own word, while prose alone is a request rejection whose text
+	// can be the caller's echo (creditsExhaustedForStatus).
+	codeAdmitted := LooksLikeCreditErrorCodeString(message) ||
+		creditsExhaustedForStatus(c.StatusCode, message, nil)
+	if kind, scope, ok := classifyMessage(strings.ToLower(message), codeAdmitted, codeAdmitted); ok {
 		c.Kind, c.Scope = kind, scope
 		return c
 	}

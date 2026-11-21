@@ -146,15 +146,21 @@ func TestClassifyError_400CreditsNeedStructuredCode(t *testing.T) {
 }
 
 // The body is optional at every existing call site that only has errorText.
-// Passing none keeps the old behaviour: prose alone never earned a quota
-// verdict, which is the request-scoped 4xx contract.
+// Passing none keeps the request-scoped 4xx contract: prose alone never earns a
+// quota verdict. A bare credit code in errorText is not prose — it is the
+// upstream's own verdict, which chat.extractErrorText folds in when the body is
+// not threaded through — so it does park.
 func TestClassifyError_400CreditsNoBodyIsRequestScoped(t *testing.T) {
-	cls := ClassifyError(http.StatusBadRequest, "insufficient_quota", 0)
+	cls := ClassifyError(http.StatusBadRequest, "exceeded your current quota", 0)
 	if cls.ShouldFallback {
 		t.Fatalf("ShouldFallback = true, want false without a body to read a code from")
 	}
 	if cls.CooldownMs != 0 {
 		t.Errorf("CooldownMs = %d, want 0", cls.CooldownMs)
+	}
+	byCode := ClassifyError(http.StatusBadRequest, "credit_balance_exhausted", 0)
+	if !byCode.ShouldFallback || byCode.CooldownMs != QuotaExhaustedCooldownMs {
+		t.Fatalf("bare credit code in errorText = %+v, want the quota park", byCode)
 	}
 }
 
