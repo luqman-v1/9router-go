@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -74,11 +77,19 @@ func TestIsDeadKeepAliveSocket(t *testing.T) {
 		{name: "nil error is not a dead socket"},
 		{name: "server closed idle connection", err: errors.New(`Post "https://x": http: server closed idle connection`), want: true},
 		{name: "wrapped EOF", err: fmt.Errorf(`Post "https://x": %w`, io.EOF), want: true},
-		{name: "broken pipe", err: errors.New("write tcp 1.2.3.4:5->6.7.8.9:443: broken pipe"), want: true},
-		{name: "connection reset by peer", err: errors.New("read tcp 1.2.3.4:5->6.7.8.9:443: connection reset by peer"), want: true},
+		// A real broken pipe surfaces as *net.OpError wrapping *os.SyscallError
+		// wrapping syscall.EPIPE, or a *url.Error wrapping it; the chain must be
+		// walked with errors.Is, not matched by substring text.
+		{name: "broken pipe errno", err: fmt.Errorf("write tcp 1.2.3.4:5->6.7.8.9:443: %w", syscall.EPIPE), want: true},
+		{name: "broken pipe wrapped in op error", err: &net.OpError{Op: "write", Net: "tcp", Err: &os.SyscallError{Syscall: "write", Err: syscall.EPIPE}}, want: true},
+		{name: "connection reset by peer errno", err: fmt.Errorf("read tcp 1.2.3.4:5->6.7.8.9:443: %w", syscall.ECONNRESET), want: true},
+		{name: "connection reset wrapped in op error", err: &net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}, want: true},
 		{name: "response in hand is not retried", err: errors.New(`Post "https://x": EOF`), resp: inHand},
 		{name: "dial failure is not a dead socket", err: errors.New("dial tcp: no route to host")},
 		{name: "context deadline is not a dead socket", err: context.DeadlineExceeded},
+		// An unrelated error whose message merely mentions the errno text must
+		// not be retried: errors.Is is the classifier, not substring matching.
+		{name: "unrelated broken pipe text is not a dead socket", err: errors.New("broken pipe in unrelated context")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

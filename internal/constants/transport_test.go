@@ -56,3 +56,41 @@ func TestHTTPTransportConfig_Configure_Nil(t *testing.T) {
 	// Should not panic on nil transport
 	DefaultHTTPTransportConfig.Configure(nil)
 }
+
+// TestDefaultIdleConnTimeoutIsCapped pins the keep-alive TTL cap: the idle
+// connection pool must not hold dead sockets for 90s (upstream/edge idle
+// windows drop idle sockets without a TCP RST; decolua/9router@963787f73).
+func TestDefaultIdleConnTimeoutIsCapped(t *testing.T) {
+	if got := DefaultHTTPTransportConfig.IdleConnTimeout; got != defaultKeepAliveTimeout {
+		t.Errorf("expected IdleConnTimeout=%v (capped keep-alive TTL), got %v", defaultKeepAliveTimeout, got)
+	}
+}
+
+// TestResolveKeepAliveTimeoutEnvOverride pins the FETCH_KEEPALIVE_TIMEOUT_MS
+// override and its fallback on unset/invalid input.
+func TestResolveKeepAliveTimeoutEnvOverride(t *testing.T) {
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv("FETCH_KEEPALIVE_TIMEOUT_MS", "2500")
+		if got := resolveKeepAliveTimeout(); got != 2500*time.Millisecond {
+			t.Errorf("expected 2500ms, got %v", got)
+		}
+	})
+	t.Run("unset falls back to default", func(t *testing.T) {
+		t.Setenv("FETCH_KEEPALIVE_TIMEOUT_MS", "")
+		if got := resolveKeepAliveTimeout(); got != defaultKeepAliveTimeout {
+			t.Errorf("expected default %v, got %v", defaultKeepAliveTimeout, got)
+		}
+	})
+	t.Run("invalid falls back to default", func(t *testing.T) {
+		t.Setenv("FETCH_KEEPALIVE_TIMEOUT_MS", "not-a-number")
+		if got := resolveKeepAliveTimeout(); got != defaultKeepAliveTimeout {
+			t.Errorf("expected default %v, got %v", defaultKeepAliveTimeout, got)
+		}
+	})
+	t.Run("non-positive falls back to default", func(t *testing.T) {
+		t.Setenv("FETCH_KEEPALIVE_TIMEOUT_MS", "0")
+		if got := resolveKeepAliveTimeout(); got != defaultKeepAliveTimeout {
+			t.Errorf("expected default %v, got %v", defaultKeepAliveTimeout, got)
+		}
+	})
+}

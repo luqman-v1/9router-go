@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 
 	"9router/proxy/internal/log"
 )
@@ -205,6 +206,13 @@ const idleConnClosedError = "http: server closed idle connection"
 // by peer") or EPIPE ("broken pipe") from an abrupt one. A transport wrapped
 // transportReadFromServerError is unwrapped by net/http before the caller sees
 // it, so the chain is walked rather than the outer text alone.
+//
+// ECONNRESET and EPIPE are classified with errors.Is against the syscall errno
+// rather than substring text (§4.E): an error chain can wrap them at any depth
+// (*net.OpError, *os.SyscallError, *url.Error), and a message that merely
+// mentions "broken pipe" from an unrelated cause must not be retried. The
+// unexported errServerClosedIdle sentinel has no exported handle, so its
+// wording is the only way to recognise it.
 func isDeadKeepAliveSocket(err error, resp *http.Response) bool {
 	if err == nil || resp != nil {
 		return false
@@ -212,12 +220,10 @@ func isDeadKeepAliveSocket(err error, resp *http.Response) bool {
 	if errors.Is(err, io.EOF) {
 		return true
 	}
-	for _, marker := range [...]string{"broken pipe", "connection reset by peer", idleConnClosedError} {
-		if strings.Contains(strings.ToLower(err.Error()), marker) {
-			return true
-		}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
 	}
-	return false
+	return strings.Contains(strings.ToLower(err.Error()), idleConnClosedError)
 }
 
 // send performs one attempt through client, defaulting to the shared client.
