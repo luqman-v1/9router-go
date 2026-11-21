@@ -1,6 +1,8 @@
 package browsercookies
 
 import (
+	"encoding/json/v2"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -106,6 +108,100 @@ func buildHeader(cookies []Cookie, allowed map[string]bool, order []string) stri
 // buildGoogleHeader renders the Google session cookies as a Cookie header.
 func buildGoogleHeader(cookies []Cookie) string {
 	return buildHeader(cookies, sessionCookieSet, sessionCookieNames)
+}
+
+// NormalizeCookieHeaderInput turns a pasted Muse Web credential into a Cookie
+// header. It is the Go port of decolua/9router @0760c302
+// (open-sse/utils/webCookieAuth.js normalizeCookieHeaderInput), which fixed
+// #5582: a Muse Web credential pasted as a Cookie-Editor JSON export (a bare
+// array of {name, value} objects or a {cookies: [...]} object) was rejected by
+// the semicolon-delimited cookie parser, so the identity probe reported a
+// missing hatch_sess cookie and session renewal sent a malformed header.
+//
+// A JSON export is rendered as "name=value; ...". An ordinary Cookie header
+// (including '=' inside a value) is returned unchanged. Malformed or
+// unsupported JSON is rejected before any request is made.
+func NormalizeCookieHeaderInput(raw string) (string, error) {
+	stripped := stripCookieInputPrefix(raw)
+	if header, isJSON, err := parseJSONCookiesToHeader(stripped); err != nil {
+		return "", err
+	} else if isJSON {
+		return header, nil
+	}
+	if strings.HasPrefix(stripped, "[") || strings.HasPrefix(stripped, "{") {
+		return "", fmt.Errorf("invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
+	}
+	return stripped, nil
+}
+
+// stripCookieInputPrefix removes the decorations a paste sometimes carries: a
+// bearer prefix or a "cookie:" label. Mirrors upstream stripCookieInputPrefix
+// (case-insensitive /^bearer\s+/ and /^cookie:/).
+func stripCookieInputPrefix(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) >= len("bearer ") && strings.EqualFold(trimmed[:len("bearer ")], "bearer ") {
+		trimmed = strings.TrimSpace(trimmed[len("bearer "):])
+	}
+	if len(trimmed) >= len("cookie:") && strings.EqualFold(trimmed[:len("cookie:")], "cookie:") {
+		trimmed = strings.TrimSpace(trimmed[len("cookie:"):])
+	}
+	return trimmed
+}
+
+// parseJSONCookiesToHeader reads a Cookie-Editor style export into a Cookie
+// header. It accepts a bare array of cookie objects or a {cookies: [...]}
+// object, and returns (header, true, nil) when the input was JSON, or
+// ("", false, nil) when it was not JSON (a pass-through). It errors on a JSON
+// entry that is not an object or is missing the required name/value string
+// fields. An empty array or an empty cookies array yields an empty header.
+func parseJSONCookiesToHeader(raw string) (header string, isJSON bool, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || (!strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{")) {
+		return "", false, nil
+	}
+
+	var parsed any
+	if jsonErr := json.Unmarshal([]byte(trimmed), &parsed); jsonErr != nil {
+		// Not valid JSON: treat as a pass-through so an ordinary header string
+		// that merely starts with "[" or "{" is never rejected here.
+		return "", false, nil
+	}
+
+	entries, ok := parsed.([]any)
+	if !ok {
+		if obj, isObj := parsed.(map[string]any); isObj {
+			entries, ok = obj["cookies"].([]any)
+			if !ok {
+				return "", true, fmt.Errorf("invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
+			}
+		} else {
+			return "", true, fmt.Errorf("invalid cookie JSON: expected an array of cookie objects or an object with a cookies array")
+		}
+	}
+	if len(entries) == 0 {
+		return "", true, nil
+	}
+
+	parts := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		obj, isObj := entry.(map[string]any)
+		if !isObj {
+			return "", true, fmt.Errorf("invalid cookie JSON at index %d: expected an object", i)
+		}
+		name, nameOK := obj["name"].(string)
+		if !nameOK || name == "" {
+			return "", true, fmt.Errorf("invalid cookie JSON at index %d: missing required field 'name'", i)
+		}
+		value, valueOK := obj["value"].(string)
+		if !valueOK {
+			return "", true, fmt.Errorf("invalid cookie JSON at index %d: missing required field 'value'", i)
+		}
+		parts = append(parts, name+"="+value)
+	}
+	return strings.Join(parts, "; "), true, nil
 }
 
 // ioCopy copies a stream.
