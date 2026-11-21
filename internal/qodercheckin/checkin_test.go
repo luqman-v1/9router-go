@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -193,7 +194,7 @@ func TestQoderCheckinLedgerSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat ledger: %v", err)
 	}
-	if info.Mode().Perm() != 0600 && info.Mode().Perm() != 0644 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 && info.Mode().Perm() != 0644 {
 		t.Errorf("ledger mode = %v", info.Mode().Perm())
 	}
 }

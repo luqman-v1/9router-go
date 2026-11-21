@@ -226,3 +226,49 @@ func TestClassifyError(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCommandIsolatesEnv(t *testing.T) {
+	t.Setenv("HOME", "/host/home")
+	t.Setenv("USERPROFILE", `C:\host\user`)
+	t.Setenv("GEMINI_API_KEY", "secret-1")
+	t.Setenv("GOOGLE_API_KEY", "secret-2")
+
+	dir, err := NewAccountDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := buildCommand(context.Background(), "agy", dir, TurnOptions{})
+
+	var homes, userProfiles []string
+	for _, entry := range cmd.Env {
+		k, v, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch {
+		case envKeyMatches(k, "HOME"):
+			homes = append(homes, v)
+		case envKeyMatches(k, "USERPROFILE"):
+			userProfiles = append(userProfiles, v)
+		case envKeyMatches(k, "GEMINI_API_KEY"), envKeyMatches(k, "GOOGLE_API_KEY"):
+			t.Errorf("secret env var %q leaked into subprocess env", k)
+		}
+	}
+	if len(homes) != 1 || homes[0] != dir.Root {
+		t.Errorf("HOME entries = %v, want single [%q]", homes, dir.Root)
+	}
+	if len(userProfiles) != 1 || userProfiles[0] != dir.Root {
+		t.Errorf("USERPROFILE entries = %v, want single [%q]", userProfiles, dir.Root)
+	}
+
+	gotExact := removeEnv([]string{"USERPROFILE=old", "KEEP=1"}, "USERPROFILE")
+	if len(gotExact) != 1 || gotExact[0] != "KEEP=1" {
+		t.Errorf("removeEnv exact = %v, want [KEEP=1]", gotExact)
+	}
+	if runtime.GOOS == "windows" {
+		gotFold := removeEnv([]string{"UserProfile=old", "KEEP=1"}, "USERPROFILE")
+		if len(gotFold) != 1 || gotFold[0] != "KEEP=1" {
+			t.Errorf("removeEnv Windows case-fold = %v, want [KEEP=1]", gotFold)
+		}
+	}
+}
