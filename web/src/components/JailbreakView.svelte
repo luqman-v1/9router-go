@@ -6,8 +6,8 @@
 <<<<<<< HEAD
   import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
 =======
-  import { filterFuzzy } from '../lib/fuzzyMatch'
->>>>>>> 57c1e4f (feat(web): tolerate slip and split ids in the bulk-arm model search)
+  import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
+>>>>>>> b0bb27d (perf(web): index the bulk-arm catalog so a keystroke stops rebuilding it)
   import { marked } from 'marked'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
@@ -502,9 +502,7 @@
     // rather than a lowercase and separator strip per id.
     return filterFuzzyIndexed(q, bulkArmIndex, 200)
 =======
-    // answering "no matches" and making the operator re-type.
-    return filterFuzzy(q, bulkArmModels, 200)
->>>>>>> 57c1e4f (feat(web): tolerate slip and split ids in the bulk-arm model search)
+>>>>>>> b0bb27d (perf(web): index the bulk-arm catalog so a keystroke stops rebuilding it)
   })
   // Select every id the current filter matches — the regex/substring query is
   // the selector, so "arm everything matching /^deepseek/" is one click.

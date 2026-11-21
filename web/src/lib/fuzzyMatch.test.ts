@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 <<<<<<< HEAD
 import { buildFuzzyIndex, filterFuzzy, filterFuzzyIndexed, fuzzyMatch, matchRank } from './fuzzyMatch'
 =======
-import { filterFuzzy, fuzzyMatch, matchRank } from './fuzzyMatch'
->>>>>>> 57c1e4f (feat(web): tolerate slip and split ids in the bulk-arm model search)
+import { buildFuzzyIndex, filterFuzzy, filterFuzzyIndexed, fuzzyMatch, matchRank } from './fuzzyMatch'
+>>>>>>> b0bb27d (perf(web): index the bulk-arm catalog so a keystroke stops rebuilding it)
 
 describe('fuzzyMatch', () => {
   it('matches an exact substring', () => {
@@ -161,4 +161,4 @@ describe('filterFuzzyIndexed', () => {
   })
 })
 =======
->>>>>>> 57c1e4f (feat(web): tolerate slip and split ids in the bulk-arm model search)
+>>>>>>> b0bb27d (perf(web): index the bulk-arm catalog so a keystroke stops rebuilding it)
