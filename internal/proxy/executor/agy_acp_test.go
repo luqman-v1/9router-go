@@ -97,8 +97,15 @@ func TestForwardAGYACPNonStream(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode response: %v: %s", err, rec.Body.String())
 	}
-	if len(out.Choices) == 0 || out.Choices[0].Message.Content != "PONGPONG" {
-		// Streamed chunk + final result both recorded.
+	if len(out.Choices) == 0 {
+		t.Fatalf("no choices in response: %s", rec.Body.String())
+	}
+	// The fake ACP server sends the same text as a session/update chunk and
+	// as the final session/prompt result. RunTurn selects between those two
+	// channels, so either one can win the race: "PONGPONG" when the chunk is
+	// consumed first, "PONG" when the result is consumed first. The sibling
+	// TestRunTurnStream tolerates the same scheduler-dependent interleaving.
+	if got := out.Choices[0].Message.Content; got != "PONG" && got != "PONGPONG" {
 		t.Errorf("unexpected content: %s", rec.Body.String())
 	}
 }

@@ -349,13 +349,14 @@ func TestTeamPageCreditsEveryContributor(t *testing.T) {
 	if strings.Contains(body, "XXX") || strings.Contains(body, "[REAL DATA]") {
 		t.Error("team page contains placeholder copy")
 	}
-	// The bot must be excluded and the exclusion must be explained, so a reader
-	// does not think it was forgotten.
+	// The bots must be excluded and the exclusion must be explained, so a
+	// reader does not think it was forgotten. The copy says "not a person"
+	// for one bot and "are not people" when more than one is listed.
 	if !strings.Contains(body, "imgbot[bot]") {
 		t.Error("the excluded bot account is not mentioned: its absence looks like an oversight")
 	}
-	if !strings.Contains(body, "not a person") {
-		t.Error("the reason for excluding the bot is not stated")
+	if !strings.Contains(body, "not a person") && !strings.Contains(body, "not people") {
+		t.Error("the reason for excluding the bots is not stated")
 	}
 }
 
