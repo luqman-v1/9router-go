@@ -250,8 +250,8 @@ func migrationFiles(dir string) ([]string, error) {
 	return tables, nil
 }
 
-// importTable creates the table when missing (with all-TEXT columns so any
-// legacy SQLite table imports cleanly) and inserts its rows in chunks.
+// importTable creates the table when missing (JSONB fallback for legacy
+// tables the PG schema does not declare) and inserts its rows in chunks.
 func importTable(ctx context.Context, db *sql.DB, table, path string) (int, error) {
 	cols, rows, err := ReadJSONL(path)
 	if err != nil {
@@ -260,10 +260,11 @@ func importTable(ctx context.Context, db *sql.DB, table, path string) (int, erro
 	if len(cols) == 0 {
 		return 0, nil
 	}
-	if err := ensureTableForImport(ctx, db, table, cols); err != nil {
+	isLegacy, err := ensureTableForImport(ctx, db, table, cols)
+	if err != nil {
 		return 0, err
 	}
-	if err := insertChunks(ctx, db, table, cols, rows); err != nil {
+	if err := insertChunks(ctx, db, table, cols, rows, isLegacy); err != nil {
 		return 0, err
 	}
 	return len(rows), nil
@@ -274,20 +275,18 @@ func importTable(ctx context.Context, db *sql.DB, table, path string) (int, erro
 // but a SQLite dump can carry legacy tables that only exist in older installs
 // (dbVersion from the pre-Go implementation, upstream_leases before it moved
 // into its own bootstrap, etc.). For those we fall back to an all-JSONB table
-// so the import can proceed and no user data is dropped. JSONB accepts every
-// JSON scalar (string, number, bool, null) that the SQLite dump may carry in
-// any column, so numeric-looking IDs survive a TEXT-typed fallback.
-// Tables the PG schema owns are left untouched.
-func ensureTableForImport(ctx context.Context, db *sql.DB, table string, cols []string) error {
+// and return legacy=true so the insert path serialises every value to JSON.
+// Tables the PG schema owns are left untouched and legacy=false is returned.
+func ensureTableForImport(ctx context.Context, db *sql.DB, table string, cols []string) (bool, error) {
 	var count int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM information_schema.tables WHERE lower(table_name) = lower($1)`,
 		table,
 	).Scan(&count); err != nil {
-		return fmt.Errorf("dbmigrate: probe table %s: %w", table, err)
+		return false, fmt.Errorf("dbmigrate: probe table %s: %w", table, err)
 	}
 	if count > 0 {
-		return nil
+		return false, nil
 	}
 	defs := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -295,14 +294,16 @@ func ensureTableForImport(ctx context.Context, db *sql.DB, table string, cols []
 	}
 	q := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", quoteIdent(table), strings.Join(defs, ", "))
 	if _, err := db.ExecContext(ctx, q); err != nil {
-		return fmt.Errorf("dbmigrate: create table %s: %w", table, err)
+		return false, fmt.Errorf("dbmigrate: create table %s: %w", table, err)
 	}
-	return nil
+	return true, nil
 }
 
 // insertChunks inserts rows in BatchSize chunks inside one transaction and
-// realigns any IDENTITY sequences the explicit IDs moved past.
-func insertChunks(ctx context.Context, db *sql.DB, table string, cols []string, rows []map[string]any) error {
+// realigns any IDENTITY sequences the explicit IDs moved past. legacy marks
+// a fallback all-JSONB table: every value is serialised to JSON and cast to
+// ::jsonb so strings, numbers, bools and null all encode cleanly.
+func insertChunks(ctx context.Context, db *sql.DB, table string, cols []string, rows []map[string]any, legacy bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("dbmigrate: begin tx %s: %w", table, err)
@@ -310,7 +311,7 @@ func insertChunks(ctx context.Context, db *sql.DB, table string, cols []string, 
 	defer tx.Rollback()
 
 	for start := 0; start < len(rows); start += BatchSize {
-		if err := insertChunk(ctx, tx, table, cols, rows[start:min(start+BatchSize, len(rows))]); err != nil {
+		if err := insertChunk(ctx, tx, table, cols, rows[start:min(start+BatchSize, len(rows))], legacy); err != nil {
 			return err
 		}
 	}
@@ -324,7 +325,10 @@ func insertChunks(ctx context.Context, db *sql.DB, table string, cols []string, 
 }
 
 // insertChunk builds and runs one multi-row INSERT ... ON CONFLICT DO NOTHING.
-func insertChunk(ctx context.Context, tx *sql.Tx, table string, cols []string, rows []map[string]any) error {
+// legacy=true serialises values to JSON and casts placeholders to ::jsonb;
+// legacy=false binds values natively and lets pgx encode per the declared
+// column type (TEXT, BIGINT, BOOLEAN, ...).
+func insertChunk(ctx context.Context, tx *sql.Tx, table string, cols []string, rows []map[string]any, legacy bool) error {
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO ")
 	sb.WriteString(quoteIdent(table))
@@ -346,9 +350,21 @@ func insertChunk(ctx context.Context, tx *sql.Tx, table string, cols []string, r
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			fmt.Fprintf(&sb, "$%d", len(args)+1)
+			if legacy {
+				fmt.Fprintf(&sb, "$%d::jsonb", len(args)+1)
+			} else {
+				fmt.Fprintf(&sb, "$%d", len(args)+1)
+			}
 			if v, ok := row[c]; ok {
-				args = append(args, v)
+				if legacy {
+					b, err := json.Marshal(v)
+					if err != nil {
+						return fmt.Errorf("dbmigrate: encode %s.%s row %d: %w", table, c, r, err)
+					}
+					args = append(args, string(b))
+				} else {
+					args = append(args, v)
+				}
 			} else {
 				args = append(args, nil)
 			}
