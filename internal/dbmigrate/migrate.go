@@ -272,9 +272,12 @@ func importTable(ctx context.Context, db *sql.DB, table, path string) (int, erro
 // ensureTableForImport creates the target table if it does not exist yet.
 // The PG schema (schema_postgres.go) declares the tables the gateway owns,
 // but a SQLite dump can carry legacy tables that only exist in older installs
-// (dbVersion, upstream_leases before it moved into EnsureCoreSchema, etc.).
-// For those we fall back to an all-TEXT table so the import can proceed and
-// no user data is dropped. Tables the schema owns are left untouched.
+// (dbVersion from the pre-Go implementation, upstream_leases before it moved
+// into its own bootstrap, etc.). For those we fall back to an all-JSONB table
+// so the import can proceed and no user data is dropped. JSONB accepts every
+// JSON scalar (string, number, bool, null) that the SQLite dump may carry in
+// any column, so numeric-looking IDs survive a TEXT-typed fallback.
+// Tables the PG schema owns are left untouched.
 func ensureTableForImport(ctx context.Context, db *sql.DB, table string, cols []string) error {
 	var count int
 	if err := db.QueryRowContext(ctx,
@@ -288,7 +291,7 @@ func ensureTableForImport(ctx context.Context, db *sql.DB, table string, cols []
 	}
 	defs := make([]string, 0, len(cols))
 	for _, c := range cols {
-		defs = append(defs, quoteIdent(c)+" TEXT")
+		defs = append(defs, quoteIdent(c)+" JSONB")
 	}
 	q := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", quoteIdent(table), strings.Join(defs, ", "))
 	if _, err := db.ExecContext(ctx, q); err != nil {
