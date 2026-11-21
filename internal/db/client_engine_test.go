@@ -1,6 +1,10 @@
 package db
 
-import "testing"
+import (
+	"database/sql"
+	"testing"
+	_ "modernc.org/sqlite"
+)
 
 func TestDetectEngine(t *testing.T) {
 	tests := []struct {
@@ -25,6 +29,24 @@ func TestDetectEngine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEngineOfHandle pins the driver-sniffing path used by callers that open
+// a handle outside InitGlobalDatabase (the dbmigrate CLI).
+func TestEngineOfHandle(t *testing.T) {
+	sqliteDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqliteDB.Close()
+	if got := engineOfHandle(sqliteDB); got != EngineSQLite {
+		t.Errorf("engineOfHandle(sqlite) = %v, want %v", got, EngineSQLite)
+	}
+	if got := engineOfHandle(nil); got != EngineSQLite {
+		t.Errorf("engineOfHandle(nil) = %v, want %v", got, EngineSQLite)
+	}
+	// pgx path requires a live handle we cannot open offline; the pgx driver
+	// concrete type is covered by the deploy/README migration smoke test.
 }
 
 // TestPgPoolConnsDefaults pins the PRD §4.3 defaults so an accidental constant
