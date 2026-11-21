@@ -930,7 +930,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	}
 
 	// Fit tool names exceeding MaxToolNameLength (64 chars) to prevent upstream HTTP 400.
-	fittedBody, fittedToolMap := translator.FitToolNames(pipedBody)
+	fittedBody, fittedToolMap := translator.FitToolNamesForProvider(pipedBody, provider)
 	if len(fittedToolMap) > 0 {
 		log.Debug("fallback", "fitted long tool names", "provider", provider, "model", model, "count", len(fittedToolMap))
 		pipedBody = fittedBody

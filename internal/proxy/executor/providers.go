@@ -333,6 +333,11 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 
 // ForwardAzure forwards to Azure OpenAI with dynamic URL from env vars.
 func ForwardAzure(w http.ResponseWriter, req *Request) error {
+	fittedBody, toolNameMap := applyToolNameAlias(req)
+	if len(toolNameMap) > 0 {
+		req.Body = fittedBody
+		req.ToolNameMap = mergeToolNameMaps(req.ToolNameMap, toolNameMap)
+	}
 	var oreq struct {
 		Model string `json:"model"`
 	}
