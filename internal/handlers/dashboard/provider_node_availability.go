@@ -53,7 +53,7 @@ func (h *DashboardHandler) HandleCheckProviderNodeAvailability(w http.ResponseWr
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req struct {
 		Prefix    string `json:"prefix"`
