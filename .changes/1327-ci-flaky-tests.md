@@ -1,0 +1,5 @@
+### CI
+
+- **Unflake `TestForwardAGYACPNonStream` on the `main` Race detector job.** The fake ACP server emits the same text both as a `session/update` chunk and as the final `session/prompt` result, and `agy.RunTurn` selects between those two channels, so the non-stream answer is `PONGPONG` when the chunk wins and `PONG` when the result wins. The test demanded exactly `PONGPONG` and failed run 44951651570 with `content:"PONG"`. It now accepts either interleaving, matching the sibling `TestRunTurnStream`, which already documents the scheduler dependence.
+- **Unflake `TestTeamPageCreditsEveryContributor` after the contributors roster refresh.** The wiki copy now says the excluded accounts "are not people" (two bots) instead of "is not a person"; the test still matched the singular phrase. It now accepts both forms, so the wording stays grammatical for one or several bots.
+- Both changes are test-only: no gateway, routing, provider, or web behaviour changed. Verified with `go vet ./...`, `go test ./...`, and targeted `-race` runs of both tests.
