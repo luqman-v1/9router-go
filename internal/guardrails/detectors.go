@@ -92,15 +92,12 @@ var (
 	// IBAN: 2 country letters, 2 check digits, then alphanumerics.
 	ibanRe = regexp.MustCompile(`\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`)
 
-	// PEM private key (PKCS#1, PKCS#8, EC, encrypted). '-' is part of the
-	// body class: traditional encrypted PKCS#1 carries
-	// "Proc-Type: 4,ENCRYPTED" / "DEK-Info: AES-128-CBC,<hex>" headers, and
-	// without it the match fails outright (issue #1282). The class stops at
-	// the space-prefixed END delimiter instead of ending on a dash, so a
-	// match still cannot bridge repeated BEGIN headers: Go's RE2 engine
-	// scans this in O(N) (no backtracking), so hostile text that repeats
-	// "-----BEGIN ... PRIVATE KEY-----" without an END marker stays linear.
-	// OmniRoute #19954 / issue #1280.
+	// PEM private key (PKCS#1, PKCS#8, EC, encrypted).
+	// The body class admits '-' because encrypted PKCS#1 carries
+	// "DEK-Info: AES-128-CBC,<hex>" headers, and terminates on the
+	// '-----END' delimiter, so a match cannot bridge repeated BEGIN
+	// headers. RE2 scans this in O(N) regardless.
+	// OmniRoute #19954 / issue #1282 / issue #1280.
 	privateKeyRe = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----[A-Za-z0-9+/=\s:,-]+-----END [A-Z0-9 ]+PRIVATE KEY-----`)
 
 	// "ignore all previous instructions" and every phrasing around it.
