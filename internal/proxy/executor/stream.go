@@ -934,6 +934,39 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 	created := time.Now().Unix()
 	state := &kiroStreamState{gateOff: !kiroIntegrityGateEnabled()}
 
+	// A /v1/messages client asked for Anthropic SSE, not Chat Completions SSE.
+	// Kiro's frames are synthesized as chat chunks because that is the shape the
+	// rest of this pipeline (and the non-streaming fold) understands, so the
+	// chunk is translated on the way out. Only for a live stream: the
+	// non-streaming path folds these same chunks with sseToOpenAIJSON and would
+	// choke on Claude events.
+	claudeSession := ""
+	if req.ClaudeClient && req.IsStream {
+		// NewSessionKey, not a bare timestamp: two turns landing on the same
+		// nanosecond would share one translation state and leak a message id,
+		// block index or tool call between requests.
+		claudeSession = translator.NewSessionKey("kiro-stream")
+		defer translator.ClearStreamState(claudeSession)
+	}
+	emit := func(chunk map[string]any) error {
+		if claudeSession == "" {
+			return writeSSE(w, chunk)
+		}
+		raw, err := json.Marshal(chunk)
+		if err != nil {
+			return fmt.Errorf("emit chunk marshal: %w", err)
+		}
+		out, err := translator.TranslateOpenAIToClaudeStreamSession(claudeSession, raw)
+		if err != nil {
+			return err
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		_, err = w.Write(out)
+		return err
+	}
+
 	var accumulatedContent strings.Builder
 	var readErr error
 
@@ -976,7 +1009,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			if req.ResponseBuf != nil {
 				_, _ = fmt.Fprintf(req.ResponseBuf, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%d,\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n\n", responseID, created, payload.Content)
 			}
-			if err := writeSSE(w, chunk); err != nil {
+			if err := emit(chunk); err != nil {
 				return err
 			}
 			if flusher != nil {
@@ -1006,7 +1039,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			if req.ResponseBuf != nil {
 				_, _ = fmt.Fprintf(req.ResponseBuf, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%d,\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":%q},\"finish_reason\":null}]}\n\n", responseID, created, payload.Text)
 			}
-			if err := writeSSE(w, chunk); err != nil {
+			if err := emit(chunk); err != nil {
 				return err
 			}
 			if flusher != nil {
@@ -1069,7 +1102,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 				}
 				call.emitted = true
 				markTTFT(req, req.StartTime)
-				if err := writeSSE(w, map[string]any{
+				if err := emit(map[string]any{
 					"id":      responseID,
 					"object":  "chat.completion.chunk",
 					"created": created,
@@ -1116,7 +1149,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 		}
 		call.emitted = true
 		markTTFT(req, req.StartTime)
-		if err := writeSSE(w, chunk); err != nil {
+		if err := emit(chunk); err != nil {
 			return err
 		}
 		if flusher != nil {
@@ -1138,10 +1171,18 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			"finish_reason": finishReason,
 		}},
 	}
-	if err := writeSSE(w, done); err != nil {
+	if err := emit(done); err != nil {
 		return err
 	}
-	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+	if claudeSession != "" {
+		// Anthropic SSE has no [DONE]: close with whatever terminal the
+		// translator deferred instead.
+		if tail := translator.EnsureStreamClosed(claudeSession); len(tail) > 0 {
+			if _, err := w.Write(tail); err != nil {
+				return err
+			}
+		}
+	} else if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
 		return err
 	}
 	if flusher != nil {

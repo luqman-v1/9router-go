@@ -491,7 +491,10 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "psychology_alt",
 		ServiceKinds: []string{"llm"},
 		Website:      "https://kiro.dev",
-		Notice:       &Notice{SignupURL: "https://kiro.dev"},
+		Notice: &Notice{
+			Text:      "Risk Notice: This provider drives AWS CodeWhisperer by presenting itself as the Kiro IDE client, and speaks for a personal or corporate Kiro session that is not officially licensed for proxy gateways. Account, quota or seat access may be restricted or suspended by your AWS organization or by Kiro. Use at your own risk.",
+			SignupURL: "https://kiro.dev",
+		},
 	},
 	"mimo-free": {
 		ID:            "mimo-free",
