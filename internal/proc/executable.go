@@ -30,7 +30,7 @@ func Executable(pid int) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("proc.Executable: no image path available for pid %d on %s", pid, runtime.GOOS)
 	}
-	return path, nil
+	return resolveImagePath(path), nil
 }
 
 // resolveImagePath normalizes a path so two lookups of the same binary agree.

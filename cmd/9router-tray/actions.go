@@ -62,6 +62,7 @@ func runGatewayCLI(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
+	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -111,12 +112,15 @@ func autostartEnabled() bool {
 	return ok && info.Enabled
 }
 
-// setAutostart installs or removes the boot entry.
+// execGatewayCLI is a test seam for tray actions that delegate to the sibling
+// gateway CLI.
+var execGatewayCLI = runGatewayCLI
+
+// setAutostart installs or removes the boot entry through the sibling gateway
+// binary so the registered command launches 9router-go, not 9router-tray.
 func setAutostart(on bool) error {
 	if on {
-		_, err := service.Install(nil)
-		return err
+		return execGatewayCLI("service", "install")
 	}
-	_, err := service.Uninstall()
-	return err
+	return execGatewayCLI("service", "uninstall")
 }

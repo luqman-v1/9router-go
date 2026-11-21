@@ -108,6 +108,21 @@ func TestParseClaim(t *testing.T) {
 			raw:  "-1 " + self,
 			want: claim{},
 		},
+		{
+			name: "windows Program Files path with spaces",
+			raw:  `20130 C:\Program Files\9router-go\9router-go.exe` + "\r\n",
+			want: claim{pid: 20130, exePath: `C:\Program Files\9router-go\9router-go.exe`},
+		},
+		{
+			name: "windows user profile path with spaces",
+			raw:  `20130 C:\Users\HYPE AMD\AppData\Local\9router-go\9router-go.exe` + "\n",
+			want: claim{pid: 20130, exePath: `C:\Users\HYPE AMD\AppData\Local\9router-go\9router-go.exe`},
+		},
+		{
+			name: "posix path with spaces",
+			raw:  "20130 /Users/Alice Smith/Library/Application Support/9router-go/9router-go\n",
+			want: claim{pid: 20130, exePath: "/Users/Alice Smith/Library/Application Support/9router-go/9router-go"},
+		},
 	}
 
 	for _, tt := range tests {
