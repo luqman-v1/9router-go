@@ -7,7 +7,7 @@ import (
 
 // applyFormat ports applyFormat: one dialect out. none on a model that
 // cannot disable clamps to level minimal before the writer runs.
-func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string, provider string) {
+func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string, provider, model string) {
 	none := cfg.Mode == ModeNone
 	cd := caps.CanDisableThinking()
 	eff := cfg
@@ -27,6 +27,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 		display:    display,
 		caps:       caps,
 		provider:   provider,
+		model:      model,
 	})
 }
 
@@ -88,17 +89,24 @@ func levelFor(level string, supported []string) string {
 
 func withDisplay(thinking map[string]any, display string) map[string]any {
 	if display != "" {
-		norm := strings.ToLower(strings.TrimSpace(display))
-		switch norm {
-		case "summarized", "omitted":
-			thinking["display"] = norm
-		case "none", "off", "hidden", "false":
-			thinking["display"] = "omitted"
-		default:
-			thinking["display"] = "summarized"
-		}
+		thinking["display"] = normalizeDisplay(display)
 	}
 	return thinking
+}
+
+// normalizeDisplay resolves the client's display value to the two the wire
+// accepts (summarized | omitted). An unknown value defaults to summarized,
+// the Anthropic default for a thinking block.
+func normalizeDisplay(display string) string {
+	norm := strings.ToLower(strings.TrimSpace(display))
+	switch norm {
+	case "summarized", "omitted":
+		return norm
+	case "none", "off", "hidden", "false":
+		return "omitted"
+	default:
+		return "summarized"
+	}
 }
 
 func containsLevel(levels []string, want string) bool {

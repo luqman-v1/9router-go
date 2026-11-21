@@ -23,7 +23,7 @@ score.
       <p class="contrib-name"><a href="https://github.com/luqman-v1">Luqmannul Hakim</a></p>
       <p class="contrib-login">@luqman-v1</p>
       <p class="contrib-count">Backend Engineer with Positive Mental Attitude</p>
-      <p class="contrib-count">696 commits · repository owner</p>
+      <p class="contrib-count">701 commits · repository owner</p>
     </div>
   </div>
 
@@ -31,21 +31,21 @@ score.
     <img src="https://avatars.githubusercontent.com/u/64591494?v=4&s=200" alt="M Riyadh Azhar" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/mriazh">M Riyadh Azhar</a></p>
     <p class="contrib-login">@mriazh</p>
-    <p class="contrib-count">182 commits</p>
+    <p class="contrib-count">190 commits</p>
   </div>
 
   <div class="contrib-card">
     <img src="https://avatars.githubusercontent.com/u/121752948?v=4&s=200" alt="KunN21" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/KunN-21">KunN21</a></p>
     <p class="contrib-login">@KunN-21</p>
-    <p class="contrib-count">103 commits</p>
+    <p class="contrib-count">105 commits</p>
   </div>
 
   <div class="contrib-card">
     <img src="https://avatars.githubusercontent.com/u/20932301?v=4&s=200" alt="Helmi Amirudin" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/helmiau">Helmi Amirudin</a></p>
     <p class="contrib-login">@helmiau</p>
-    <p class="contrib-count">77 commits</p>
+    <p class="contrib-count">79 commits</p>
   </div>
 
   <div class="contrib-card">
@@ -249,4 +249,4 @@ score.
 
 ## Not listed
 
-`imgbot[bot]` appears in the repository's commit history. The GitHub API reports that account's type as `Bot`: it compresses images and keeps the dependency graph current, and is not a person, so it is not listed among the contributors.
+`github-actions[bot]`, `imgbot[bot]` appear in the repository's commit history. The GitHub API reports those accounts' type as `Bot`: they compress images and keep the dependency graph current, and are not people, so they are not listed among the contributors.

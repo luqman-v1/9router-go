@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/browsercookies"
 	"9router/proxy/internal/connlimit"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
@@ -490,6 +491,22 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 		}
 	}
 	if apiKey != "" {
+		// gemini-web's credential is the whole site Cookie header, and the
+		// modal hands it over as apiKey. A paste is often a Cookie-Editor JSON
+		// export, so render it once here: the row, every later probe and every
+		// chat turn then read the header form. A malformed export is refused at
+		// the boundary rather than stored and sent to the site as a header it
+		// cannot read. deepseek-web, grok-web, perplexity-web and uc-web are
+		// excluded: their apiKey is a token or a single cookie value, not a
+		// header, so the JSON-cookie parser must not read it.
+		if req.Provider == "gemini-web" {
+			normalized, err := browsercookies.NormalizeCookieHeaderInput(apiKey)
+			if err != nil {
+				handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			apiKey = normalized
+		}
 		dataMap["apiKey"] = apiKey
 	}
 	if len(req.ProviderSpecificData) > 0 {

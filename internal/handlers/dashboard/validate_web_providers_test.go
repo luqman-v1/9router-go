@@ -369,6 +369,72 @@ func TestValidateGeminiWebReportsACookieWithoutTheSessionTimestamp(t *testing.T)
 	}
 }
 
+// TestValidateCookieProviderNormalizesJSONExport pins the wired call site: a
+// credential pasted as a Cookie-Editor JSON export reaches the probe as a
+// Cookie header. The probe then judges the credential the site sees rather
+// than the paste the modal handed over.
+func TestValidateCookieProviderNormalizesJSONExport(t *testing.T) {
+	var probe *capturedProbe
+	withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		probe = &p
+		return http.StatusOK, []byte(`[null,false,false,0,"wrb.fr"]`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":`+
+		quoteJSON(`[{"name":"__Secure-1PSID","value":"psid"},{"name":"__Secure-1PSIDTS","value":"sidts"}]`)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("valid = %v, want true: the JSON export is a whole credential (error: %v)", out["valid"], out["error"])
+	}
+	if probe == nil {
+		t.Fatal("no probe was sent")
+	}
+	if got := probe.headers.Get("Cookie"); got != "__Secure-1PSID=psid; __Secure-1PSIDTS=sidts" {
+		t.Errorf("probe Cookie = %q, want the JSON export rendered as a header", got)
+	}
+}
+
+// TestValidateCookieProviderReportsAMalformedJSONExport proves a bad paste is
+// reported instead of being sent to the site as a header it cannot read.
+func TestValidateCookieProviderReportsAMalformedJSONExport(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":`+
+		quoteJSON(`[{"name":"__Secure-1PSID","value":`)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != false {
+		t.Errorf("valid = %v, want false: a malformed export is not a credential", out["valid"])
+	}
+	if len(*calls) != 0 {
+		t.Errorf("expected no probe for a malformed export, got %d", len(*calls))
+	}
+}
+
+// TestValidateDeepSeekWebNormalizesJSONCookieExport pins the deepSeekCookie
+// call site: the site's own session cookie is normalized before it is sent,
+// so a Cookie-Editor export reaches the probe as a header.
+func TestValidateDeepSeekWebNormalizesJSONCookieExport(t *testing.T) {
+	calls := withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
+		return http.StatusOK, deepSeekProbeBody("access-token"), nil
+	})
+
+	postValidate(t, `{"provider":"deepseek-web","apiKey":"user-token-1",`+
+		`"providerSpecificData":{"deepSeekCookie":`+
+		quoteJSON(`[{"name":"ds_session_id","value":"abc"},{"name":"aws-waf-token","value":"def"}]`)+`}}`)
+
+	if len(*calls) != 1 {
+		t.Fatalf("expected one probe, got %d", len(*calls))
+	}
+	got := (*calls)[0].headers.Get("Cookie")
+	if got != "ds_session_id=abc; aws-waf-token=def" {
+		t.Errorf("probe Cookie = %q, want the JSON export rendered as a header", got)
+	}
+}
+
 // quoteJSON renders a Go string as a JSON string literal, for the raw request
 // bodies these tests post.
 func quoteJSON(s string) string {

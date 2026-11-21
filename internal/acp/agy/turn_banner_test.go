@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -49,14 +51,30 @@ func main(){
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command(gobin, "build", "-o", path, helper).CombinedOutput(); err != nil {
+	// go build appends no extension on Windows, so the exhaustive build in
+	// fakeACP produced a bare "fakebanner" that exec could not start.
+	binPath := path
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
+	if out, err := exec.Command(gobin, "build", "-o", binPath, helper).CombinedOutput(); err != nil {
 		t.Fatalf("build fake banner ACP: %v: %s", err, out)
 	}
 	// Wrap so the banner argument is fixed: RunTurn invokes <bin> acp …
-	wrap := filepath.Join(dir, "fakeagy")
-	script := "#!/bin/sh\nexec " + path + " " + shellQuote(banner) + "\n"
-	if err := os.WriteFile(wrap, []byte(script), 0o700); err != nil {
+	// A shell script cannot be exec'd on Windows, so the wrapper is a
+	// compiled Go program that re-execs the banner binary with the fixed
+	// argument — the same trick the sh wrapper used, portable.
+	wrapSrc := "package main\n\nimport (\n\t\"os\"\n\t\"os/exec\"\n)\n\nfunc main() {\n\tcmd := exec.Command(" + strconv.Quote(binPath) + ", " + strconv.Quote(banner) + ")\n\tcmd.Stdout = os.Stdout\n\tcmd.Stderr = os.Stderr\n\tcmd.Stdin = os.Stdin\n\tif err := cmd.Run(); err != nil {\n\t\tos.Exit(1)\n\t}\n}\n"
+	wrapGo := filepath.Join(dir, "wrap.go")
+	if err := os.WriteFile(wrapGo, []byte(wrapSrc), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	wrap := filepath.Join(dir, "fakeagy")
+	if runtime.GOOS == "windows" {
+		wrap += ".exe"
+	}
+	if out, err := exec.Command(gobin, "build", "-o", wrap, wrapGo).CombinedOutput(); err != nil {
+		t.Fatalf("build fake banner wrapper: %v: %s", err, out)
 	}
 	return wrap
 }

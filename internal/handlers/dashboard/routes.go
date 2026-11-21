@@ -190,6 +190,8 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/jailbreak/models", h.HandleListJailbreakModels)
 		r.Get("/jailbreak/models/catalog", h.HandleJailbreakModelCatalog)
 		r.Put("/jailbreak/models", h.HandleSetJailbreakModel)
+		r.Put("/jailbreak/keys/model", h.HandleSetJailbreakKeyModel)
+		r.Get("/jailbreak/keys/bindings", h.HandleListJailbreakKeyBindings)
 		r.Delete("/jailbreak/models", h.HandleDeleteJailbreakModel)
 		r.Get("/jailbreak/excludes", h.HandleGetJailbreakExcludes)
 		r.Put("/jailbreak/excludes", h.HandlePutJailbreakExcludes)

@@ -339,7 +339,7 @@ func TestJailbreakImportFromGithubEndToEnd(t *testing.T) {
 
 	// A request for the model on a provider the collection never names still
 	// resolves: the keyword chain covers the family.
-	doc, err := repo.ResolveJailbreakDoc("providerx/deepseek-v4")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-v4")
 	if err != nil {
 		t.Fatalf("resolve deepseek: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestJailbreakImportFromGithubEndToEnd(t *testing.T) {
 
 	// The file carries a suffix the model id does not, so the chain has to
 	// reach the shorter id for it to resolve at all.
-	doc, err = repo.ResolveJailbreakDoc("kimi-k3")
+	doc, err = repo.ResolveJailbreakDoc("", "kimi-k3")
 	if err != nil {
 		t.Fatalf("resolve kimi: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestJailbreakImportFromGithubEndToEnd(t *testing.T) {
 	}
 
 	// A model the collection does not cover stays untouched.
-	doc, err = repo.ResolveJailbreakDoc("openai/gpt-4o")
+	doc, err = repo.ResolveJailbreakDoc("", "openai/gpt-4o")
 	if err != nil {
 		t.Fatalf("resolve unrelated: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestHandleUploadJailbreakPreset(t *testing.T) {
 			t.Fatalf("source = %q, want the upload marker", doc.Source)
 		}
 		// And it resolves for the model it names, on any provider.
-		resolved, err := repo.ResolveJailbreakDoc("providerx/deepseek-v4")
+		resolved, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-v4")
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/browsercookies"
 	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
@@ -439,6 +440,23 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 
 // (GET /models, falling back to a minimal chat request).
 func validateProviderKey(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
+	// A web-cookie provider whose credential is the whole site Cookie header
+	// (gemini-web) takes a paste that is often a Cookie-Editor JSON export
+	// rather than a header: render it once here so every probe below reads the
+	// header form. An empty credential stays empty (gemini-web works
+	// anonymously) and an ordinary header passes through. deepseek-web,
+	// grok-web, perplexity-web and uc-web are deliberately excluded: their
+	// apiKey is a token or a single cookie value (deepseek-web's userToken is
+	// even a JSON-wrapped localStorage value), which the JSON-cookie parser
+	// must not try to read as an export.
+	switch provider {
+	case "gemini-web":
+		if normalized, err := browsercookies.NormalizeCookieHeaderInput(apiKey); err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		} else if normalized != "" {
+			apiKey = normalized
+		}
+	}
 	if cfg.NoAuth {
 		// gemini-web is the one NoAuth provider whose credential is optional
 		// rather than absent: the site serves an anonymous visitor, and a pasted

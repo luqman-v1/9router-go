@@ -197,11 +197,19 @@ type Capabilities struct {
 	// default is true, and a table entry that names a thinking format without
 	// this flag must still resolve to true. See CanDisableThinking.
 	ThinkingCanDisable *bool
+	// ThinkingOffType declares how the model wants a "thinking off" request expressed
+	// (e.g. "between_tools" for Claude Sonnet 5.5, which takes thinkingOffType in place
+	// of "disabled"). Empty means "use the standard disabled shape".
+	ThinkingOffType string
 	// ThinkingRange is the {min, max} budget clamp for budget-based formats.
 	ThinkingRange *ThinkingRange
 	// ThinkingEffortSupported reports that the model accepts a reasoning_effort
 	// level on the wire.
 	ThinkingEffortSupported bool
+	// ForcedToolChoice reports whether the model rejects forced tool_choice pinning
+	// (tool_choice:"any"/"required" or a named tool). false means the model 400s on
+	// such choices. Port of upstream capabilities.js forcedToolChoice:false.
+	ForcedToolChoice *bool
 	// ContextWindow and MaxOutput are the token limits declared by the provider
 	// entry. Zero means "unknown, fall back to the model token-limit table".
 	ContextWindow int
@@ -220,6 +228,14 @@ type ThinkingRange struct {
 // switched off.
 func (c Capabilities) CanDisableThinking() bool {
 	return c.ThinkingCanDisable == nil || *c.ThinkingCanDisable
+}
+
+// CanForceToolChoice resolves the tri-state ForcedToolChoice flag: an unset
+// entry means "not specified", which is upstream's default — forced tool_choice
+// is accepted. false means the model 400s on tool_choice "any"/"required" or a
+// named tool.
+func (c Capabilities) CanForceToolChoice() bool {
+	return c.ForcedToolChoice == nil || *c.ForcedToolChoice
 }
 
 var DefaultCapabilities = Capabilities{
@@ -242,18 +258,30 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-opus-5-thinking":         {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-opus-5-agentic":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-opus-5-thinking-agentic": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	// Opus 5.5 — experimental preview on Kiro (1M context, 2x credits).
-	"claude-opus-5.5":                  {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-5.5-thinking":         {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-5.5-agentic":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-5.5-thinking-agentic": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	// Opus 5.5 — experimental preview on Kiro (1M context, 2x credits). Dotted ids
+	// (GitHub Copilot / Kiro / Token Harbor). GitHub Copilot applies the same
+	// Anthropic per-model thinking rules as the dashed ids: it rejects
+	// thinking.type "disabled" (400 "thinking.type.disabled is not supported")
+	// and forced tool_choice (400). thinkingCanDisable:false is set here and
+	// forcedToolChoice:false is read by the Claude request builder to downgrade a
+	// forced tool_choice to auto. Port of upstream decolua/9router commit f3e1f716.
+	"claude-opus-5.5":                  {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000, ThinkingCanDisable: new(false), ForcedToolChoice: new(false)},
+	"claude-opus-5.5-thinking":         {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000, ThinkingCanDisable: new(false), ForcedToolChoice: new(false)},
+	"claude-opus-5.5-agentic":          {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000, ThinkingCanDisable: new(false), ForcedToolChoice: new(false)},
+	"claude-opus-5.5-thinking-agentic": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000, ThinkingCanDisable: new(false), ForcedToolChoice: new(false)},
 	// Haiku 5.5 is adaptive-only like the rest of the 5.x line (upstream
 	// MODEL_CAPABILITIES): the *claude*haiku* budget pattern would 400 on
 	// thinking.type.enabled.
 	"claude-haiku-5-5": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	// Sonnet 5.5 dotted id (Kiro preview / GitHub Copilot / Token Harbor),
-	// same model as the dashed rows below.
-	"claude-sonnet-5.5": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	// Sonnet 5.5 dotted id (GitHub Copilot / Kiro / Token Harbor), same model as the
+	// dashed rows below. GitHub Copilot applies Anthropic's per-model thinking rules:
+	// Sonnet 5.5 takes thinkingOffType "between_tools" in place of "disabled" and
+	// rejects forced tool_choice (any/tool). The Claude request builder reads
+	// thinkingOffType to rewrite a disabled thinking block, and forcedToolChoice:false
+	// to downgrade a forced tool_choice to auto. Port of upstream decolua/9router
+	// commit f3e1f716.
+	"claude-sonnet-5.5": {Vision: true, PDF: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000, ThinkingOffType: "between_tools", ForcedToolChoice: new(false)},
+
 	// Opus 5.5 on Antigravity (upstream v0.5.99, a07ed95b): all five
 	// effort spellings, 1M window / 128K output. thinkingCanDisable:false is
 	// representable here — without it CanDisableThinking defaults to true and
@@ -1658,6 +1686,8 @@ func mergeCapabilities(base, overlay Capabilities) Capabilities {
 		// overlay as soon as it declares a format, mirroring the JS spread
 		// where an absent key keeps the default.
 		ThinkingCanDisable: base.ThinkingCanDisable,
+		ThinkingOffType:    base.ThinkingOffType,
+		ForcedToolChoice:   base.ForcedToolChoice,
 		// Limits are a declaration, not a flag: an overlay naming no
 		// contextWindow/maxOutput says nothing about them, so the base's
 		// numbers survive. Without this, every provider and exact-model row
@@ -1669,8 +1699,10 @@ func mergeCapabilities(base, overlay Capabilities) Capabilities {
 	if overlay.ThinkingFormat != "" {
 		res.ThinkingFormat = overlay.ThinkingFormat
 		res.ThinkingCanDisable = overlay.ThinkingCanDisable
+		res.ThinkingOffType = overlay.ThinkingOffType
 		res.ThinkingRange = overlay.ThinkingRange
 		res.ThinkingEffortSupported = overlay.ThinkingEffortSupported
+		res.ForcedToolChoice = overlay.ForcedToolChoice
 	}
 	if overlay.ContextWindow != 0 {
 		res.ContextWindow = overlay.ContextWindow
@@ -1700,6 +1732,8 @@ type CapabilitiesDetail struct {
 	ThinkingCanDisable      bool    `json:"thinkingCanDisable"`
 	ThinkingRange           any     `json:"thinkingRange"`
 	ThinkingEffortSupported bool    `json:"thinkingEffortSupported"`
+	ThinkingOffType         string  `json:"thinkingOffType,omitempty"`
+	ForcedToolChoice        *bool   `json:"forcedToolChoice,omitempty"`
 	ContextWindow           int     `json:"contextWindow,omitempty"`
 	MaxOutput               int     `json:"maxOutput,omitempty"`
 }
@@ -1855,6 +1889,8 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 		ThinkingCanDisable:      caps.CanDisableThinking(),
 		ThinkingRange:           thinkingRange,
 		ThinkingEffortSupported: caps.ThinkingEffortSupported,
+		ThinkingOffType:         caps.ThinkingOffType,
+		ForcedToolChoice:        caps.ForcedToolChoice,
 		ContextWindow:           cw,
 		MaxOutput:               maxOut,
 	}

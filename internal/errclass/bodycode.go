@@ -1,6 +1,7 @@
 package errclass
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -120,6 +121,131 @@ func LooksLikeRateLimitWrapped(body []byte) bool {
 		return true
 	}
 	return containsAny(strings.ToLower(string(body)), rateLimitWrappedPhrases)
+}
+
+// LooksLikeCreditsExhausted reports whether an error body reads as a spent
+// credit/quota budget rather than a transient throttle: OpenAI
+// "insufficient_quota", Anthropic "credit balance is too low", new-api family
+// gateways "insufficient_user_quota", DeepSeek "insufficient balance", a
+// command-code/bai "insufficient credits". The vocabulary matches the quota
+// rules the connection-rotation classifier already parks on.
+func LooksLikeCreditsExhausted(body string) bool {
+	return containsAny(strings.ToLower(body), creditsExhaustedPhrases)
+}
+
+var creditsExhaustedPhrases = []string{
+	"insufficient_quota",
+	"billing_hard_limit_reached",
+	"exceeded your current quota",
+	"exceeded your current usage quota",
+	"credit_balance_too_low",
+	"credit_balance_exhausted",
+	"your credit balance is too low",
+	"credit balance is too low",
+	"credits exhausted",
+	"credit exhausted",
+	"exhausted all your credits",
+	"out of credits",
+	"out of funds",
+	"insufficient_user_quota",
+	"insufficient balance",
+	"insufficient_balance",
+	"insufficient credit",
+	"insufficient credit balance",
+	"no remaining credits",
+	"payment required",
+	"quota exceeded",
+	"insufficient quota",
+	"exceeded quota",
+	"exceed quota",
+	"monthly limit",
+	"monthly quota",
+	"per month limit",
+	"per-month limit",
+	"frequency limit",
+	"free allowance",
+	"billing cap",
+	"balance=0",
+	"individual quota reached",
+	"enable overages",
+	"billing required",
+	"tier has been exhausted",
+	"free tier of the model has been exhausted",
+	"hard limit",
+	"plan limit",
+	"余额不足",
+	"无可用资源包",
+}
+
+// LooksLikeCreditErrorCode reports whether a body's structured error code is a
+// credit code. That is the one signal that cannot have come from the caller's
+// own input: a 400 may echo the request text, but a code is the upstream's own
+// verdict. It reads the same two fields BodyErrorCode does — error.code, then
+// code — and ignores a numeric code, which says nothing about billing.
+//
+// A caller that already holds the code (providers.extractErrorText folds it into
+// the error text) uses LooksLikeCreditErrorCodeString instead of wrapping prose
+// in a JSON envelope.
+func LooksLikeCreditErrorCode(body []byte) bool {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 || body[0] != '{' {
+		return false
+	}
+	var env struct {
+		Code  any `json:"code"`
+		Error *struct {
+			Code any `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &env) != nil {
+		return false
+	}
+	return isCreditErrorCode(env.Code) || (env.Error != nil && isCreditErrorCode(env.Error.Code))
+}
+
+func isCreditErrorCode(v any) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return LooksLikeCreditErrorCodeString(s)
+}
+
+// LooksLikeCreditErrorCodeString is LooksLikeCreditErrorCode for a caller that
+// already extracted the code from the envelope, so no re-encoding is needed. It
+// matches the code alone, not a substring of it: a code embedded in a longer
+// string is prose, and prose at a 400 can be the caller's own words.
+func LooksLikeCreditErrorCodeString(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "insufficient_user_quota", "insufficient_quota", "insufficient_balance",
+		"billing_hard_limit_reached", "credit_balance_too_low", "credit_balance_exhausted":
+		return true
+	}
+	return false
+}
+
+// creditsExhaustedForStatus decides whether a credit reading is admitted for the
+// status it arrived with. Every status except 400 keeps the plain prose match: a
+// 402 is a spent balance by definition, and a 429 that says "insufficient
+// balance" is one too.
+//
+// A 400 is how an upstream rejects the CALLER's input, and many quote that input
+// back in error.message ("Unknown parameter: '<x>'", "Invalid value '<x>' for
+// model"). A credit phrase inside such an echo is request text, not a billing
+// verdict — treating it as one parked a healthy shared connection for every user
+// until the recovery tick cleared it. So on 400 prose alone never counts.
+//
+// The structured credit code is the other carrier, and it counts on its own: a
+// code is the upstream's own verdict, never an echo. That means the reading no
+// longer needs a prose hit as well — openai, azure and the new-api family answer
+// a spent balance with a 400 whose message is terse or localized ("リクエストの
+// 上限に達しました", "saldo tidak mencukupi"), and requiring a phrase from the
+// table silently left every code but "insufficient_quota" request-scoped.
+func creditsExhaustedForStatus(status int, body string, structured []byte) bool {
+	if status == 400 {
+		return LooksLikeCreditErrorCode([]byte(body)) || LooksLikeCreditErrorCode(structured)
+	}
+	return LooksLikeCreditsExhausted(body)
 }
 
 // MaxRetryAfterHeader caps upstream Retry-After hints taken from headers. A

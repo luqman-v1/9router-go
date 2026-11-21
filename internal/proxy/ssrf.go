@@ -369,15 +369,32 @@ func ambientProxyAllowlist() *proxyAllowlist {
 // newSafeDialerForProxy returns NewSafeDialer's dialer with the given proxy
 // endpoints exempted from the private-IP guard. A nil allowlist behaves exactly
 // like NewSafeDialer.
+//
+// When strict is true the ALLOW_PRIVATE_NETWORKING and per-connection
+// WithAllowPrivateNetworking opt-outs are ignored: the dial refuses every
+// private/reserved address regardless of the operator's global setting. That is
+// the vision bridge's connect-time guard, which judges caller-supplied image
+// URLs and so cannot honour a setting that would let a private target through.
+// The ambient proxy endpoint is still exempted in both modes, so an operator's
+// egress proxy keeps working either way.
 func newSafeDialerForProxy(allow *proxyAllowlist) *net.Dialer {
+	return newSafeDialer(allow, false)
+}
+
+// newStrictSafeDialer is newSafeDialerForProxy with strict=true.
+func newStrictSafeDialer(allow *proxyAllowlist) *net.Dialer {
+	return newSafeDialer(allow, true)
+}
+
+func newSafeDialer(allow *proxyAllowlist, strict bool) *net.Dialer {
 	return &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 		ControlContext: func(ctx context.Context, network, address string, c syscall.RawConn) error {
-			if IsPrivateNetworkingAllowed() {
+			if !strict && IsPrivateNetworkingAllowed() {
 				return nil
 			}
-			if IsPrivateNetworkingAllowedFor(ctx) {
+			if !strict && IsPrivateNetworkingAllowedFor(ctx) {
 				return nil
 			}
 			host, _, err := net.SplitHostPort(address)
@@ -423,6 +440,20 @@ func newSafeDialerForProxy(allow *proxyAllowlist) *net.Dialer {
 func NewSafeTransport() *http.Transport {
 	t := NewSafeTransportForProxy("")
 	t.Proxy = proxyFromEnvironment
+	return t
+}
+
+// NewStrictSafeTransport is NewSafeTransport with an unconditional private-IP
+// guard: the dial refuses loopback / RFC1918 / link-local / metadata addresses
+// no matter how ALLOW_PRIVATE_NETWORKING is set, so a caller-supplied URL
+// (the vision bridge's remote image fetch) cannot walk the gateway into the
+// internal network. It keeps the operator's egress proxy: t.Proxy is the
+// ambient resolver and the dialer exempts that proxy endpoint, so a local
+// CONNECT proxy or sidecar still works — only the private *target* is refused.
+func NewStrictSafeTransport() *http.Transport {
+	t := constants.DefaultHTTPTransportConfig.NewTransport()
+	t.Proxy = proxyFromEnvironment
+	t.DialContext = newStrictSafeDialer(ambientProxyAllowlist()).DialContext
 	return t
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
@@ -64,6 +65,11 @@ type codexImageRequest struct {
 	// dropped: upstream answers with exactly one image regardless, and
 	// returning two would mean a second Responses round trip.
 	N int `json:"n"`
+	// OutputCompression is the native PNG/WebP compression level the caller
+	// asked for. Any explicit value is outside the native edit scope, which
+	// only accepts the upstream default, so such a request keeps the
+	// Responses path where its output controls are honoured.
+	OutputCompression int `json:"output_compression"`
 }
 
 // codexImageUsage is the recorded shape. Cached and reasoning tokens are
@@ -101,7 +107,8 @@ func (h *MediaHandler) handleCodexImage(w http.ResponseWriter, r *http.Request, 
 		model = strings.TrimPrefix(model, modelInfo.Provider+"/")
 		model = strings.TrimPrefix(model, "cx/")
 	}
-	cleanModel, responsesModel, toolModel := codexImageModels(model)
+	cleanModel, _, _ := codexImageModels(model)
+	scope := codexEditScopeFor(model, &req)
 
 	pinned := modelInfo.ConnectionID
 	if pinned == "" {
@@ -134,7 +141,7 @@ func (h *MediaHandler) handleCodexImage(w http.ResponseWriter, r *http.Request, 
 			excludeIDs = append(excludeIDs, conn.ID)
 			continue
 		}
-		attemptErr := h.tryCodexImageConn(w, r, &req, cleanModel, responsesModel, toolModel, conn, connData)
+		attemptErr := h.tryCodexImageConn(w, r, &req, scope, cleanModel, conn, connData)
 		if attemptErr == nil {
 			return nil
 		}
@@ -304,6 +311,136 @@ func codexImageBody(req *codexImageRequest, responsesModel, toolModel string) ([
 	return out, nil
 }
 
+// codexEditScope is one Codex image attempt: the endpoint it dials and the
+// request body it sends, chosen once per connection from the request's model
+// and output controls.
+type codexEditScope struct {
+	native bool
+	model  string
+}
+
+const codexDefaultResponsesBase = "https://chatgpt.com/backend-api/codex/responses"
+
+// codexNativeEditURL derives the native Images edits endpoint from the
+// configured base, mirroring upstream CODEX_IMAGES_EDITS_URL. The base is
+// usually the Responses endpoint (`.../codex/responses`), but a connection may
+// override BaseURL to a bare host or a gateway path (`.../backend-api/codex`),
+// so anything that is not already the edits endpoint gets it appended.
+func codexNativeEditURL(base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	if trimmed == "" {
+		return codexNativeEditURL(codexDefaultResponsesBase)
+	}
+	if strings.HasSuffix(trimmed, "/images/edits") {
+		return trimmed
+	}
+	return strings.TrimSuffix(trimmed, "/responses") + "/images/edits"
+}
+
+// codexHasNativeOutputControls reports whether the request's output controls
+// stay inside the scope the native endpoint honours. Native Codex has been
+// observed returning one auto-sized PNG even when n, size, or output_format
+// requests something else, so a request outside this scope keeps the Responses
+// path where those controls are honoured (upstream hasNativeOutputControls).
+func codexHasNativeOutputControls(model string, req *codexImageRequest) bool {
+	return codexToolImageModels[model] &&
+		(req.N == 0 || req.N == 1) &&
+		(req.Size == "" || req.Size == "auto") &&
+		(req.OutputFormat == "" || strings.EqualFold(req.OutputFormat, "png")) &&
+		(req.Background == "" || req.Background == "auto" || req.Background == "opaque") &&
+		(req.Quality == "" || req.Quality == "auto" || req.Quality == "low" || req.Quality == "medium" || req.Quality == "high") &&
+		req.OutputCompression == 0
+}
+
+// codexUseNativeEdit reports whether a reference-image request routes to the
+// native Images edits endpoint, the one Codex CLI uses, instead of the
+// Responses API (upstream shouldUseNativeEdit). The Responses image_generation
+// tool path rejects every GPT Image edit with "Complexity 'medium' is not
+// supported for this image model".
+func codexUseNativeEdit(model string, req *codexImageRequest) bool {
+	return len(codexImageRefs(req)) > 0 && codexHasNativeOutputControls(model, req)
+}
+
+// codexNativeEditBody assembles the native Images edits request, mirroring
+// Codex CLI's ImageEditRequest: {model, prompt, images: [{image_url}], n: 1,
+// size: auto, quality, background} (upstream buildNativeEditBody).
+func codexNativeEditBody(model string, req *codexImageRequest) ([]byte, error) {
+	refs := codexImageRefs(req)
+	images := make([]any, len(refs))
+	for i, ref := range refs {
+		images[i] = map[string]any{"image_url": ref}
+	}
+	payload := map[string]any{
+		"model":      model,
+		"prompt":     req.Prompt,
+		"images":     images,
+		"n":          1,
+		"size":       "auto",
+		"quality":    lo.Ternary(req.Quality != "", req.Quality, "auto"),
+		"background": lo.Ternary(req.Background != "", req.Background, "auto"),
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal codex native edit body: %w", err)
+	}
+	return out, nil
+}
+
+// codexEditScopeFor resolves which transport and model a Codex image attempt
+// uses. The native edit path carries the image-model id and dials images/edits;
+// every other request keeps the Responses path and resolves its model through
+// codexImageModels. The model is fixed here, outside the retry loop, so the
+// unsupported-model fallback cannot re-route a native request.
+func codexEditScopeFor(model string, req *codexImageRequest) codexEditScope {
+	if codexUseNativeEdit(model, req) {
+		return codexEditScope{native: true, model: model}
+	}
+	_, responsesModel, _ := codexImageModels(model)
+	return codexEditScope{model: responsesModel}
+}
+
+// codexNativeEditJSON answers a native Images response, which carries a plain
+// JSON body with a b64_json (or url) per image rather than the Responses SSE
+// stream (upstream parseResponse native branch).
+func codexNativeEditJSON(payload []byte) (imageB64 string, err error) {
+	var body struct {
+		Data []struct {
+			B64 string `json:"b64_json"`
+			URL string `json:"url"`
+		} `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return "", fmt.Errorf("codex images API returned invalid JSON: %w", err)
+	}
+	for _, item := range body.Data {
+		if item.B64 != "" {
+			return item.B64, nil
+		}
+	}
+	if body.Error != nil {
+		return "", fmt.Errorf("codex images API error: %s", body.Error.Message)
+	}
+	return "", fmt.Errorf("codex images API returned no image")
+}
+
+// codexNativeUsage reads the token row a native Images response carried. A
+// native turn may report no usage at all, in which case nothing is recorded.
+func codexNativeUsage(payload []byte) *codexImageUsage {
+	var body struct {
+		Usage any `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil
+	}
+	return normalizeCodexImageUsage(body.Usage)
+}
+
 // isCodexGpt6SolUnsupported reports whether an upstream 400 response indicates
 // that the ChatGPT account rejects gpt-6-sol. Upstream PR #5546.
 func isCodexGpt6SolUnsupported(body []byte) bool {
@@ -312,7 +449,10 @@ func isCodexGpt6SolUnsupported(body []byte) bool {
 }
 
 // tryCodexImageConn performs one Codex image attempt and writes the response.
-func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request, req *codexImageRequest, cleanModel, responsesModel, toolModel string, conn *models.ProviderConnection, connData *chat.ConnectionData) error {
+// A native edit (scope.native) dials the Images edits endpoint with a plain
+// JSON body and reads a plain JSON answer; every other request keeps the
+// Responses SSE path, including the gpt-6-sol unsupported fallback.
+func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request, req *codexImageRequest, scope codexEditScope, cleanModel string, conn *models.ProviderConnection, connData *chat.ConnectionData) error {
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
 		return fmt.Errorf("no API key found for codex connection %s", conn.ID)
@@ -333,15 +473,27 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 	if targetURL == "" {
 		return fmt.Errorf("no Codex responses endpoint configured")
 	}
+	if scope.native {
+		// The native edit endpoint is the base's images/edits sibling, whether
+		// that base is a Responses endpoint, a bare host, or a gateway path.
+		targetURL = codexNativeEditURL(targetURL)
+	}
 
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
 		return clientErr
 	}
+	// The client is the chat handler's shared one; guard its redirects so a
+	// 302 on this image call cannot walk into a private address.
+	client = guardMediaRedirects(client)
 
-	currentResponsesModel := responsesModel
+	if scope.native {
+		return h.tryCodexNativeEditConn(w, r, req, scope.model, targetURL, providerCfg, apiKey, client, cleanModel, conn, connData)
+	}
+
+	currentResponsesModel := scope.model
 	for {
-		payload, err := codexImageBody(req, currentResponsesModel, toolModel)
+		payload, err := codexImageBody(req, currentResponsesModel, codexImageToolModel(scope.model))
 		if err != nil {
 			return err
 		}
@@ -385,6 +537,54 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// codexImageToolModel returns the image-generation tool id a Responses call
+// carries for the given request model, or "" when the model answers the
+// Responses call directly (a *-image virtual model).
+func codexImageToolModel(model string) string {
+	_, _, toolModel := codexImageModels(model)
+	return toolModel
+}
+
+// tryCodexNativeEditConn performs one native Images edits attempt. The native
+// endpoint answers a plain JSON body, so there is no stream to parse and no
+// gpt-6-sol fallback: the request carries the image-model id the endpoint
+// expects and the model is fixed for the turn.
+func (h *MediaHandler) tryCodexNativeEditConn(w http.ResponseWriter, r *http.Request, req *codexImageRequest, model, targetURL string, providerCfg *providers.ProviderConfig, apiKey string, client *http.Client, cleanModel string, conn *models.ProviderConnection, connData *chat.ConnectionData) error {
+	payload, err := codexNativeEditBody(model, req)
+	if err != nil {
+		return err
+	}
+
+	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("create codex image request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	for k, v := range providerCfg.StaticHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	handlerutil.SetAuthHeader(httpReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("codex image request failed: %w", err)
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return h.codexImageUpstreamError(r, resp.StatusCode, respBody, conn, cleanModel)
+	}
+
+	image, err := codexNativeEditJSON(respBody)
+	if err != nil {
+		return err
+	}
+	h.recordCodexImageUsage(codexNativeUsage(respBody), cleanModel, conn, connData)
+	h.finishCodexImageConn(conn, cleanModel)
+	return writeCodexImageJSON(w, image)
+}
+
 // codexImageUpstreamError classifies a failed upstream response and locks the
 // account so the rotation moves on instead of hammering it. A probe reads
 // production state to decide what to display and must never clear or extend it.
@@ -395,7 +595,7 @@ func (h *MediaHandler) codexImageUpstreamError(r *http.Request, status int, body
 	}
 	log.Warn("media", "codex image error", "status", status, "body", text)
 	if h.Repo != nil && conn != nil && !handlerutil.IsProbeContext(r.Context()) {
-		if classification := providers.ClassifyError(status, text, 0); classification.ShouldFallback {
+		if classification := providers.ClassifyError(status, text, 0, body); classification.ShouldFallback {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
 			_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
 		}
