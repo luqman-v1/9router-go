@@ -172,6 +172,10 @@
   let bindingPage = $state(1)
   let bindingPageSize = $state(10)
   let bindingSearch = $state('')
+  // Prefix filter: model ids arrive as `provider/model`, so the provider is
+  // the leading segment. Picking one narrows the list to that provider without
+  // the operator typing (or knowing) the exact prefix string.
+  let bindingPrefix = $state('')
 
   onMount(load)
   async function load() {
@@ -510,11 +514,34 @@
       bindModalOpen = false
     }
   }
+  // The distinct provider prefixes the armed bindings actually use, so the
+  // filter offers only prefixes that would match something.
+  let bindingPrefixOptions = $derived.by(() => {
+    const seen = new Set<string>()
+    for (const [id] of boundEntries) {
+      const slash = id.indexOf('/')
+      if (slash > 0) seen.add(id.slice(0, slash))
+    }
+    return [...seen].sort()
+  })
+  // Names whatever the two filters currently narrow to, so the empty state
+  // says which one (or both) excluded everything rather than blaming the query.
+  let filterDesc = $derived.by(() => {
+    const parts: string[] = []
+    if (bindingPrefix) parts.push(`prefix "${bindingPrefix}"`)
+    if (bindingSearch.trim()) parts.push(`"${bindingSearch.trim()}"`)
+    return parts.length ? ' ' + parts.join(' + ') : ''
+  })
   // Pagination + batch selection over the model-binding list.
   let filteredBindings = $derived.by(() => {
     const q = bindingSearch.trim().toLowerCase()
-    if (!q) return boundEntries
-    return boundEntries.filter(
+    let rows = boundEntries
+    if (bindingPrefix) {
+      const head = bindingPrefix + '/'
+      rows = rows.filter(([id]) => id === bindingPrefix || id.startsWith(head))
+    }
+    if (!q) return rows
+    return rows.filter(
       ([id, cfg]) =>
         id.toLowerCase().includes(q) ||
         presetLabel(cfg.presetId).toLowerCase().includes(q),
@@ -1246,6 +1273,17 @@
            matches nothing, the field has to stay on screen or the operator
            cannot clear what they typed. -->
       <div class="flex flex-wrap items-center gap-2 pt-4">
+        <select
+          bind:value={bindingPrefix}
+          aria-label="Filter by provider prefix"
+          title="Narrow the list to one provider's model ids"
+          class="px-2 py-1.5 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-xs outline-none"
+        >
+          <option value="">All providers</option>
+          {#each bindingPrefixOptions as prefix (prefix)}
+            <option value={prefix}>{prefix} ({boundEntries.filter(([id]) => id === prefix || id.startsWith(prefix + '/')).length})</option>
+          {/each}
+        </select>
         <input
           type="text"
           bind:value={bindingSearch}
@@ -1266,7 +1304,7 @@
       </div>
       {#if filteredBindings.length === 0}
         <p class="text-xs text-text-subtle pt-3 border-t border-border-subtle">
-          No binding matches "{bindingSearch}".
+          No binding matches{filterDesc}
         </p>
       {:else}
       <!-- Two rows: the select-all checkboxes and the selected count stay on the
