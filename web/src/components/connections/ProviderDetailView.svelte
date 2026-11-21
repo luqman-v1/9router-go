@@ -102,6 +102,11 @@
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
   import FreebuffAdBanner from './FreebuffAdBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'
+  import {
+    computeProviderThinkingOptions,
+    formatThinkingOptionLabel,
+    resolveProviderThinkingSuffix,
+  } from './providerThinking'
 
   interface Props {
     providerId: string
@@ -475,25 +480,21 @@
   // the catalog ships as a static bundle, but caps depend on the provider
   // registry, the capability tables and the synced models.dev catalog.
   let modelCaps = $state<Record<string, ModelCaps>>({})
-  // Union of the thinking levels this provider's models accept, with the
-  // explicit "auto" reset first — upstream providerThinkingLevels
-  // (dashboard/providers/[id]/page.js:186). null hides the picker entirely for a
-  // provider whose models have no reasoning.
-  let providerThinkingLevels = $derived.by(() => {
-    const levels = new Set<string>()
-    for (const m of allAvailableModels) {
-      for (const l of modelCaps[m.id]?.thinkingLevels ?? []) {
-        if (l !== 'none') levels.add(l)
-      }
-    }
-    return levels.size ? ['auto', ...levels] : null
-  })
+  // Options for the per-provider "Thinking:" picker: compatible nodes always
+  // offer auto/off/on even with no model capability metadata, and built-in
+  // providers include "off" whenever at least one model can disable thinking.
+  let providerThinkingLevels = $derived.by(() =>
+    computeProviderThinkingOptions({
+      modelThinkingLevels: toolbarRows.map((r) => r.thinkingLevels),
+      isCompatibleNode,
+      currentMode: thinkingLevel,
+    }),
+  )
   // A picked level only applies to a model that actually supports it, so the
-  // displayed id and the copied id never carry a level the provider rejects.
+  // displayed id and the copied id never carry a level the provider rejects
+  // or a switch mode like auto/off/on.
   function resolveThinkingSuffix(modelId: string): string | null {
-    if (!thinkingLevel || thinkingLevel === 'auto') return null
-    const levels = modelCaps[modelId]?.thinkingLevels
-    return levels && levels.includes(thinkingLevel) ? thinkingLevel : null
+    return resolveProviderThinkingSuffix(thinkingLevel, modelCaps[modelId]?.thinkingLevels)
   }
   // Compatible nodes (upstream CompatibleModelsSection): rows = custom models
   // + legacy aliases, both keyed by the node row id; display = node prefix.
@@ -959,6 +960,7 @@
 
   // Load models, settings, proxy pools
   async function loadData() {
+    const pid = providerId
     try {
       const [modelsData, settingsData, poolsData, aliasesData, capsData] = await Promise.all([
         fetchProviderModelsData(providerId, storageAlias),
@@ -981,6 +983,7 @@
           ? api.getModelCaps(providerId).catch(() => ({ caps: {} as Record<string, ModelCaps> }))
           : Promise.resolve({ caps: {} as Record<string, ModelCaps> }),
       ])
+      if (pid !== providerId) return
       const capsById = capsData?.caps || {}
       // Same guard as the call above: an alias equal to the id would spend a
       // second round trip on a map we already have.
@@ -989,6 +992,7 @@
         const aliasCaps = await api
           .getModelCaps(storageAlias)
           .catch(() => ({ caps: {} as Record<string, ModelCaps> }))
+        if (pid !== providerId) return
         const aliasMap = aliasCaps?.caps || {}
         for (const [id, entry] of Object.entries(aliasMap)) {
           if (!capsMerged[id]) capsMerged[id] = entry
@@ -1189,6 +1193,7 @@
         if (lastLoadedProviderId !== pid) {
           lastLoadedProviderId = pid
           suggestedModels = []
+          thinkingLevel = 'auto'
         }
         loadData()
       })
@@ -1234,19 +1239,24 @@
   }
 
   async function handleThinkingChange(event: Event) {
-    const val = (event.target as HTMLSelectElement).value
+    const select = event.target as HTMLSelectElement
+    const prevLevel = thinkingLevel
+    const val = select.value
     thinkingLevel = val
+    const prevSettings = (settings as any)?.providerThinking
     try {
-      const current = (settings as any)?.providerThinking || {}
+      const current = prevSettings || {}
       const updated = { ...current }
       if (val && val !== 'auto') {
         updated[providerId] = { mode: val }
       } else {
         delete updated[providerId]
       }
-      if (settings) (settings as any).providerThinking = updated
       await api.updateSettings({ providerThinking: updated })
+      if (settings) (settings as any).providerThinking = updated
     } catch (err) {
+      thinkingLevel = prevLevel
+      if (settings) (settings as any).providerThinking = prevSettings
       console.error('Error saving provider thinking:', err)
     }
   }
@@ -2841,7 +2851,8 @@
   let compatibleTestSummary = $derived(formatCheckAllSummary(compatibleTestResults))
 
   function copyCompatibleModel(modelId: string) {
-    copyToClipboard(`${displayAlias()}/${modelId}`)
+    const level = resolveThinkingSuffix(modelId)
+    copyToClipboard(`${displayAlias()}/${modelId}${level ? `(${level})` : ''}`)
     copiedModelId = modelId
     setTimeout(() => (copiedModelId = null), 2000)
   }
@@ -4462,6 +4473,24 @@
   {#if isCompatibleNode}
   <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
     <div class="flex flex-col gap-4">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex flex-wrap items-center gap-3">
+          <h2 class="text-lg font-semibold">Available Models</h2>
+          {#if providerThinkingLevels}
+            <select
+              aria-label="Provider thinking mode"
+              title="Sets per-provider thinking override for requests routed to this provider"
+              value={thinkingLevel}
+              onchange={handleThinkingChange}
+              class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer"
+            >
+              {#each providerThinkingLevels as opt (opt)}
+                <option value={opt}>Thinking: {formatThinkingOptionLabel(opt)}</option>
+              {/each}
+            </select>
+          {/if}
+        </div>
+      </div>
       <p class="text-sm text-text-muted">
         Add {isAnthropicCompatibleNode ? 'Anthropic' : 'OpenAI'}-compatible models manually or import them from the /models endpoint.
       </p>
@@ -4593,6 +4622,8 @@
       {#if compatibleRows.length > 0}
         <div class="flex flex-col gap-3">
           {#each filteredRows as row (row.id)}
+            {@const level = resolveThinkingSuffix(row.id)}
+            {@const fullModelId = `${displayAlias()}/${row.id}${level ? `(${level})` : ''}`}
             {@const tStatus = compatibleTestResults[row.id]}
             {@const tError = compatibleTestErrors[row.id]}
             {@const isTestingRow = compatibleTesting[row.id]}
@@ -4613,7 +4644,7 @@
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate">{row.id}</p>
                 <div class="flex items-center gap-1 mt-1 flex-wrap">
-                  <code class="max-w-[72vw] truncate text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded sm:max-w-[360px]">{displayAlias()}/{row.id}</code>
+                  <code class="max-w-[72vw] truncate text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded sm:max-w-[360px]">{fullModelId}</code>
                   <!-- Capability icons, mirroring the registered grid's row:
                        the same model id can be imported into a compatible
                        node, and a row that shows nothing there reads as a
@@ -4737,13 +4768,14 @@
         {/if}
         {#if providerThinkingLevels}
         <select
-          title="Appends (level) suffix to copied model names"
+          aria-label="Provider thinking mode"
+          title="Sets per-provider thinking override (and appends (level) suffix to copied model names when supported)"
           value={thinkingLevel}
           onchange={handleThinkingChange}
-          class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none cursor-pointer"
+          class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer"
         >
           {#each providerThinkingLevels as opt (opt)}
-            <option value={opt}>Thinking: {opt.charAt(0).toUpperCase() + opt.slice(1)}</option>
+            <option value={opt}>Thinking: {formatThinkingOptionLabel(opt)}</option>
           {/each}
         </select>
         {/if}
