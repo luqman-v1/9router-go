@@ -801,8 +801,11 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 		}
 		data := restData(c, "id", "provider", "authType", "name", "email", "priority", "isActive", "createdAt", "updatedAt")
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+			 provider=excluded.provider, authType=excluded.authType, name=excluded.name, email=excluded.email,
+			 priority=excluded.priority, isActive=excluded.isActive, data=excluded.data,
+			 createdAt=excluded.createdAt, updatedAt=excluded.updatedAt`,
 			c["id"], c["provider"], stringDefault(c["authType"], "oauth"), stringDefault(c["name"], nil),
 			stringDefault(c["email"], nil), c["priority"], boolToInt(c["isActive"]), data,
 			stringDefault(c["createdAt"], nowISO()), stringDefault(c["updatedAt"], nowISO()),
@@ -827,10 +830,16 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 			"rpmLimit", "tpmLimit", "concurrencyLimit", "tokenQuota", "queueTimeoutMs",
 			"quotaResetId", "contractExpiresAt")
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt,
+			`INSERT INTO providerNodes(id, type, name, data, createdAt, updatedAt,
 			        rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId,
 			        contractExpiresAt)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET type=excluded.type, name=excluded.name, data=excluded.data,
+			 createdAt=excluded.createdAt, updatedAt=excluded.updatedAt,
+			 rpmLimit=excluded.rpmLimit, tpmLimit=excluded.tpmLimit,
+			 concurrencyLimit=excluded.concurrencyLimit, tokenQuota=excluded.tokenQuota,
+			 queueTimeoutMs=excluded.queueTimeoutMs, quotaResetId=excluded.quotaResetId,
+			 contractExpiresAt=excluded.contractExpiresAt`,
 			n["id"], stringDefault(n["type"], nil), stringDefault(n["name"], nil), data,
 			stringDefault(n["createdAt"], nowISO()), stringDefault(n["updatedAt"], nowISO()),
 			intDefault(n["rpmLimit"], 0), intDefault(n["tpmLimit"], 0),
@@ -850,7 +859,9 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 		}
 		data := restData(p, "id", "isActive", "testStatus", "createdAt", "updatedAt")
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO proxyPools(id, isActive, testStatus, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO proxyPools(id, isActive, testStatus, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET isActive=excluded.isActive, testStatus=excluded.testStatus,
+			 data=excluded.data, createdAt=excluded.createdAt, updatedAt=excluded.updatedAt`,
 			p["id"], boolToInt(p["isActive"]), stringDefault(p["testStatus"], "unknown"), data,
 			stringDefault(p["createdAt"], nowISO()), stringDefault(p["updatedAt"], nowISO()),
 		); err != nil {
@@ -869,10 +880,17 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 			continue
 		}
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt,
+			`INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt,
 			        rateLimitRPM, rateLimitTPM, rateLimitConcurrency, tokenQuota, queueTimeoutMs,
 			        limitMicros, limitTokens, budgetPeriod, alertPct, hardCutoff)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET
+			 key=excluded.key, name=excluded.name, machineId=excluded.machineId, isActive=excluded.isActive,
+			 createdAt=excluded.createdAt, rateLimitRPM=excluded.rateLimitRPM, rateLimitTPM=excluded.rateLimitTPM,
+			 rateLimitConcurrency=excluded.rateLimitConcurrency, tokenQuota=excluded.tokenQuota,
+			 queueTimeoutMs=excluded.queueTimeoutMs, limitMicros=excluded.limitMicros,
+			 limitTokens=excluded.limitTokens, budgetPeriod=excluded.budgetPeriod,
+			 alertPct=excluded.alertPct, hardCutoff=excluded.hardCutoff`,
 			k["id"], k["key"], stringDefault(k["name"], nil), stringDefault(k["machineId"], nil),
 			boolToInt(k["isActive"]), stringDefault(k["createdAt"], nowISO()),
 			// A restored key must come back with the limits it had: a backup
@@ -894,7 +912,8 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 		}
 		for _, model := range importAllowlist(k) {
 			if _, err := tx.Exec(
-				`INSERT OR REPLACE INTO api_key_model_access(api_key_id, model, created_at) VALUES(?, ?, ?)`,
+				`INSERT INTO api_key_model_access(api_key_id, model, created_at) VALUES(?, ?, ?)
+				 ON CONFLICT(api_key_id, model) DO UPDATE SET created_at=excluded.created_at`,
 				keyID, model, stringDefault(k["createdAt"], nowISO()),
 			); err != nil {
 				return nil, err
@@ -917,7 +936,9 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 			rules = []byte("[]")
 		}
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO combos(id, name, kind, models, matchRules, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO combos(id, name, kind, models, matchRules, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, models=excluded.models,
+			 matchRules=excluded.matchRules, createdAt=excluded.createdAt, updatedAt=excluded.updatedAt`,
 			c["id"], c["name"], stringDefault(c["kind"], nil), string(models), string(rules),
 			stringDefault(c["createdAt"], nowISO()), stringDefault(c["updatedAt"], nowISO()),
 		); err != nil {
@@ -1046,7 +1067,7 @@ func writeKVPayload(tx *sql.Tx, scope string, value any, keyed bool) error {
 				continue
 			}
 			if _, err := tx.Exec(
-				`INSERT OR REPLACE INTO kv(scope, key, value) VALUES(?, ?, ?)`, scope, k, string(b),
+				`INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`, scope, k, string(b),
 			); err != nil {
 				return err
 			}
@@ -1070,7 +1091,7 @@ func writeKVPayload(tx *sql.Tx, scope string, value any, keyed bool) error {
 			continue
 		}
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO kv(scope, key, value) VALUES(?, ?, ?)`, scope, key, string(b),
+			`INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`, scope, key, string(b),
 		); err != nil {
 			return err
 		}

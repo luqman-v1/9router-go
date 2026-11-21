@@ -1,0 +1,471 @@
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+// postgresTables is the PostgreSQL mirror of coreSchema() plus
+// keiRouterTables: the upstream v0.5.85 core tables and the KeiRouter port
+// tables, expressed in PG DDL. It is additive-only — schemaPostgres never
+// drops, renames, or retypes anything — matching the SQLite auto-sync
+// contract.
+//
+// Type mapping (PRD §4.2):
+//   - TEXT PRIMARY KEY stays.
+//   - INTEGER PRIMARY KEY AUTOINCREMENT becomes BIGINT GENERATED ALWAYS AS
+//     IDENTITY PRIMARY KEY.
+//   - 0/1 INTEGER flags become BOOLEAN.
+//   - ISO8601 timestamps stay TEXT in v1 so query parity is 100% and the
+//     SQLite -> PG export/import is a straight copy. Upgrade to TIMESTAMPTZ in v2.
+//   - BLOB becomes BYTEA.
+var postgresTables = []pgTableDef{
+	{
+		name: "settings",
+		columns: []pgColumn{
+			{"id", "INTEGER NOT NULL PRIMARY KEY CHECK (id = 1)"},
+			{"data", "TEXT NOT NULL"},
+		},
+	},
+	{
+		name: "_meta",
+		columns: []pgColumn{
+			{"key", "TEXT PRIMARY KEY"},
+			{"value", "TEXT NOT NULL"},
+		},
+	},
+	{
+		name: "providerConnections",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"provider", "TEXT NOT NULL"},
+			{"authType", "TEXT NOT NULL"},
+			{"name", "TEXT"},
+			{"email", "TEXT"},
+			{"priority", "INTEGER"},
+			{"isActive", "BOOLEAN DEFAULT TRUE"},
+			{"data", "TEXT NOT NULL"},
+			{"createdAt", "TEXT NOT NULL"},
+			{"updatedAt", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_pc_provider ON providerConnections(provider)",
+			"CREATE INDEX IF NOT EXISTS idx_pc_provider_active ON providerConnections(provider, isActive)",
+			"CREATE INDEX IF NOT EXISTS idx_pc_priority ON providerConnections(provider, priority)",
+		},
+	},
+	{
+		name: "providerNodes",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"type", "TEXT"},
+			{"name", "TEXT"},
+			{"data", "TEXT NOT NULL"},
+			{"createdAt", "TEXT NOT NULL"},
+			{"updatedAt", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_pn_type ON providerNodes(type)",
+		},
+	},
+	{
+		name: "proxyPools",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"isActive", "BOOLEAN DEFAULT TRUE"},
+			{"testStatus", "TEXT"},
+			{"data", "TEXT NOT NULL"},
+			{"createdAt", "TEXT NOT NULL"},
+			{"updatedAt", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_pp_active ON proxyPools(isActive)",
+			"CREATE INDEX IF NOT EXISTS idx_pp_status ON proxyPools(testStatus)",
+		},
+	},
+	{
+		name: "apiKeys",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"key", "TEXT UNIQUE NOT NULL"},
+			{"name", "TEXT"},
+			{"machineId", "TEXT"},
+			{"isActive", "BOOLEAN DEFAULT TRUE"},
+			{"createdAt", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+		},
+	},
+	{
+		name: "combos",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"name", "TEXT UNIQUE NOT NULL"},
+			{"kind", "TEXT"},
+			{"models", "TEXT NOT NULL"},
+			{"createdAt", "TEXT NOT NULL"},
+			{"updatedAt", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_combo_name ON combos(name)",
+		},
+	},
+	{
+		name: "kv",
+		columns: []pgColumn{
+			{"scope", "TEXT NOT NULL"},
+			{"key", "TEXT NOT NULL"},
+			{"value", "TEXT NOT NULL"},
+		},
+		primaryKey: "PRIMARY KEY (scope, key)",
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv(scope)",
+		},
+	},
+	{
+		name: "usageHistory",
+		columns: []pgColumn{
+			{"id", "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY"},
+			{"timestamp", "TEXT NOT NULL"},
+			{"provider", "TEXT"},
+			{"model", "TEXT"},
+			{"connectionId", "TEXT"},
+			{"apiKey", "TEXT"},
+			{"endpoint", "TEXT"},
+			{"promptTokens", "INTEGER DEFAULT 0"},
+			{"completionTokens", "INTEGER DEFAULT 0"},
+			{"cost", "DOUBLE PRECISION DEFAULT 0"},
+			{"status", "TEXT"},
+			{"tokens", "TEXT"},
+			{"meta", "TEXT"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_uh_ts ON usageHistory(timestamp DESC)",
+			"CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
+			"CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
+			"CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
+			"CREATE INDEX IF NOT EXISTS idx_uh_ts_prov ON usageHistory(timestamp DESC, provider)",
+			"CREATE INDEX IF NOT EXISTS idx_uh_ts_model ON usageHistory(timestamp DESC, model)",
+			// The per-key lifetime token quota sums prompt+completion tokens
+			// WHERE apiKey = ? on every request for a quota-bearing key, and
+			// this ledger is never pruned (see usage_retention.go: it is the
+			// billing record). Without this index that sum is a full scan.
+			"CREATE INDEX IF NOT EXISTS idx_uh_apikey ON usageHistory(apiKey)",
+		},
+	},
+	{
+		name: "usageDaily",
+		columns: []pgColumn{
+			{"dateKey", "TEXT PRIMARY KEY"},
+			{"data", "TEXT NOT NULL"},
+		},
+	},
+	{
+		name: "requestDetails",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"timestamp", "TEXT NOT NULL"},
+			{"provider", "TEXT"},
+			{"model", "TEXT"},
+			{"connectionId", "TEXT"},
+			{"status", "TEXT"},
+			{"data", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_rd_ts ON requestDetails(timestamp DESC)",
+			"CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
+			"CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
+			"CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+		},
+	},
+	{
+		name: "compressionAnalytics",
+		columns: []pgColumn{
+			{"id", "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY"},
+			{"timestamp", "TEXT NOT NULL"},
+			{"provider", "TEXT"},
+			{"model", "TEXT"},
+			{"mode", "TEXT NOT NULL"},
+			{"originalTokens", "INTEGER NOT NULL"},
+			{"compressedTokens", "INTEGER NOT NULL"},
+			{"tokensSaved", "INTEGER NOT NULL"},
+			{"durationMs", "INTEGER DEFAULT 0"},
+			{"requestId", "TEXT"},
+			{"actualPromptTokens", "INTEGER DEFAULT 0"},
+			{"actualCompletionTokens", "INTEGER DEFAULT 0"},
+			{"actualTotalTokens", "INTEGER DEFAULT 0"},
+			{"actualCacheReadTokens", "INTEGER DEFAULT 0"},
+			{"actualCacheWriteTokens", "INTEGER DEFAULT 0"},
+			{"estimatedUsdSaved", "DOUBLE PRECISION DEFAULT 0"},
+			{"skipReason", "TEXT"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_ca_ts ON compressionAnalytics(timestamp DESC)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_provider ON compressionAnalytics(provider)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_model ON compressionAnalytics(model)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_mode ON compressionAnalytics(mode)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_req ON compressionAnalytics(requestId)",
+			// The four indexes below exist for the analytics page, and the
+			// shape of each one is forced by a measured plan rather than by
+			// what looks natural; see the SQLite mirror in schema.go for the
+			// timings that motivated them.
+			"CREATE INDEX IF NOT EXISTS idx_ca_stat_p ON compressionAnalytics(provider, timestamp, tokensSaved, originalTokens, durationMs)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_stat_m ON compressionAnalytics(model, timestamp, tokensSaved, originalTokens, durationMs)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_saved ON compressionAnalytics(tokensSaved, timestamp)",
+			"CREATE INDEX IF NOT EXISTS idx_ca_receipt ON compressionAnalytics(timestamp, actualPromptTokens, actualTotalTokens)",
+		},
+	},
+	{
+		name: "semanticCacheEntries",
+		columns: []pgColumn{
+			{"key", "TEXT PRIMARY KEY"},
+			{"model", "TEXT NOT NULL"},
+			{"responseBody", "BYTEA NOT NULL"},
+			{"contentType", "TEXT"},
+			{"storedAt", "TEXT NOT NULL"},
+			{"hitCount", "INTEGER DEFAULT 0"},
+			{"tokensSaved", "INTEGER DEFAULT 0"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_sce_model ON semanticCacheEntries(model)",
+			"CREATE INDEX IF NOT EXISTS idx_sce_stored ON semanticCacheEntries(storedAt)",
+		},
+	},
+	// KeiRouter port tables (mirror of keiRouterTables in schema.go).
+	{
+		name: "api_key_model_access",
+		columns: []pgColumn{
+			{"api_key_id", "TEXT NOT NULL"},
+			{"model", "TEXT NOT NULL"},
+			{"created_at", "TEXT NOT NULL"},
+		},
+		primaryKey: "PRIMARY KEY (api_key_id, model)",
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_akma_key ON api_key_model_access(api_key_id)",
+		},
+	},
+	{
+		name: "guardrail_policies",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL DEFAULT 'default'"},
+			{"scope", "TEXT NOT NULL"},
+			{"scope_id", "TEXT NOT NULL DEFAULT ''"},
+			{"name", "TEXT NOT NULL"},
+			{"enabled", "BOOLEAN NOT NULL DEFAULT TRUE"},
+			{"config", "TEXT NOT NULL DEFAULT '{}'"},
+			{"created_at", "TEXT NOT NULL"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_grp_scope ON guardrail_policies(tenant_id, scope, scope_id)",
+		},
+	},
+	{
+		name: "guardrail_logs",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL"},
+			{"request_id", "TEXT DEFAULT ''"},
+			{"api_key_id", "TEXT DEFAULT ''"},
+			{"provider", "TEXT DEFAULT ''"},
+			{"model", "TEXT DEFAULT ''"},
+			{"chain_id", "TEXT DEFAULT ''"},
+			{"detector", "TEXT NOT NULL"},
+			{"direction", "TEXT NOT NULL"},
+			{"action", "TEXT NOT NULL"},
+			{"severity", "TEXT DEFAULT ''"},
+			{"reason", "TEXT DEFAULT ''"},
+			{"findings", "TEXT DEFAULT '[]'"},
+			{"created_at", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_grl_ts ON guardrail_logs(created_at DESC)",
+		},
+	},
+}
+
+// postgresAdditiveColumns is the PG mirror of goOnlyColumns. Added
+// idempotently on every boot; the upstream Next.js app ignores them.
+var postgresAdditiveColumns = []pgAdditiveColumn{
+	{"providerConnections", "lastUsedAt", "TEXT"},
+	{"providerConnections", "consecutiveUseCount", "INTEGER DEFAULT 0"},
+	// F-5 Credential Vault: sealed credential columns
+	{"providerConnections", "secretWrappedDEK", "TEXT DEFAULT ''"},
+	{"providerConnections", "secretCiphertext", "TEXT DEFAULT ''"},
+	{"providerConnections", "tokenWrappedDEK", "TEXT DEFAULT ''"},
+	{"providerConnections", "tokenCiphertext", "TEXT DEFAULT ''"},
+	{"providerConnections", "refreshWrappedDEK", "TEXT DEFAULT ''"},
+	{"providerConnections", "refreshCiphertext", "TEXT DEFAULT ''"},
+	// F-1 Rate Limiting per-key
+	{"apiKeys", "rateLimitRPM", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitTPM", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitConcurrency", "INTEGER DEFAULT 0"},
+	// F-1b Budget & queue
+	{"apiKeys", "tokenQuota", "INTEGER DEFAULT 0"},
+	{"apiKeys", "queueTimeoutMs", "INTEGER DEFAULT 0"},
+	// F-6 Argon2id key hashing
+	{"apiKeys", "keyHash", "TEXT DEFAULT ''"},
+	{"apiKeys", "lookupHash", "TEXT DEFAULT ''"},
+	{"apiKeys", "keyDisplay", "TEXT DEFAULT ''"},
+	// F-14 Time-limit keys + resale metadata
+	{"apiKeys", "expiresAt", "TEXT DEFAULT ''"},
+	{"apiKeys", "lastUsedAt", "TEXT DEFAULT ''"},
+	{"apiKeys", "usedCount", "INTEGER DEFAULT 0"},
+	{"apiKeys", "metadata", "TEXT DEFAULT ''"},
+}
+
+type pgColumn struct {
+	name       string
+	definition string
+}
+
+type pgAdditiveColumn struct {
+	table      string
+	column     string
+	definition string
+}
+
+type pgTableDef struct {
+	name       string
+	columns    []pgColumn
+	primaryKey string
+	indexes    []string
+}
+
+// postgresSupersededIndexes are dropped before the CREATE INDEX pass so an
+// install that ran an older build does not keep paying to maintain an index
+// no query reads any more. Mirrors supersededIndexes in schema.go.
+var postgresSupersededIndexes = []string{
+	"DROP INDEX IF EXISTS idx_ca_ts_prov",
+	"DROP INDEX IF EXISTS idx_ca_ts_model",
+}
+
+// schemaPostgres brings a PostgreSQL database to the shape the gateway
+// expects. Safe to call on every startup: every statement is
+// IF NOT EXISTS / ON CONFLICT DO NOTHING / column-presence-checked, so
+// existing user data is never touched.
+//
+// BackfillCompressionAnalytics is intentionally not invoked here: it is
+// written in SQLite dialect (INSERT OR REPLACE, PRAGMA) and worker B owns the
+// engine-portable rewrite. Skipping it on PG only delays a one-time telemetry
+// backfill; the gate that marks it done lives in _meta and stays unset.
+func schemaPostgres(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("postgres schema: nil db")
+	}
+
+	for _, stmt := range postgresSupersededIndexes {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("postgres schema: drop superseded index: %w", err)
+		}
+	}
+	for _, t := range postgresTables {
+		if err := pgEnsureTable(db, t); err != nil {
+			return err
+		}
+	}
+	for _, c := range postgresAdditiveColumns {
+		exists, err := pgTableExists(db, c.table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err := pgAddColumnIfMissing(db, c.table, c.column, c.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO _meta(key, value) VALUES('schemaVersion', '1') ON CONFLICT (key) DO NOTHING`,
+	); err != nil {
+		return fmt.Errorf("postgres schema: seed _meta: %w", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO settings(id, data) VALUES(1, '{}') ON CONFLICT (id) DO NOTHING`,
+	); err != nil {
+		return fmt.Errorf("postgres schema: seed settings: %w", err)
+	}
+	return nil
+}
+
+func pgEnsureTable(db *sql.DB, t pgTableDef) error {
+	defs := make([]string, 0, len(t.columns)+1)
+	for _, c := range t.columns {
+		defs = append(defs, c.name+" "+c.definition)
+	}
+	if t.primaryKey != "" {
+		defs = append(defs, t.primaryKey)
+	}
+	if _, err := db.Exec(
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", t.name, strings.Join(defs, ", ")),
+	); err != nil {
+		return fmt.Errorf("postgres schema: create table %s: %w", t.name, err)
+	}
+	for _, c := range t.columns {
+		if err := pgAddColumnIfMissing(db, t.name, c.name, c.definition); err != nil {
+			return err
+		}
+	}
+	for _, idx := range t.indexes {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("postgres schema: create index on %s: %w", t.name, err)
+		}
+	}
+	return nil
+}
+
+// pgAddColumnIfMissing mirrors addColumnIfMissing: PG, like SQLite, forbids
+// PRIMARY KEY / UNIQUE inside ADD COLUMN, so those fragments are stripped —
+// they only take effect at CREATE TABLE time on fresh databases.
+func pgAddColumnIfMissing(db *sql.DB, table, column, definition string) error {
+	exists, err := pgColumnExists(db, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	safe := definition
+	for _, frag := range []string{"PRIMARY KEY", "UNIQUE", "GENERATED ALWAYS AS IDENTITY"} {
+		safe = strings.ReplaceAll(safe, frag, "")
+	}
+	safe = strings.TrimSpace(safe)
+	safe = strings.Join(strings.Fields(safe), " ")
+	if _, err := db.Exec(
+		fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, safe),
+	); err != nil {
+		return fmt.Errorf("postgres schema: add column %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+// pgColumnExists probes information_schema rather than a rewordable driver
+// error string.
+func pgColumnExists(db *sql.DB, table, column string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(1) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
+		table, column,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("postgres schema: inspect %s.%s: %w", table, column, err)
+	}
+	return count > 0, nil
+}
+
+// pgTableExists reports whether a table is present.
+func pgTableExists(db *sql.DB, table string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(1) FROM information_schema.tables WHERE table_name = $1`,
+		table,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("postgres schema: inspect table %s: %w", table, err)
+	}
+	return count > 0, nil
+}

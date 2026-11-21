@@ -326,7 +326,7 @@ func (r *Repo) GetPromptCacheTrend(ctx context.Context, win analyticsrange.Windo
 	// unconditionally and reports zero cached requests for every bucket.
 	trendQuery := `
 SELECT
-	strftime('%Y-%m-%dT%H:00:00Z', timestamp) as bucket,
+	SUBSTR(timestamp, 1, 13) || ':00:00Z' as bucket,
 	COUNT(*) as requests,
 	SUM(CASE WHEN (` + sqlCachedTokensExpr + `) > 0 OR (` + sqlCacheCreationTokensExpr + `) > 0
 		THEN 1 ELSE 0 END) as cachedRequests,

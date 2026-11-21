@@ -11,21 +11,95 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
 // The global connection and its open error, guarded by dbMu. OpenDatabase has
 // no meaningful failure mode once the path is validated, so a bool would carry
-// no information the error does not.
+// no information the error does not. currentEngine records which backend the
+// global handle talks to so schema bootstrap can dispatch (see ensureSchema);
+// it is set under dbMu alongside dbInstance and reset by the same paths.
 var (
-	dbMu       sync.Mutex
-	dbInstance *sql.DB
-	initErr    error
+	dbMu          sync.Mutex
+	dbInstance    *sql.DB
+	initErr       error
+	currentEngine = EngineSQLite
 )
 
-// OpenDatabase opens a SQLite database and configures it with WAL mode, normal synchronous mode,
-// and other safe concurrency / performance defaults matching the Node/Bun implementation.
-func OpenDatabase(path string) (*sql.DB, error) {
+// Engine identifies the SQL backend a DSN selects. The gateway supports two:
+// SQLite (default, zero-config) and PostgreSQL (opt-in via postgres:// DSN).
+type Engine string
+
+const (
+	EngineSQLite   Engine = "sqlite"
+	EnginePostgres Engine = "postgres"
+)
+
+// Connection pool defaults for PostgreSQL. Larger than SQLite's pool because
+// a PG backend shares buffers across connections instead of holding a private
+// page cache per conn (see sqliteCacheSizeKB). Overridable via env so operators
+// can tune for their workload without rebuilding.
+const (
+	pgDefaultMaxOpenConns   = 50
+	pgDefaultMaxIdleConns   = 10
+	pgConnMaxLifetime       = 30 * time.Minute
+	pgConnMaxIdleTime       = 5 * time.Minute
+	envDBMaxOpenConns       = "DB_MAX_CONNS"
+	envDBMaxIdleConns       = "DB_MAX_IDLE_CONNS"
+)
+
+// detectEngine picks the driver from the DSN shape: a postgres:// or
+// postgresql:// prefix means PostgreSQL (driver "pgx"), anything else is a
+// SQLite file path. This is the only routing decision the gateway makes on
+// DSN inspection — provider/model routing never uses it.
+func detectEngine(dsn string) Engine {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		return EnginePostgres
+	}
+	return EngineSQLite
+}
+
+// pgPoolConns reads the operator-tunable pool sizes from the environment,
+// falling back to the PRD §4.3 defaults when unset or unparseable.
+func pgPoolConns() (maxOpen, maxIdle int) {
+	maxOpen, maxIdle = pgDefaultMaxOpenConns, pgDefaultMaxIdleConns
+	if v, err := strconv.Atoi(os.Getenv(envDBMaxOpenConns)); err == nil && v > 0 {
+		maxOpen = v
+	}
+	if v, err := strconv.Atoi(os.Getenv(envDBMaxIdleConns)); err == nil && v > 0 {
+		maxIdle = v
+	}
+	return maxOpen, maxIdle
+}
+
+// OpenDatabase opens the database selected by dsn and configures it with
+// engine-appropriate concurrency / performance defaults. SQLite keeps WAL mode
+// and per-connection PRAGMAs matching the Node/Bun implementation; PostgreSQL
+// is configured purely through the connection pool.
+func OpenDatabase(dsn string) (*sql.DB, error) {
+	if detectEngine(dsn) == EnginePostgres {
+		return openPostgres(dsn)
+	}
+	return openSQLite(dsn)
+}
+
+func openPostgres(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("sql.Open(pgx): %w", err)
+	}
+	// No PRAGMAs and no file chmod: PG has no file to secure and its
+	// configuration is server-side. Pool sizing is the only knob.
+	maxOpen, maxIdle := pgPoolConns()
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxLifetime(pgConnMaxLifetime)
+	db.SetConnMaxIdleTime(pgConnMaxIdleTime)
+	return db, nil
+}
+
+func openSQLite(path string) (*sql.DB, error) {
 	// Ensure the parent directory of the database file exists
 	dbDir := filepath.Dir(path)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
@@ -43,7 +117,8 @@ func OpenDatabase(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("sql.Open(%s): %w", path, err)
 	}
 
-	// Persistent database-level PRAGMA: journal_mode is written to the database file header.
+	// Persistent database-level PRAGMA: journal_mode is written to the
+	// database file header.
 	if _, err = db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pragma exec journal_mode: %w", err)
@@ -104,6 +179,9 @@ func InitGlobalDatabase(path string) error {
 		return initErr
 	}
 	dbInstance, initErr = OpenDatabase(path)
+	if initErr == nil {
+		currentEngine = detectEngine(path)
+	}
 	return initErr
 }
 
@@ -131,6 +209,7 @@ func ResetGlobalDatabaseForTesting() {
 		_ = dbInstance.Close()
 	}
 	dbInstance, initErr = nil, nil
+	currentEngine = EngineSQLite
 }
 
 // GetConnection returns the global database connection.
@@ -141,6 +220,14 @@ func GetConnection() (*sql.DB, error) {
 		return nil, errors.New("database not initialized, call InitGlobalDatabase first")
 	}
 	return dbInstance, nil
+}
+
+// CurrentEngine reports which backend the global handle (if any) talks to.
+// Defaults to SQLite before InitGlobalDatabase, matching the zero-config path.
+func CurrentEngine() Engine {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	return currentEngine
 }
 
 // sqliteMaxOpenConns is the connection pool size. It is what turns a
