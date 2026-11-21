@@ -553,6 +553,18 @@ func TestEnsureMessagesFor_Claude55DottedThinking(t *testing.T) {
 			body:         `{"max_tokens":4096,"stream":false,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"Evaluate."}]}`,
 			wantThinking: "disabled",
 		},
+		{
+			// Native Claude passthrough carrying tool_choice {type:"required"}:
+			// this is not a valid Claude tool_choice type (Claude uses "any"),
+			// but applyClaudeThinkingOffAndToolChoice must NOT downgrade it —
+			// upstream only downgrades "any"/"tool" (claude.js:507).
+			name:         "opus-5.5 native required tool choice not downgraded",
+			model:        "claude-opus-5.5",
+			body:         `{"max_tokens":32000,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},"tools":[{"name":"Bash","description":"Run","input_schema":{"type":"object"}}],"tool_choice":{"type":"required"},"messages":[{"role":"user","content":"go"}]}`,
+			wantThinking: "adaptive",
+			wantEffort:   "high",
+			wantTool:     "required",
+		},
 	}
 
 	for _, tt := range tests {

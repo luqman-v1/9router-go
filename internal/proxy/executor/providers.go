@@ -1142,7 +1142,8 @@ func enforceClaudeThinkingSampling(reqMap map[string]any) {
 //     thinkingOffType ("between_tools") in its place, and between_tools only
 //     accepts effort up to high.
 //   - forcedToolChoice: a model that rejects forced tool_choice pinning
-//     ("any"/"required" or a named tool) gets tool_choice downgraded to "auto".
+//     ("any" or a named tool) gets tool_choice downgraded to "auto". "required"
+//     is left untouched, matching upstream, which only downgrades "any"/"tool".
 func applyClaudeThinkingOffAndToolChoice(reqMap map[string]any, provider, model string) {
 	caps := providers.GetCapabilitiesForModel(provider, model)
 	thinking, _ := reqMap["thinking"].(map[string]any)
@@ -1176,7 +1177,7 @@ func applyClaudeThinkingOffAndToolChoice(reqMap map[string]any, provider, model 
 	if !caps.CanForceToolChoice() {
 		if tc, _ := reqMap["tool_choice"].(map[string]any); tc != nil {
 			switch tc["type"] {
-			case "any", "required", "tool":
+			case "any", "tool":
 				graded := map[string]any{"type": "auto"}
 				if v, ok := tc["disable_parallel_tool_use"]; ok {
 					graded["disable_parallel_tool_use"] = v

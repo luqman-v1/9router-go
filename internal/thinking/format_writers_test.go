@@ -53,12 +53,15 @@ func TestApplyClaudeAdaptiveDisplayPreserved(t *testing.T) {
 		t.Fatalf("opus-5.5 off output_config = %+v", out["output_config"])
 	}
 	// Non-Claude always-on adaptive model: display is dropped, effort survives.
-	// (Upstream gates on /claude/i.test(model); all always-on adaptive models
-	// today are Claude-named, so this branch is defensive.)
-	out = apply(t, "claude", "github", "claude-opus-5.5",
-		map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "omitted"}, "output_config": map[string]any{"effort": "high"}}, nil)
-	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "adaptive", "display": "omitted"}) {
-		t.Fatalf("opus-5.5 omitted display = %+v", out["thinking"])
+	// (Upstream gates on /claude/i.test(model); MiniMax-M3.1-Flash-Preview on
+	// the minimax-code lane is a non-Claude model with claude-adaptive and
+	// ThinkingCanDisable:false, so it exercises the else branch that drops the
+	// thinking block entirely.)
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}, "output_config": map[string]any{"effort": "high"}}, nil)
+	mustAbsent(t, out, "thinking")
+	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "high"}) {
+		t.Fatalf("minimax adaptive output_config = %+v", out["output_config"])
 	}
 }
 
