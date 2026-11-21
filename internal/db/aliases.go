@@ -80,6 +80,9 @@ type CustomModel struct {
 	Caps          map[string]bool `json:"caps"`
 	ContextWindow int             `json:"contextWindow,omitempty"`
 	MaxOutput     int             `json:"maxOutput,omitempty"`
+	// ExtraBody is merged into every outbound request for this model (see
+	// chat.applyCustomExtraBody). Validated on save by ParseExtraBody.
+	ExtraBody jsontext.Value `json:"extraBody,omitempty"`
 }
 
 // UnmarshalJSON reads a customModels row without letting one unusable `caps`
@@ -106,6 +109,7 @@ func (cm *CustomModel) UnmarshalJSON(data []byte) error {
 		Caps          jsontext.Value `json:"caps"`
 		ContextWindow int            `json:"contextWindow,omitempty"`
 		MaxOutput     int            `json:"maxOutput,omitempty"`
+		ExtraBody     jsontext.Value `json:"extraBody,omitempty"`
 	}
 	var r row
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -117,6 +121,7 @@ func (cm *CustomModel) UnmarshalJSON(data []byte) error {
 	cm.Name = r.Name
 	cm.ContextWindow = r.ContextWindow
 	cm.MaxOutput = r.MaxOutput
+	cm.ExtraBody = r.ExtraBody
 	cm.Caps = nil
 	if len(r.Caps) == 0 || string(r.Caps) == "null" {
 		return nil

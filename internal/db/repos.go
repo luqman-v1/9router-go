@@ -53,6 +53,12 @@ type Repo struct {
 	// boot path — so it runs once, like settingsCache.
 	budgetColsOnce sync.Once
 	budgetCols     bool
+	// extraBody caches every custom model's extraBody so the request path
+	// merges it without a query. Every customModels write bumps extraBodyGen,
+	// which retires the snapshot built under the older generation.
+	extraBody      atomic.Pointer[extraBodySnapshot]
+	extraBodyGen   atomic.Uint64
+	extraBodyBuild sync.Mutex
 }
 
 // cachedSettings is one parsed settings row and the row content it was

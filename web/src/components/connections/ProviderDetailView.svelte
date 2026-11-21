@@ -87,6 +87,7 @@
   } from './connectionProbe'
   import EditConnectionModal, { type ConnectionUpdate } from './EditConnectionModal.svelte'
   import AddConnectionModal from './AddConnectionModal.svelte'
+  import { buildEditedRow, pruneDisabledAfterDelete } from '../../lib/customModelEdit'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
   import { nodeLimitsDraftOf, nodeLimitsSummary, nodeLimitsUsageSummary } from '../../lib/node-limits'
   import type { ProviderNodeLimitsPatch } from '../../api/client'
@@ -779,6 +780,7 @@
   let showAddKeyModal = $state(false)
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
+  let editingModel = $state<CustomModelData | null>(null)
   let showEditNodeModal = $state(false)
   let showExportKeysModal = $state(false)
   let showShareProviderModal = $state(false)
@@ -2496,6 +2498,20 @@
     }
   }
 
+  // The delete endpoint parks the id in disabledModels; drop it so a deleted
+  // custom model does not show under "Disabled models".
+  async function pruneDeletedFromDisabled(deletedIds: string[]) {
+    const fresh = await fetchProviderModelsData(providerId, storageAlias)
+    customModels = fresh.customModels
+    const kept = pruneDisabledAfterDelete(
+      fresh.disabledModelIds,
+      deletedIds,
+      builtInModels.map((m) => m.id)
+    )
+    disabledModelIds = kept
+    if (kept.length !== fresh.disabledModelIds.length) await api.saveDisabledModels(storageAlias, kept)
+  }
+
   async function handleEnableModel(modelId: string) {
     const updated = disabledModelIds.filter((id) => id !== modelId)
     disabledModelIds = updated
@@ -2532,25 +2548,39 @@
     caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean },
     limits?: { contextWindow?: number; maxOutput?: number },
     modelType?: CustomModelType,
+    extraBody?: Record<string, unknown>,
   ) {
     // The modal picks the kind; the id is only consulted for a caller that adds
     // a model without going through it.
     const kind = modelType ?? inferModelKind(modelId)
     try {
-      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId, kind), {
+      if (editingModel) {
+        const stored = editingModel
+        await api.saveCustomModel(
+          customModelKeyFor(storageAlias, stored.id, stored.type),
+          buildEditedRow(stored, {
+            caps: { vision: false, reasoning: false, jailbreak: false, ...caps },
+            contextWindow: limits?.contextWindow ?? 0,
+            maxOutput: limits?.maxOutput ?? 0,
+            extraBody,
+          }),
+        )
+      } else await api.saveCustomModel(customModelKeyFor(storageAlias, modelId, kind), {
         id: modelId,
         providerAlias: storageAlias,
         type: kind,
         ...(kind !== 'llm' ? {} : caps ? { caps } : {}),
         ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
         ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
+        ...(extraBody ? { extraBody } : {}),
       })
       showAddCustomModelModal = false
+      editingModel = null
       const modelsData = await fetchProviderModelsData(providerId, storageAlias)
       customModels = modelsData.customModels
       notifyCustomModelsChanged()
     } catch (err) {
-      alert(`Failed to add custom model: ${err instanceof Error ? err.message : String(err)}`)
+      alert(`Failed to save custom model: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -3343,6 +3373,7 @@
     if (!confirm(parts.join(' '))) return
 
     let deleted = 0
+    const deletedIds: string[] = []
     let disabledOnly = 0
     const failures: string[] = []
     for (const row of rows) {
@@ -3355,19 +3386,22 @@
           if (match?.alias) await api.deleteModelAlias(match.alias)
           else await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, match?.kind))
           deleted++
+          deletedIds.push(row.id)
         } else {
-          const stored = compatibleRows.find((r) => r.id === row.id)?.kind
+          const stored =
+            compatibleRows.find((r) => r.id === row.id)?.kind ??
+            providerCustomModels.find((m) => m.id === row.id)?.type
           await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, stored))
           deleted++
+          deletedIds.push(row.id)
         }
       } catch (err) {
         failures.push(`${row.id}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
     if (pid !== providerId) return
-    const modelsData = await fetchProviderModelsData(providerId, storageAlias)
-    customModels = modelsData.customModels
-    disabledModelIds = modelsData.disabledModelIds
+    await pruneDeletedFromDisabled(deletedIds).catch((err) => console.error('prune disabled failed:', err))
+    if (pid !== providerId) return
     notifyCustomModelsChanged()
     selectedModelIds = new Set()
     const summary = [`${deleted} deleted`]
@@ -3384,8 +3418,7 @@
       if (!confirm(`Delete custom model "${modelId}"?`)) return
       try {
         await api.deleteCustomModel(customModelKeyFor(storageAlias, modelId, custom.type))
-        const modelsData = await fetchProviderModelsData(providerId, storageAlias)
-        customModels = modelsData.customModels
+        await pruneDeletedFromDisabled([modelId])
         notifyCustomModelsChanged()
       } catch (err) {
         alert(`Failed to delete model: ${err instanceof Error ? err.message : String(err)}`)
@@ -4981,12 +5014,25 @@
               </span>
             </div>
 
+            {#if model.isCustom}
+              <button
+                type="button"
+                onclick={() => {
+                  editingModel = providerCustomModels.find((c) => c.id === model.id) ?? null
+                  showAddCustomModelModal = !!editingModel
+                }}
+                class="shrink-0 rounded p-0.5 text-text-muted hover:bg-sidebar hover:text-primary cursor-pointer"
+                title="Edit model"
+              >
+                <span class="material-symbols-outlined text-sm">edit</span>
+              </button>
+            {/if}
             <!-- Disable button -->
             <button
               type="button"
-              onclick={() => handleDisableModel(model.id)}
+              onclick={() => (model.isCustom ? handleDeleteModel(model.id) : handleDisableModel(model.id))}
               class="ml-auto rounded p-0.5 text-text-muted opacity-100 transition-opacity hover:bg-red-500/10 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
-              title="Disable this model"
+              title={model.isCustom ? 'Delete this custom model' : 'Disable this model'}
             >
               <span class="material-symbols-outlined text-sm">close</span>
             </button>
@@ -5010,7 +5056,10 @@
       <!-- Add Model button inside the same flex-wrap -->
       <button
         type="button"
-        onclick={() => (showAddCustomModelModal = true)}
+        onclick={() => {
+          editingModel = null
+          showAddCustomModelModal = true
+        }}
         class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto cursor-pointer"
       >
         <span class="material-symbols-outlined text-sm">add</span>
@@ -5651,7 +5700,11 @@
 <AddCustomModelModal
   isOpen={showAddCustomModelModal}
   providerAlias={storageAlias}
-  onClose={() => (showAddCustomModelModal = false)}
+  editing={editingModel}
+  onClose={() => {
+    showAddCustomModelModal = false
+    editingModel = null
+  }}
   onSave={submitAddCustomModel}
   onBulkSaved={handleBulkModelsSaved}
 />

@@ -5,6 +5,10 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { api, type CustomModelBatchEntry } from '../../api/client'
   import { parseModelIds, summarizeBulkModels } from '../../lib/bulk-models'
+  import { parseExtraBodyInput } from '../../lib/extraBody'
+  import { extraBodyToText } from '../../lib/customModelEdit'
+  import ExtraBodyField from './ExtraBodyField.svelte'
+  import type { CustomModelData } from './types'
   import { MODEL_TYPE_OPTIONS, type CustomModelType } from './modelTypeOptions'
 
   export interface ModelCaps {
@@ -28,13 +32,16 @@
       caps: ModelCaps,
       limits: ModelLimits,
       modelType: CustomModelType,
+      extraBody?: Record<string, unknown>,
     ) => Promise<void> | void
     /** Called after a bulk save, so the parent reloads the list the paste changed. */
     onBulkSaved?: () => void
     onClose: () => void
+    /** Stored custom row to edit: id is locked, bulk paste is off, fields are prefilled. */
+    editing?: CustomModelData | null
   }
 
-  let { isOpen, providerAlias, onSave, onBulkSaved, onClose }: Props = $props()
+  let { isOpen, providerAlias, onSave, onBulkSaved, onClose, editing = null }: Props = $props()
 
   // Port of CAPACITY_META (upstream shared/constants/models.js).
   const CAPACITY_META: Record<string, { label: string; desc: string }> = {
@@ -72,7 +79,7 @@
   let plan = $derived(parseModelIds(modelId, providerAlias))
   // More than one id, or something the paste half-failed on: either way the answer is a
   // list, so the list is shown before anything is written.
-  let isPaste = $derived(plan.ids.length > 1 || plan.duplicates.length > 0 || plan.invalid.length > 0)
+  let isPaste = $derived(!editing && (plan.ids.length > 1 || plan.duplicates.length > 0 || plan.invalid.length > 0))
 
   function parseLimit(raw: string): number {
     const n = Number.parseInt(raw, 10)
@@ -89,17 +96,23 @@
       : '',
   )
 
+  // Operator request-body overrides; the gateway honours them on OpenRouter only.
+  let extraBodyText = $state('')
+  let showExtraBody = $derived(providerAlias === 'openrouter' && modelType === 'llm' && !isPaste)
+  let extraBody = $derived(showExtraBody ? parseExtraBodyInput(extraBodyText) : { value: undefined, error: '' })
+
   // Reset state when modal opens (upstream parity).
   $effect(() => {
     if (isOpen) {
-      modelId = ''
-      caps = defaultCaps()
-      limits = defaultLimits()
-      modelType = 'llm'
+      modelId = editing?.id ?? ''
+      caps = { ...defaultCaps(), ...editing?.caps }
+      limits = { contextWindow: editing?.contextWindow ?? 0, maxOutput: editing?.maxOutput ?? 0 }
+      modelType = (editing?.type as CustomModelType | undefined) ?? 'llm'
       testStatus = null
       testError = ''
       bulkResult = null
       bulkError = ''
+      extraBodyText = extraBodyToText(editing?.extraBody)
     }
   })
 
@@ -129,7 +142,7 @@
   // be tested against the provider first), anything longer goes to the batch endpoint so
   // that one bad line cannot take the others down with it.
   async function handleSubmit() {
-    if (limitsError) return
+    if (limitsError || extraBody.error) return
     if (isPaste) {
       if (bulkSaving || plan.ids.length === 0) return
       bulkSaving = true
@@ -159,7 +172,7 @@
     if (!cleanId || saving) return
     saving = true
     try {
-      await onSave(cleanId, { ...caps }, { ...limits }, modelType)
+      await onSave(cleanId, { ...caps }, { ...limits }, modelType, extraBody.value)
     } finally {
       saving = false
     }
@@ -173,14 +186,14 @@
   }
 </script>
 
-<Modal {isOpen} {onClose} title="Add Custom Model">
+<Modal {isOpen} {onClose} title={editing ? 'Edit Model' : 'Add Custom Model'}>
   <div class="flex flex-col gap-4">
     <div>
       <label class="text-sm font-medium mb-1.5 block" for="add-custom-model-type">Model type</label>
       <select
         id="add-custom-model-type"
         value={modelType}
-        disabled={saving || bulkSaving || testStatus === 'testing'}
+        disabled={!!editing || saving || bulkSaving || testStatus === 'testing'}
         onchange={(e) => {
           modelType = (e.target as HTMLSelectElement).value as CustomModelType
           testStatus = null
@@ -211,6 +224,7 @@
             testStatus = null
             testError = ''
           }}
+          readonly={!!editing}
           onkeydown={handleKeyDown}
           placeholder="e.g. claude-opus-4-5 — paste a list to add several"
           class="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
@@ -348,6 +362,10 @@
       </div>
     {/if}
 
+    {#if showExtraBody}
+      <ExtraBodyField bind:value={extraBodyText} error={extraBody.error} />
+    {/if}
+
     {#if testStatus === 'ok'}
       <div class="flex items-center gap-2 text-sm text-green-600">
         <span class="material-symbols-outlined text-base">check_circle</span>
@@ -367,10 +385,12 @@
         onclick={handleSubmit}
         fullWidth
         size="sm"
-        disabled={plan.ids.length === 0 || saving || bulkSaving || !!limitsError}
+        disabled={plan.ids.length === 0 || saving || bulkSaving || !!limitsError || !!extraBody.error}
       >
         {#if saving || bulkSaving}
-          Adding...
+          {editing ? 'Saving...' : 'Adding...'}
+        {:else if editing}
+          Save
         {:else if isPaste}
           Add {plan.ids.length} Model{plan.ids.length === 1 ? '' : 's'}
         {:else}

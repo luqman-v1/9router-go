@@ -38,13 +38,18 @@ describe('explicit custom model type', () => {
   it('defaults to llm and resets to it when the dialog is reopened', () => {
     const js = compiledModal()
     expect(js).toContain("let modelType = $.state('llm');")
-    expect(js).toContain("$.set(modelType, 'llm');")
+    expect(js).toContain("$.set(modelType, editing()?.type ?? 'llm', true);")
   })
 
   it('passes the selected type to onSave instead of leaving the caller to infer it', () => {
     expect(compiledModal()).toContain(
-      '$$props.onSave($.get(cleanId), { ...$.get(caps) }, { ...$.get(limits) }, $.get(modelType));',
+      '$$props.onSave($.get(cleanId), { ...$.get(caps) }, { ...$.get(limits) }, $.get(modelType), $.get(extraBody).value);',
     )
+  })
+
+  it('offers the custom request body on OpenRouter single chat saves only and forwards it', () => {
+    expect(MODAL_SRC).toContain("providerAlias === 'openrouter' && modelType === 'llm' && !isPaste")
+    expect(PROVIDER_SRC).toContain('...(extraBody ? { extraBody } : {}),')
   })
 
   it('probes the model through the selected type, so Test and Save cannot disagree', () => {
@@ -68,7 +73,7 @@ describe('explicit custom model type', () => {
 
   it('locks the selector while a save or a test is in flight', () => {
     expect(compiledModal()).toContain(
-      "select.disabled = $.get(saving) || $.get(bulkSaving) || $.get(testStatus) === 'testing';",
+      "select.disabled = !!editing() || $.get(saving) || $.get(bulkSaving) || $.get(testStatus) === 'testing';",
     )
   })
 
