@@ -127,6 +127,85 @@ func TestHandleCreateConnection_KeepsLegacyDataString(t *testing.T) {
 	}
 }
 
+// TestHandleCreateConnection_NormalizesCookieJSONExport pins the ingest call
+// site: gemini-web's credential is the whole Cookie header, and a paste as a
+// Cookie-Editor JSON export is stored as a header. The row, the probes and
+// every chat turn then read the same form.
+func TestHandleCreateConnection_NormalizesCookieJSONExport(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	body := `{"provider":"gemini-web","authType":"cookie","name":"GW Web",
+		"apiKey":` + quoteJSON(`[{"name":"__Secure-1PSID","value":"psid"},{"name":"__Secure-1PSIDTS","value":"sidts"}]`) + `}`
+	rec := postConnection(t, router, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	conn, err := repo.GetProviderConnectionByID(created["id"].(string))
+	if err != nil || conn == nil {
+		t.Fatalf("failed to reload connection: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(conn.Data), &data); err != nil {
+		t.Fatalf("decode connection data: %v", err)
+	}
+	if data["apiKey"] != "__Secure-1PSID=psid; __Secure-1PSIDTS=sidts" {
+		t.Errorf("stored apiKey = %v, want the JSON export rendered as a header", data["apiKey"])
+	}
+}
+
+// TestHandleCreateConnection_LeavesTokenCredentialsAlone proves the normalizer
+// is scoped to whole-header cookie providers: deepseek-web's userToken can
+// itself be a JSON object (the localStorage value), and reading it as a
+// Cookie-Editor export would reject a credential that is valid.
+func TestHandleCreateConnection_LeavesTokenCredentialsAlone(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	body := `{"provider":"deepseek-web","authType":"cookie","name":"DS Web",
+		"apiKey":` + quoteJSON(`{"value":"user-token-2"}`) + `}`
+	rec := postConnection(t, router, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	conn, err := repo.GetProviderConnectionByID(created["id"].(string))
+	if err != nil || conn == nil {
+		t.Fatalf("failed to reload connection: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(conn.Data), &data); err != nil {
+		t.Fatalf("decode connection data: %v", err)
+	}
+	if data["apiKey"] != `{"value":"user-token-2"}` {
+		t.Errorf("stored apiKey = %v, want the userToken untouched", data["apiKey"])
+	}
+}
+
+// TestHandleCreateConnection_RefusesMalformedCookieJSON proves a bad paste is
+// a 400 at the boundary, not a row the first turn would fail on.
+func TestHandleCreateConnection_RefusesMalformedCookieJSON(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	body := `{"provider":"gemini-web","authType":"cookie","name":"GW Web",
+		"apiKey":` + quoteJSON(`[{"name":"__Secure-1PSID","value":`) + `}`
+	rec := postConnection(t, router, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleCreateConnection_RequiresProvider(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
