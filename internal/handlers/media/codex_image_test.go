@@ -1052,10 +1052,28 @@ func TestCodexNativeEditJSON(t *testing.T) {
 	})
 }
 
-// The native edit URL is the responses host's images/edits sibling.
+// The native edit URL is the base's images/edits sibling, whatever shape the
+// connection's BaseURL override takes: a Responses endpoint, a bare host, or a
+// gateway path.
 func TestCodexNativeEditURL(t *testing.T) {
-	got := codexNativeEditURL("https://chatgpt.com/backend-api/codex/responses")
-	if got != "https://chatgpt.com/backend-api/codex/images/edits" {
-		t.Errorf("codexNativeEditURL = %q, want https://chatgpt.com/backend-api/codex/images/edits", got)
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"responses endpoint", "https://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com/backend-api/codex/images/edits"},
+		{"responses endpoint with trailing slash", "https://my.gateway.example.com/backend-api/codex/responses/", "https://my.gateway.example.com/backend-api/codex/images/edits"},
+		{"bare host override", "https://my.gateway.example.com", "https://my.gateway.example.com/images/edits"},
+		{"gateway path override", "https://my.gateway.example.com/backend-api/codex", "https://my.gateway.example.com/backend-api/codex/images/edits"},
+		{"already the edits endpoint", "https://my.gateway.example.com/backend-api/codex/images/edits", "https://my.gateway.example.com/backend-api/codex/images/edits"},
+		{"empty falls back to the default host", "", "https://chatgpt.com/backend-api/codex/images/edits"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexNativeEditURL(tt.base); got != tt.want {
+				t.Errorf("codexNativeEditURL(%q) = %q, want %q", tt.base, got, tt.want)
+			}
+		})
 	}
 }

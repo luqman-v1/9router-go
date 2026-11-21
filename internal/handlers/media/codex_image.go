@@ -319,13 +319,22 @@ type codexEditScope struct {
 	model  string
 }
 
+const codexDefaultResponsesBase = "https://chatgpt.com/backend-api/codex/responses"
+
 // codexNativeEditURL derives the native Images edits endpoint from the
-// configured responses base, mirroring upstream CODEX_IMAGES_EDITS_URL.
-func codexNativeEditURL(responsesBase string) string {
-	if base := strings.TrimSuffix(strings.TrimRight(responsesBase, "/"), "/responses"); base != responsesBase {
-		return base + "/images/edits"
+// configured base, mirroring upstream CODEX_IMAGES_EDITS_URL. The base is
+// usually the Responses endpoint (`.../codex/responses`), but a connection may
+// override BaseURL to a bare host or a gateway path (`.../backend-api/codex`),
+// so anything that is not already the edits endpoint gets it appended.
+func codexNativeEditURL(base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	if trimmed == "" {
+		return codexNativeEditURL(codexDefaultResponsesBase)
 	}
-	return strings.TrimRight(responsesBase, "/")
+	if strings.HasSuffix(trimmed, "/images/edits") {
+		return trimmed
+	}
+	return strings.TrimSuffix(trimmed, "/responses") + "/images/edits"
 }
 
 // codexHasNativeOutputControls reports whether the request's output controls
@@ -465,8 +474,8 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 		return fmt.Errorf("no Codex responses endpoint configured")
 	}
 	if scope.native {
-		// The native edit endpoint is the Responses host's images/edits sibling;
-		// a connection that overrode BaseURL to a bare host gets it there too.
+		// The native edit endpoint is the base's images/edits sibling, whether
+		// that base is a Responses endpoint, a bare host, or a gateway path.
 		targetURL = codexNativeEditURL(targetURL)
 	}
 
