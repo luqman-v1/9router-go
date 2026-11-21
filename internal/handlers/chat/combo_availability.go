@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -26,14 +27,14 @@ type comboAvailability struct {
 	prefixToNodeID map[string]string
 }
 
-func (h *ChatHandler) loadComboAvailability() *comboAvailability {
+func (h *ChatHandler) loadComboAvailability(ctx context.Context) *comboAvailability {
 	avail := &comboAvailability{
 		disabled: h.disabledModelIndex(),
 	}
 	if h.Repo == nil {
 		return avail
 	}
-	if status, err := h.Repo.ProviderActiveStatus(); err == nil {
+	if status, err := h.Repo.ProviderActiveStatus(ctx); err == nil {
 		avail.providerActive = status
 	}
 	if prefixMap, err := h.Repo.GetProviderNodePrefixMap(); err == nil && len(prefixMap) > 0 {
@@ -121,11 +122,11 @@ func (a *comboAvailability) filterModels(entries []string) ([]string, []string) 
 
 // filterAvailableComboModels drops disabled/inactive entries from comboModels
 // and adapterModels using a single batched availability snapshot.
-func (h *ChatHandler) filterAvailableComboModels(comboModels []string, adapterModels []string) ([]string, []string) {
+func (h *ChatHandler) filterAvailableComboModels(ctx context.Context, comboModels []string, adapterModels []string) ([]string, []string) {
 	if h.Repo == nil || len(comboModels) == 0 {
 		return comboModels, adapterModels
 	}
-	avail := h.loadComboAvailability()
+	avail := h.loadComboAvailability(ctx)
 	keptModels, skippedModels := avail.filterModels(comboModels)
 	keptAdapters := adapterModels
 	if len(adapterModels) > 0 {

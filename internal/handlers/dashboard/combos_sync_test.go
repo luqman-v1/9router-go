@@ -145,3 +145,79 @@ func TestDisableModelPreservesPlainComboEntries(t *testing.T) {
 		t.Fatalf("plain-keep members = %v, want preserved %v when disabled", members, want)
 	}
 }
+
+func TestDeleteConnectionPrunesCombosOnlyWhenLastRemoved(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	for _, c := range []struct {
+		id, prov string
+	}{
+		{"conn-oai-1", "openai"},
+		{"conn-oai-2", "openai"},
+		{"conn-ds-1", "deepseek"},
+		{"conn-oc-1", "opencode"}, // NoAuth keyless provider
+	} {
+		if _, err := repo.RawDB().Exec(
+			`INSERT INTO providerConnections (id, provider, authType, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'apikey', 1, '{}', '2026-01-01', '2026-01-01')`,
+			c.id, c.prov,
+		); err != nil {
+			t.Fatalf("seed conn %s: %v", c.id, err)
+		}
+	}
+
+	if rec := postJSON(t, router, "/api/combos", map[string]any{
+		"id":     "plain-conn",
+		"name":   "plain-conn",
+		"models": []string{"openai/gpt-4o", "deepseek/deepseek-chat", "opencode/gpt-5", "ag/claude-sonnet-4-6"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("create combo = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := repo.RawDB().Exec(
+		`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		 ('weighted-conn', 'weighted-conn', 'fallback', '[{"model":"openai/gpt-4o","weight":3},{"model":"opencode/gpt-5","weight":1}]', '2026-01-01', '2026-01-01')`,
+	); err != nil {
+		t.Fatalf("seed weighted combo: %v", err)
+	}
+
+	deleteConn := func(id string) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/connections/"+id, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("DELETE /api/connections/%s = %d: %s", id, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Deleting the first of two openai connections keeps openai members intact.
+	deleteConn("conn-oai-1")
+	members, err := comboModels(mustCombo(t, repo, "plain-conn").Models)
+	if err != nil {
+		t.Fatalf("comboModels after first openai delete: %v", err)
+	}
+	wantAfterFirst := []string{"openai/gpt-4o", "deepseek/deepseek-chat", "opencode/gpt-5", "ag/claude-sonnet-4-6"}
+	if !slices.Equal(members, wantAfterFirst) {
+		t.Fatalf("after first openai delete = %v, want %v", members, wantAfterFirst)
+	}
+
+	// Deleting the last openai and deepseek connections prunes both from combos.
+	deleteConn("conn-oai-2")
+	deleteConn("conn-ds-1")
+	// Deleting the keyless opencode connection must preserve opencode entries.
+	deleteConn("conn-oc-1")
+
+	members, err = comboModels(mustCombo(t, repo, "plain-conn").Models)
+	if err != nil {
+		t.Fatalf("comboModels after last deletes: %v", err)
+	}
+	wantFinal := []string{"opencode/gpt-5", "ag/claude-sonnet-4-6"}
+	if !slices.Equal(members, wantFinal) {
+		t.Fatalf("after last deletes = %v, want %v", members, wantFinal)
+	}
+
+	weightedRaw := mustCombo(t, repo, "weighted-conn").Models
+	if wantWeighted := `[{"model":"opencode/gpt-5","weight":1}]`; weightedRaw != wantWeighted {
+		t.Fatalf("weighted-conn models = %s, want %s", weightedRaw, wantWeighted)
+	}
+}

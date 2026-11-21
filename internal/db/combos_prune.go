@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ func pruneComboModelsTx(ctx context.Context, tx *sql.Tx, shouldDrop func(entry s
 	if err != nil {
 		return 0, fmt.Errorf("prune combo models: read combos: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 
 	type comboUpdate struct {
 		id     string
@@ -58,7 +60,6 @@ func pruneComboModelsTx(ctx context.Context, tx *sql.Tx, shouldDrop func(entry s
 	for rows.Next() {
 		var id, rawModels string
 		if err := rows.Scan(&id, &rawModels); err != nil {
-			_ = rows.Close()
 			return 0, fmt.Errorf("prune combo models: scan combo: %w", err)
 		}
 		rewritten, changed := filterComboModelsJSON(rawModels, shouldDrop)
@@ -67,7 +68,6 @@ func pruneComboModelsTx(ctx context.Context, tx *sql.Tx, shouldDrop func(entry s
 		}
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
 		return 0, fmt.Errorf("prune combo models: iterate combos: %w", err)
 	}
 	if err := rows.Close(); err != nil {
@@ -143,8 +143,8 @@ func filterComboModelsJSON(rawModels string, shouldDrop func(entry string) bool)
 // ProviderActiveStatus returns whether each provider that has stored rows in
 // providerConnections has at least one active (isActive = 1) connection.
 // Providers with zero connection rows are absent from the returned map.
-func (r *Repo) ProviderActiveStatus() (map[string]bool, error) {
-	rows, err := r.db.Query(`SELECT provider, COALESCE(MAX(isActive), 0) FROM providerConnections GROUP BY provider`)
+func (r *Repo) ProviderActiveStatus(ctx context.Context) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT provider, COALESCE(MAX(isActive), 0) FROM providerConnections GROUP BY provider`)
 	if err != nil {
 		return nil, fmt.Errorf("provider active status: %w", err)
 	}
@@ -165,4 +165,41 @@ func (r *Repo) ProviderActiveStatus() (map[string]bool, error) {
 		return nil, fmt.Errorf("provider active status: %w", err)
 	}
 	return status, nil
+}
+
+// DeleteProviderConnectionWithCount atomically deletes a provider connection by id
+// and returns its provider name plus the count of remaining connections for that provider.
+func (r *Repo) DeleteProviderConnectionWithCount(ctx context.Context, id string) (provider string, remaining int, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("delete connection: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var prov sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT provider FROM providerConnections WHERE id = ?`, id).Scan(&prov)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, nil
+	}
+	if err != nil {
+		return "", 0, fmt.Errorf("delete connection: lookup provider: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM providerConnections WHERE id = ?`, id); err != nil {
+		return "", 0, fmt.Errorf("delete connection: %w", err)
+	}
+
+	if prov.String != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM providerConnections WHERE provider = ?`, prov.String).Scan(&remaining); err != nil {
+			return "", 0, fmt.Errorf("delete connection: count remaining: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", 0, fmt.Errorf("delete connection: commit: %w", err)
+	}
+	return strings.TrimSpace(prov.String), remaining, nil
 }

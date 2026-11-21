@@ -173,7 +173,7 @@ func TestProviderActiveStatus(t *testing.T) {
 		}
 	}
 
-	got, err := repo.ProviderActiveStatus()
+	got, err := repo.ProviderActiveStatus(t.Context())
 	if err != nil {
 		t.Fatalf("ProviderActiveStatus error = %v", err)
 	}
@@ -188,5 +188,57 @@ func TestProviderActiveStatus(t *testing.T) {
 	}
 	if _, exists := got["opencode"]; exists {
 		t.Errorf("expected opencode (no rows) to be absent from status map")
+	}
+}
+
+func TestDeleteProviderConnectionWithCount(t *testing.T) {
+	repo := openEphemeralSchemaDB(t)
+	dbRaw := repo.RawDB()
+
+	for _, c := range []struct {
+		id, prov string
+	}{
+		{"c-oai-1", "openai"},
+		{"c-oai-2", "openai"},
+		{"c-ds-1", "deepseek"},
+	} {
+		if _, err := dbRaw.Exec(
+			`INSERT INTO providerConnections (id, provider, authType, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'apikey', 1, '{}', '2026-01-01', '2026-01-01')`,
+			c.id, c.prov,
+		); err != nil {
+			t.Fatalf("seed conn %s: %v", c.id, err)
+		}
+	}
+
+	prov, rem, err := repo.DeleteProviderConnectionWithCount(t.Context(), "c-oai-1")
+	if err != nil {
+		t.Fatalf("delete c-oai-1 error = %v", err)
+	}
+	if prov != "openai" || rem != 1 {
+		t.Fatalf("delete c-oai-1 = (%q, %d), want (openai, 1)", prov, rem)
+	}
+
+	prov, rem, err = repo.DeleteProviderConnectionWithCount(t.Context(), "c-oai-2")
+	if err != nil {
+		t.Fatalf("delete c-oai-2 error = %v", err)
+	}
+	if prov != "openai" || rem != 0 {
+		t.Fatalf("delete c-oai-2 = (%q, %d), want (openai, 0)", prov, rem)
+	}
+
+	prov, rem, err = repo.DeleteProviderConnectionWithCount(t.Context(), "missing-id")
+	if err != nil {
+		t.Fatalf("delete missing-id error = %v", err)
+	}
+	if prov != "" || rem != 0 {
+		t.Fatalf("delete missing-id = (%q, %d), want (\"\", 0)", prov, rem)
+	}
+
+	prov, rem, err = repo.DeleteProviderConnectionWithCount(t.Context(), "c-ds-1")
+	if err != nil {
+		t.Fatalf("delete c-ds-1 error = %v", err)
+	}
+	if prov != "deepseek" || rem != 0 {
+		t.Fatalf("delete c-ds-1 = (%q, %d), want (deepseek, 0)", prov, rem)
 	}
 }

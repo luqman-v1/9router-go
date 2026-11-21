@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -227,7 +228,7 @@ func (r *Repo) DeleteProviderNode(ctx context.Context, id string) error {
 
 	var rawData sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT data FROM providerNodes WHERE id = ?`, id).Scan(&rawData)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {

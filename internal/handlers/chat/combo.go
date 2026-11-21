@@ -959,7 +959,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	var settings, _ = h.Repo.GetSettings()
 
 	var models []string
-	comboModels, adapterModels = h.filterAvailableComboModels(comboModels, adapterModels)
+	comboModels, adapterModels = h.filterAvailableComboModels(ctx, comboModels, adapterModels)
 	if len(comboModels) == 0 {
 		lastErr = allComboModelsUnavailableError()
 	} else {
@@ -1506,7 +1506,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 	var models []string
-	comboModels, adapterModels = h.filterAvailableComboModels(comboModels, adapterModels)
+	comboModels, adapterModels = h.filterAvailableComboModels(ctx, comboModels, adapterModels)
 	if len(comboModels) == 0 {
 		lastErr = allComboModelsUnavailableError()
 	} else {
@@ -2071,7 +2071,7 @@ var fusionDefaults = FusionTuning{
 func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, customJudgeModel string) {
 	cw := newCommittedResponseWriter(w)
 	if h.Repo != nil {
-		avail := h.loadComboAvailability()
+		avail := h.loadComboAvailability(ctx)
 		comboModels, _ = avail.filterModels(comboModels)
 		if len(comboModels) == 0 {
 			handlerutil.WriteJSONError(cw, http.StatusServiceUnavailable, "all fusion combo models are currently disabled or unavailable")
