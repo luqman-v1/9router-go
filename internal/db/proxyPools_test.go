@@ -162,3 +162,55 @@ func TestProxyPool_IsEdgeRelay(t *testing.T) {
 		})
 	}
 }
+
+func TestInsertProxyPool_RespectsExplicitIsActiveFalse(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	repo := NewRepo(db)
+	inactive := false
+	pool, err := repo.InsertProxyPool(ProxyPoolData{
+		Name:        "inactive-warp",
+		ProxyURL:    "socks5://127.0.0.1:40000",
+		Type:        "socks5",
+		StrictProxy: true,
+		IsActive:    &inactive,
+	})
+	if err != nil {
+		t.Fatalf("InsertProxyPool failed: %v", err)
+	}
+	if pool["isActive"] != false {
+		t.Fatalf("returned isActive = %v, want false", pool["isActive"])
+	}
+
+	var isActive int
+	var dataStr string
+	if err := db.QueryRow(`SELECT isActive, data FROM proxyPools WHERE id = ?`, pool["id"]).Scan(&isActive, &dataStr); err != nil {
+		t.Fatalf("read back row: %v", err)
+	}
+	if isActive != 0 {
+		t.Errorf("stored isActive column = %d, want 0", isActive)
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
+		t.Fatalf("unmarshal stored data: %v", err)
+	}
+	if len(data) != 7 {
+		t.Fatalf("expected exact 7 JSON keys in data, got %d: %v", len(data), data)
+	}
+	if _, leaked := data["isActive"]; leaked {
+		t.Errorf("isActive must not leak into data JSON blob: %v", data)
+	}
+}

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"database/sql"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -117,39 +118,18 @@ func (h *DashboardHandler) HandleCreateProxyPool(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
-	var req struct {
-		Name        string   `json:"name"`
-		ProxyURL    string   `json:"proxyUrl"`
-		URLs        []string `json:"urls"`
-		Type        string   `json:"type"`
-		NoProxy     string   `json:"noProxy"`
-		StrictProxy bool     `json:"strictProxy"`
-		IsActive    bool     `json:"isActive"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+	var req createProxyPoolRequest
+	if verr := decodeProxyPoolJSON(body, &req); verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
 		return
 	}
 
-	if req.Name == "" {
-		req.Name = "Proxy Pool"
-	}
-	if req.Type == "" {
-		if strings.HasPrefix(req.ProxyURL, "socks") {
-			req.Type = "socks5"
-		} else {
-			req.Type = "http"
-		}
-	}
-
-	poolData := db.ProxyPoolData{
-		Name:        req.Name,
-		ProxyURL:    req.ProxyURL,
-		NoProxy:     req.NoProxy,
-		Type:        req.Type,
-		StrictProxy: req.StrictProxy,
+	poolData, verr := validateCreateProxyPool(req)
+	if verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
+		return
 	}
 
 	created, err := h.Repo.InsertProxyPool(poolData)
@@ -174,15 +154,35 @@ func (h *DashboardHandler) HandleUpdateProxyPool(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
-	var updates map[string]any
-	if err := json.Unmarshal(body, &updates); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+	var req updateProxyPoolRequest
+	if verr := decodeProxyPoolJSON(body, &req); verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
+		return
+	}
+
+	existing, err := h.Repo.GetProxyPool(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "proxy pool not found")
+		return
+	}
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	updates, verr := buildUpdateProxyPoolMap(req, existing)
+	if verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
 		return
 	}
 
 	if err := h.Repo.UpdateProxyPool(id, updates); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			handlerutil.WriteJSONError(w, http.StatusNotFound, "proxy pool not found")
+			return
+		}
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

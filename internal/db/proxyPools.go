@@ -171,6 +171,9 @@ type ProxyPoolData struct {
 	StrictProxy  bool    `json:"strictProxy"`
 	LastTestedAt *string `json:"lastTestedAt"`
 	LastError    *string `json:"lastError"`
+	// IsActive controls the proxyPools.isActive column on insert; nil defaults to active (1).
+	// Excluded from the JSON data blob to keep byte-compatibility with the shared schema.
+	IsActive *bool `json:"-"`
 }
 
 // InsertProxyPool inserts a new proxy pool row and returns the pool object in
@@ -178,13 +181,21 @@ type ProxyPoolData struct {
 func (r *Repo) InsertProxyPool(d ProxyPoolData) (map[string]any, error) {
 	id := randomID()
 	now := time.Now().UTC().Format(time.RFC3339)
+	active := true
+	if d.IsActive != nil {
+		active = *d.IsActive
+	}
+	isActiveInt := 0
+	if active {
+		isActiveInt = 1
+	}
 	dataBytes, err := json.Marshal(d)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pool data: %w", err)
 	}
 	_, err = r.db.Exec(
 		`INSERT INTO proxyPools (id, isActive, testStatus, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, 1, "unknown", string(dataBytes), now, now,
+		id, isActiveInt, "unknown", string(dataBytes), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert proxy pool: %w", err)
@@ -197,7 +208,7 @@ func (r *Repo) InsertProxyPool(d ProxyPoolData) (map[string]any, error) {
 		"noProxy":      d.NoProxy,
 		"type":         d.Type,
 		"strictProxy":  d.StrictProxy,
-		"isActive":     true,
+		"isActive":     active,
 		"testStatus":   "unknown",
 		"lastTestedAt": nil,
 		"lastError":    nil,
