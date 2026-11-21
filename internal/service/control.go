@@ -8,8 +8,8 @@ import (
 )
 
 // ErrNoSupervisor reports that the installed backend has no runtime
-// supervisor: cron only wakes the gateway at boot, so process control falls
-// back to the pid-file daemon (`9router-go start|stop|restart`).
+// supervisor: cron and windows-run only launch the gateway at boot/logon, so
+// process control falls back to the pid-file daemon (`9router-go start|stop|restart`).
 var ErrNoSupervisor = errors.New("service: autostart backend has no supervisor, manage the process directly")
 
 // controlTimeout bounds how long start/stop/restart wait for the supervised
@@ -51,7 +51,7 @@ func control(op string) (Info, error) {
 		err = controlRunit(op)
 	case BackendWindowsTask:
 		err = controlWindowsTask(op)
-	case BackendCron:
+	case BackendCron, BackendWindowsRun:
 		return Info{}, ErrNoSupervisor
 	default:
 		return Info{}, ErrNotInstalled
