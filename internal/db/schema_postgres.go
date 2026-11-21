@@ -444,11 +444,14 @@ func pgAddColumnIfMissing(db *sql.DB, table, column, definition string) error {
 }
 
 // pgColumnExists probes information_schema rather than a rewordable driver
-// error string.
+// error string. PG stores identifiers lowercase by default, so compare
+// case-insensitively — callers pass mixed-case names straight from the
+// shared schema (providerConnections, settings.id, etc.).
 func pgColumnExists(db *sql.DB, table, column string) (bool, error) {
 	var count int
 	err := db.QueryRow(
-		`SELECT COUNT(1) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
+		`SELECT COUNT(1) FROM information_schema.columns
+		 WHERE lower(table_name) = lower($1) AND lower(column_name) = lower($2)`,
 		table, column,
 	).Scan(&count)
 	if err != nil {
@@ -457,11 +460,13 @@ func pgColumnExists(db *sql.DB, table, column string) (bool, error) {
 	return count > 0, nil
 }
 
-// pgTableExists reports whether a table is present.
+// pgTableExists reports whether a table is present. Case-insensitive — PG
+// stores identifiers lowercase by default and callers pass the shared
+// mixed-case names.
 func pgTableExists(db *sql.DB, table string) (bool, error) {
 	var count int
 	err := db.QueryRow(
-		`SELECT COUNT(1) FROM information_schema.tables WHERE table_name = $1`,
+		`SELECT COUNT(1) FROM information_schema.tables WHERE lower(table_name) = lower($1)`,
 		table,
 	).Scan(&count)
 	if err != nil {
