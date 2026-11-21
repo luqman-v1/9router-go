@@ -51,7 +51,7 @@ func TestToolFit_ExistingUniquenessAndRestore(t *testing.T) {
 			},
 		}
 
-		shortToOrig := FitToolNamesInMap(req)
+		shortToOrig := FitToolNamesInMap(req, "deepseek")
 		if shortToOrig == nil {
 			t.Fatal("expected non-nil shortToOrig map")
 		}
@@ -209,7 +209,7 @@ func TestToolFit_ExistingUniquenessAndRestore(t *testing.T) {
 				map[string]any{"type": "function", "function": map[string]any{"name": "tool_two"}},
 			},
 		}
-		gotMap := FitToolNamesInMap(req)
+		gotMap := FitToolNamesInMap(req, "deepseek")
 		if gotMap != nil {
 			t.Errorf("expected nil map when all tools are short, got: %v", gotMap)
 		}

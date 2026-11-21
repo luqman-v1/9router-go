@@ -2,6 +2,7 @@ package translator
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -435,5 +436,372 @@ func TestFitToolNames_LegacyFunctions(t *testing.T) {
 	}
 	if strings.Contains(string(got), longName) {
 		t.Errorf("expected long name replaced in functions: %s", string(got))
+	}
+}
+
+// wantHashAlias is the OmniRoute #20258 alias of orig: the first 51 chars of
+// the sanitized name, "_", then the first 12 hex chars of sha256(original).
+func wantHashAlias(t *testing.T, orig string) string {
+	t.Helper()
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		}
+		return '_'
+	}, orig)
+	prefix := safe
+	if len(prefix) > MaxToolNameLength-toolNameHashLen-1 {
+		prefix = prefix[:MaxToolNameLength-toolNameHashLen-1]
+	}
+	return prefix + "_" + toolNameHash(orig)
+}
+
+// TestFitToolNamesForProvider_OpenAI_SHA256Alias pins the upstream wire format:
+// `${safePrefix}_${hash12}`, at most 64 chars, ending in _<12 hex chars>.
+func TestFitToolNamesForProvider_OpenAI_SHA256Alias(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action" // 77 chars
+	if len(longName) <= MaxToolNameLength {
+		t.Fatalf("fixture name must exceed %d chars, got %d", MaxToolNameLength, len(longName))
+	}
+	body := []byte(`{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "` + longName + `", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "result"}
+		],
+		"tools": [{"type": "function", "function": {"name": "` + longName + `", "description": "test"}}],
+		"tool_choice": {"type": "function", "function": {"name": "` + longName + `"}}
+	}`)
+
+	got, toolMap := FitToolNamesForProvider(body, "openai")
+	if len(toolMap) != 1 {
+		t.Fatalf("expected 1 mapped tool, got %d: %v", len(toolMap), toolMap)
+	}
+
+	var alias string
+	for k, v := range toolMap {
+		alias = k
+		if v != longName {
+			t.Errorf("expected mapped value to be original name %q, got %q", longName, v)
+		}
+	}
+
+	want := wantHashAlias(t, longName)
+	if alias != want {
+		t.Errorf("alias = %q, want %q", alias, want)
+	}
+	// The alias shape: prefix_ then exactly 12 hex chars, total <= 64.
+	if len(alias) > MaxToolNameLength {
+		t.Errorf("alias is %d chars, over the %d limit: %q", len(alias), MaxToolNameLength, alias)
+	}
+	idx := strings.LastIndexByte(alias, '_')
+	if idx < 1 {
+		t.Fatalf("alias %q has no _<hash> suffix", alias)
+	}
+	if hash := alias[idx+1:]; len(hash) != toolNameHashLen || !isHex(hash) {
+		t.Errorf("alias %q does not end in _<%d hex chars>: suffix %q", alias, toolNameHashLen, hash)
+	}
+	if strings.HasPrefix(alias, "tool_") && len(alias) == 55 {
+		t.Errorf("alias still uses the old tool_<sha256[:50]> shape: %q", alias)
+	}
+
+	// Body must not contain the long name anywhere; it must contain the alias
+	// in tools[], tool_choice, and messages[].tool_calls[].
+	gotStr := string(got)
+	if strings.Contains(gotStr, longName) {
+		t.Errorf("expected long name replaced in body, still present: %s", gotStr)
+	}
+	if count := strings.Count(gotStr, alias); count != 3 {
+		t.Errorf("expected alias to appear 3 times (tools, tool_choice, tool_calls), got %d: %s", count, gotStr)
+	}
+}
+
+// TestFitToolNamesForProvider_AzureVariants checks the whole built-in provider
+// set from OmniRoute #20258 — openai, azure, azure-openai, azure-ai — aliases
+// identically. azure-ai is the one the maintainers flagged as missing.
+func TestFitToolNamesForProvider_AzureVariants(t *testing.T) {
+	longName := "mcp__example-observability-prod__trace_top_time_consuming_operations_by_service" // 78 chars
+	for _, provider := range []string{"openai", "azure", "azure-openai", "azure-ai"} {
+		t.Run(provider, func(t *testing.T) {
+			if !UsesToolNameHash(provider) {
+				t.Fatalf("provider %q must use hash aliasing", provider)
+			}
+			body := []byte(`{"tools":[{"type":"function","function":{"name":"` + longName + `"}}]}`)
+			_, toolMap := FitToolNamesForProvider(body, provider)
+			if len(toolMap) != 1 {
+				t.Fatalf("expected 1 mapped tool, got %d: %v", len(toolMap), toolMap)
+			}
+			want := wantHashAlias(t, longName)
+			for alias, orig := range toolMap {
+				if alias != want {
+					t.Errorf("alias = %q, want %q", alias, want)
+				}
+				if orig != longName {
+					t.Errorf("mapped original = %q, want %q", orig, longName)
+				}
+				if len(alias) > MaxToolNameLength {
+					t.Errorf("alias is %d chars, over the %d limit", len(alias), MaxToolNameLength)
+				}
+			}
+		})
+	}
+}
+
+// TestUsesToolNameHash pins the provider set against accidental widening: the
+// four OpenAI-format providers that declare a 64-char tool name limit alias,
+// and every other provider (including sibling gateway ids that only look like
+// them) keeps the legacy truncation.
+func TestUsesToolNameHash(t *testing.T) {
+	cases := []struct {
+		provider string
+		want     bool
+	}{
+		{"openai", true},
+		{"azure", true},
+		{"azure-openai", true},
+		{"azure-ai", true},
+		{"OpenAI", true},  // case-insensitive: provider ids arrive as stored
+		{" azure ", true}, // surrounding space tolerated
+		{"azure-foundry", false},
+		{"openai-compatible-chat", false},
+		{"deepseek", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			if got := UsesToolNameHash(tc.provider); got != tc.want {
+				t.Errorf("UsesToolNameHash(%q) = %v, want %v", tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFitToolNamesForProvider_InvalidCharsReplaced checks the charset half of
+// the upstream contract: a name that fits the length limit but carries a dot,
+// a slash, a space or a colon is aliased too, with each invalid char replaced
+// by "_".
+func TestFitToolNamesForProvider_InvalidCharsReplaced(t *testing.T) {
+	cases := []struct {
+		name string
+		orig string
+	}{
+		{"dot", "mcp.github.get_issue"},
+		{"slash", "mcp/github/get issue"},
+		{"space", "get weather forecast"},
+		{"colon", "namespace:action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.orig) > MaxToolNameLength {
+				t.Fatalf("fixture %q is %d chars; this case is about the charset, not the length", tc.orig, len(tc.orig))
+			}
+			body := []byte(`{"tools":[{"type":"function","function":{"name":"` + tc.orig + `"}}]}`)
+			got, toolMap := FitToolNamesForProvider(body, "openai")
+			if len(toolMap) != 1 {
+				t.Fatalf("expected invalid-char name %q to be aliased, got map %v", tc.orig, toolMap)
+			}
+			var alias string
+			for a := range toolMap {
+				alias = a
+			}
+			if strings.ContainsAny(alias, "./ :") {
+				t.Errorf("alias %q still carries an invalid char", alias)
+			}
+			if !isOpenAICompatibleToolName(alias) {
+				t.Errorf("alias %q violates ^[A-Za-z0-9_-]{1,64}$", alias)
+			}
+			if alias == tc.orig {
+				t.Errorf("alias equals the original invalid name %q", tc.orig)
+			}
+			if want := wantHashAlias(t, tc.orig); alias != want {
+				t.Errorf("alias = %q, want %q", alias, want)
+			}
+			if strings.Contains(string(got), tc.orig) {
+				t.Errorf("original invalid name %q still present in body: %s", tc.orig, got)
+			}
+		})
+	}
+}
+
+// TestFitToolNamesForProvider_NonHashProvider_KeepsNamesUntouched verifies that
+// providers NOT in the 64-char-limit set (e.g. deepseek) keep the legacy
+// behavior: over-length names get the _N truncation, and a short name with an
+// invalid char is left exactly as the client sent it.
+func TestFitToolNamesForProvider_NonHashProvider_KeepsTruncation(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action"
+	body := []byte(`{
+		"model": "deepseek-chat",
+		"tools": [
+			{"type": "function", "function": {"name": "` + longName + `"}},
+			{"type": "function", "function": {"name": "mcp.github.get_issue"}}
+		]
+	}`)
+	got, toolMap := FitToolNamesForProvider(body, "deepseek")
+	if len(toolMap) != 1 {
+		t.Fatalf("expected only the over-length name mapped, got %d: %v", len(toolMap), toolMap)
+	}
+	for k := range toolMap {
+		if !strings.HasSuffix(k, "_1") {
+			t.Errorf("expected truncated name with _1 suffix, got %q", k)
+		}
+		if len(k) > MaxToolNameLength {
+			t.Errorf("fitted name still exceeds %d chars: %q", MaxToolNameLength, k)
+		}
+	}
+	if strings.Contains(string(got), "mcp.github.get_issue") == false {
+		t.Errorf("deepseek must leave the short invalid-char name untouched, got: %s", got)
+	}
+}
+
+// TestFitToolNamesForProvider_CollisionResolution checks that two long names
+// sharing a 51-char prefix do not collapse onto one alias, that every alias
+// stays within 64 chars, and that nothing panics (the original [:60] on a
+// 53-char fallback alias did).
+func TestFitToolNamesForProvider_CollisionResolution(t *testing.T) {
+	// Every name exceeds 64 chars so each one needs an alias, and all share the
+	// same first 51 chars so the `${safePrefix}_${hash12}` aliases collide in
+	// their prefix and only the hash separates them.
+	shared := strings.Repeat("a", 51)
+	names := []string{
+		shared + "_alpha_variant_that_makes_this_name_long_enough",
+		shared + "_beta_variant_that_makes_this_name_long_enough",
+		shared + "_gamma_variant_that_makes_this_name_long_enough",
+	}
+	for _, n := range names {
+		if len(n) <= MaxToolNameLength {
+			t.Fatalf("fixture %q is %d chars; it must exceed %d to need an alias", n, len(n), MaxToolNameLength)
+		}
+	}
+	for _, provider := range []string{"openai", "azure-ai"} {
+		t.Run(provider, func(t *testing.T) {
+			req := map[string]any{"tools": []any{}}
+			for _, n := range names {
+				req["tools"] = append(req["tools"].([]any), map[string]any{
+					"type":     "function",
+					"function": map[string]any{"name": n},
+				})
+			}
+			shortToOrig := FitToolNamesInMap(req, provider)
+			if len(shortToOrig) != len(names) {
+				t.Fatalf("expected %d aliases, got %d: %v", len(names), len(shortToOrig), shortToOrig)
+			}
+			for alias, orig := range shortToOrig {
+				if len(alias) > MaxToolNameLength {
+					t.Errorf("alias %q is %d chars, over %d", alias, len(alias), MaxToolNameLength)
+				}
+				if !isOpenAICompatibleToolName(alias) {
+					t.Errorf("alias %q violates the tool-name charset", alias)
+				}
+				if !slices.Contains(names, orig) {
+					t.Errorf("alias %q maps to unknown original %q", alias, orig)
+				}
+			}
+		})
+	}
+}
+
+// TestFitToolNamesForProvider_AliasShadowingShortName covers the collision the
+// upstream explicitly rejects: a generated alias equals an already-valid short
+// name declared beside the long one. The long name must fall back instead of
+// producing two tools with one name.
+func TestFitToolNamesForProvider_AliasShadowingShortName(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action"
+	shadowing := wantHashAlias(t, longName)
+	if len(shadowing) > MaxToolNameLength {
+		t.Fatalf("shadow fixture is %d chars, over the limit", len(shadowing))
+	}
+	body := []byte(`{"tools":[
+		{"type":"function","function":{"name":"` + shadowing + `"}},
+		{"type":"function","function":{"name":"` + longName + `"}}
+	]}`)
+
+	_, toolMap := FitToolNamesForProvider(body, "openai")
+	if len(toolMap) != 1 {
+		t.Fatalf("expected 1 mapped tool, got %d: %v", len(toolMap), toolMap)
+	}
+	var alias string
+	for a := range toolMap {
+		alias = a
+	}
+	if alias == shadowing {
+		t.Errorf("alias %q collides with the short name already in the body", alias)
+	}
+	if len(alias) > MaxToolNameLength {
+		t.Errorf("fallback alias %q is %d chars, over %d", alias, len(alias), MaxToolNameLength)
+	}
+	if !isOpenAICompatibleToolName(alias) {
+		t.Errorf("fallback alias %q violates the tool-name charset", alias)
+	}
+	// The fallback alias must still round-trip: the upstream answers with it and
+	// the client has to see the name it declared.
+	resp := []byte(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"` + alias + `"}}]}}]}`)
+	restored := RestoreToolNamesInPayload(resp, toolMap)
+	if strings.Contains(string(restored), alias) {
+		t.Errorf("fallback alias %q leaked to the client: %s", alias, restored)
+	}
+	if !strings.Contains(string(restored), longName) {
+		t.Errorf("original name %q not restored from fallback alias %q: %s", longName, alias, restored)
+	}
+	// The short name that shadowed the preferred alias must survive untouched.
+	if !strings.Contains(string(body), shadowing) {
+		t.Errorf("shadowing short name %q was rewritten: %s", shadowing, body)
+	}
+}
+
+// TestFitToolNamesForProvider_RestoreResponse verifies that
+// RestoreToolNamesInPayload restores the original name from the alias.
+func TestFitToolNamesForProvider_RestoreResponse(t *testing.T) {
+	longName := "mcp__github_server__create_or_update_file_contents_with_commit_details_action"
+	body := []byte(`{
+		"tools": [{"type": "function", "function": {"name": "` + longName + `"}}]
+	}`)
+	_, toolMap := FitToolNamesForProvider(body, "openai")
+	if len(toolMap) == 0 {
+		t.Fatal("expected tool map, got none")
+	}
+
+	// Build a fake response that uses the alias.
+	var alias string
+	for k := range toolMap {
+		alias = k
+	}
+	resp := []byte(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"` + alias + `","arguments":"{}"}}]}}]}`)
+
+	restored := RestoreToolNamesInPayload(resp, toolMap)
+	if strings.Contains(string(restored), alias) {
+		t.Errorf("expected alias replaced by original name, still present: %s", string(restored))
+	}
+	if !strings.Contains(string(restored), longName) {
+		t.Errorf("expected original name %q in restored payload: %s", longName, string(restored))
+	}
+}
+
+// isHex reports whether s is non-empty lowercase hex.
+func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// TestFitToolNamesForProvider_NoToolsUnchanged verifies that a body without
+// tool names is returned unchanged with a nil map, regardless of provider.
+func TestFitToolNamesForProvider_NoToolsUnchanged(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+	for _, provider := range []string{"openai", "azure", "azure-openai", "azure-ai", "deepseek"} {
+		got, toolMap := FitToolNamesForProvider(body, provider)
+		if string(got) != string(body) {
+			t.Errorf("provider %s: expected body unchanged, got: %s", provider, got)
+		}
+		if len(toolMap) != 0 {
+			t.Errorf("provider %s: expected empty toolMap, got: %v", provider, toolMap)
+		}
 	}
 }

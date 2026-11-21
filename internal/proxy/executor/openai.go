@@ -276,8 +276,30 @@ func isGroqGPTOSSModel(model string) bool {
 	return strings.Contains(lower, "gpt-oss")
 }
 
+// applyToolNameAlias rewrites req.Body to alias tool names that violate the
+// upstream's function-name constraint (over 64 chars, or carrying a char
+// outside [A-Za-z0-9_-]) for the providers that enforce it, and returns the
+// fitted body and map for response restoration. If the provider does not
+// enforce the limit or no name violates it, req.Body is unchanged and a nil map
+// is returned. translator.UsesToolNameHash is the single source of truth for
+// which providers that is (openai, azure, azure-openai, azure-ai).
+func applyToolNameAlias(req *Request) ([]byte, map[string]string) {
+	if !translator.UsesToolNameHash(req.Provider) {
+		return req.Body, nil
+	}
+	return translator.FitToolNamesForProvider(req.Body, req.Provider)
+}
+
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
+	// Alias tool names the upstream would reject (over 64 chars, or carrying a
+	// char outside [A-Za-z0-9_-]). OmniRoute #20258 spec:
+	// `${safePrefix}_${sha256(name)[:12]}`.
+	fittedBody, toolNameMap := applyToolNameAlias(req)
+	if len(toolNameMap) > 0 {
+		req.Body = fittedBody
+		req.ToolNameMap = mergeToolNameMaps(req.ToolNameMap, toolNameMap)
+	}
 	// Provider-scoped param rules from upstream paramSupport strip unsupported
 	// params on the outgoing body (executors/default.js:91). The openai rule
 	// renames max_tokens because current OpenAI models answer 400 "Use
