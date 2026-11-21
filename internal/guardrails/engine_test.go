@@ -268,11 +268,21 @@ func TestScanDetectsPEMPrivateKey(t *testing.T) {
 	const encKey = "-----BEGIN ENCRYPTED PRIVATE KEY-----\n" +
 		"MIIFHzBJBgkqhkiG9w0BBQ0wPDCCAQMCFA0zQ2lCjGV5r2q3vL8m\n" +
 		"-----END ENCRYPTED PRIVATE KEY-----"
+	// Traditional (PKCS#1) encrypted key: the body carries Proc-Type and
+	// DEK-Info headers, so the hyphen in "DEK-Info: AES-128-CBC," must be
+	// inside the body character class (issue #1282).
+	const encPkcs1Key = "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"Proc-Type: 4,ENCRYPTED\n" +
+		"DEK-Info: AES-128-CBC,8BA4E4C0AB8A0F1D2C3B4A5968778695\n\n" +
+		"MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2lPM\n" +
+		"Qq6qQ2lMlI3m1r5v7x9z8aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRs\n" +
+		"-----END RSA PRIVATE KEY-----"
 
 	for _, tc := range []struct{ name, key string }{
 		{"rsa pkcs1", rsaKey},
 		{"ec", ecKey},
 		{"encrypted pkcs8", encKey},
+		{"encrypted pkcs1 with DEK-Info", encPkcs1Key},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine := NewEngine([]string{"pii"}, ActionBlock)
