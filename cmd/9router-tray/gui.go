@@ -205,15 +205,6 @@ func refresh(m *menu, actions tray.Actions) {
 	}
 }
 
-// report surfaces a failure without ever printing a credential (C6): errors
-// from the actions carry a command and its output, never a token.
-func report(err error) {
-	if err == nil {
-		return
-	}
-	fmt.Println(err)
-}
-
 func openDashboard(port int) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
 	var cmd *exec.Cmd

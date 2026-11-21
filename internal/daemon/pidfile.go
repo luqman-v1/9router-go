@@ -78,18 +78,24 @@ func readClaim() claim {
 
 // parseClaim reads the on-disk line: PID, then optionally the executable.
 func parseClaim(raw string) claim {
-	fields := strings.Fields(raw)
-	if len(fields) == 0 {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return claim{}
 	}
-	pid, err := strconv.Atoi(fields[0])
+	if nl := strings.IndexAny(trimmed, "\r\n"); nl >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:nl])
+	}
+	pidStr := trimmed
+	var exePath string
+	if idx := strings.IndexAny(trimmed, " \t"); idx >= 0 {
+		pidStr = trimmed[:idx]
+		exePath = strings.TrimSpace(trimmed[idx+1:])
+	}
+	pid, err := strconv.Atoi(pidStr)
 	if err != nil || pid <= 0 {
 		return claim{}
 	}
-	if len(fields) < 2 {
-		return claim{pid: pid}
-	}
-	return claim{pid: pid, exePath: fields[1]}
+	return claim{pid: pid, exePath: exePath}
 }
 
 // owner reports whether the process behind this claim is still this daemon:
