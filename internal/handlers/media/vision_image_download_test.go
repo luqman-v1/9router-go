@@ -63,9 +63,29 @@ func TestResolveImageInput_ReachableLoopbackNotDownloaded(t *testing.T) {
 	}
 }
 
-// TestResolveImageInput_RedirectToPrivateRefused pins that every redirect hop
-// is re-checked: a public host answering 302 to a loopback address must not be
-// followed, and the private server must stay at zero hits.
+// TestResolveImageInput_RedirectToPrivateRefused pins that a redirect hop
+// landing on a private address is refused by checkRedirectPublic — the policy,
+// not the dialer. The original test pointed hop 1 at a loopback httptest server,
+// so the dialer blocked the first connect and this check was never reached
+// (vacuous). Here the client is driven through a fake RoundTripper that plays
+// hop 1: it answers 302 with a Location on loopback, so the socket guard is out
+// of the picture and checkRedirectPublic is the only thing that can refuse. A
+// private image server records hits; a refusal leaves it at zero.
+type redirectRoundTripper struct {
+	location string
+}
+
+func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	h := http.Header{}
+	h.Set("Location", rt.location)
+	return &http.Response{
+		StatusCode: http.StatusFound,
+		Header:     h,
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
+}
+
 func TestResolveImageInput_RedirectToPrivateRefused(t *testing.T) {
 	var privateHits atomic.Int32
 	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,15 +94,24 @@ func TestResolveImageInput_RedirectToPrivateRefused(t *testing.T) {
 	}))
 	defer private.Close()
 
-	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, private.URL+"/admin", http.StatusFound)
-	}))
-	defer public.Close()
+	rt := &redirectRoundTripper{location: private.URL + "/admin"}
+	fakeClient := &http.Client{
+		Transport:     rt,
+		CheckRedirect: checkRedirectPublic,
+	}
+
+	orig := visionImageDownloadClient
+	visionImageDownloadClient = func() *http.Client { return fakeClient }
+	t.Cleanup(func() { visionImageDownloadClient = orig })
 
 	h := newTestMediaHandler(nil)
 	ctx := context.Background()
-	if _, err := h.resolveImageInput(ctx, public.URL+"/image.png"); err == nil {
+	_, err := h.resolveImageInput(ctx, "http://public.example/image.png")
+	if err == nil {
 		t.Fatal("redirect to private address must be refused, got nil error")
+	}
+	if !contains(err.Error(), "redirect refused") {
+		t.Fatalf("refusal must come from checkRedirectPublic, got: %v", err)
 	}
 	if hits := privateHits.Load(); hits != 0 {
 		t.Fatalf("redirect to private address was followed %d time(s)", hits)
