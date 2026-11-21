@@ -3,6 +3,7 @@
   import { onMount } from 'svelte'
   import { api, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
+  import { filterFuzzy } from '../lib/fuzzyMatch'
   import { marked } from 'marked'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
@@ -475,8 +476,10 @@
       const re = new RegExp(q.slice(1), 'i')
       return bulkArmModels.filter((m) => re.test(m)).slice(0, 200)
     }
-    const lower = q.toLowerCase()
-    return bulkArmModels.filter((m) => m.toLowerCase().includes(lower)).slice(0, 200)
+    // Fuzzy for plain text only: an explicit regex stays authoritative, while a
+    // typed id tolerates a stray space or a one or two character slip instead of
+    // answering "no matches" and making the operator re-type.
+    return filterFuzzy(q, bulkArmModels, 200)
   })
   // Select every id the current filter matches — the regex/substring query is
   // the selector, so "arm everything matching /^deepseek/" is one click.
@@ -2013,8 +2016,11 @@
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-sm text-text-main font-code placeholder:text-text-subtle"
         />
         <p class="text-[11px] text-text-subtle">
-          Substring by default. Start with <span class="font-code text-text-muted">/</span> for an RE2 regex,
-          matched case-insensitively — e.g. <span class="font-code text-text-muted">/^deepseek</span> or
+          Fuzzy by default: spacing and a one or two character slip still match, so
+          <span class="font-code text-text-muted">deepseek chat</span> finds
+          <span class="font-code text-text-muted">deepseek/chat-v3</span>. Start with
+          <span class="font-code text-text-muted">/</span> for an exact RE2 regex, matched
+          case-insensitively — e.g. <span class="font-code text-text-muted">/^deepseek</span> or
           <span class="font-code text-text-muted">/(kimi|glm)-\d</span>.
         </p>
         {#if bulkArmRegexError}
