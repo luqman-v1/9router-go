@@ -119,6 +119,7 @@
   let formDefaultModel = $state('')
   let formPriority = $state(1)
   let formProxyPoolId = $state(NONE_PROXY_POOL_VALUE)
+  let formIgnoreRateLimit = $state(false)
   let formOllamaHostUrl = $state('')
   let azureData = $state({
     azureEndpoint: '',
@@ -188,6 +189,7 @@
     formDefaultModel = ''
     formPriority = 1
     formProxyPoolId = NONE_PROXY_POOL_VALUE
+    formIgnoreRateLimit = false
     formOllamaHostUrl = ''
     azureData = { azureEndpoint: '', apiVersion: '2024-10-01-preview', deployment: '', organization: '' }
     cloudflareAccountId = ''
@@ -428,6 +430,7 @@
         apiKey: formApiKey,
         priority: formPriority,
         proxyPoolId: formProxyPoolId === NONE_PROXY_POOL_VALUE ? null : formProxyPoolId,
+        ignoreRateLimit: formIgnoreRateLimit,
         testStatus: isValid ? 'active' : 'unknown',
         providerSpecificData: providerSpecificDataForSave(),
         ...(isCompatible ? { defaultModel: formDefaultModel.trim() } : {}),
@@ -458,6 +461,7 @@
           name: entry.name,
           apiKey: entry.apiKey,
           priority: 1,
+          ignoreRateLimit: formIgnoreRateLimit,
           testStatus: res.supported && res.valid ? 'active' : 'unknown',
           ...(entry.providerSpecificData ? { providerSpecificData: entry.providerSpecificData } : {}),
         })
@@ -1080,6 +1084,22 @@
                 No active proxy pools available. Create one in Proxy Pools page first.
               </p>
             {/if}
+
+            <div>
+              <label class="flex items-center gap-2 text-xs text-text-main">
+                <input
+                  type="checkbox"
+                  checked={formIgnoreRateLimit}
+                  onchange={() => (formIgnoreRateLimit = !formIgnoreRateLimit)}
+                  class="accent-primary"
+                />
+                <span class="font-medium">Ignore rate limit</span>
+              </label>
+              <p class="mt-1 text-[11px] text-text-subtle">
+                Keep serving this connection while its rate-limit cooldown is active, instead of
+                waiting the window out. Model locks and OAuth re-login parks still apply.
+              </p>
+            </div>
 
             <div class="flex gap-2">
               <Button type="submit" fullWidth disabled={saveDisabled}>

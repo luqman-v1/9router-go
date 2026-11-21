@@ -27,20 +27,23 @@ type ModelInfo struct {
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey                 string         `json:"apiKey"`
-	AccessToken            string         `json:"accessToken"`
-	AuthType               string         `json:"authType"`
-	BaseURL                string         `json:"baseUrl,omitempty"`
-	ProxyPoolID            string         `json:"proxyPoolId,omitempty"`
-	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled,omitempty"`
-	ConnectionProxyURL     string         `json:"connectionProxyUrl,omitempty"`
-	ConnectionNoProxy      string         `json:"connectionNoProxy,omitempty"`
-	StrictProxy            bool           `json:"strictProxy,omitempty"`
-	AllowPrivateNetworking bool           `json:"allowPrivateNetworking,omitempty"`
-	MediaEnabled           *bool          `json:"mediaEnabled,omitempty"`
-	IsMediaActiveField     *bool          `json:"isMediaActive,omitempty"`
-	DisabledKinds          []string       `json:"disabledKinds,omitempty"`
-	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
+	APIKey                 string `json:"apiKey"`
+	AccessToken            string `json:"accessToken"`
+	AuthType               string `json:"authType"`
+	BaseURL                string `json:"baseUrl,omitempty"`
+	ProxyPoolID            string `json:"proxyPoolId,omitempty"`
+	ConnectionProxyEnabled bool   `json:"connectionProxyEnabled,omitempty"`
+	ConnectionProxyURL     string `json:"connectionProxyUrl,omitempty"`
+	ConnectionNoProxy      string `json:"connectionNoProxy,omitempty"`
+	StrictProxy            bool   `json:"strictProxy,omitempty"`
+	AllowPrivateNetworking bool   `json:"allowPrivateNetworking,omitempty"`
+	// IgnoreRateLimit mirrors data.ignoreRateLimit: keep serving this
+	// connection while its account-scoped rate-limit cooldown is active.
+	IgnoreRateLimit      bool           `json:"ignoreRateLimit,omitempty"`
+	MediaEnabled         *bool          `json:"mediaEnabled,omitempty"`
+	IsMediaActiveField   *bool          `json:"isMediaActive,omitempty"`
+	DisabledKinds        []string       `json:"disabledKinds,omitempty"`
+	ProviderSpecificData map[string]any `json:"providerSpecificData,omitempty"`
 
 	// RefusedProxies is the set of this pool's proxy URLs the current turn has
 	// already spent, keyed by pool id.

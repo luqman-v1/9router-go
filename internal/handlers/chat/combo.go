@@ -904,7 +904,7 @@ func (h *ChatHandler) comboEntrySendable(modelInfo *ModelInfo, excludeIDs []stri
 		if h.connectionModelBlocked(c, modelInfo.Provider, modelInfo.Model) {
 			continue
 		}
-		if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+		if until, ok := accountParkBlocked(c, now); ok && until.After(now) {
 			continue
 		}
 		return true
@@ -1111,13 +1111,17 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				// Skip a connection that is already locked for this model.
 				// picked.Data is already in memory — the repo call re-fetched
 				// and re-parsed the same row per connection attempt.
+				// ignoreRateLimit lifts the lock: the operator chose to ride
+				// out rate-limit windows on this connection instead of
+				// skipping them (recordModelCooldown still writes the lock,
+				// and the dashboard badge keeps showing it).
 				if picked != nil {
 					lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
 					locked := db.ConnectionModelLockedData(picked.Data, lockKey)
 					if !locked && lockKey != modelInfo.Model {
 						locked = db.ConnectionModelLockedData(picked.Data, modelInfo.Model)
 					}
-					if locked {
+					if locked && !ignoresRateLimit(picked) {
 						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", picked.ID)
 						excludeIDs = append(excludeIDs, picked.ID)
 						continue
@@ -1613,13 +1617,14 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				}
 				// Skip a connection already locked for this model, reading the
 				// blob picked already carries — same rationale as the chat loop.
+				// ignoreRateLimit lifts the lock (see the chat loop's twin).
 				if picked != nil {
 					lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
 					locked := db.ConnectionModelLockedData(picked.Data, lockKey)
 					if !locked && lockKey != modelInfo.Model {
 						locked = db.ConnectionModelLockedData(picked.Data, modelInfo.Model)
 					}
-					if locked {
+					if locked && !ignoresRateLimit(picked) {
 						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", picked.ID)
 						excludeIDs = append(excludeIDs, picked.ID)
 						continue
@@ -2007,21 +2012,40 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	}
 	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue, provider)
 	lockKey := canonicalLockModel(provider, model)
-	if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
-		log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", lockKey, "error", err)
-	}
-	if lockKey != model {
-		_ = h.Repo.LockConnectionModel(connID, model, cooldownSec, cls.NewBackoffLevel)
+	// ignoreRateLimit skips the per-model locks too: on a custom endpoint a
+	// model-scoped 429 is the same upstream window as an account one, and a
+	// lock written here would block the next request the toggle promised to
+	// keep serving. Within this request the connection is still excluded
+	// below, so the turn does not re-dial the same exhausted account.
+	skipParks := h.connectionIgnoresRateLimitByID(connID)
+	if !skipParks {
+		if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
+			log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", lockKey, "error", err)
+		}
+		if lockKey != model {
+			_ = h.Repo.LockConnectionModel(connID, model, cooldownSec, cls.NewBackoffLevel)
+		}
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
 	// can skip this account before spending a request (upstream applyErrorState).
 	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth
 	// issues, or a rule that declared itself model-scoped such as an NVIDIA
 	// NIM degraded cluster), so unrelated models stay available.
+	//
+	// ignoreRateLimit keeps the park off entirely: the operator flagged this
+	// connection to keep serving while rate limited, so a 429 here only
+	// excludes it for the rest of this pass and the next request tries it
+	// again.
 	if cls.ModelScoped || isModelScopedError(ue.StatusCode, extractErrorText(ue.Body), model, ue.Body) {
 		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
 			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
 		}
+	} else if skipParks {
+		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
+		}
+		log.Info("combo", "ignoring rate-limit park on flagged connection",
+			"provider", provider, "model", model, "conn", connID, "status", ue.StatusCode)
 	} else {
 		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
 		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {

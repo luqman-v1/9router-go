@@ -370,9 +370,15 @@ func (h *ChatHandler) handleAccountFallback(
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
 			}
 			lockKey := canonicalLockModel(provider, model)
-			h.Repo.LockConnectionModel(connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
-			if lockKey != model {
-				_ = h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
+			// ignoreRateLimit skips the per-model locks too (see
+			// comboLockRetryable): on a custom endpoint a model-scoped 429 is
+			// the same upstream window, and the lock would block the next
+			// request the toggle promised to keep serving.
+			if !ctxConnIgnoresRateLimit(connData) {
+				h.Repo.LockConnectionModel(connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
+				if lockKey != model {
+					_ = h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
+				}
 			}
 			// Account-scoped cooldown alongside the per-model locks, so the
 			// selector can skip this account before spending a request
@@ -384,6 +390,17 @@ func (h *ChatHandler) handleAccountFallback(
 				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
+			} else if ctxConnIgnoresRateLimit(connData) {
+				// The operator flagged this connection to keep serving while it
+				// is rate limited, so the park is not written: the error is
+				// recorded for the dashboard, the account stays in rotation, and
+				// the next request tries it again. The per-model locks above
+				// still stand.
+				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
+				}
+				log.Info("fallback", "ignoring rate-limit park on flagged connection",
+					"conn", connObj.ID, "provider", provider, "model", model, "status", ue.StatusCode)
 			} else {
 				// Account-level bans (permanent/severe account failures) use the
 				// escalating lockout ladder keyed on the connection's consecutive

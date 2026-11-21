@@ -27,6 +27,11 @@
     priority?: number
     apiKey?: string
     testStatus?: string
+    /**
+     * Operator flag: keep serving this connection while its account-scoped
+     * rate-limit cooldown is active. Omitted means unchanged.
+     */
+    ignoreRateLimit?: boolean
     /** Partial provider-specific data; the backend merges it into the row. */
     providerSpecificData?: Record<string, unknown>
   }
@@ -89,6 +94,8 @@
   // rename into an assignment of rank 1, colliding with whichever row already
   // held it.
   let seededPriority = $state<number>(connection.priority ?? 1)
+  let ignoreRateLimit = $state<boolean>(connection.ignoreRateLimit === true)
+  let seededIgnoreRateLimit = $state<boolean>(connection.ignoreRateLimit === true)
   let testStatus = $state<TestStatus>(null)
   let testError = $state<string | null>(null)
   let isTesting = $state(false)
@@ -201,6 +208,9 @@
       // recreating the un-reorderable pair the reorder endpoint repairs.
       if (priority !== seededPriority) {
         payload.priority = priority
+      }
+      if (ignoreRateLimit !== seededIgnoreRateLimit) {
+        payload.ignoreRateLimit = ignoreRateLimit
       }
       if (isCodex) {
         const next = [...enabledModels].sort()
@@ -316,6 +326,22 @@
           bind:value={priority}
           class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
         />
+      </div>
+
+      <div>
+        <label class="flex items-center gap-2 text-xs text-text-main">
+          <input
+            type="checkbox"
+            checked={ignoreRateLimit}
+            onchange={() => (ignoreRateLimit = !ignoreRateLimit)}
+            class="accent-primary"
+          />
+          <span class="font-medium">Ignore rate limit</span>
+        </label>
+        <p class="mt-1 text-[11px] text-text-subtle">
+          Keep serving this connection while its rate-limit cooldown is active, instead of waiting
+          the window out. Model locks and OAuth re-login parks still apply.
+        </p>
       </div>
 
       {#if isCodex && codexCatalog.length > 0}
