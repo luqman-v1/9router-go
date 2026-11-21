@@ -72,4 +72,13 @@ func TestPgPoolConnsDefaults(t *testing.T) {
 	if open != 50 {
 		t.Fatalf("pgPoolConns() garbage env = %d, want default 50", open)
 	}
+
+	// Typo guard: a huge value clamps to the ceiling instead of exhausting
+	// file descriptors on a small box.
+	t.Setenv("DB_MAX_CONNS", "50000")
+	t.Setenv("DB_MAX_IDLE_CONNS", "99999")
+	open, idle = pgPoolConns()
+	if open != pgMaxOpenConnsCeiling || idle != pgMaxOpenConnsCeiling {
+		t.Fatalf("pgPoolConns() huge env = (%d, %d), want ceiling %d", open, idle, pgMaxOpenConnsCeiling)
+	}
 }

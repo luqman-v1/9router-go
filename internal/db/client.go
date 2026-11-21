@@ -43,6 +43,10 @@ const (
 const (
 	pgDefaultMaxOpenConns   = 50
 	pgDefaultMaxIdleConns   = 10
+	// pgMaxOpenConnsCeiling caps the operator override for DB_MAX_CONNS. Large
+	// values exhaust file descriptors on small boxes and collide with PG's
+	// max_connections (200 in the deploy/ compose); 200 is generous headroom.
+	pgMaxOpenConnsCeiling = 200
 	pgConnMaxLifetime       = 30 * time.Minute
 	pgConnMaxIdleTime       = 5 * time.Minute
 	envDBMaxOpenConns       = "DB_MAX_CONNS"
@@ -61,14 +65,16 @@ func detectEngine(dsn string) Engine {
 }
 
 // pgPoolConns reads the operator-tunable pool sizes from the environment,
-// falling back to the PRD §4.3 defaults when unset or unparseable.
+// falling back to the PRD §4.3 defaults when unset or unparseable. Values are
+// clamped to sane upper bounds so a typo like DB_MAX_CONNS=50000 on a small
+// box cannot exhaust file descriptors or PG's max_connections.
 func pgPoolConns() (maxOpen, maxIdle int) {
 	maxOpen, maxIdle = pgDefaultMaxOpenConns, pgDefaultMaxIdleConns
 	if v, err := strconv.Atoi(os.Getenv(envDBMaxOpenConns)); err == nil && v > 0 {
-		maxOpen = v
+		maxOpen = min(v, pgMaxOpenConnsCeiling)
 	}
 	if v, err := strconv.Atoi(os.Getenv(envDBMaxIdleConns)); err == nil && v > 0 {
-		maxIdle = v
+		maxIdle = min(v, maxOpen)
 	}
 	return maxOpen, maxIdle
 }

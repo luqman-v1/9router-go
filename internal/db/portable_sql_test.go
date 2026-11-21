@@ -55,6 +55,10 @@ func TestPortableSQL(t *testing.T) {
 		if strings.HasSuffix(base, "_test.go") {
 			return nil
 		}
+		// internal/dbtest is test-support code; its SQLite DDL is fixture-only.
+		if strings.Contains(filepath.ToSlash(path), "/internal/dbtest/") {
+			return nil
+		}
 		if strings.HasPrefix(base, "schema") && strings.HasSuffix(base, ".go") {
 			return nil
 		}

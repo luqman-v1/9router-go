@@ -147,6 +147,10 @@ func exportTable(db *sql.DB, table, path string) (int, error) {
 // Column order comes from the first record; later records may omit keys
 // (the importer fills them from the column default) but may not introduce
 // new ones.
+//
+// ponytail: this loads the whole table into memory. Large ledgers
+// (requestDetails with 20 KB payloads) could spike; add a streaming
+// ReadJSONLChunks when someone migrates a >1 GB dump.
 func ReadJSONL(path string) ([]string, []map[string]any, error) {
 	f, err := os.Open(path)
 	if err != nil {
