@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -53,11 +54,17 @@ func main(){
 	if err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command(bin, "build", "-o", path, helper)
+	// go build appends no extension on Windows, so the exhaustive build in
+	// fakeACP produced a bare "fakeagy" that exec could not start.
+	binPath := path
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
+	build := exec.Command(bin, "build", "-o", binPath, helper)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build fake ACP: %v: %s", err, out)
 	}
-	return path, func() {}
+	return binPath, func() {}
 }
 
 func TestResolveModel(t *testing.T) {
@@ -126,7 +133,13 @@ func TestWriteCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0o600 {
-		t.Errorf("credential mode = %v, want 0600", info.Mode().Perm())
+		// Windows: os.Chmod only toggles the read-only bit, so a 0600
+		// request lands on -rw-rw-rw-. The code already wrote the file as
+		// tightly as the platform allows; asserting 0600 unconditionally
+		// fails every Windows run.
+		if runtime.GOOS != "windows" {
+			t.Errorf("credential mode = %v, want 0600", info.Mode().Perm())
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

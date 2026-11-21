@@ -128,6 +128,24 @@ func validateJailbreakRules(doc *db.JailbreakDoc) error {
 		return err
 	}
 	doc.Keywords, doc.Excludes = keywords, excludes
+	switch doc.Position {
+	case "", "system", "append":
+	default:
+		return fmt.Errorf("unknown position %q: want \"system\", \"append\" or empty for the legacy prepend", doc.Position)
+	}
+	switch doc.Mode {
+	case "", "chat":
+	default:
+		return fmt.Errorf("unknown mode %q: want \"chat\" or empty for a system prompt", doc.Mode)
+	}
+	// Mode "chat" with Position "append" IS rejected: chat mode has no system
+	// prompt to order, so "append" would silently do nothing and an operator
+	// reading the library would believe the prompt lands after their system
+	// text. Every other combination is coherent — "" and "system" are the same
+	// pair of placements.
+	if doc.Mode == "chat" && doc.Position == "append" {
+		return fmt.Errorf("mode \"chat\" has no system prompt to append to; leave position empty or use \"system\"")
+	}
 	return nil
 }
 
@@ -225,6 +243,76 @@ func (h *DashboardHandler) HandleSetJailbreakModel(w http.ResponseWriter, r *htt
 	})
 }
 
+// HandleSetJailbreakKeyModel arms a preset for one model under one API key.
+// The binding outranks the same model's global binding on the request path,
+// so a resold client gets a different persona than the operator's own key.
+func (h *DashboardHandler) HandleSetJailbreakKeyModel(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req struct {
+		KeyID    string `json:"keyId"`
+		ID       string `json:"id"`
+		Enabled  *bool  `json:"enabled"`
+		PresetID string `json:"presetId"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.KeyID == "" || len(req.KeyID) > 100 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid api key id")
+		return
+	}
+	if req.ID == "" || len(req.ID) > 300 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid model id")
+		return
+	}
+	enabled := false
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	} else if req.PresetID != "" {
+		enabled = req.PresetID != "off" && req.PresetID != "none"
+	}
+	presetID := req.PresetID
+	if enabled && (presetID == "" || presetID == "on") {
+		presetID = "default"
+	}
+	if err := h.Repo.SetJailbreakKeyModelPreset(req.KeyID, req.ID, presetID, enabled); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "keyId": req.KeyID, "id": req.ID,
+		"enabled": enabled, "presetId": presetID,
+	})
+}
+
+// HandleListJailbreakKeyBindings returns the key-scoped bindings for one API
+// key, already filtered to that key. The map is keyed by the bare model id.
+func (h *DashboardHandler) HandleListJailbreakKeyBindings(w http.ResponseWriter, r *http.Request) {
+	keyID := r.URL.Query().Get("keyId")
+	if keyID == "" || len(keyID) > 100 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid api key id")
+		return
+	}
+	configs, err := h.Repo.ListJailbreakModelConfigs()
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := map[string]db.JailbreakModelConfig{}
+	for k, cfg := range configs {
+		if cfg.APIKeyID != keyID {
+			continue
+		}
+		out[strings.TrimPrefix(k, keyID+":")] = cfg
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, out)
+}
+
 func slugify(s string) string {
 	s = strings.TrimSuffix(s, ".md")
 	s = strings.TrimSuffix(s, ".markdown")
@@ -248,7 +336,9 @@ func slugify(s string) string {
 // why?" — POST /api/jailbreak/resolve with {"id":"providerx/deepseek-4-pro"}.
 // It is the read-only twin of the injection path: the same resolver runs, and
 // the winning rule is reported so an operator can verify a keyword or an
-// exclude without sending a real request.
+// exclude without sending a real request. An optional "apiKeyId" resolves the
+// same id a second time under that key's scope, which is how the dashboard's
+// playground shows a key-scoped binding actually outranking the global one.
 func (h *DashboardHandler) HandleExplainJailbreak(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024))
 	if err != nil {
@@ -256,7 +346,8 @@ func (h *DashboardHandler) HandleExplainJailbreak(w http.ResponseWriter, r *http
 		return
 	}
 	var req struct {
-		ID string `json:"id"`
+		ID       string `json:"id"`
+		APIKeyID string `json:"apiKeyId"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -267,7 +358,11 @@ func (h *DashboardHandler) HandleExplainJailbreak(w http.ResponseWriter, r *http
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid model id")
 		return
 	}
-	match, err := h.Repo.ExplainJailbreakDoc(id)
+	if len(req.APIKeyID) > 100 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid api key id")
+		return
+	}
+	match, err := h.Repo.ExplainJailbreakDoc(strings.TrimSpace(req.APIKeyID), id)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -372,6 +467,7 @@ func (h *DashboardHandler) HandlePreviewJailbreak(w http.ResponseWriter, r *http
 	}
 	var req struct {
 		ID       string           `json:"id"`
+		APIKeyID string           `json:"apiKeyId"`
 		Messages []map[string]any `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -383,13 +479,14 @@ func (h *DashboardHandler) HandlePreviewJailbreak(w http.ResponseWriter, r *http
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid model id")
 		return
 	}
-	match, err := h.Repo.ExplainJailbreakDoc(id)
+	// The preview is scoped to the request it is building: what this client
+	// key would carry. An "apiKeyId" in the body resolves under that key's
+	// scope, so the same body shown for two different keys is two bodies.
+	match, err := h.Repo.ExplainJailbreakDoc(strings.TrimSpace(req.APIKeyID), id)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// The preview carries the caller's own messages, so an empty list is a
-	// caller mistake rather than a reason to invent content.
 	msgs := make([]map[string]any, 0, len(req.Messages)+1)
 	msgs = append(msgs, req.Messages...)
 	out := map[string]any{

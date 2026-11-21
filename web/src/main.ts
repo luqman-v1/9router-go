@@ -6,8 +6,9 @@
 import { mount } from 'svelte'
 import App from './App.svelte'
 import './index.css'
-import { registerServiceWorker } from './lib/pwa'
+import { registerServiceWorker, selfHealStaleChunks } from './lib/pwa'
 
+selfHealStaleChunks()
 registerServiceWorker()
 const app = mount(App, {
   target: document.getElementById('app')!,

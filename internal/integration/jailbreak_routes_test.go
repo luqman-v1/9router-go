@@ -25,9 +25,13 @@ func TestJailbreakRoutesAreMounted(t *testing.T) {
 		{http.MethodPut, "/api/jailbreak/presets"},
 		{http.MethodGet, "/api/jailbreak/models"},
 		{http.MethodPut, "/api/jailbreak/models"},
+		{http.MethodPut, "/api/jailbreak/keys/model"},
+		{http.MethodGet, "/api/jailbreak/keys/bindings"},
 		{http.MethodGet, "/api/jailbreak/excludes"},
 		{http.MethodPut, "/api/jailbreak/excludes"},
 		{http.MethodPost, "/api/jailbreak/import"},
+		{http.MethodPost, "/api/jailbreak/resolve"},
+		{http.MethodPost, "/api/jailbreak/preview"},
 		{http.MethodPost, "/api/jailbreak/presets/upload"},
 	}
 
