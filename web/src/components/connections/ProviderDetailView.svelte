@@ -2532,6 +2532,7 @@
     caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean },
     limits?: { contextWindow?: number; maxOutput?: number },
     modelType?: CustomModelType,
+    extraBody?: Record<string, unknown>,
   ) {
     // The modal picks the kind; the id is only consulted for a caller that adds
     // a model without going through it.
@@ -2544,6 +2545,7 @@
         ...(kind !== 'llm' ? {} : caps ? { caps } : {}),
         ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
         ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
+        ...(extraBody ? { extraBody } : {}),
       })
       showAddCustomModelModal = false
       const modelsData = await fetchProviderModelsData(providerId, storageAlias)

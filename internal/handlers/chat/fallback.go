@@ -1039,6 +1039,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// neither field, so the normalizer is a no-op there.
 	if !claudeNative && !upstreamClaude && !executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
 		pipedBody = normalizeChatTokenFields(pipedBody)
+		// Operator-declared extraBody for an OpenRouter custom model: merged
+		// after every rewrite above so none of them can drop it.
+		pipedBody = h.applyCustomExtraBody(pipedBody, provider, wireModel)
 	}
 
 	// Strict pattern validation: strip regex lookarounds and malformed patterns

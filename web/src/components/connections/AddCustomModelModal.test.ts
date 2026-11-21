@@ -43,8 +43,13 @@ describe('explicit custom model type', () => {
 
   it('passes the selected type to onSave instead of leaving the caller to infer it', () => {
     expect(compiledModal()).toContain(
-      '$$props.onSave($.get(cleanId), { ...$.get(caps) }, { ...$.get(limits) }, $.get(modelType));',
+      '$$props.onSave($.get(cleanId), { ...$.get(caps) }, { ...$.get(limits) }, $.get(modelType), $.get(extraBody).value);',
     )
+  })
+
+  it('offers the custom request body on OpenRouter single chat saves only and forwards it', () => {
+    expect(MODAL_SRC).toContain("providerAlias === 'openrouter' && modelType === 'llm' && !isPaste")
+    expect(PROVIDER_SRC).toContain('...(extraBody ? { extraBody } : {}),')
   })
 
   it('probes the model through the selected type, so Test and Save cannot disagree', () => {

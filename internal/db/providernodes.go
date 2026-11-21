@@ -246,6 +246,7 @@ func (r *Repo) DeleteProviderNode(ctx context.Context, id string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("delete provider node %s: commit: %w", id, err)
 	}
+	r.InvalidateCustomModelExtraBody()
 	return nil
 }
 
