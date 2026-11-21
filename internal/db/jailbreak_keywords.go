@@ -196,19 +196,53 @@ type jailbreakRuleset struct {
 	excludes []jailbreakKeywordRule
 	// presetExcludes are the per-preset deny lists, keyed by preset id.
 	presetExcludes map[string][]jailbreakKeywordRule
+	// keyExact holds key-scoped bindings: map[apiKeyID]map[modelID]config.
+	// They outrank the same model's entry in exact, so a resold key can carry
+	// a different persona than the operator's own.
+	keyExact map[string]map[string]JailbreakModelConfig
 }
 
 // ResolveJailbreakDoc resolves the injection document for one request. ids are
 // the candidate ids in specificity order: the id the client sent first, then
 // each forwarded leg id ("provider/model", then the bare model). See the
-// precedence note at the top of this file.
-func (r *Repo) ResolveJailbreakDoc(ids ...string) (*JailbreakDoc, error) {
+// precedence note at the top of this file. apiKeyID scopes the lookup: a
+// binding stored for that key outranks the same model's global binding, and a
+// preset scoped to that key outranks the global preset. An empty apiKeyID (or
+// an unrecognised one) sees only global scope.
+func (r *Repo) ResolveJailbreakDoc(apiKeyID string, ids ...string) (*JailbreakDoc, error) {
 	rs := r.jailbreakRuleset()
 
 	// The global exclude list is absolute: it outranks every preset and every
 	// exact binding, so it is the operator's "never these models" switch.
 	if rs.excluded("", ids) {
 		return nil, nil
+	}
+
+	// Key-scoped exact bindings first: the most specific match wins.
+	if apiKeyID != "" {
+		if keyCfgs := rs.keyExact[apiKeyID]; keyCfgs != nil {
+			for _, id := range ids {
+				if id == "" {
+					continue
+				}
+				cfg, ok := keyCfgs[id]
+				if !ok || !cfg.Enabled {
+					continue
+				}
+				presetID := cfg.PresetID
+				if presetID == "" {
+					presetID = jailbreakDocKey
+				}
+				doc, ok := rs.presets[presetID]
+				if !ok {
+					continue // orphan binding: the preset is gone, keep looking
+				}
+				if rs.excluded(presetID, ids) {
+					return nil, nil // this preset denies the request
+				}
+				return doc, nil // authoritative, even when the preset prompt is empty
+			}
+		}
 	}
 
 	for _, id := range ids {
@@ -330,6 +364,7 @@ func (r *Repo) buildJailbreakRuleset() (*jailbreakRuleset, error) {
 		exact:          map[string]JailbreakModelConfig{},
 		presets:        map[string]*JailbreakDoc{},
 		presetExcludes: map[string][]jailbreakKeywordRule{},
+		keyExact:       map[string]map[string]JailbreakModelConfig{},
 	}
 
 	pRows, err := r.db.QueryContext(context.Background(),
@@ -375,7 +410,21 @@ func (r *Repo) buildJailbreakRuleset() (*jailbreakRuleset, error) {
 		if cfg.PresetID == "" {
 			cfg.PresetID = jailbreakDocKey
 		}
-		rs.exact[strings.TrimPrefix(k, jailbreakModelPrefix)] = cfg
+		modelID := strings.TrimPrefix(k, jailbreakModelPrefix)
+		// Key-scoped bindings are stored as model:<apiKeyID>:<modelID>; the
+		// apiKeyID is a UUID, which never contains ":", so the first segment
+		// is the key and the rest (a model id may itself contain ":") is the
+		// model.
+		if idx := strings.Index(modelID, ":"); idx > 0 {
+			keyID := modelID[:idx]
+			bare := modelID[idx+1:]
+			if rs.keyExact[keyID] == nil {
+				rs.keyExact[keyID] = map[string]JailbreakModelConfig{}
+			}
+			rs.keyExact[keyID][bare] = cfg
+			continue
+		}
+		rs.exact[modelID] = cfg
 	}
 	if err := mRows.Err(); err != nil {
 		return nil, fmt.Errorf("list jailbreak bindings: %w", err)
@@ -495,8 +544,9 @@ type JailbreakMatch struct {
 
 // ExplainJailbreakDoc resolves ids the same way ResolveJailbreakDoc does, and
 // reports which rule won. It exists for the dashboard's test-match field: the
-// resolution itself is unchanged, only the reason is surfaced.
-func (r *Repo) ExplainJailbreakDoc(ids ...string) (*JailbreakMatch, error) {
+// resolution itself is unchanged, only the reason is surfaced. apiKeyID scopes
+// the lookup the same way the request path does.
+func (r *Repo) ExplainJailbreakDoc(apiKeyID string, ids ...string) (*JailbreakMatch, error) {
 	rs := r.jailbreakRuleset()
 	if rs.excluded("", ids) {
 		return &JailbreakMatch{
@@ -504,6 +554,44 @@ func (r *Repo) ExplainJailbreakDoc(ids ...string) (*JailbreakMatch, error) {
 			Reason:   "global-exclude",
 			Detail:   "A global exclude rule matches this id, so no preset is ever injected.",
 		}, nil
+	}
+	if apiKeyID != "" {
+		if keyCfgs := rs.keyExact[apiKeyID]; keyCfgs != nil {
+			for _, id := range ids {
+				if id == "" {
+					continue
+				}
+				cfg, ok := keyCfgs[id]
+				if !ok || !cfg.Enabled {
+					continue
+				}
+				presetID := cfg.PresetID
+				if presetID == "" {
+					presetID = jailbreakDocKey
+				}
+				doc, ok := rs.presets[presetID]
+				if !ok {
+					continue
+				}
+				if rs.excluded(presetID, ids) {
+					return &JailbreakMatch{
+						Injected:  false,
+						Reason:    "preset-exclude",
+						PresetID:  presetID,
+						MatchedID: id,
+						Detail:    "A key-scoped binding matched, but that preset's own exclude list denies this id.",
+					}, nil
+				}
+				return &JailbreakMatch{
+					Injected:   true,
+					Reason:     "key-binding",
+					PresetID:   presetID,
+					PresetName: doc.Name,
+					MatchedID:  id,
+					Detail:     "A binding stored for this API key wins over the same model's global binding.",
+				}, nil
+			}
+		}
 	}
 	for _, id := range ids {
 		if id == "" {

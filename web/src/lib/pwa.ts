@@ -20,6 +20,26 @@ export function isStandalone(): boolean {
   )
 }
 
+// A deploy swaps hashed chunk names; a tab still running the old index.html
+// then fails a dynamic import with a 404 and shows a blank screen. Reload
+// once (guarded so a persistently broken deploy cannot loop) after clearing
+// the SW caches, which may hold the stale index that requested the dead chunk.
+const CHUNK_RELOAD_KEY = '9router-chunk-reload'
+
+export function selfHealStaleChunks() {
+  if (typeof window === 'undefined') return
+  window.addEventListener('vite:preloadError', () => {
+    if (sessionStorage.getItem(CHUNK_RELOAD_KEY)) return
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, '1')
+    if ('caches' in window) {
+      caches.keys().then((keys) => keys.forEach((key) => caches.delete(key)))
+    }
+    location.reload()
+  })
+  // Fresh load succeeded: re-arm the guard for the next deploy.
+  window.addEventListener('load', () => sessionStorage.removeItem(CHUNK_RELOAD_KEY))
+}
+
 export function registerServiceWorker() {
   if (typeof window === 'undefined') return
 

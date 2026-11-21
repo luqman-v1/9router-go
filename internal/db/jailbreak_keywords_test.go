@@ -165,7 +165,7 @@ func TestResolveJailbreakDocKeywordCoversProvidersAndVariants(t *testing.T) {
 		t.Fatalf("save preset: %v", err)
 	}
 	for _, id := range []string{"providera/deepseek", "providerx/deepseek-4-pro", "deepseek-v4", "deepseek"} {
-		doc, err := repo.ResolveJailbreakDoc(id)
+		doc, err := repo.ResolveJailbreakDoc("", id)
 		if err != nil {
 			t.Fatalf("resolve %s: %v", id, err)
 		}
@@ -174,7 +174,7 @@ func TestResolveJailbreakDocKeywordCoversProvidersAndVariants(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"deepseekia", "notdeepseek", "openai/gpt-4o", ""} {
-		doc, err := repo.ResolveJailbreakDoc(id)
+		doc, err := repo.ResolveJailbreakDoc("", id)
 		if err != nil {
 			t.Fatalf("resolve %s: %v", id, err)
 		}
@@ -196,7 +196,7 @@ func TestResolveJailbreakDocExactBindingBeatsKeyword(t *testing.T) {
 		t.Fatalf("bind model: %v", err)
 	}
 
-	doc, err := repo.ResolveJailbreakDoc("providerx/deepseek-4-pro")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestResolveJailbreakDocExactBindingBeatsKeyword(t *testing.T) {
 	}
 
 	// A sibling id with no binding still takes the keyword.
-	doc, err = repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil {
 		t.Fatalf("resolve sibling: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestResolveJailbreakDocLongestKeywordWins(t *testing.T) {
 		t.Fatalf("save long preset: %v", err)
 	}
 
-	doc, err := repo.ResolveJailbreakDoc("providerx/deepseek-4-pro")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestResolveJailbreakDocLongestKeywordWins(t *testing.T) {
 	}
 
 	// The shorter keyword still owns the ids the longer one does not match.
-	doc, err = repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil {
 		t.Fatalf("resolve plain: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestResolveJailbreakDocKeywordTieGoesToLowestPresetID(t *testing.T) {
 	if err := repo.SaveJailbreakPreset(&JailbreakDoc{ID: "aaa", Name: "A", Prompt: "A RULE", Keywords: []JailbreakKeyword{{Text: "deepseek"}}}); err != nil {
 		t.Fatalf("save aaa: %v", err)
 	}
-	doc, err := repo.ResolveJailbreakDoc("deepseek")
+	doc, err := repo.ResolveJailbreakDoc("", "deepseek")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestResolveJailbreakDocRequestedIDBeatsLegID(t *testing.T) {
 		t.Fatalf("save leg preset: %v", err)
 	}
 
-	doc, err := repo.ResolveJailbreakDoc("fleet-alpha", "providerx/deepseek-4-pro", "deepseek-4-pro")
+	doc, err := repo.ResolveJailbreakDoc("", "fleet-alpha", "providerx/deepseek-4-pro", "deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestResolveJailbreakDocRequestedIDBeatsLegID(t *testing.T) {
 		t.Errorf("got %+v, want the requested id's keyword to win", doc)
 	}
 
-	doc, err = repo.ResolveJailbreakDoc("my-combo", "providerx/deepseek-4-pro", "deepseek-4-pro")
+	doc, err = repo.ResolveJailbreakDoc("", "my-combo", "providerx/deepseek-4-pro", "deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve leg only: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestResolveJailbreakDocPresetExcludeDeniesKeyword(t *testing.T) {
 		t.Fatalf("save preset: %v", err)
 	}
 
-	doc, err := repo.ResolveJailbreakDoc("providerx/deepseek-4-pro")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve excluded: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestResolveJailbreakDocPresetExcludeDeniesKeyword(t *testing.T) {
 		t.Errorf("excluded id got %+v, want no injection", doc)
 	}
 
-	doc, err = repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil {
 		t.Fatalf("resolve allowed: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestResolveJailbreakDocGlobalExcludeBeatsEverything(t *testing.T) {
 	}
 
 	// The exact binding loses to the global deny list.
-	doc, err := repo.ResolveJailbreakDoc("providerx/deepseek-4-pro")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve bound id: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestResolveJailbreakDocGlobalExcludeBeatsEverything(t *testing.T) {
 	}
 
 	// A keyword match on another id is untouched.
-	doc, err = repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil {
 		t.Fatalf("resolve other id: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestResolveJailbreakDocGlobalExcludeRegex(t *testing.T) {
 	if err := repo.SaveJailbreakExcludes([]JailbreakKeyword{{Text: "/internal-", Mode: JailbreakKeywordPartial}}); err != nil {
 		t.Fatalf("save global excludes: %v", err)
 	}
-	doc, err := repo.ResolveJailbreakDoc("providerx/internal-deepseek")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/internal-deepseek")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestResolveJailbreakDocOrphanBindingFallsThrough(t *testing.T) {
 		t.Fatalf("save keyword preset: %v", err)
 	}
 
-	doc, err := repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err := repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestResolveJailbreakDocEmptyPresetBindingInjectsNothing(t *testing.T) {
 
 	// An exact binding to an empty preset is authoritative: it means "inject
 	// nothing here", and it must not fall through to a keyword.
-	doc, err := repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err := repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestJailbreakRulesetCacheInvalidation(t *testing.T) {
 	if err := repo.SaveJailbreakPreset(&JailbreakDoc{ID: "ds", Name: "DS", Prompt: "FIRST RULE", Keywords: []JailbreakKeyword{{Text: "deepseek"}}}); err != nil {
 		t.Fatalf("save first: %v", err)
 	}
-	doc, err := repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err := repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil || doc == nil || doc.Prompt != "FIRST RULE" {
 		t.Fatalf("first resolve: doc=%+v err=%v", doc, err)
 	}
@@ -427,12 +427,12 @@ func TestJailbreakRulesetCacheInvalidation(t *testing.T) {
 	if err := repo.SaveJailbreakPreset(&JailbreakDoc{ID: "ds", Name: "DS", Prompt: "SECOND RULE", Keywords: []JailbreakKeyword{{Text: "providera"}}}); err != nil {
 		t.Fatalf("save second: %v", err)
 	}
-	doc, err = repo.ResolveJailbreakDoc("providera/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providera/deepseek")
 	if err != nil || doc == nil || doc.Prompt != "SECOND RULE" {
 		t.Fatalf("after preset rewrite: doc=%+v err=%v", doc, err)
 	}
 	// The old keyword is gone, so a sibling id no longer resolves.
-	doc, err = repo.ResolveJailbreakDoc("providerx/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providerx/deepseek")
 	if err != nil {
 		t.Fatalf("resolve sibling: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestJailbreakRulesetCacheInvalidation(t *testing.T) {
 	if err := repo.SetJailbreakModelPreset("providerx/deepseek", "ds", true); err != nil {
 		t.Fatalf("bind model: %v", err)
 	}
-	doc, err = repo.ResolveJailbreakDoc("providerx/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providerx/deepseek")
 	if err != nil || doc == nil {
 		t.Fatalf("after binding: doc=%+v err=%v", doc, err)
 	}
@@ -451,7 +451,7 @@ func TestJailbreakRulesetCacheInvalidation(t *testing.T) {
 	if err := repo.SaveJailbreakExcludes([]JailbreakKeyword{{Text: "providerx"}}); err != nil {
 		t.Fatalf("save excludes: %v", err)
 	}
-	doc, err = repo.ResolveJailbreakDoc("providerx/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providerx/deepseek")
 	if err != nil {
 		t.Fatalf("after excludes: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestJailbreakRulesetCacheInvalidation(t *testing.T) {
 	if err := repo.SaveJailbreakExcludes(nil); err != nil {
 		t.Fatalf("clear excludes: %v", err)
 	}
-	doc, err = repo.ResolveJailbreakDoc("providerx/deepseek")
+	doc, err = repo.ResolveJailbreakDoc("", "providerx/deepseek")
 	if err != nil || doc == nil {
 		t.Fatalf("after clearing excludes: doc=%+v err=%v", doc, err)
 	}

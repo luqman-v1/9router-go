@@ -1,8 +1,9 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
+  import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
+  import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
   import { marked } from 'marked'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
@@ -10,6 +11,8 @@
   import Card from '../lib/ui/Card.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Toggle from '../lib/ui/Toggle.svelte'
+  import JailbreakPlayground from './jailbreak/JailbreakPlayground.svelte'
+  import JailbreakKeyScope from './jailbreak/JailbreakKeyScope.svelte'
   // Preset library.
   let presets = $state<JailbreakDoc[]>([])
   let loading = $state(false)
@@ -47,6 +50,10 @@
 
   // Per-model / provider / combo bindings.
   let models = $state<Record<string, JailbreakModelConfig>>({})
+  // Client keys, for the per-key editor below. The playground fetches its
+  // own copy, but the editor needs the ids too and the two would otherwise
+  // race on first paint.
+  let apiKeys = $state<APIKey[]>([])
   let bindModelId = $state('')
   let bindPresetId = $state('')
   let bindError = $state('')
@@ -100,6 +107,12 @@
   // #6 Bulk arm: pick several ids from the live catalog, bind them at once.
   let bulkArmSearch = $state('')
   let bulkArmModels = $state<string[]>([])
+  // The catalog's comparison index, built once when the list loads. A
+  // keystroke filters through this instead of re-lowercasing and re-stripping
+  // every id on each pass (see buildFuzzyIndex), which is what keeps typing
+  // responsive over a catalog of ~2,000 ids on the 1-vCPU box the gateway runs
+  // on.
+  let bulkArmIndex = $state<FuzzyIndexEntry[]>([])
   let bulkArmModelsLoading = $state(false)
   let bulkArmPicked = $state<Set<string>>(new Set())
   let bulkArmPresetId = $state('')
@@ -171,16 +184,22 @@
   let bindingPage = $state(1)
   let bindingPageSize = $state(10)
   let bindingSearch = $state('')
+  // Prefix filter: model ids arrive as `provider/model`, so the provider is
+  // the leading segment. Picking one narrows the list to that provider without
+  // the operator typing (or knowing) the exact prefix string.
+  let bindingPrefix = $state('')
 
   onMount(load)
   async function load() {
     loading = true
     try {
-      const [presetList, modelMap, excludeList] = await Promise.all([
+      const [presetList, modelMap, excludeList, keyList] = await Promise.all([
         api.listJailbreakPresets(),
         api.listJailbreakModels(),
         api.getJailbreakExcludes(),
+        api.getApiKeys(),
       ])
+      apiKeys = Array.isArray(keyList) ? keyList : []
       presets = Array.isArray(presetList) ? presetList : []
       models = modelMap || {}
       globalExcludes = excludeList?.excludes || []
@@ -352,6 +371,7 @@
     try {
       const res = await api.getJailbreakModelCatalog()
       bulkArmModels = Array.isArray(res.models) ? res.models : []
+      bulkArmIndex = buildFuzzyIndex(bulkArmModels)
     } catch (e) {
       bulkArmStatus = 'Failed to load models: ' + errorMessage(e)
     } finally {
@@ -470,8 +490,12 @@
       const re = new RegExp(q.slice(1), 'i')
       return bulkArmModels.filter((m) => re.test(m)).slice(0, 200)
     }
-    const lower = q.toLowerCase()
-    return bulkArmModels.filter((m) => m.toLowerCase().includes(lower)).slice(0, 200)
+    // Fuzzy for plain text only: an explicit regex stays authoritative, while a
+    // typed id tolerates a stray space or a one or two character slip instead of
+    // answering "no matches" and making the operator re-type. The index carries
+    // each id's comparison forms, so a keystroke costs one pass over the index
+    // rather than a lowercase and separator strip per id.
+    return filterFuzzyIndexed(q, bulkArmIndex, 200)
   })
   // Select every id the current filter matches — the regex/substring query is
   // the selector, so "arm everything matching /^deepseek/" is one click.
@@ -509,11 +533,34 @@
       bindModalOpen = false
     }
   }
+  // The distinct provider prefixes the armed bindings actually use, so the
+  // filter offers only prefixes that would match something.
+  let bindingPrefixOptions = $derived.by(() => {
+    const seen = new Set<string>()
+    for (const [id] of boundEntries) {
+      const slash = id.indexOf('/')
+      if (slash > 0) seen.add(id.slice(0, slash))
+    }
+    return [...seen].sort()
+  })
+  // Names whatever the two filters currently narrow to, so the empty state
+  // says which one (or both) excluded everything rather than blaming the query.
+  let filterDesc = $derived.by(() => {
+    const parts: string[] = []
+    if (bindingPrefix) parts.push(`prefix "${bindingPrefix}"`)
+    if (bindingSearch.trim()) parts.push(`"${bindingSearch.trim()}"`)
+    return parts.length ? ' ' + parts.join(' + ') : ''
+  })
   // Pagination + batch selection over the model-binding list.
   let filteredBindings = $derived.by(() => {
     const q = bindingSearch.trim().toLowerCase()
-    if (!q) return boundEntries
-    return boundEntries.filter(
+    let rows = boundEntries
+    if (bindingPrefix) {
+      const head = bindingPrefix + '/'
+      rows = rows.filter(([id]) => id === bindingPrefix || id.startsWith(head))
+    }
+    if (!q) return rows
+    return rows.filter(
       ([id, cfg]) =>
         id.toLowerCase().includes(q) ||
         presetLabel(cfg.presetId).toLowerCase().includes(q),
@@ -675,6 +722,7 @@
     const next = new Set(selectedPresetIds)
     if (allSelected) ids.forEach((id) => next.delete(id))
     else ids.forEach((id) => next.add(id))
+    selectedPresetIds = next
   }
   function clearPresetSelection() {
     selectedPresetIds = new Set()
@@ -1244,6 +1292,17 @@
            matches nothing, the field has to stay on screen or the operator
            cannot clear what they typed. -->
       <div class="flex flex-wrap items-center gap-2 pt-4">
+        <select
+          bind:value={bindingPrefix}
+          aria-label="Filter by provider prefix"
+          title="Narrow the list to one provider's model ids"
+          class="px-2 py-1.5 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-xs outline-none"
+        >
+          <option value="">All providers</option>
+          {#each bindingPrefixOptions as prefix (prefix)}
+            <option value={prefix}>{prefix} ({boundEntries.filter(([id]) => id === prefix || id.startsWith(prefix + '/')).length})</option>
+          {/each}
+        </select>
         <input
           type="text"
           bind:value={bindingSearch}
@@ -1264,7 +1323,7 @@
       </div>
       {#if filteredBindings.length === 0}
         <p class="text-xs text-text-subtle pt-3 border-t border-border-subtle">
-          No binding matches "{bindingSearch}".
+          No binding matches{filterDesc}
         </p>
       {:else}
       <!-- Two rows: the select-all checkboxes and the selected count stay on the
@@ -1409,6 +1468,20 @@
       />
     {/if}
       {/if}
+  </Card>
+
+  <!-- The per-key editor: without this the two new routes have no caller in
+       the UI, so an operator can arm a key-scoped binding only through the API.
+       It sits above the playground so the binding is written before it is
+       resolved, and it reuses the keys the playground fetches on its own. -->
+  <Card padding="md">
+    <JailbreakKeyScope keys={apiKeys} presets={presets} initialModelId={bindModelId} onchanged={load} />
+  </Card>
+
+  <!-- Resolves one id under both scopes so a key-scoped binding is seen
+       outranking the global one, instead of being trusted unread. -->
+  <Card padding="md">
+    <JailbreakPlayground presets={presets} />
   </Card>
 </div>
 
@@ -1967,8 +2040,11 @@
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-sm text-text-main font-code placeholder:text-text-subtle"
         />
         <p class="text-[11px] text-text-subtle">
-          Substring by default. Start with <span class="font-code text-text-muted">/</span> for an RE2 regex,
-          matched case-insensitively — e.g. <span class="font-code text-text-muted">/^deepseek</span> or
+          Fuzzy by default: spacing and a one or two character slip still match, so
+          <span class="font-code text-text-muted">deepseek chat</span> finds
+          <span class="font-code text-text-muted">deepseek/chat-v3</span>. Start with
+          <span class="font-code text-text-muted">/</span> for an exact RE2 regex, matched
+          case-insensitively — e.g. <span class="font-code text-text-muted">/^deepseek</span> or
           <span class="font-code text-text-muted">/(kimi|glm)-\d</span>.
         </p>
         {#if bulkArmRegexError}
