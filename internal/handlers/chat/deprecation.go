@@ -103,7 +103,11 @@ func (h *ChatHandler) recordModelCooldown(ctx context.Context, provider, model, 
 	// Always park the failed connection for the cooldown window so this request
 	// fails over to the next account/model. One request that walks three failed
 	// accounts parks all three — that is the failover working as intended.
-	if connID != "" {
+	// ignoreRateLimit skips the park: the operator rides out rate-limit
+	// windows on this connection, so the lock would only block the next
+	// request. (The model cooldown badge below is still written, so the
+	// dashboard keeps showing the upstream condition.)
+	if connID != "" && !h.connectionIgnoresRateLimitByID(connID) {
 		lockKey := canonicalLockModel(provider, model)
 		cooldownSec := providers.ModelCooldownSec
 		if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, 0); err != nil {

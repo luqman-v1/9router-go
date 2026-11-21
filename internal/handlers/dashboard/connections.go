@@ -331,6 +331,7 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 		// badges (⏱), quota/rate-limit panels, model assignment. Secret
 		// keys (apiKey/accessToken/refreshToken/authToken/...) stay dropped.
 		"backoffLevel", "rateLimitedUntil", "rateLimit", "rateLimitsByModel",
+		"ignoreRateLimit",
 		"freebuffModel", "assignedModel", "freebucks", "allowPrivateNetworking",
 	} {
 		if v, ok := data[f]; ok && v != nil {
@@ -408,16 +409,19 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 // add-key modal sends, mirroring upstream POST /api/providers: priority,
 // providerSpecificData, testStatus and proxyPoolId.
 type createConnectionRequest struct {
-	ID                   string         `json:"id"`
-	Provider             string         `json:"provider"`
-	AuthType             string         `json:"authType"`
-	Name                 string         `json:"name"`
-	DisplayName          string         `json:"displayName"`
-	APIKey               string         `json:"apiKey"`
-	TestStatus           string         `json:"testStatus"`
-	ProxyPoolID          string         `json:"proxyPoolId"`
-	Priority             *int           `json:"priority"`
-	DefaultModel         string         `json:"defaultModel"`
+	ID           string `json:"id"`
+	Provider     string `json:"provider"`
+	AuthType     string `json:"authType"`
+	Name         string `json:"name"`
+	DisplayName  string `json:"displayName"`
+	APIKey       string `json:"apiKey"`
+	TestStatus   string `json:"testStatus"`
+	ProxyPoolID  string `json:"proxyPoolId"`
+	Priority     *int   `json:"priority"`
+	DefaultModel string `json:"defaultModel"`
+	// IgnoreRateLimit carries the operator's bypass flag straight into the
+	// data blob, mirroring what PUT /api/connections/{id} accepts.
+	IgnoreRateLimit      bool           `json:"ignoreRateLimit"`
 	ProviderSpecificData map[string]any `json:"providerSpecificData"`
 	Data                 any            `json:"data"`
 	// AllowOverwrite (or its legacy `overwrite` spelling) states that a
@@ -508,6 +512,9 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 	}
 	if req.AllowPrivateNetworking {
 		dataMap["allowPrivateNetworking"] = true
+	}
+	if req.IgnoreRateLimit {
+		dataMap["ignoreRateLimit"] = true
 	}
 
 	// Upstream POST /api/providers rebuilds providerSpecificData from the node
@@ -727,6 +734,12 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	_, hasAssignedModel := rawBody["assignedModel"]
 	_, hasProxyPool := rawBody["proxyPoolId"]
 	_, hasAllowPrivate := rawBody["allowPrivateNetworking"]
+	hasIgnoreRateLimit := false
+	var ignoreRateLimitVal bool
+	if v, ok := rawBody["ignoreRateLimit"].(bool); ok {
+		hasIgnoreRateLimit = true
+		ignoreRateLimitVal = v
+	}
 	hasMediaEnabled := false
 	var mediaEnabledVal bool
 	if v, ok := rawBody["mediaEnabled"].(bool); ok {
@@ -790,7 +803,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	// Fast path: if only updating active status
-	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey && !hasAllowPrivate && !hasMediaEnabled && !hasIsMediaActive && !hasDisabledKinds {
+	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey && !hasAllowPrivate && !hasMediaEnabled && !hasIsMediaActive && !hasDisabledKinds && !hasIgnoreRateLimit {
 		if err := h.Repo.SetConnectionStatus(id, a); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -822,7 +835,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	dataStr := existing.Data
-	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey || hasAllowPrivate || hasMediaEnabled || hasIsMediaActive || hasDisabledKinds {
+	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey || hasAllowPrivate || hasMediaEnabled || hasIsMediaActive || hasDisabledKinds || hasIgnoreRateLimit {
 		dataMap := make(map[string]any)
 		if existing.Data != "" {
 			_ = json.Unmarshal([]byte(existing.Data), &dataMap)
@@ -901,6 +914,16 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 				dataMap["allowPrivateNetworking"] = true
 			} else {
 				delete(dataMap, "allowPrivateNetworking")
+			}
+		}
+
+		if hasIgnoreRateLimit {
+			// Same shape as allowPrivateNetworking: false removes the field so
+			// a cleared toggle does not leave a stale false in the blob.
+			if ignoreRateLimitVal {
+				dataMap["ignoreRateLimit"] = true
+			} else {
+				delete(dataMap, "ignoreRateLimit")
 			}
 		}
 

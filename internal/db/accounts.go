@@ -330,6 +330,11 @@ func ConnectionModelLockedData(rawData, model string) bool {
 // full-blob unmarshals to answer a question one scan answers. Lock fields
 // are parsed in Go — not json_extract — so a malformed blob stays "unlocked"
 // exactly as before instead of becoming a SQL error.
+//
+// A connection carrying ignoreRateLimit counts as available regardless of its
+// locks: the operator chose to ride out rate-limit windows on it, so its
+// modelLock_ fields must not make a single-connection provider look dead to
+// the combo health pre-check.
 func (r *Repo) IsProviderAvailable(ctx context.Context, provider, model string) bool {
 	if provider == "" {
 		return true
@@ -353,8 +358,8 @@ func (r *Repo) IsProviderAvailable(ctx context.Context, provider, model string) 
 		if err := rows.Scan(&rawData); err != nil {
 			return true // fail open on scan trouble, as before
 		}
-		if !ConnectionModelLockedData(rawData, model) {
-			return true // one unlocked connection is all the answer needs
+		if ConnectionIgnoresRateLimit(rawData) || !ConnectionModelLockedData(rawData, model) {
+			return true // one usable connection is all the answer needs
 		}
 	}
 	if err := rows.Err(); err != nil {
