@@ -1,2 +1,0 @@
-### Changed
-- **Combo round-robin rotates across initial target space** — Round-robin strategy advances pointer against initial configured target space even when models are filtered by capability or affinity (upstream OmniRoute #20263 parity).
