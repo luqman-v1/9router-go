@@ -280,3 +280,46 @@ func TestHandleKiroStream_IntegrityGateOnEmitsCompleteToolCall(t *testing.T) {
 		t.Errorf("tool turn must finish with tool_calls: %s", body)
 	}
 }
+
+// A /v1/messages client asked for Anthropic SSE. Kiro's frames are synthesized
+// as chat chunks, so they must be translated on the way out — a
+// chat.completion.chunk body is not something an Anthropic client can read.
+func TestHandleKiroStream_ClaudeClientGetsAnthropicSSE(t *testing.T) {
+	stream := kiroEventFrame("assistantResponseEvent", `{"content":"KIRO-OK"}`)
+
+	rec := httptest.NewRecorder()
+	req := &Request{Ctx: context.Background(), ClaudeClient: true, IsStream: true}
+	if err := handleKiroStream(rec, req, bytes.NewReader(stream)); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("handleKiroStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{"event: message_start", "event: content_block_delta", "event: message_stop", "KIRO-OK"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "chat.completion.chunk") || strings.Contains(body, "[DONE]") {
+		t.Errorf("chat-shaped SSE reached a Claude client:\n%s", body)
+	}
+}
+
+// The non-streaming fold reads these same chunks with sseToOpenAIJSON, so the
+// Claude translation must stay off when the client is not streaming.
+func TestHandleKiroNonStream_ClaudeClientStillFoldsToClaudeJSON(t *testing.T) {
+	stream := kiroEventFrame("assistantResponseEvent", `{"content":"KIRO-OK"}`)
+
+	rec := httptest.NewRecorder()
+	req := &Request{Ctx: context.Background(), ClaudeClient: true, TranslateResp: true}
+	if err := handleKiroNonStream(rec, req, bytes.NewReader(stream)); err != nil {
+		t.Fatalf("handleKiroNonStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "event: ") || strings.Contains(body, "chat.completion") {
+		t.Errorf("non-streaming answer must be one folded JSON document: %s", body)
+	}
+	if !strings.Contains(body, "KIRO-OK") {
+		t.Errorf("answer text missing: %s", body)
+	}
+}

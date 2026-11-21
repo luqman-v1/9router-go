@@ -57,12 +57,15 @@ type geminiWebEmitter struct {
 func newGeminiWebEmitter(w http.ResponseWriter, req *Request, model string) *geminiWebEmitter {
 	hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 	emitter := &geminiWebEmitter{
-		req:        req,
-		hw:         hw,
-		id:         "chatcmpl-gemini-web-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-		created:    time.Now().Unix(),
-		model:      model,
-		sessionKey: fmt.Sprintf("gemini-web-stream-%d", time.Now().UnixNano()),
+		req:     req,
+		hw:      hw,
+		id:      "chatcmpl-gemini-web-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		created: time.Now().Unix(),
+		model:   model,
+		// NewSessionKey, not a bare timestamp: two turns landing on the same
+		// nanosecond would share one translation state and leak content
+		// between requests.
+		sessionKey: translator.NewSessionKey("gemini-web-stream"), // not a bare timestamp: two turns in one nanosecond would share translation state
 		claude:     req.TranslateResp,
 	}
 	// A /v1/responses client is one hop further out than a Chat one: the

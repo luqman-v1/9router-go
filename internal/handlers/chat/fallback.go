@@ -1267,8 +1267,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// single-use token on the same request would only log the rejection again
 	// and re-park. The 401 stands and the account loop below moves on.
 	// A custom JSON business endpoint has no OAuth token to refresh, so it is
-	// excluded from the reactive 401 refresh as well.
-	if errors.As(fwdErr, &ue) && ue.StatusCode == http.StatusUnauthorized && connectionID != "" && !customJSON && !connectionParkedForReauth(h, connectionID) {
+	// excluded from the reactive refresh as well. credentialRejected widens the
+	// trigger from a bare 401 to a 403 whose body names the token, which is how
+	// Kiro reports an expired access token.
+	if errors.As(fwdErr, &ue) && credentialRejected(ue) && connectionID != "" && !customJSON && !connectionParkedForReauth(h, connectionID) {
 		refreshedKey, _, rErr := h.forceRefreshOAuthToken(connectionID)
 		if rErr == nil && refreshedKey != "" && refreshedKey != apiKey {
 			log.Info("fallback", "reactive 401 token refresh success, retrying request", "conn", connectionID)
@@ -2234,6 +2236,40 @@ func sanitizeOutboundToolSchemas(body []byte, provider string) []byte {
 		return newBody
 	}
 	return body
+}
+
+// credentialRejected reports a refusal of the credential itself — the only
+// class a forced OAuth refresh can answer.
+//
+// A 401 always is one. A 403 is not: an unentitled, geo-blocked or quota-refused
+// account is refused the same way, and spending the single-use refresh token on
+// that would park an otherwise healthy account. So a 403 counts only when its
+// body names the token. Kiro answers a dead OAuth access token with
+//
+//	403 {"message":"The bearer token included in the request is invalid."}
+//
+// instead of 401, which is why the reactive refresh never fired for it and the
+// account stayed unusable — 403 on every turn — until someone logged in again
+// by hand.
+func credentialRejected(ue *upstreamError) bool {
+	if ue == nil {
+		return false
+	}
+	switch ue.StatusCode {
+	case http.StatusUnauthorized:
+		return true
+	case http.StatusForbidden:
+		body := strings.ToLower(string(ue.Body))
+		for _, marker := range []string{
+			"bearer token", "access token", "token is invalid", "invalid token",
+			"token has expired", "token expired", "expired token",
+		} {
+			if strings.Contains(body, marker) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // bodySpeaksOpenAIChat reports whether this request body is in Chat
