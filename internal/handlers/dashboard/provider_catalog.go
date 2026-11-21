@@ -51,5 +51,11 @@ func (h *DashboardHandler) HandleGetProviderCatalog(w http.ResponseWriter, r *ht
 		"noAuth":     providers.NoAuthProviders(),
 		"kinds":      providers.ServiceKindLabels(),
 		"categories": providers.CategoryOrder,
+		// The prefixes a provider node may not claim. The add/edit dialog
+		// suggests a prefix derived from the node's name, and a suggestion the
+		// server answers 409 for is worse than none — so the guard's own set
+		// travels with the catalog instead of being re-guessed from the
+		// sections above, which do not cover it (57 of 292 keys are absent).
+		"reservedPrefixes": providers.ReservedProviderPrefixes(),
 	})
 }

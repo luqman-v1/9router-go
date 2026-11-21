@@ -687,6 +687,19 @@ export interface ProviderNode {
   limits?: ProviderNodeLimits
 }
 
+/** Availability of a live candidate provider namespace or composed id. */
+export interface ProviderNodeFieldAvailability {
+  value: string
+  status: 'available' | 'taken' | 'invalid' | 'automatic' | 'random'
+  reason?: string
+  providerId?: string
+}
+
+export interface ProviderNodeAvailability {
+  prefix: ProviderNodeFieldAvailability
+  urlSuffix: ProviderNodeFieldAvailability
+}
+
 /**
  * ProviderNodeLimits mirrors the Go side (ProviderNodeLimitsResponse). Live
  * figures (`rpmUsedWindow`, `activeConcurrency`) come from the gateway's own
@@ -1624,6 +1637,12 @@ export const api = {
   ) =>
     request<{ node: ProviderNode }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  /** Checks a candidate prefix and URL suffix for immediate availability. */
+  checkProviderNodeAvailability: (payload: { prefix?: string; urlSuffix?: string; type?: string; apiType?: string }) =>
+    request<ProviderNodeAvailability>('/api/provider-nodes/availability', {
+      method: 'POST',
       body: JSON.stringify(payload),
     }),
   deleteProviderNode: (id: string) =>

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
   getProvidersByKind,
+  getReservedPrefixes,
   isChatProvider,
   MEDIA_PROVIDER_KINDS,
   PROVIDER_CATALOG,
@@ -209,5 +210,27 @@ describe('providers & media separation', () => {
       (p) => !shared.has(p.id) && !assets.has(`${p.id}.png`) && !assets.has(`${p.id}.svg`)
     ).map((p) => p.id)
     assert.deepStrictEqual(missing, [], `providers without artwork: ${missing.join(', ')}`)
+  })
+})
+
+describe('reserved prefixes served with the catalog', () => {
+  it('exposes the guard set as a lookup the dialog can consult', () => {
+    __setProviderCatalogForTest([], [], ['anthropic', 'gh', 'openai-compatible'])
+    const reserved = getReservedPrefixes()
+    assert.ok(reserved.has('gh'), 'a registry alias belongs to the reserved set')
+    assert.ok(!reserved.has('acme-prod'), 'a free namespace is not reserved')
+  })
+
+  it('is empty before a catalog is installed, rather than guessing', () => {
+    __setProviderCatalogForTest([], [], [])
+    assert.strictEqual(getReservedPrefixes().size, 0)
+  })
+
+  it('replaces the previous set on reload instead of merging it', () => {
+    __setProviderCatalogForTest([], [], ['gh'])
+    __setProviderCatalogForTest([], [], ['ant'])
+    const reserved = getReservedPrefixes()
+    assert.ok(reserved.has('ant'))
+    assert.ok(!reserved.has('gh'), 'the earlier boot\'s set must not leak into the next')
   })
 })

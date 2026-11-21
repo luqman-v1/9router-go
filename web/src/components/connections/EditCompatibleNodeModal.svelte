@@ -86,9 +86,7 @@
     limitsAfterReset = null
   })
 
-  let saveDisabled = $derived(
-    saving || !formName.trim() || !formPrefix.trim() || !formBaseUrl.trim()
-  )
+  let saveDisabled = $derived(saving || !formName.trim() || !formBaseUrl.trim())
 
   async function handleValidate() {
     if (!checkKey || validating || !formBaseUrl.trim()) return
@@ -155,7 +153,7 @@
       label="Prefix"
       bind:value={formPrefix}
       placeholder={isAnthropic ? 'ac-prod' : 'oc-prod'}
-      hint="Required. Used as the provider prefix for model IDs."
+      hint="Optional. Used as the provider prefix for model IDs; left blank it reuses this provider’s URL suffix, or a short token when the suffix is generated."
     />
     <Input
       label="Custom URL Suffix"

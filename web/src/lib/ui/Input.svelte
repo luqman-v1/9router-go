@@ -19,7 +19,14 @@
      * label focuses the field and a screen reader announces the pair; without one
      * the label is decoration.
      */
-    id = ''
+    id = '',
+    /**
+     * Forwarded to the native input. A caller that writes the bound value
+     * itself needs this to tell its own write from a keystroke: `change` fires
+     * only on blur, and comparing values cannot distinguish an operator typing
+     * the same string the caller just wrote.
+     */
+    oninput = undefined
   }: {
     label?: string
     type?: string
@@ -40,8 +47,10 @@
     class?: string
     inputClass?: string
     id?: string
+    oninput?: (event: Event) => void
   } = $props()
 </script>
+
 
 <div class="flex flex-col gap-1.5 {klass}">
   {#if label}
@@ -65,6 +74,7 @@
       {min}
       {max}
       bind:value
+      {oninput}
       class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40 transition-all duration-150 ease-out disabled:opacity-50 disabled:cursor-not-allowed text-[16px] sm:text-sm {icon ? 'pl-10' : ''} {error ? 'ring-1 ring-red-500 focus:ring-2 focus:ring-red-500/40 border-red-500/40' : ''} {inputClass}"
     />
   </div>
