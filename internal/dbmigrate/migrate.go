@@ -267,6 +267,11 @@ func importTable(ctx context.Context, db *sql.DB, table, path string) (int, erro
 	if err := insertChunks(ctx, db, table, cols, rows, isLegacy); err != nil {
 		return 0, err
 	}
+	if !isLegacy {
+		if err := resetSequences(ctx, db, table, cols); err != nil {
+			return 0, err
+		}
+	}
 	return len(rows), nil
 }
 
