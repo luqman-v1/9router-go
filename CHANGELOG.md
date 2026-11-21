@@ -1,5 +1,163 @@
 # Changelog
 
+## [v1.9.17-exp.11] - 2026-11-21
+
+### fix(kiro): refresh a dead bearer token, and answer a Messages client in Anthropic SSE
+- A Kiro account could sit active but unusable: every turn answered `403 {"message":"The bearer token included in the request is invalid."}`. The reactive refresh in `tryForwardWithConnection` only fired on a bare 401, so a provider that reports a dead OAuth token as a 403 never refreshed and the account stayed dead until someone logged in again by hand.
+- The trigger is now `credentialRejected`: a 401 always counts; a 403 counts only when its body names the token (`bearer token`, `access token`, `token is invalid/expired`, …). An unentitled, quota-refused or geo-blocked account answers 403 too, and spending the single-use refresh token on that would park a healthy account.
+- After one refresh the expiry is persisted (`expiresAt`), so subsequent turns refresh proactively and stop paying a failed round-trip first.
+- A `/v1/messages` client that asked for `stream: true` on a Kiro model received **Chat Completions SSE** (`chat.completion.chunk`, `data: [DONE]`) instead of Anthropic events: `handleKiroStream` synthesizes chat chunks and wrote them out unchanged. Each chunk is now translated with `TranslateOpenAIToClaudeStreamSession` when the client is a streaming Messages client, closing with `EnsureStreamClosed` and never emitting `[DONE]`. The non-streaming fold is untouched (it reads those same chat chunks with `sseToOpenAIJSON`).
+- The provider entry now carries the same class of risk notice as `gemini-cli`: it presents itself as the Kiro IDE client against AWS CodeWhisperer and speaks for a session not licensed for proxy gateways.
+
+Verified live against an `idc` (IAM Identity Center) connection: `claude-sonnet-5`, `claude-opus-5`, `claude-opus-5.5`, `gpt-5.6-sol`, `deepseek-3.2`, `qwen3-coder-next`, `glm-5`, `MiniMax-M2.5` and `claude-opus-5-thinking` all answer; tool history survives the round trip; streaming text and streaming tool calls arrive as Anthropic `content_block_delta` / `input_json_delta`.
+
+### fix(combo): keep tool results when a Messages combo falls through to a non-Claude seat
+- A combo fixes the request body's wire format at its FIRST member. When that member speaks Claude, a `/v1/messages` client's body stayed Messages-shaped for every seat behind it, and a non-Claude seat (`cx/gpt-6.x`, DeepSeek, …) was handed `tool_use`/`tool_result` blocks it cannot represent: the Responses conversion keeps only blocks carrying a `text` key, so every tool call and its result silently vanished.
+- The model never saw the output of its own tool call and re-issued the same command indefinitely — a bash loop that repeated once the combo's Anthropic seat was rate-limited and the turn landed on a Codex seat every time.
+- `tryForwardWithConnection` now converts a Messages-shaped body to Chat Completions when the candidate upstream does not serve the Messages endpoint itself, mirroring the opposite conversion that already ran for the other direction. `bodySpeaksClaudeMessages` decides the shape from the body (top-level `system`, `input_schema` tools, Claude-only block types), so Chat and Responses bodies, and a text-only Messages body, are left untouched; a provider that does serve Messages (minimax-code, opencode-zen's Claude lane) still receives Messages.
+- The client's `stream` flag is copied onto the converted body: the converter writes its own `"stream": false`, and a streamed turn handed a buffered answer reads as a dead connection.
+
+### fix(codex): drop an orphaned tool output instead of failing the turn, and log tool blocks
+- A `function_call_output` naming a `call_id` the body carries no `function_call` for made the Codex backend answer `502 "No tool call found for function call output with call_id gone-1"` and lose the whole turn, where the Claude lane answers normally. `buildResponsesBody` now drops such a result: the pairing pass has no call to attach it to, and clients replay a history trimmed from the front, so an orphan is ordinary rather than corrupt.
+- A Claude tool turn was logged as an empty message. `extractContent` read only a block's `text` key, which `tool_use`, `tool_result` and `thinking` do not have, so the Recent Requests detail showed a 186k-token request as twenty empty rows and a lost tool result could not be diagnosed from it. Blocks now render as `[tool_use <name> <input>]`, `[tool_result <content>]` and `[thinking <text>]`, truncated like every other detail field.
+- Two defects found while writing that pass: the `thinking` payload is read with a checked assertion (a null or non-string value used to panic the very request the log only describes), and one shared 2KB budget bounds a whole content array so a turn carrying hundreds of blocks cannot scale the preview with the block count.
+
+### Changed
+
+- **chore(deps): bump `golang.org/x/net` to v0.62.0 and `golang.org/x/crypto` to v0.59.0** — clears the three dependency-level findings from `govulncheck` (none were reachable from this code, symbol-level scan was already clean):
+  - GO-2026-6866 / GO-2026-6860: `golang.org/x/net` html parser namespace-transition and quadratic text-node coalescing issues, fixed in v0.62.0.
+  - GO-2026-5932: unmaintained `golang.org/x/crypto/openpgp` module-level advisory, superseded by v0.59.0.
+- Transitive bumps: `x/sync` v0.25.0, `x/sys` v0.50.0, `x/text` v0.44.0.
+
+### Fixed
+
+- `TestRecordConnectionAccountBanFailure_EscalatesAndClears` no longer fails on Windows: the clock has ~15 ms resolution, so two consecutive ban records inside one escalation step could produce identical park-until stamps. Strict outlasting is now only asserted when the escalation window actually grew.
+
+### Verification
+
+- `govulncheck ./...` clean before and after; the three findings were dependency-level only (0 symbol-level).
+- Portability gate: all five `CROSS_TARGETS` build with `CGO_ENABLED=0`.
+- `go test ./...` passes except two pre-existing environment issues on this workstation (production `.env` overriding `TestLoadConfigFromDotEnv` fixtures); the fixed flake passes `-count=3`.
+
+### Added
+
+- A mandatory live UI regression gate for `web/` (AGENTS.md §6.H): a PR that changes what the dashboard shows, copies, submits, or names must carry a `web/e2e/` test that drives a real gateway in Chromium and asserts the observable result — the rendered text, clipboard contents, or submitted request. The new test must fail on the base and pass with the fix, both results shown in the PR. Screenshots must be element-scoped and capture the thing that changed. Display and storage aliases must stay separate (upstream keeps `providerDisplayAlias` and `providerStorageAlias` distinct).
+- §5.C.5: changing or deleting an existing test assertion is now a contract change that needs a source of truth and an explicit justification in the PR body; a test that only asserts the new behaviour is a recording, not verification.
+
+### Why
+
+- PR #1259 (`929acc66`) changed the provider page's Copy button to a helper that returned the raw provider id for every registered provider. The button copied `opencode/<model>` where the gateway serves `oc/<model>`. `bun test src scripts` stayed green, the svelte ratchet stayed green, and the PR carried screenshots — of a different part of the page. No gate rendered the button and read the clipboard.
+
+### Verification
+
+- Added `web/e2e/providerCopyModelPrefix.test.ts`: boots a real gateway in Chromium at an isolated data dir, opens `/dashboard/providers/opencode`, asserts every rendered model id carries the published `oc/` prefix, presses the first Copy button and reads the clipboard. It **fails on base** (`opencode/...`) and **passes with the fix** (`oc/...`), both observed locally against rebuilt bundle and binary.
+- `bun test src scripts` → 888 pass / 0 fail. Full e2e suite still green on CI.
+
+### Installers: `VERSION=exp` for one-click experimental builds
+
+- `install.sh`, `install-noavx.sh` and `install.ps1` now accept `VERSION=exp`
+  (also `experimental`), resolving the newest GitHub pre-release by publish
+  date. `releases/latest` skips pre-releases, so the old one-liner silently
+  installed stable; pinning `VERSION=vX.Y.Z-exp.N` still works.
+- Reason: experimental builds were documented as "grab the asset manually",
+  which is exactly the friction the one-line installer exists to remove.
+- No jq dependency on Unix; API rate-limit failures produce a clear error.
+
+### Fixed
+
+- The provider detail page's **Copy** button handed out the provider's internal id instead of the prefix its model ids are published under: `opencode/nemotron-3-ultra-free` where the gateway serves `oc/nemotron-3-ultra-free`. Pasting that id back into a client failed, because the router resolves a model id by its published prefix.
+
+### Why
+
+- PR #1259 replaced the copy target with `displayAlias()`, which returned the raw provider id for every registered provider — it only ever returned a node's prefix for a compatible node, which is the case the fix was written for.
+- The published prefix is the registry alias (`oc` for opencode, `cmc` for commandcode, `ds` for deepseek) or the node's own prefix. Upstream resolves it the same way (`providers/[id]/page.js:217`).
+
+### How it was verified
+
+- New helper `providerDisplayPrefix` in `web/src/components/connections/types.ts`, driven by the provider catalog's new `modelPrefix` field.
+- `ProviderMeta.ModelPrefix` is served by `GET /api/providers/catalog` and filled from `GetProviderAlias(id)` — the same function `/v1/models` publishes model ids with, so the value the dashboard copies and the value the gateway serves cannot drift apart.
+- New tests: `web/src/components/connections/providerDisplayPrefix.test.ts` (fails on base, passes with the fix) and `internal/providers/catalog_alias_resolvable_test.go` (every catalog prefix equals the published alias; every published prefix resolves back to its own provider).
+- Live check on a scratch gateway: base rendered `opencode/nemotron-3-ultra-free`, head renders `oc/nemotron-3-ultra-free`. Screenshots in `docs/screenshots/provider-model-copy-{before,after}.png`.
+- `bun test src scripts` → 888 pass / 0 fail; `bun run build` green; `bun run ratchet:svelte` → 0 unresolved identifiers, 74 errors (baseline 74); `go test ./internal/providers/` green.
+
+### Removed
+
+- `gw-head`, a locally built 66 MB gateway binary that entered `main` through PR #1298, is untracked again and the `.gitignore` entry keeps it out.
+
+### Fixed
+
+- The combo card's action trigger rendered the literal text `progress_activity animate-spin` instead of a spinning icon while a combo test was running. The Material Symbols glyph name and the Tailwind `animate-spin` utility were both written into the span's **text**, so the font had no single ligature to draw and the browser showed the words. The utility now lives in the `class` attribute and the glyph text carries the icon name alone.
+
+### Verification
+
+- New test `web/src/lib/iconGlyphText.test.ts` fails on base (the offending literal is reported with file and line) and passes with the fix. It scans every `.svelte` file for a Material Symbols span whose quoted text contains whitespace — a glyph name never does.
+- `bun test src scripts` → 880 pass / 0 fail. `bun run build` green. `bun run ratchet:svelte` → 0 unresolved identifiers, 74 errors (baseline 74).
+- Live check on a scratch gateway: base trigger span text = `progress_activity animate-spin` (272 px wide, no icon drawn); head = `progress_activity` with `animate-spin` on the class (28 px, spinner drawn).
+- Screenshots: `docs/screenshots/combo-test-spinner-before.png` (base) and `docs/screenshots/combo-test-spinner-after.png` (head).
+
+### Added
+
+- The contributors page is regenerated from the GitHub API on every Pages deploy. `go run ./tools/sitegen -gen-team` fetches the repository's contributors and display names and rewrites the grid in `wiki/team.md` in a deterministic order, excluding bot accounts and keeping the owner's curated byline. The Pages workflow runs it before the site builds, so the deployed roster is the current one, and commits the regenerated page back when it changed — which keeps the checkout's copy, the one a local build and the shape tests read, from falling behind.
+
+### Fixed
+
+- The page had gone stale in three ways: the owner card said 585 commits when the API reports 692, six contributors who landed after the page was written were missing (`ghozali25`, `blestafist`, `Xractz`, `DaDecky`, `shiwildy`, `ariefra`), and the shape test pinned exactly 24 cards — the snapshot's count — so the test kept passing on a roster that had fallen behind. The test now pins what cannot move: at least one card, exactly one owner, one profile link and one lazy sized avatar per card.
+
+### fix(nvidia): harden NIM parameter sanitization and degraded cluster cooldown (Closes #1285)
+
+Port of upstream `decolua/9router` `2275bc0d` + `ced0cf6e6` (both merged on upstream `master`, v0.5.119).
+
+- **NIM parameter sanitization** (`internal/proxy/executor/nvidia.go`): NVIDIA NIM answers 400 for client-sent params instead of ignoring them. `sanitizeNIMBody` strips `client_metadata`, `prompt_cache_key`, `service_tier`, `anthropic_beta`, `thinking_budget`, `user_id`, `custom_field` (upstream paramSupport nvidia `drop` rule, decolua@2275bc0d) before forwarding. A body with nothing to change is returned byte-for-byte.
+- **Reasoning alias normalization** (same file): assistant-turn `reasoning` is renamed to `reasoning_content` (NIM treats them as aliases of one field — replaying both makes its deserializer fail on a duplicate field). An explicit canonical `reasoning_content` wins; the alias is dropped (behavior from ced0cf6e6, folded into the same single-pass sanitizer).
+- **Degraded-cluster model-scoped cooldown, no API-key lock**: new `{Provider: "nvidia", Text: "degraded", CooldownMs: 15m, ModelScoped: true}` rule in `internal/providers/errorclassify.go` (upstream `modelScoped`), `KindModelUnavailable`/`ScopeModel` classification in `internal/errclass`, and lock-path handling in `internal/handlers/chat/{fallback,combo}.go`: a model-scoped verdict locks only `modelLock_<model>` for 15 minutes and records a scoped error — the account-scoped `rateLimitedUntil` cooldown is NOT set, so sibling models on the same key keep serving. `providers.RetryModelScopedError` routes a model-scoped verdict on a non-retryable status (NIM's degraded arrives as 400, otherwise request-scoped) into the lock path.
+- **Upstream divergence**: upstream's registry also adds the NIM model catalog and a transport timeout quirk in the same commit; the Go port's catalog already carries the Nemotron/GLM/DeepSeek entries, and the model-list/timeout portion is out of scope for the three requested behaviors.
+- Verified: `go test ./internal/translator/... ./internal/errclass/... ./internal/providers/...` plus `./internal/handlers/chat/...` and `./internal/proxy/...` all pass; `CHANGELOG.md` untouched.
+
+<!-- fragment: 1290 nvidia-nim-hardening -->
+
+### feat(dashboard): expand white-label branding with five new fields
+
+- Settings > White-label branding card gains **Application description** (200 chars),
+  **Tagline** (80 chars), **Login logo URL**, **Tray app name** (60 chars), and
+  **Tray icon URL**. All five are stored, returned by `GET /api/settings`, and
+  read by the surfaces that render them.
+- **Login screen consumes the branding.** `LoginView.svelte` now renders the
+  tagline beneath the app name and points its logo tile at `loginLogo` when set
+  — both read from `/api/auth/status`, which already answers before a session
+  exists. The title and logo fall back to `9router-go` and `/favicon.svg` when
+  unset.
+- **System tray companion consumes its name.** `cmd/9router-tray/gui.go` reads
+  `trayAppName` from the gateway's settings row (`GET /api/settings`) and shows
+  it as the menu's first item and the tray title. An unreachable gateway, a
+  non-200 response, or a blank title all fall back to `9Router Go` (C5), and
+  `tray.ico` stays embedded so a broken `trayIcon` URL can never leave the tray
+  with no mark.
+- `internal/handlers/dashboard/auth.go` adds `appName`, `appTagline` and
+  `loginLogo` to the `GET /api/auth/status` payload, so the login screen reads
+  them from the one endpoint it already calls.
+- `internal/db/settings.go` carries the five fields on `SettingsData` (plus
+  `appName`/`appLogoUrl`), so the typed read sees what the settings blob holds.
+- `internal/handlers/dashboard/whitelabel.go` adds five normalizer functions
+  (`normalizeAppDescription`, `normalizeAppTagline`, `normalizeLoginLogoUrl`,
+  `normalizeTrayAppName`, `normalizeTrayIconUrl`) and extends
+  `applyWhitelabelUpdate` and `sanitizeWhitelabel` to cover the new keys.
+  Login-logo and tray-icon URLs reuse `normalizeAppLogoUrlWithMax` so the same
+  HTTPS-or-local-path rule applies.
+- `web/src/components/ProfileSettingsView.svelte` loads the five fields in
+  `$effect`, `loadSettings`, and `handleSaveAll`; the render block inserts five
+  inputs in the existing branding card.
+- `internal/handlers/dashboard/whitelabel_test.go` adds table-driven tests for
+  all five normalizers and updates `TestApplyWhitelabelUpdateClearsOnBadPayload`,
+  `TestApplyWhitelabelUpdateKeepsGoodPayload`,
+  `TestSanitizeWhitelabelDropsUnusableStoredValues`, and
+  `TestSanitizeWhitelabelKeepsUsableStoredValues` to cover the new keys.
+
+**Verified.** `go build ./...` (including `CGO_ENABLED=0 GOOS=linux`), `go vet`,
+`go test ./internal/handlers/dashboard/`, and `bun run build` pass. `bun run
+ratchet:svelte` reports 0 unresolved identifiers and 74 errors against a
+baseline of 74 — no new errors. `TestRecordConnectionAccountBanFailure_EscalatesAndClears`
+fails identically on `luqman/main` at the same commit, so it is not this PR.
+
 ## [v1.9.17-exp.10] - 2026-11-20
 
 ### agy-acp: fix `/v1/messages` (Anthropic mode) responses
