@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -669,7 +670,7 @@ func engineOfHandle(db *sql.DB) Engine {
 // mirror DDL in schema_postgres.go.
 func ensureSchema(db *sql.DB, engine Engine) error {
 	if engine == EnginePostgres {
-		return schemaPostgres(db)
+		return schemaPostgres(context.Background(), db)
 	}
 	return ensureSchemaSQLite(db)
 }
@@ -722,7 +723,7 @@ func ensureSchemaSQLite(db *sql.DB) error {
 	); err != nil {
 		return fmt.Errorf("core schema: seed settings: %w", err)
 	}
-	if err := BackfillCompressionAnalytics(db); err != nil {
+	if err := BackfillCompressionAnalytics(context.Background(), db); err != nil {
 		return err
 	}
 	return nil

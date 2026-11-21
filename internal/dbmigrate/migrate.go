@@ -54,7 +54,7 @@ func Export(sqlitePath, outDir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dbmigrate: open sqlite %s: %w", sqlitePath, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("dbmigrate: sqlite %s unreachable: %w", sqlitePath, err)
 	}
@@ -85,7 +85,7 @@ func userTables(db *sql.DB) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dbmigrate: introspect tables: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var tables []string
 	for rows.Next() {
 		var name string
@@ -105,7 +105,7 @@ func exportTable(db *sql.DB, table, path string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("dbmigrate: select %s: %w", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
 		return 0, fmt.Errorf("dbmigrate: columns %s: %w", table, err)
@@ -115,7 +115,7 @@ func exportTable(db *sql.DB, table, path string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("dbmigrate: create %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	enc := json.NewEncoder(f)
 	values := make([]any, len(cols))
@@ -156,7 +156,7 @@ func ReadJSONL(path string) ([]string, []map[string]any, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("dbmigrate: open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	dec := json.NewDecoder(f)
 	var (
 		cols []string
@@ -203,7 +203,7 @@ func Import(ctx context.Context, dsn, dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dbmigrate: open pg: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("dbmigrate: pg unreachable: %w", err)
 	}
@@ -317,7 +317,7 @@ func insertChunks(ctx context.Context, db *sql.DB, table string, cols []string, 
 	if err != nil {
 		return fmt.Errorf("dbmigrate: begin tx %s: %w", table, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	for start := 0; start < len(rows); start += BatchSize {
 		if err := insertChunk(ctx, tx, table, cols, rows[start:min(start+BatchSize, len(rows))], legacy); err != nil {

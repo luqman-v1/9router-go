@@ -41,16 +41,16 @@ const (
 // page cache per conn (see sqliteCacheSizeKB). Overridable via env so operators
 // can tune for their workload without rebuilding.
 const (
-	pgDefaultMaxOpenConns   = 50
-	pgDefaultMaxIdleConns   = 10
+	pgDefaultMaxOpenConns = 50
+	pgDefaultMaxIdleConns = 10
 	// pgMaxOpenConnsCeiling caps the operator override for DB_MAX_CONNS. Large
 	// values exhaust file descriptors on small boxes and collide with PG's
 	// max_connections (200 in the deploy/ compose); 200 is generous headroom.
 	pgMaxOpenConnsCeiling = 200
-	pgConnMaxLifetime       = 30 * time.Minute
-	pgConnMaxIdleTime       = 5 * time.Minute
-	envDBMaxOpenConns       = "DB_MAX_CONNS"
-	envDBMaxIdleConns       = "DB_MAX_IDLE_CONNS"
+	pgConnMaxLifetime     = 30 * time.Minute
+	pgConnMaxIdleTime     = 5 * time.Minute
+	envDBMaxOpenConns     = "DB_MAX_CONNS"
+	envDBMaxIdleConns     = "DB_MAX_IDLE_CONNS"
 )
 
 // detectEngine picks the driver from the DSN shape: a postgres:// or
@@ -91,10 +91,11 @@ func OpenDatabase(dsn string) (*sql.DB, error) {
 }
 
 func openPostgres(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
+	connector, err := newPgxRebindConnector(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("sql.Open(pgx): %w", err)
+		return nil, err
 	}
+	db := sql.OpenDB(connector)
 	// No PRAGMAs and no file chmod: PG has no file to secure and its
 	// configuration is server-side. Pool sizing is the only knob.
 	maxOpen, maxIdle := pgPoolConns()

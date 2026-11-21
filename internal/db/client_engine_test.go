@@ -2,8 +2,8 @@ package db
 
 import (
 	"database/sql"
-	"testing"
 	_ "modernc.org/sqlite"
+	"testing"
 )
 
 func TestDetectEngine(t *testing.T) {

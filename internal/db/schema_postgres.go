@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -352,39 +353,43 @@ var postgresSupersededIndexes = []string{
 // written in SQLite dialect (INSERT OR REPLACE, PRAGMA) and worker B owns the
 // engine-portable rewrite. Skipping it on PG only delays a one-time telemetry
 // backfill; the gate that marks it done lives in _meta and stays unset.
-func schemaPostgres(db *sql.DB) error {
+func schemaPostgres(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("postgres schema: nil db")
 	}
 
+	if err := pgEnsureSQLiteCompat(ctx, db); err != nil {
+		return err
+	}
+
 	for _, stmt := range postgresSupersededIndexes {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("postgres schema: drop superseded index: %w", err)
 		}
 	}
 	for _, t := range postgresTables {
-		if err := pgEnsureTable(db, t); err != nil {
+		if err := pgEnsureTable(ctx, db, t); err != nil {
 			return err
 		}
 	}
 	for _, c := range postgresAdditiveColumns {
-		exists, err := pgTableExists(db, c.table)
+		exists, err := pgTableExists(ctx, db, c.table)
 		if err != nil {
 			return err
 		}
 		if !exists {
 			continue
 		}
-		if err := pgAddColumnIfMissing(db, c.table, c.column, c.definition); err != nil {
+		if err := pgAddColumnIfMissing(ctx, db, c.table, c.column, c.definition); err != nil {
 			return err
 		}
 	}
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(ctx, 
 		`INSERT INTO _meta(key, value) VALUES('schemaVersion', '1') ON CONFLICT (key) DO NOTHING`,
 	); err != nil {
 		return fmt.Errorf("postgres schema: seed _meta: %w", err)
 	}
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(ctx, 
 		`INSERT INTO settings(id, data) VALUES(1, '{}') ON CONFLICT (id) DO NOTHING`,
 	); err != nil {
 		return fmt.Errorf("postgres schema: seed settings: %w", err)
@@ -392,7 +397,7 @@ func schemaPostgres(db *sql.DB) error {
 	return nil
 }
 
-func pgEnsureTable(db *sql.DB, t pgTableDef) error {
+func pgEnsureTable(ctx context.Context, db *sql.DB, t pgTableDef) error {
 	defs := make([]string, 0, len(t.columns)+1)
 	for _, c := range t.columns {
 		defs = append(defs, c.name+" "+c.definition)
@@ -400,18 +405,18 @@ func pgEnsureTable(db *sql.DB, t pgTableDef) error {
 	if t.primaryKey != "" {
 		defs = append(defs, t.primaryKey)
 	}
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(ctx, 
 		fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", t.name, strings.Join(defs, ", ")),
 	); err != nil {
 		return fmt.Errorf("postgres schema: create table %s: %w", t.name, err)
 	}
 	for _, c := range t.columns {
-		if err := pgAddColumnIfMissing(db, t.name, c.name, c.definition); err != nil {
+		if err := pgAddColumnIfMissing(ctx, db, t.name, c.name, c.definition); err != nil {
 			return err
 		}
 	}
 	for _, idx := range t.indexes {
-		if _, err := db.Exec(idx); err != nil {
+		if _, err := db.ExecContext(ctx, idx); err != nil {
 			return fmt.Errorf("postgres schema: create index on %s: %w", t.name, err)
 		}
 	}
@@ -421,8 +426,8 @@ func pgEnsureTable(db *sql.DB, t pgTableDef) error {
 // pgAddColumnIfMissing mirrors addColumnIfMissing: PG, like SQLite, forbids
 // PRIMARY KEY / UNIQUE inside ADD COLUMN, so those fragments are stripped —
 // they only take effect at CREATE TABLE time on fresh databases.
-func pgAddColumnIfMissing(db *sql.DB, table, column, definition string) error {
-	exists, err := pgColumnExists(db, table, column)
+func pgAddColumnIfMissing(ctx context.Context, db *sql.DB, table, column, definition string) error {
+	exists, err := pgColumnExists(ctx, db, table, column)
 	if err != nil {
 		return err
 	}
@@ -435,7 +440,7 @@ func pgAddColumnIfMissing(db *sql.DB, table, column, definition string) error {
 	}
 	safe = strings.TrimSpace(safe)
 	safe = strings.Join(strings.Fields(safe), " ")
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(ctx, 
 		fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, safe),
 	); err != nil {
 		return fmt.Errorf("postgres schema: add column %s.%s: %w", table, column, err)
@@ -447,9 +452,9 @@ func pgAddColumnIfMissing(db *sql.DB, table, column, definition string) error {
 // error string. PG stores identifiers lowercase by default, so compare
 // case-insensitively — callers pass mixed-case names straight from the
 // shared schema (providerConnections, settings.id, etc.).
-func pgColumnExists(db *sql.DB, table, column string) (bool, error) {
+func pgColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
 	var count int
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM information_schema.columns
 		 WHERE lower(table_name) = lower($1) AND lower(column_name) = lower($2)`,
 		table, column,
@@ -463,9 +468,9 @@ func pgColumnExists(db *sql.DB, table, column string) (bool, error) {
 // pgTableExists reports whether a table is present. Case-insensitive — PG
 // stores identifiers lowercase by default and callers pass the shared
 // mixed-case names.
-func pgTableExists(db *sql.DB, table string) (bool, error) {
+func pgTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
 	var count int
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM information_schema.tables WHERE lower(table_name) = lower($1)`,
 		table,
 	).Scan(&count)
@@ -473,4 +478,101 @@ func pgTableExists(db *sql.DB, table string) (bool, error) {
 		return false, fmt.Errorf("postgres schema: inspect table %s: %w", table, err)
 	}
 	return count > 0, nil
+}
+
+// pgEnsureSQLiteCompat creates the SQLite JSON compatibility functions that
+// the gateway's query layer uses. The gateway was written against SQLite's
+// json_set/json_extract/json_valid/json()/json_each; these PL/pgSQL shims let
+// it run unchanged on PostgreSQL (PRD §4.1 option b).
+//
+// All shims are idempotent (CREATE OR REPLACE FUNCTION) so they are safe to
+// re-run on every boot.
+func pgEnsureSQLiteCompat(ctx context.Context, db *sql.DB) error {
+	stmts := []string{
+		// json_valid(TEXT) → bool. Mirrors SQLite's json_valid: true for any
+		// text that parses as JSON (object, array, string, number, bool, null).
+		`CREATE OR REPLACE FUNCTION json_valid(v TEXT) RETURNS boolean
+		 LANGUAGE plpgsql IMMUTABLE AS $$
+		 BEGIN
+		   IF v IS NULL THEN RETURN false; END IF;
+		   PERFORM v::jsonb;
+		   RETURN true;
+		 EXCEPTION WHEN OTHERS THEN
+		   RETURN false;
+		 END;
+		 $$`,
+
+		// json_extract(TEXT, path TEXT) → TEXT. Mirrors SQLite's json_extract,
+		// which returns the raw scalar value (not a JSON fragment). Returns
+		// NULL when the path is absent or the value is not JSON.
+		`CREATE OR REPLACE FUNCTION json_extract(v TEXT, path TEXT) RETURNS text
+		 LANGUAGE plpgsql IMMUTABLE AS $$
+		 DECLARE
+		   jb jsonb;
+		 BEGIN
+		   IF v IS NULL OR path IS NULL THEN RETURN NULL; END IF;
+		   BEGIN
+		     jb := v::jsonb;
+		   EXCEPTION WHEN OTHERS THEN
+		     RETURN NULL;
+		   END;
+		   RETURN jb#>>string_to_array(substring(path from 2), '.');
+		 EXCEPTION WHEN OTHERS THEN
+		   RETURN NULL;
+		 END;
+		 $$`,
+
+		// json_set(TEXT, VARIADIC args TEXT[]) → TEXT. Mirrors SQLite's
+		// json_set: walks the path list in (path, value) pairs and sets each.
+		// Value is inserted as-is (text scalar). Returns the modified JSON as
+		// text.
+		`CREATE OR REPLACE FUNCTION json_set(v TEXT, VARIADIC args TEXT[]) RETURNS text
+		 LANGUAGE plpgsql IMMUTABLE AS $$
+		 DECLARE
+		   jb jsonb;
+		   i int := 1;
+		   path text;
+		   val text;
+		 BEGIN
+		   IF v IS NULL THEN RETURN NULL; END IF;
+		   BEGIN
+		     jb := v::jsonb;
+		   EXCEPTION WHEN OTHERS THEN
+		     jb := '{}'::jsonb;
+		   END;
+		   WHILE i <= array_length(args, 1) - 1 LOOP
+		     path := args[i];
+		     val := args[i+1];
+		     jb := jsonb_set(jb, string_to_array(substring(path from 2), '.'), to_jsonb(val), true);
+		     i := i + 2;
+		   END LOOP;
+		   RETURN jb::text;
+		 END;
+		 $$`,
+
+		// json(TEXT) → jsonb. Mirrors SQLite's json() which validates and
+		// normalizes a JSON string. Returns a jsonb; NULL for invalid input.
+		`CREATE OR REPLACE FUNCTION json(v TEXT) RETURNS jsonb
+		 LANGUAGE sql IMMUTABLE AS $$
+		   SELECT v::jsonb
+		 $$`,
+
+		// json_array(VARIADIC args TEXT[]) → jsonb. Mirrors SQLite's
+		// json_array which builds a JSON array from text values.
+		`CREATE OR REPLACE FUNCTION json_array(VARIADIC args TEXT[]) RETURNS jsonb
+		 LANGUAGE sql IMMUTABLE AS $$
+		   SELECT to_jsonb(args)
+		 $$`,
+
+		// rowid shim. PG has no rowid; a serial pk named id is the closest
+		// equivalent. The one caller (usage_retention_ledger.go:556) uses it
+		// as `WHERE rowid IN (SELECT value FROM json_each(?))`. We rewrite
+		// that call site to use `id` instead.
+	}
+	for _, stmt := range stmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("postgres schema: sqlite compat: %w", err)
+		}
+	}
+	return nil
 }
