@@ -3,7 +3,7 @@
   import { onMount } from 'svelte'
   import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
-  import { filterFuzzy } from '../lib/fuzzyMatch'
+  import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
   import { marked } from 'marked'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
@@ -107,6 +107,12 @@
   // #6 Bulk arm: pick several ids from the live catalog, bind them at once.
   let bulkArmSearch = $state('')
   let bulkArmModels = $state<string[]>([])
+  // The catalog's comparison index, built once when the list loads. A
+  // keystroke filters through this instead of re-lowercasing and re-stripping
+  // every id on each pass (see buildFuzzyIndex), which is what keeps typing
+  // responsive over a catalog of ~2,000 ids on the 1-vCPU box the gateway runs
+  // on.
+  let bulkArmIndex = $state<FuzzyIndexEntry[]>([])
   let bulkArmModelsLoading = $state(false)
   let bulkArmPicked = $state<Set<string>>(new Set())
   let bulkArmPresetId = $state('')
@@ -365,6 +371,7 @@
     try {
       const res = await api.getJailbreakModelCatalog()
       bulkArmModels = Array.isArray(res.models) ? res.models : []
+      bulkArmIndex = buildFuzzyIndex(bulkArmModels)
     } catch (e) {
       bulkArmStatus = 'Failed to load models: ' + errorMessage(e)
     } finally {
@@ -485,8 +492,10 @@
     }
     // Fuzzy for plain text only: an explicit regex stays authoritative, while a
     // typed id tolerates a stray space or a one or two character slip instead of
-    // answering "no matches" and making the operator re-type.
-    return filterFuzzy(q, bulkArmModels, 200)
+    // answering "no matches" and making the operator re-type. The index carries
+    // each id's comparison forms, so a keystroke costs one pass over the index
+    // rather than a lowercase and separator strip per id.
+    return filterFuzzyIndexed(q, bulkArmIndex, 200)
   })
   // Select every id the current filter matches — the regex/substring query is
   // the selector, so "arm everything matching /^deepseek/" is one click.
