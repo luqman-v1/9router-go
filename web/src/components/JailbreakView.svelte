@@ -1,7 +1,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
+  import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
   import { filterFuzzy } from '../lib/fuzzyMatch'
   import { marked } from 'marked'
@@ -12,6 +12,7 @@
   import Modal from '../lib/ui/Modal.svelte'
   import Toggle from '../lib/ui/Toggle.svelte'
   import JailbreakPlayground from './jailbreak/JailbreakPlayground.svelte'
+  import JailbreakKeyScope from './jailbreak/JailbreakKeyScope.svelte'
   // Preset library.
   let presets = $state<JailbreakDoc[]>([])
   let loading = $state(false)
@@ -49,6 +50,10 @@
 
   // Per-model / provider / combo bindings.
   let models = $state<Record<string, JailbreakModelConfig>>({})
+  // Client keys, for the per-key editor below. The playground fetches its
+  // own copy, but the editor needs the ids too and the two would otherwise
+  // race on first paint.
+  let apiKeys = $state<APIKey[]>([])
   let bindModelId = $state('')
   let bindPresetId = $state('')
   let bindError = $state('')
@@ -182,11 +187,13 @@
   async function load() {
     loading = true
     try {
-      const [presetList, modelMap, excludeList] = await Promise.all([
+      const [presetList, modelMap, excludeList, keyList] = await Promise.all([
         api.listJailbreakPresets(),
         api.listJailbreakModels(),
         api.getJailbreakExcludes(),
+        api.getApiKeys(),
       ])
+      apiKeys = Array.isArray(keyList) ? keyList : []
       presets = Array.isArray(presetList) ? presetList : []
       models = modelMap || {}
       globalExcludes = excludeList?.excludes || []
@@ -1452,6 +1459,14 @@
       />
     {/if}
       {/if}
+  </Card>
+
+  <!-- The per-key editor: without this the two new routes have no caller in
+       the UI, so an operator can arm a key-scoped binding only through the API.
+       It sits above the playground so the binding is written before it is
+       resolved, and it reuses the keys the playground fetches on its own. -->
+  <Card padding="md">
+    <JailbreakKeyScope keys={apiKeys} presets={presets} initialModelId={bindModelId} onchanged={load} />
   </Card>
 
   <!-- Resolves one id under both scopes so a key-scoped binding is seen
