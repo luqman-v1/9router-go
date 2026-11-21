@@ -3,6 +3,7 @@ package guardrails
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestScanCodeTrafficIsClean is the most important test in this package.
@@ -249,5 +250,108 @@ func TestScanJSONWalksNestedStrings(t *testing.T) {
 	}
 	if second := messages[1].(map[string]any)["content"].(string); second != "you are helpful" {
 		t.Errorf("unrelated message was altered: %q", second)
+	}
+}
+
+// TestScanDetectsPEMPrivateKey proves the private_key detector fires on real
+// PEM blocks (RSA PKCS#1, EC, encrypted PKCS#8) and that Mask redacts the
+// whole block while Block stops the request.
+func TestScanDetectsPEMPrivateKey(t *testing.T) {
+	const rsaKey = "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2lPM\n" +
+		"Qq6qQ2lMlI3m1r5v7x9z8aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRs\n" +
+		"TuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ\n" +
+		"-----END RSA PRIVATE KEY-----"
+	const ecKey = "-----BEGIN EC PRIVATE KEY-----\n" +
+		"MHcCAQEEIB1kL5vQ7x9mN2pR4sT6uV8wX9yZaBcDeFgHiJkLmNoPqRoAoGCCqGSM49\n" +
+		"-----END EC PRIVATE KEY-----"
+	const encKey = "-----BEGIN ENCRYPTED PRIVATE KEY-----\n" +
+		"MIIFHzBJBgkqhkiG9w0BBQ0wPDCCAQMCFA0zQ2lCjGV5r2q3vL8m\n" +
+		"-----END ENCRYPTED PRIVATE KEY-----"
+	// Traditional (PKCS#1) encrypted key: the body carries Proc-Type and
+	// DEK-Info headers, so the hyphen in "DEK-Info: AES-128-CBC," must be
+	// inside the body character class (issue #1282).
+	const encPkcs1Key = "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"Proc-Type: 4,ENCRYPTED\n" +
+		"DEK-Info: AES-128-CBC,8BA4E4C0AB8A0F1D2C3B4A5968778695\n\n" +
+		"MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2lPM\n" +
+		"Qq6qQ2lMlI3m1r5v7x9z8aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRs\n" +
+		"-----END RSA PRIVATE KEY-----"
+
+	for _, tc := range []struct{ name, key string }{
+		{"rsa pkcs1", rsaKey},
+		{"ec", ecKey},
+		{"encrypted pkcs8", encKey},
+		{"encrypted pkcs1 with DEK-Info", encPkcs1Key},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := NewEngine([]string{"pii"}, ActionBlock)
+			d := engine.Scan(tc.key)
+			if len(d.Findings) == 0 {
+				t.Fatalf("no findings for %s PEM key", tc.name)
+			}
+			if d.Action != ActionBlock {
+				t.Errorf("action = %q, want block", d.Action)
+			}
+			var hit bool
+			for _, f := range d.Findings {
+				if f.Detector == "private_key" && f.Entity == "PRIVATE_KEY" {
+					hit = true
+				}
+			}
+			if !hit {
+				t.Errorf("private_key finding not recorded: %+v", d.Findings)
+			}
+		})
+	}
+
+	t.Run("mask redacts the whole block", func(t *testing.T) {
+		engine := NewEngine([]string{"pii"}, ActionMask)
+		d := engine.Scan("config:\n" + rsaKey + "\ntrailing")
+		if d.Action != ActionMask {
+			t.Fatalf("action = %q, want mask", d.Action)
+		}
+		if d.Mutated == "" {
+			t.Fatal("mask produced no mutated content")
+		}
+		if strings.Contains(d.Mutated, "MIIEowIBAAKCAQEA") {
+			t.Error("mutated content still contains the PEM body")
+		}
+		if !strings.Contains(d.Mutated, "[REDACTED]") {
+			t.Errorf("expected redaction marker, got: %q", d.Mutated)
+		}
+		if !strings.Contains(d.Mutated, "config:") || !strings.Contains(d.Mutated, "trailing") {
+			t.Errorf("unrelated content was altered: %q", d.Mutated)
+		}
+	})
+}
+
+// TestScanPEMPatternLinear guards against quadratic scanning / ReDoS when
+// hostile input repeats BEGIN headers with no END marker. RE2 guarantees
+// linear time; a generous wall-clock bound keeps the test deterministic on a
+// loaded CI box while still catching a regression to a backtracking engine or
+// a pattern that backtracks on repeated BEGIN markers.
+func TestScanPEMPatternLinear(t *testing.T) {
+	const begin = "-----BEGIN PRIVATE KEY-----\n"
+	// 1 MB of repeated BEGIN headers, no END marker: the worst case for a
+	// quadratic pattern.
+	repeated := strings.Repeat(begin, 1<<20/len(begin))
+
+	// Go RE2 scans 1 MB in well under 50ms. The bound is 10s rather than 2s
+	// because the race detector adds 5-10x overhead (measured 4.35s on a
+	// GitHub Actions runner); a quadratic implementation takes minutes, so the
+	// regression is still caught.
+	const budget = 10 * time.Second
+
+	engine := NewEngine([]string{"pii"}, ActionBlock)
+	start := time.Now()
+	d := engine.Scan(repeated)
+	elapsed := time.Since(start)
+
+	if len(d.Findings) != 0 {
+		t.Errorf("expected no findings for unpaired BEGIN headers, got %d: %+v", len(d.Findings), d.Findings)
+	}
+	if elapsed > budget {
+		t.Errorf("scan of %d bytes took %v, want < %v (quadratic/ReDoS regression)", len(repeated), elapsed, budget)
 	}
 }
