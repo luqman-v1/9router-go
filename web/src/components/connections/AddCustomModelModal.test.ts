@@ -38,7 +38,7 @@ describe('explicit custom model type', () => {
   it('defaults to llm and resets to it when the dialog is reopened', () => {
     const js = compiledModal()
     expect(js).toContain("let modelType = $.state('llm');")
-    expect(js).toContain("$.set(modelType, 'llm');")
+    expect(js).toContain("$.set(modelType, editing()?.type ?? 'llm', true);")
   })
 
   it('passes the selected type to onSave instead of leaving the caller to infer it', () => {
@@ -73,7 +73,7 @@ describe('explicit custom model type', () => {
 
   it('locks the selector while a save or a test is in flight', () => {
     expect(compiledModal()).toContain(
-      "select.disabled = $.get(saving) || $.get(bulkSaving) || $.get(testStatus) === 'testing';",
+      "select.disabled = !!editing() || $.get(saving) || $.get(bulkSaving) || $.get(testStatus) === 'testing';",
     )
   })
 
