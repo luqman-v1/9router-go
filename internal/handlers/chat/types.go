@@ -22,6 +22,13 @@ type comboStickyState struct {
 	// requests reuse it so a tool-use sequence stays on the same provider,
 	// even after Index has advanced for the next turn.
 	ServingIndex int
+	// Space is the combo's initial configured target list the rotation pointer
+	// lives in; Models is the list handed to the last rotation. Advancing the
+	// pointer across a list that a capability or affinity filter shortened
+	// skips whatever sat past the cut and, when a later seat served as a
+	// fallback, serves the same model again next turn.
+	Space  []string
+	Models []string
 
 	// Weighted round-robin state
 	Sig            string
