@@ -3,7 +3,11 @@
   import { onMount } from 'svelte'
   import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
+<<<<<<< HEAD
   import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
+=======
+  import { filterFuzzy } from '../lib/fuzzyMatch'
+>>>>>>> 57c1e4f (feat(web): tolerate slip and split ids in the bulk-arm model search)
   import { marked } from 'marked'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
@@ -492,10 +496,15 @@
     }
     // Fuzzy for plain text only: an explicit regex stays authoritative, while a
     // typed id tolerates a stray space or a one or two character slip instead of
+<<<<<<< HEAD
     // answering "no matches" and making the operator re-type. The index carries
     // each id's comparison forms, so a keystroke costs one pass over the index
     // rather than a lowercase and separator strip per id.
     return filterFuzzyIndexed(q, bulkArmIndex, 200)
+=======
+    // answering "no matches" and making the operator re-type.
+    return filterFuzzy(q, bulkArmModels, 200)
+>>>>>>> 57c1e4f (feat(web): tolerate slip and split ids in the bulk-arm model search)
   })
   // Select every id the current filter matches — the regex/substring query is
   // the selector, so "arm everything matching /^deepseek/" is one click.
