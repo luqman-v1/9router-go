@@ -496,3 +496,109 @@ func TestSanitizeClaudeThinking(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureMessagesFor_Claude55DottedThinking pins the upstream f3e1f716
+// request-shape rules for the dotted Claude 5.5 ids on the GitHub Copilot lane.
+// Opus 5.5 never sees thinking.type "disabled" (the block is dropped and effort
+// clamped to low), Sonnet 5.5 rewrites "disabled" to "between_tools", and both
+// downgrade a forced tool_choice to "auto".
+func TestEnsureMessagesFor_Claude55DottedThinking(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		body         string
+		wantThinking string // "absent", "disabled", "between_tools", "adaptive"
+		wantEffort   string // "absent", "low", "high"
+		wantTool     string // "absent", "auto", "any"
+	}{
+		{
+			name:         "opus-5.5 thinking-off never sends disabled",
+			model:        "claude-opus-5.5",
+			body:         `{"max_tokens":4096,"stream":false,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"Evaluate."}]}`,
+			wantThinking: "absent",
+			wantEffort:   "low",
+		},
+		{
+			name:         "opus-5.5 mainloop keeps adaptive + display",
+			model:        "claude-opus-5.5",
+			body:         `{"max_tokens":32000,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},"tools":[{"name":"Bash","description":"Run","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"go"}]}`,
+			wantThinking: "adaptive",
+			wantEffort:   "high",
+		},
+		{
+			name:         "opus-5.5 forced tool choice downgraded to auto",
+			model:        "claude-opus-5.5",
+			body:         `{"max_tokens":32000,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},"tools":[{"name":"Bash","description":"Run","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"},"messages":[{"role":"user","content":"go"}]}`,
+			wantThinking: "adaptive",
+			wantEffort:   "high",
+			wantTool:     "auto",
+		},
+		{
+			name:         "sonnet-5.5 thinking-off rewrites to between_tools",
+			model:        "claude-sonnet-5.5",
+			body:         `{"max_tokens":4096,"stream":false,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"Evaluate."}]}`,
+			wantThinking: "between_tools",
+		},
+		{
+			name:         "sonnet-5.5 forced tool choice downgraded to auto",
+			model:        "claude-sonnet-5.5",
+			body:         `{"max_tokens":32000,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},"tools":[{"name":"Bash","description":"Run","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"},"messages":[{"role":"user","content":"go"}]}`,
+			wantThinking: "adaptive",
+			wantEffort:   "high",
+			wantTool:     "auto",
+		},
+		{
+			name:         "opus-5 (no 5.5 rules) keeps disabled",
+			model:        "claude-opus-5",
+			body:         `{"max_tokens":4096,"stream":false,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"Evaluate."}]}`,
+			wantThinking: "disabled",
+		},
+		{
+			// Native Claude passthrough carrying tool_choice {type:"required"}:
+			// this is not a valid Claude tool_choice type (Claude uses "any"),
+			// but applyClaudeThinkingOffAndToolChoice must NOT downgrade it —
+			// upstream only downgrades "any"/"tool" (claude.js:507).
+			name:         "opus-5.5 native required tool choice not downgraded",
+			model:        "claude-opus-5.5",
+			body:         `{"max_tokens":32000,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},"tools":[{"name":"Bash","description":"Run","input_schema":{"type":"object"}}],"tool_choice":{"type":"required"},"messages":[{"role":"user","content":"go"}]}`,
+			wantThinking: "adaptive",
+			wantEffort:   "high",
+			wantTool:     "required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ensureMessagesFor([]byte(tt.body), "github", tt.model)
+			var m map[string]any
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			if tt.wantThinking == "absent" {
+				if _, ok := m["thinking"]; ok {
+					t.Errorf("thinking must be absent, got %v", m["thinking"])
+				}
+			} else {
+				th, _ := m["thinking"].(map[string]any)
+				if got, _ := th["type"].(string); got != tt.wantThinking {
+					t.Errorf("thinking.type = %q, want %q (body %s)", got, tt.wantThinking, out)
+				}
+			}
+
+			if tt.wantEffort != "" && tt.wantEffort != "absent" {
+				oc, _ := m["output_config"].(map[string]any)
+				if got, _ := oc["effort"].(string); got != tt.wantEffort {
+					t.Errorf("output_config.effort = %q, want %q (body %s)", got, tt.wantEffort, out)
+				}
+			}
+
+			if tt.wantTool != "" && tt.wantTool != "absent" {
+				tc, _ := m["tool_choice"].(map[string]any)
+				if got, _ := tc["type"].(string); got != tt.wantTool {
+					t.Errorf("tool_choice.type = %q, want %q (body %s)", got, tt.wantTool, out)
+				}
+			}
+		})
+	}
+}

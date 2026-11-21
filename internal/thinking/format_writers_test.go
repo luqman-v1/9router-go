@@ -31,6 +31,40 @@ func TestApplyClaudeAdaptive(t *testing.T) {
 	}
 }
 
+// TestApplyClaudeAdaptiveDisplayPreserved pins upstream f3e1f716: an always-on
+// adaptive Claude model (thinkingCanDisable:false) keeps a requested display
+// when the level is not minimal; a non-Claude always-on model stays effort-only.
+func TestApplyClaudeAdaptiveDisplayPreserved(t *testing.T) {
+	// Always-on Claude model (opus-5.5): display survives when thinking is on.
+	out := apply(t, "claude", "github", "claude-opus-5.5",
+		map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}, "output_config": map[string]any{"effort": "high"}}, nil)
+	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "adaptive", "display": "summarized"}) {
+		t.Fatalf("opus-5.5 thinking = %+v", out["thinking"])
+	}
+	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "high"}) {
+		t.Fatalf("opus-5.5 output_config = %+v", out["output_config"])
+	}
+	// Always-on Claude model, thinking-off request (clamped to minimal):
+	// no display, no thinking block, effort clamped to low.
+	out = apply(t, "claude", "github", "claude-opus-5.5",
+		map[string]any{"thinking": map[string]any{"type": "disabled"}}, nil)
+	mustAbsent(t, out, "thinking")
+	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "low"}) {
+		t.Fatalf("opus-5.5 off output_config = %+v", out["output_config"])
+	}
+	// Non-Claude always-on adaptive model: display is dropped, effort survives.
+	// (Upstream gates on /claude/i.test(model); MiniMax-M3.1-Flash-Preview on
+	// the minimax-code lane is a non-Claude model with claude-adaptive and
+	// ThinkingCanDisable:false, so it exercises the else branch that drops the
+	// thinking block entirely.)
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}, "output_config": map[string]any{"effort": "high"}}, nil)
+	mustAbsent(t, out, "thinking")
+	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "high"}) {
+		t.Fatalf("minimax adaptive output_config = %+v", out["output_config"])
+	}
+}
+
 func TestApplyClaudeBudget(t *testing.T) {
 	out := apply(t, "claude", "claude", "claude-haiku-4.5",
 		map[string]any{"reasoning_effort": "high"}, nil)

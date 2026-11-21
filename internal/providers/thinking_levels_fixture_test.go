@@ -111,12 +111,22 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"gemini-3.7-flash": {"low", "medium", "high"},
 		"gemini-3.6-flash": {"low", "medium", "high"},
 		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+		// Upstream f3e1f716 sets thinkingCanDisable:false on the dotted
+		// claude-opus-5.5 ids (thinking can't be switched off), so the
+		// picker drops "none". The v0.5.109 fixture predates that commit.
+		"claude-opus-5.5": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"gh": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
 		"gemini-3.7-flash": {"low", "medium", "high"},
 		"gemini-3.6-flash": {"low", "medium", "high"},
 		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+		"claude-opus-5.5":  {"low", "medium", "high", "xhigh", "max"},
+	},
+	// Token Harbor (th/thh) serves the same dotted claude-opus-5.5 from the
+	// upstream catalog; see the github note above.
+	"tokenharbor": {
+		"claude-opus-5.5": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"bedrock": {
 		"us.anthropic.claude-fable-5": {"low", "medium", "high", "xhigh", "max"},
