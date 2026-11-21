@@ -676,6 +676,7 @@
     const next = new Set(selectedPresetIds)
     if (allSelected) ids.forEach((id) => next.delete(id))
     else ids.forEach((id) => next.add(id))
+    selectedPresetIds = next
   }
   function clearPresetSelection() {
     selectedPresetIds = new Set()
