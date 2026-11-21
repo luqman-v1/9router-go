@@ -250,7 +250,8 @@ func migrationFiles(dir string) ([]string, error) {
 	return tables, nil
 }
 
-// importTable creates the table when missing and inserts its rows in chunks.
+// importTable creates the table when missing (with all-TEXT columns so any
+// legacy SQLite table imports cleanly) and inserts its rows in chunks.
 func importTable(ctx context.Context, db *sql.DB, table, path string) (int, error) {
 	cols, rows, err := ReadJSONL(path)
 	if err != nil {
@@ -259,13 +260,41 @@ func importTable(ctx context.Context, db *sql.DB, table, path string) (int, erro
 	if len(cols) == 0 {
 		return 0, nil
 	}
-	// EnsureSchemaPostgres has already created every table with its declared
-	// column set; the JSONL dump is a subset (or equal), so no per-table DDL is
-	// needed here.
+	if err := ensureTableForImport(ctx, db, table, cols); err != nil {
+		return 0, err
+	}
 	if err := insertChunks(ctx, db, table, cols, rows); err != nil {
 		return 0, err
 	}
 	return len(rows), nil
+}
+
+// ensureTableForImport creates the target table if it does not exist yet.
+// The PG schema (schema_postgres.go) declares the tables the gateway owns,
+// but a SQLite dump can carry legacy tables that only exist in older installs
+// (dbVersion, upstream_leases before it moved into EnsureCoreSchema, etc.).
+// For those we fall back to an all-TEXT table so the import can proceed and
+// no user data is dropped. Tables the schema owns are left untouched.
+func ensureTableForImport(ctx context.Context, db *sql.DB, table string, cols []string) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM information_schema.tables WHERE lower(table_name) = lower($1)`,
+		table,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("dbmigrate: probe table %s: %w", table, err)
+	}
+	if count > 0 {
+		return nil
+	}
+	defs := make([]string, 0, len(cols))
+	for _, c := range cols {
+		defs = append(defs, quoteIdent(c)+" TEXT")
+	}
+	q := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", quoteIdent(table), strings.Join(defs, ", "))
+	if _, err := db.ExecContext(ctx, q); err != nil {
+		return fmt.Errorf("dbmigrate: create table %s: %w", table, err)
+	}
+	return nil
 }
 
 // insertChunks inserts rows in BatchSize chunks inside one transaction and
@@ -364,9 +393,14 @@ func resetSequences(ctx context.Context, db *sql.DB, table string, cols []string
 	return nil
 }
 
-// quoteIdent double-quotes a SQL identifier, escaping embedded quotes.
+// quoteIdent lowercases and double-quotes a SQL identifier, escaping
+// embedded quotes. The CREATE TABLE DDL in schema_postgres.go writes table
+// names unquoted, so PG folds them to lowercase on creation; the import
+// reads mixed-case names from the export's JSONL (mirroring the SQLite
+// schema), so we fold here too to match what CREATE TABLE actually named
+// the relation.
 func quoteIdent(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	return `"` + strings.ReplaceAll(strings.ToLower(s), `"`, `""`) + `"`
 }
 
 // quoteLiteral single-quotes a SQL string literal, escaping embedded quotes.
