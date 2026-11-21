@@ -1492,11 +1492,29 @@ func parseKiroQuotaData(data map[string]any) usageResult {
 		if rt == "" {
 			rt = "unknown"
 		}
+		// A pooling seat answers two CREDIT rows: the NON_POOLED one carries
+		// usage but no limit, the POOLED one carries the shared pool. Keying
+		// both by resourceType made the later row overwrite the earlier, so the
+		// dashboard showed whichever came last — and when AWS sent the
+		// limit-less row last it read as "0 total, -0.59 remaining". The
+		// dimension is what tells them apart, so it always joins the key rather
+		// than only on collision: which row lands first must not decide the
+		// name a quota is shown under.
+		if dim, _ := b["dimensionType"].(string); strings.TrimSpace(dim) != "" {
+			rt += "_" + strings.ToLower(strings.TrimSpace(dim))
+		}
 		used := usageNum(b["currentUsageWithPrecision"], 0)
-		total := usageNum(b["usageLimitWithPrecision"], 0)
+		limit, hasLimit := b["usageLimitWithPrecision"]
+		unlimited := !hasLimit || limit == nil
+		total, remaining := 0.0, 0.0
+		if !unlimited {
+			total = usageNum(limit, 0)
+			remaining = total - used
+		}
 		quotas[rt] = map[string]any{
-			"used": used, "total": total, "remaining": total - used,
-			"resetAt": usageResetTimeToNil(resetAtStr(resetAt)), "unlimited": false,
+			"used": used, "total": total, "remaining": remaining,
+			"resetAt":   usageResetTimeToNil(resetAtStr(resetAt)),
+			"unlimited": unlimited,
 		}
 		if ft, ok := b["freeTrialInfo"].(map[string]any); ok {
 			fu := usageNum(ft["currentUsageWithPrecision"], 0)
