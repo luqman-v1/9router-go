@@ -344,8 +344,8 @@
       oninput={takeOverSuffix}
       placeholder="e.g. bai"
       hint={composedID
-        ? `Optional. Replaces the random suffix of this provider id: ${composedID}`
-        : `Optional. Leave blank to keep a randomized suffix for '${idLiteral}-<this_is_user_custom_suffix>'.`}
+        ? `Optional. Follows the name until you edit it. Replaces the random suffix of this provider id: ${composedID}`
+        : `Optional. Follows the name until you edit it; leave blank to keep a randomized suffix for '${idLiteral}-<this_is_user_custom_suffix>'.`}
       inputClass="font-mono"
     />
 
