@@ -23,10 +23,10 @@ const ExtraBodyProvider = "openrouter"
 const ExtraBodyMaxBytes = 8 << 10
 
 var (
-	ErrExtraBodyNotObject = errors.New("extraBody must be a JSON object")
+	ErrExtraBodyNotObject   = errors.New("extraBody must be a JSON object")
 	ErrExtraBodyInvalidJSON = errors.New("extraBody is not valid JSON (duplicate keys or out-of-range number?)")
-	ErrExtraBodyTooLarge  = fmt.Errorf("extraBody exceeds %d bytes", ExtraBodyMaxBytes)
-	ErrExtraBodyProvider  = errors.New("extraBody is only supported for openrouter custom models")
+	ErrExtraBodyTooLarge    = fmt.Errorf("extraBody exceeds %d bytes", ExtraBodyMaxBytes)
+	ErrExtraBodyProvider    = errors.New("extraBody is only supported for openrouter custom models")
 )
 
 // ExtraBodyProviderAllowed reports whether a custom model stored under alias
