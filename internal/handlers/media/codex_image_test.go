@@ -755,3 +755,325 @@ func TestHandleImages_Codex_Gpt6SolFallback(t *testing.T) {
 		})
 	}
 }
+
+// A reference-image request for a GPT Image model must reach the native Images
+// edits endpoint with Codex CLI's ImageEditRequest body, not the Responses
+// image_generation tool, which rejects every GPT Image edit with "Complexity
+// 'medium' is not supported for this image model".
+func TestHandleImages_Codex_NativeEditRoutesToImagesEdits(t *testing.T) {
+	const image = `{"created":123,"data":[{"b64_json":"ZWRpdGVk"}]}`
+	var gotPath, gotAccept string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAccept = r.Header.Get("Accept")
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(image))
+	}))
+	defer server.Close()
+
+	overrideCodexProvider(t, providers.ProviderConfig{
+		BaseURL:    server.URL + "/backend-api/codex/responses",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	})
+	handler, _ := newCodexImageHandler(t)
+
+	req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(
+		`{"model":"codex/gpt-image-2.5","prompt":"make it blue","image":"data:image/png;base64,cmVm"}`))
+	rec := httptest.NewRecorder()
+
+	handler.HandleImages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/backend-api/codex/images/edits" {
+		t.Errorf("path = %q, want /backend-api/codex/images/edits", gotPath)
+	}
+	if gotAccept != "application/json" {
+		t.Errorf("Accept = %q, want application/json", gotAccept)
+	}
+	if gotBody["model"] != "gpt-image-2.5" {
+		t.Errorf("model = %v, want the image-model id", gotBody["model"])
+	}
+	if gotBody["size"] != "auto" || gotBody["n"] != float64(1) ||
+		gotBody["quality"] != "auto" || gotBody["background"] != "auto" {
+		t.Errorf("body = %v, want native edit defaults (n=1 size=auto quality=auto background=auto)", gotBody)
+	}
+	images, _ := gotBody["images"].([]any)
+	if len(images) != 1 {
+		t.Fatalf("images = %v, want one entry", gotBody["images"])
+	}
+	if entry, _ := images[0].(map[string]any); entry["image_url"] != "data:image/png;base64,cmVm" {
+		t.Errorf("images[0] = %v, want image_url data:image/png;base64,cmVm", images[0])
+	}
+	if _, present := gotBody["tools"]; present {
+		t.Errorf("a native edit must not carry Responses tools: %v", gotBody)
+	}
+	var served map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &served); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if data, _ := served["data"].([]any); len(data) != 1 || data[0].(map[string]any)["b64_json"] != "ZWRpdGVk" {
+		t.Errorf("data = %v, want the native image", served["data"])
+	}
+}
+
+// Several reference images all travel to images/edits, in order, each wrapped
+// as {image_url}.
+func TestHandleImages_Codex_NativeEditMultipleImages(t *testing.T) {
+	const image = `{"created":123,"data":[{"b64_json":"ZWRpdGVk"}]}`
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(image))
+	}))
+	defer server.Close()
+
+	overrideCodexProvider(t, providers.ProviderConfig{
+		BaseURL:    server.URL + "/backend-api/codex/responses",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	})
+	handler, _ := newCodexImageHandler(t)
+
+	req := httptest.NewRequest("POST", "/v1/images/edits", strings.NewReader(
+		`{"model":"codex/gpt-image-2.5","prompt":"combine","image":"data:image/png;base64,cmVm","images":["Zm9v"]}`))
+	rec := httptest.NewRecorder()
+
+	handler.HandleImageEdits(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	images, _ := gotBody["images"].([]any)
+	if len(images) != 2 {
+		t.Fatalf("images = %v, want two entries", gotBody["images"])
+	}
+	got := []string{}
+	for _, it := range images {
+		m, _ := it.(map[string]any)
+		got = append(got, m["image_url"].(string))
+	}
+	want := []string{"data:image/png;base64,Zm9v", "data:image/png;base64,cmVm"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("images = %v, want %v (images[] first, then the single image field)", got, want)
+		}
+	}
+}
+
+// A reference image outside the native output scope (n, size, webp, jpeg,
+// compression, background, quality) keeps the Responses path so its output
+// controls are still honoured.
+func TestHandleImages_Codex_ReferenceImageOutsideNativeScopeStaysOnResponses(t *testing.T) {
+	controls := []struct {
+		name string
+		body string
+	}{
+		{name: "n greater than one", body: `,"n":2`},
+		{name: "fixed size", body: `,"size":"1024x1024"`},
+		{name: "webp output", body: `,"output_format":"webp"`},
+		{name: "jpeg output", body: `,"output_format":"jpeg"`},
+		{name: "output compression", body: `,"output_compression":80`},
+		{name: "transparent background", body: `,"background":"transparent"`},
+		{name: "xhigh quality", body: `,"quality":"xhigh"`},
+	}
+	for _, tt := range controls {
+		t.Run(tt.name, func(t *testing.T) {
+			up := newCodexImageUpstream(t, codexImageStream("aXNSZWN0", `{"input_tokens":8,"output_tokens":2}`), http.StatusOK)
+			overrideCodexProvider(t, providers.ProviderConfig{
+				BaseURL:    up.server.URL + "/backend-api/codex/responses",
+				AuthHeader: "Authorization",
+				AuthScheme: "bearer",
+			})
+			handler, _ := newCodexImageHandler(t)
+
+			req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(
+				`{"model":"codex/gpt-image-2.5","prompt":"edit","image":"data:image/png;base64,cmVm"`+tt.body+`}`))
+			rec := httptest.NewRecorder()
+
+			handler.HandleImages(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if up.path != "/backend-api/codex/responses" {
+				t.Errorf("path = %q, want the Responses endpoint", up.path)
+			}
+			if _, present := up.body["tools"]; !present {
+				t.Errorf("a Responses request must carry the image_generation tool: %v", up.body)
+			}
+			input, _ := up.body["input"].([]any)
+			content, _ := input[0].(map[string]any)["content"].([]any)
+			found := false
+			for _, part := range content {
+				if m, _ := part.(map[string]any); m["type"] == "input_image" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the reference image must reach the Responses input: %v", up.body["input"])
+			}
+		})
+	}
+}
+
+// The shared scope predicate itself: a GPT Image model with a reference image
+// and default output controls is native; anything else stays on Responses.
+func TestCodexUseNativeEdit(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		req   *codexImageRequest
+		want  bool
+	}{
+		{
+			name:  "gpt image tool model with a reference is native",
+			model: "gpt-image-2.5",
+			req:   &codexImageRequest{Prompt: "edit", Image: "data:image/png;base64,cmVm"},
+			want:  true,
+		},
+		{
+			name:  "suffixed virtual model never goes native",
+			model: "gpt-5.6-sol-image",
+			req:   &codexImageRequest{Prompt: "edit", Image: "data:image/png;base64,cmVm"},
+			want:  false,
+		},
+		{
+			name:  "gpt image tool model without a reference is not an edit",
+			model: "gpt-image-2.5",
+			req:   &codexImageRequest{Prompt: "generate"},
+			want:  false,
+		},
+		{
+			name:  "explicit size leaves the native scope",
+			model: "gpt-image-2.5",
+			req:   &codexImageRequest{Prompt: "edit", Images: []string{"data:image/png;base64,cmVm"}, Size: "1024x1024"},
+			want:  false,
+		},
+		{
+			name:  "n greater than one leaves the native scope",
+			model: "gpt-image-2.5",
+			req:   &codexImageRequest{Prompt: "edit", Images: []string{"data:image/png;base64,cmVm"}, N: 2},
+			want:  false,
+		},
+		{
+			name:  "webp leaves the native scope",
+			model: "gpt-image-2.5",
+			req:   &codexImageRequest{Prompt: "edit", Images: []string{"data:image/png;base64,cmVm"}, OutputFormat: "webp"},
+			want:  false,
+		},
+		{
+			name:  "auto size and png stay native",
+			model: "gpt-image-2.5",
+			req:   &codexImageRequest{Prompt: "edit", Images: []string{"data:image/png;base64,cmVm"}, Size: "auto", OutputFormat: "PNG"},
+			want:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexUseNativeEdit(tt.model, tt.req); got != tt.want {
+				t.Errorf("codexUseNativeEdit(%q, %+v) = %v, want %v", tt.model, tt.req, got, tt.want)
+			}
+		})
+	}
+}
+
+// The native edit body carries exactly Codex CLI's ImageEditRequest shape.
+func TestCodexNativeEditBody(t *testing.T) {
+	req := &codexImageRequest{
+		Prompt: "make it blue",
+		Images: []string{"data:image/png;base64,cmVm", "https://cdn.example/b.png"},
+	}
+	body, err := codexNativeEditBody("gpt-image-2.5", req)
+	if err != nil {
+		t.Fatalf("build native edit body: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if payload["model"] != "gpt-image-2.5" || payload["prompt"] != "make it blue" {
+		t.Errorf("model/prompt = %v/%v", payload["model"], payload["prompt"])
+	}
+	if payload["n"] != float64(1) || payload["size"] != "auto" {
+		t.Errorf("n/size = %v/%v, want 1/auto", payload["n"], payload["size"])
+	}
+	if payload["quality"] != "auto" || payload["background"] != "auto" {
+		t.Errorf("quality/background = %v/%v, want auto/auto", payload["quality"], payload["background"])
+	}
+	images, _ := payload["images"].([]any)
+	if len(images) != 2 {
+		t.Fatalf("images = %v, want two", payload["images"])
+	}
+	if m, _ := images[0].(map[string]any); m["image_url"] != "data:image/png;base64,cmVm" {
+		t.Errorf("images[0] = %v", images[0])
+	}
+	if m, _ := images[1].(map[string]any); m["image_url"] != "https://cdn.example/b.png" {
+		t.Errorf("images[1] = %v, want the remote URL untouched", images[1])
+	}
+	for _, key := range []string{"tools", "input", "stream", "reasoning"} {
+		if _, present := payload[key]; present {
+			t.Errorf("a native edit body must not carry %q: %v", key, payload)
+		}
+	}
+}
+
+// A native Images response carries a plain JSON body; the b64 image is served
+// and a missing one is an error rather than an invented entitlement failure.
+func TestCodexNativeEditJSON(t *testing.T) {
+	t.Run("b64 image", func(t *testing.T) {
+		image, err := codexNativeEditJSON([]byte(`{"created":1,"data":[{"b64_json":"ZWRpdGVk"}]}`))
+		if err != nil || image != "ZWRpdGVk" {
+			t.Errorf("image = %q, err = %v, want ZWRpdGVk", image, err)
+		}
+	})
+	t.Run("no image is an error", func(t *testing.T) {
+		if _, err := codexNativeEditJSON([]byte(`{"created":1,"data":[]}`)); err == nil {
+			t.Error("expected an error when the payload carries no image")
+		}
+	})
+	t.Run("invalid JSON is an error", func(t *testing.T) {
+		if _, err := codexNativeEditJSON([]byte(`not json`)); err == nil {
+			t.Error("expected an error for invalid JSON")
+		}
+	})
+	t.Run("upstream error message surfaces", func(t *testing.T) {
+		_, err := codexNativeEditJSON([]byte(`{"error":{"message":"no entitlement"}}`))
+		if err == nil || !strings.Contains(err.Error(), "no entitlement") {
+			t.Errorf("err = %v, want the upstream message", err)
+		}
+	})
+}
+
+// The native edit URL is the base's images/edits sibling, whatever shape the
+// connection's BaseURL override takes: a Responses endpoint, a bare host, or a
+// gateway path.
+func TestCodexNativeEditURL(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"responses endpoint", "https://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com/backend-api/codex/images/edits"},
+		{"responses endpoint with trailing slash", "https://my.gateway.example.com/backend-api/codex/responses/", "https://my.gateway.example.com/backend-api/codex/images/edits"},
+		{"bare host override", "https://my.gateway.example.com", "https://my.gateway.example.com/images/edits"},
+		{"gateway path override", "https://my.gateway.example.com/backend-api/codex", "https://my.gateway.example.com/backend-api/codex/images/edits"},
+		{"already the edits endpoint", "https://my.gateway.example.com/backend-api/codex/images/edits", "https://my.gateway.example.com/backend-api/codex/images/edits"},
+		{"empty falls back to the default host", "", "https://chatgpt.com/backend-api/codex/images/edits"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexNativeEditURL(tt.base); got != tt.want {
+				t.Errorf("codexNativeEditURL(%q) = %q, want %q", tt.base, got, tt.want)
+			}
+		})
+	}
+}
