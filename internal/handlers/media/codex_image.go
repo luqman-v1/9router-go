@@ -395,7 +395,7 @@ func (h *MediaHandler) codexImageUpstreamError(r *http.Request, status int, body
 	}
 	log.Warn("media", "codex image error", "status", status, "body", text)
 	if h.Repo != nil && conn != nil && !handlerutil.IsProbeContext(r.Context()) {
-		if classification := providers.ClassifyError(status, text, 0); classification.ShouldFallback {
+		if classification := providers.ClassifyError(status, text, 0, body); classification.ShouldFallback {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
 			_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
 		}
