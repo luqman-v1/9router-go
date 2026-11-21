@@ -5,6 +5,8 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { api, type CustomModelBatchEntry } from '../../api/client'
   import { parseModelIds, summarizeBulkModels } from '../../lib/bulk-models'
+  import { parseExtraBodyInput } from '../../lib/extraBody'
+  import ExtraBodyField from './ExtraBodyField.svelte'
   import { MODEL_TYPE_OPTIONS, type CustomModelType } from './modelTypeOptions'
 
   export interface ModelCaps {
@@ -28,6 +30,7 @@
       caps: ModelCaps,
       limits: ModelLimits,
       modelType: CustomModelType,
+      extraBody?: Record<string, unknown>,
     ) => Promise<void> | void
     /** Called after a bulk save, so the parent reloads the list the paste changed. */
     onBulkSaved?: () => void
@@ -89,6 +92,11 @@
       : '',
   )
 
+  // Operator request-body overrides; the gateway honours them on OpenRouter only.
+  let extraBodyText = $state('')
+  let showExtraBody = $derived(providerAlias === 'openrouter' && modelType === 'llm' && !isPaste)
+  let extraBody = $derived(showExtraBody ? parseExtraBodyInput(extraBodyText) : { value: undefined, error: '' })
+
   // Reset state when modal opens (upstream parity).
   $effect(() => {
     if (isOpen) {
@@ -100,6 +108,7 @@
       testError = ''
       bulkResult = null
       bulkError = ''
+      extraBodyText = ''
     }
   })
 
@@ -129,7 +138,7 @@
   // be tested against the provider first), anything longer goes to the batch endpoint so
   // that one bad line cannot take the others down with it.
   async function handleSubmit() {
-    if (limitsError) return
+    if (limitsError || extraBody.error) return
     if (isPaste) {
       if (bulkSaving || plan.ids.length === 0) return
       bulkSaving = true
@@ -159,7 +168,7 @@
     if (!cleanId || saving) return
     saving = true
     try {
-      await onSave(cleanId, { ...caps }, { ...limits }, modelType)
+      await onSave(cleanId, { ...caps }, { ...limits }, modelType, extraBody.value)
     } finally {
       saving = false
     }
@@ -348,6 +357,10 @@
       </div>
     {/if}
 
+    {#if showExtraBody}
+      <ExtraBodyField bind:value={extraBodyText} error={extraBody.error} />
+    {/if}
+
     {#if testStatus === 'ok'}
       <div class="flex items-center gap-2 text-sm text-green-600">
         <span class="material-symbols-outlined text-base">check_circle</span>
@@ -367,7 +380,7 @@
         onclick={handleSubmit}
         fullWidth
         size="sm"
-        disabled={plan.ids.length === 0 || saving || bulkSaving || !!limitsError}
+        disabled={plan.ids.length === 0 || saving || bulkSaving || !!limitsError || !!extraBody.error}
       >
         {#if saving || bulkSaving}
           Adding...

@@ -101,6 +101,14 @@ func (h *DashboardHandler) HandleSaveCustomModel(w http.ResponseWriter, r *http.
 		})
 		return
 	}
+	if err := validateCustomModelExtraBody(body, data, key); err != nil {
+		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"error": err.Error(),
+			"code":  "INVALID_EXTRA_BODY",
+			"id":    modelID,
+		})
+		return
+	}
 	if h.guardNameCollision(w, nsCustomModel, modelID) {
 		return
 	}
