@@ -181,7 +181,7 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 		if h.Repo != nil {
 			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
 		}
-		classification := providers.ClassifyError(resp.StatusCode, errText, backoff)
+		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, errBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
 			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)

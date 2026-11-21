@@ -197,7 +197,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
 			if !handlerutil.IsProbeContext(r.Context()) {
-				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
+				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody); classification.ShouldFallback {
 					cooldownSec := max(classification.CooldownMs/1000, 1)
 					// Google reports the real quota window on the error
 					// (error.details[].metadata.quotaResetTimeStamp); it pins

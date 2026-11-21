@@ -35,19 +35,26 @@ func TestClassifyError_CreditExhaustionParksForAnHour(t *testing.T) {
 	// instead of the 2-second backoff floor. Retrying a zero balance every
 	// two seconds burns a guaranteed-failed upstream call and makes the
 	// dashboard show a false recovery.
-	for _, text := range []string{
-		"Insufficient credits to complete this request",
-		"Your credit balance is too low to access the API",
+	//
+	// The upstream carries the verdict in its structured code as well as in
+	// the prose, and that is what a 400 is judged on: see
+	// TestClassifyError_400CreditsNeedStructuredCode.
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"insufficient credits", `{"error":{"code":"insufficient_quota","message":"Insufficient credits to complete this request"}}`},
+		{"credit balance too low", `{"error":{"code":"credit_balance_too_low","message":"Your credit balance is too low to access the API"}}`},
 	} {
-		cls := ClassifyError(http.StatusBadRequest, text, 0)
+		cls := ClassifyError(http.StatusBadRequest, tc.body, 0, []byte(tc.body))
 		if !cls.ShouldFallback {
-			t.Errorf("expected fallback for %q, got %+v", text, cls)
+			t.Errorf("expected fallback for %s, got %+v", tc.name, cls)
 		}
 		if cls.NewBackoffLevel != 0 {
-			t.Errorf("expected backoff level unchanged for %q, got %d", text, cls.NewBackoffLevel)
+			t.Errorf("expected backoff level unchanged for %s, got %d", tc.name, cls.NewBackoffLevel)
 		}
 		if cls.CooldownMs != QuotaExhaustedCooldownMs {
-			t.Errorf("expected %dms cooldown for %q, got %d", QuotaExhaustedCooldownMs, text, cls.CooldownMs)
+			t.Errorf("expected %dms cooldown for %s, got %d", QuotaExhaustedCooldownMs, tc.name, cls.CooldownMs)
 		}
 	}
 	// A 400 that carries no account fault still says nothing about the credential.

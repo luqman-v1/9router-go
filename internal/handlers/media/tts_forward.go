@@ -230,7 +230,7 @@ func (h *MediaHandler) tryNvidiaTTSConn(w http.ResponseWriter, r *http.Request, 
 		log.Warn("media", "nvidia tts upstream error", "status", resp.StatusCode, "body", errText)
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
-			if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
+			if classification := providers.ClassifyError(resp.StatusCode, errText, backoff, errBytes); classification.ShouldFallback {
 				cooldownSec := max(classification.CooldownMs/1000, 1)
 				if !handlerutil.IsProbeContext(r.Context()) {
 					_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)

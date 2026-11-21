@@ -321,7 +321,7 @@ func (h *MediaHandler) tryElevenLabsSTTConn(w http.ResponseWriter, r *http.Reque
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
 			if !handlerutil.IsProbeContext(r.Context()) {
-				if classification := providers.ClassifyError(resp.StatusCode, snippet, backoff); classification.ShouldFallback {
+				if classification := providers.ClassifyError(resp.StatusCode, snippet, backoff, respBody); classification.ShouldFallback {
 					cooldownSec := max(classification.CooldownMs/1000, 1)
 					_ = h.Repo.LockConnectionModel(conn.ID, form.Model, cooldownSec, classification.NewBackoffLevel)
 				}
