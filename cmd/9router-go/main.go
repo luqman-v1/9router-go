@@ -150,6 +150,7 @@ func buildApp(self string) *cli.App {
 			},
 		},
 		Commands: []*cli.Command{
+			dbCommand(),
 			{
 				Name:  "version",
 				Usage: "Display version details and check for updates",

@@ -417,7 +417,7 @@ LIMIT %d`, modelWhere, maxBreakdownGroups)
 	// is worse than none.
 	trendQuery := `
 SELECT
-	strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hr,
+	SUBSTR(timestamp, 1, 13) || ':00:00Z' as hr,
 	COUNT(*) as cnt,
 	COALESCE(SUM(tokensSaved), 0) as saved
 FROM compressionAnalytics` + windowPredicate(win) + `
@@ -626,7 +626,7 @@ LIMIT %d`, whereClause, maxBreakdownGroups)
 	// for the same reason the table path does.
 	trendQuery := fmt.Sprintf(`
 SELECT
-	strftime('%%Y-%%m-%%dT%%H:00:00Z', timestamp) as hr,
+	SUBSTR(timestamp, 1, 13) || ':00:00Z' as hr,
 	COUNT(*) as cnt,
 	COALESCE(SUM(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER)), 0) as saved
 FROM usageHistory
@@ -854,7 +854,7 @@ WHERE NOT EXISTS (
 	}
 
 	// 4. Mark migration done in _meta
-	_, err = db.Exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES ('migration_compression_backfill_done', 'true')`)
+	_, err = db.Exec(`INSERT INTO _meta (key, value) VALUES ('migration_compression_backfill_done', 'true') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
 	if err != nil {
 		return fmt.Errorf("BackfillCompressionAnalytics mark done: %w", err)
 	}

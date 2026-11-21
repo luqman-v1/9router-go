@@ -636,12 +636,47 @@ var supersededIndexes = []string{
 	"DROP INDEX IF EXISTS idx_uh_clientkey",
 }
 
-// EnsureCoreSchema creates the upstream core tables/indexes when absent,
-// backfills missing columns on existing databases, and seeds the minimal
-// rows a fresh dashboard needs. Safe to call on every startup: every
-// statement is IF NOT EXISTS / OR IGNORE / column-presence-checked, so
-// existing user data is never touched.
+// EnsureCoreSchema brings the database the gateway opened to the shape the
+// runtime expects. The engine is derived from db's own driver so a handle
+// opened outside InitGlobalDatabase (the dbmigrate CLI, ad-hoc tests) picks
+// the right path too.
 func EnsureCoreSchema(db *sql.DB) error {
+	return ensureSchema(db, engineOfHandle(db))
+}
+
+// engineOfHandle inspects db's concrete driver type to pick an engine. The
+// process-wide handle opened by InitGlobalDatabase already records its engine
+// in CurrentEngine, but a handle opened directly (dbmigrate, tests) does not,
+// so we sniff the driver. pgx/stdlib registers *stdlib.Driver; modernc
+// registers *sqlite.Driver.
+func engineOfHandle(db *sql.DB) Engine {
+	if db == nil {
+		return EngineSQLite
+	}
+	drv := db.Driver()
+	if drv == nil {
+		return EngineSQLite
+	}
+	typeStr := fmt.Sprintf("%T", drv)
+	if strings.Contains(typeStr, "stdlib") || strings.Contains(typeStr, "pgx") {
+		return EnginePostgres
+	}
+	return EngineSQLite
+}
+
+// ensureSchema is the single engine dispatch point for schema bootstrap.
+// SQLite keeps the EnsureCoreSchemaSQLite path unchanged; PostgreSQL uses the
+// mirror DDL in schema_postgres.go.
+func ensureSchema(db *sql.DB, engine Engine) error {
+	if engine == EnginePostgres {
+		return schemaPostgres(db)
+	}
+	return ensureSchemaSQLite(db)
+}
+
+// ensureSchemaSQLite is the historical SQLite bootstrap, byte-for-byte what
+// EnsureCoreSchema did before PostgreSQL became a supported engine.
+func ensureSchemaSQLite(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("core schema: nil db")
 	}

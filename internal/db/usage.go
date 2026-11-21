@@ -74,13 +74,13 @@ func (r *Repo) InsertUsageHistory(provider, model, connectionID, apiKey, endpoin
 
 // UpsertUsageDaily inserts or replaces a daily usage aggregation record.
 // The data parameter should be a JSON string matching the 9router-go daily aggregation format.
-// NOTE: INSERT OR REPLACE is an atomic full-row replace of the pre-merged JSON
-// blob. Merging happens in-process (see handlers/chat/usage.go dailyUsageMu), so
+// NOTE: the ON CONFLICT upsert is an atomic full-row replace of the pre-merged
+// JSON blob. Merging happens in-process (see handlers/chat/usage.go dailyUsageMu), so
 // concurrent writers from MULTIPLE processes can still clobber each other. This
 // is documented as single-writer unless the aggregation moves SQL-side.
 func (r *Repo) UpsertUsageDaily(dateKey string, data string) error {
 	_, err := r.db.Exec(
-		`INSERT OR REPLACE INTO usageDaily (dateKey, data) VALUES (?, ?)`,
+		`INSERT INTO usageDaily (dateKey, data) VALUES (?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`,
 		dateKey, data,
 	)
 	if err != nil {
@@ -93,7 +93,7 @@ func (r *Repo) UpsertUsageDaily(dateKey string, data string) error {
 func (r *Repo) InsertRequestDetail(id, provider, model, connectionID, status string, data string) error {
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	_, err := r.db.Exec(
-		`INSERT OR IGNORE INTO requestDetails (id, timestamp, provider, model, connectionId, status, data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO requestDetails (id, timestamp, provider, model, connectionId, status, data) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
 		id, timestamp, provider, model, connectionID, status, data,
 	)
 	if err != nil {

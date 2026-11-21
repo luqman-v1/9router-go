@@ -74,3 +74,19 @@ func NewRepo(db *sql.DB) *Repo {
 func (r *Repo) RawDB() *sql.DB {
 	return r.db
 }
+
+// engineOf reports the engine of a database handle. The process-wide handle
+// opened by InitGlobalDatabase records its engine in CurrentEngine; handles
+// opened directly (dbmigrate CLI, tests) fall back to sniffing the driver via
+// engineOfHandle in schema.go.
+func engineOf(db *sql.DB) Engine {
+	if global, err := GetConnection(); err == nil && global == db {
+		return CurrentEngine()
+	}
+	return engineOfHandle(db)
+}
+
+// Engine reports the engine of this Repo's handle.
+func (r *Repo) Engine() Engine {
+	return engineOf(r.db)
+}
