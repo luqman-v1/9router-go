@@ -276,19 +276,15 @@ func isGroqGPTOSSModel(model string) bool {
 	return strings.Contains(lower, "gpt-oss")
 }
 
-// toolNameHashProviders lists providers that enforce a 64-character tool name
-// limit (OmniRoute #20258). For these, tool names > 64 chars are aliased to a
-// deterministic tool_<sha256[:50]> before the request leaves the gateway.
-func toolNameHashProviders(provider string) bool {
-	return provider == "openai" || provider == "azure" || provider == "azure-openai"
-}
-
-// applyToolNameAlias rewrites req.Body to alias tool names > 64 chars for
-// providers that enforce the limit, and returns the fitted body and map for
-// response restoration. If the provider does not enforce the limit or no tool
-// names exceed it, req.Body is unchanged and a nil map is returned.
+// applyToolNameAlias rewrites req.Body to alias tool names that violate the
+// upstream's function-name constraint (over 64 chars, or carrying a char
+// outside [A-Za-z0-9_-]) for the providers that enforce it, and returns the
+// fitted body and map for response restoration. If the provider does not
+// enforce the limit or no name violates it, req.Body is unchanged and a nil map
+// is returned. translator.UsesToolNameHash is the single source of truth for
+// which providers that is (openai, azure, azure-openai, azure-ai).
 func applyToolNameAlias(req *Request) ([]byte, map[string]string) {
-	if !toolNameHashProviders(req.Provider) {
+	if !translator.UsesToolNameHash(req.Provider) {
 		return req.Body, nil
 	}
 	return translator.FitToolNamesForProvider(req.Body, req.Provider)
@@ -296,8 +292,9 @@ func applyToolNameAlias(req *Request) ([]byte, map[string]string) {
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
-	// Alias over-length tool names for providers that enforce a 64-char limit
-	// (openai, azure). OmniRoute #20258 spec: tool_<sha256[:50]>.
+	// Alias tool names the upstream would reject (over 64 chars, or carrying a
+	// char outside [A-Za-z0-9_-]). OmniRoute #20258 spec:
+	// `${safePrefix}_${sha256(name)[:12]}`.
 	fittedBody, toolNameMap := applyToolNameAlias(req)
 	if len(toolNameMap) > 0 {
 		req.Body = fittedBody
