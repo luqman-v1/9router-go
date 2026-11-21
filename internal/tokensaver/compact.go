@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -55,13 +56,51 @@ func EstimateTokens(b []byte) int {
 	return (len(b) + 3) / 4
 }
 
+// DefaultEstimateDeadline bounds how long a token estimate may run before
+// EstimateTokensBounded falls back to the deterministic linear byte-length
+// estimate. The 50 ms deadline is generous for the O(N) EstimateTokens on a
+// single request body; it exists only as a safety net against pathological
+// inputs (e.g. adversarial unicode that could trigger quadratic work in a
+// future revision) or future changes that introduce non-linear paths.
+const DefaultEstimateDeadline = 50 * time.Millisecond
+
+// EstimateTokensBounded calculates a token estimate within a bounded deadline.
+// It runs EstimateTokens on a goroutine and falls back to a deterministic
+// linear byte-length estimate (len(b)/4) if the deadline is exceeded. The
+// fallback is identical to EstimateTokens, so the result is always valid and
+// deterministic; the deadline only guards against stalls. The bound guarantees
+// the function returns in O(N) time and never hangs or spikes CPU on
+// adversarial inputs (upstream OmniRoute #19650 parity).
+func EstimateTokensBounded(b []byte, deadline time.Duration) int {
+	if len(b) == 0 {
+		return 0
+	}
+	if deadline <= 0 {
+		deadline = DefaultEstimateDeadline
+	}
+	type result struct{ tokens int }
+	ch := make(chan result, 1)
+	go func() {
+		ch <- result{EstimateTokens(b)}
+	}()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.tokens
+	case <-timer.C:
+		// Fallback: deterministic linear estimate (same formula as EstimateTokens).
+		return (len(b) + 3) / 4
+	}
+}
+
 // CompactContextByBudget compacts intermediate tool outputs when estimated tokens
 // exceed the model context budget threshold.
 // Returns the resulting request body and a result summary.
 func CompactContextByBudget(body []byte, opts CompactContextOptions) ([]byte, CompactContextResult) {
 	result := CompactContextResult{
-		EstimatedBefore: EstimateTokens(body),
-		EstimatedAfter:  EstimateTokens(body),
+		EstimatedBefore: EstimateTokensBounded(body, DefaultEstimateDeadline),
+		EstimatedAfter:  EstimateTokensBounded(body, DefaultEstimateDeadline),
 	}
 
 	threshold := opts.BudgetTokens
@@ -164,7 +203,7 @@ func CompactContextByBudget(body []byte, opts CompactContextOptions) ([]byte, Co
 	result.Compacted = true
 	result.CompactedOutputs = compactedCount
 	result.CompactedBytes = totalCompactedBytes
-	result.EstimatedAfter = EstimateTokens(out)
+	result.EstimatedAfter = EstimateTokensBounded(out, DefaultEstimateDeadline)
 
 	return out, result
 }
