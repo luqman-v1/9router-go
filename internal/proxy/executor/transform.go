@@ -332,8 +332,14 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	instructions := oreq.Instructions
 	var pendingToolCallIDs []string
 	toolSeq := 0
-
-	for i, msg := range messages {
+	// Call ids this body actually emits a function_call for. A
+	// function_call_output naming an id no function_call carries is rejected
+	// outright — the Codex backend answers 502 "No tool call found for function
+	// call output with call_id x" and the whole turn is lost, where the Claude
+	// lane answers normally. Clients replay a trimmed history, so a result whose
+	// call fell off the front is ordinary; it is dropped rather than sent.
+	declaredCallIDs := make(map[string]bool)
+	for _, msg := range messages {
 		switch msg.Role {
 		case "system", "developer":
 			txt := ExtractSimpleText(msg.Content)
@@ -390,6 +396,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					cid = fmt.Sprintf("call_%d_%d", toolSeq, tcIdx)
 				}
 				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+				declaredCallIDs[clampCallID(cid)] = true
 				args := tc.Function.Arguments
 				if name == "Agent" {
 					args = stripAgentIsolationFromArgs(args)
@@ -416,7 +423,11 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 				cid = pendingToolCallIDs[0]
 				pendingToolCallIDs = pendingToolCallIDs[1:]
 			} else {
-				cid = fmt.Sprintf("call_tool_%d", i)
+				// No call to attach it to: sending the invented id is the 502.
+				continue
+			}
+			if !declaredCallIDs[clampCallID(cid)] {
+				continue
 			}
 			inputItems = append(inputItems, map[string]any{
 				"type":    "function_call_output",

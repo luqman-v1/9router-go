@@ -579,18 +579,88 @@ func extractContent(content any) string {
 	case string:
 		return v
 	case []any:
-		parts := make([]string, 0, len(v))
+		// One shared budget for the whole array: constants.MaxMessageContentLen
+		// is the cap the caller applies anyway. Every append is cut to what is
+		// left of it, so neither many blocks nor one oversized block can grow
+		// past it — building a preview the caller would throw away buys nothing.
+		var b strings.Builder
 		for _, block := range v {
-			if m, ok := block.(map[string]any); ok {
-				if text, ok := m["text"].(string); ok {
-					parts = append(parts, text)
-				}
+			if b.Len() >= constants.MaxMessageContentLen {
+				b.WriteString(" ...")
+				break
+			}
+			m, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			// A Claude block carries its text under text/thinking/tool_use.input/
+			// tool_result.content, never all under "text". Reading only "text"
+			// logged every tool turn as an empty message, so the detail view
+			// showed a 186k-token request as twenty empty rows and a lost tool
+			// result could not be diagnosed from it.
+			switch blockType(m) {
+			case "tool_use":
+				// Name only. The arguments are already logged by the entry
+				// builder as `name#hash8` (toolCallSignature), and serialising
+				// an arbitrary tool payload here would allocate in proportion to
+				// a body the preview is about to discard.
+				name, _ := m["name"].(string)
+				writePreview(&b, "[tool_use "+truncateDetailText(name, 100, "...")+"]")
+			case "tool_result":
+				// A string is the shape a tool result actually has; anything
+				// else gets a marker rather than a recursive walk of a payload
+				// this preview would discard anyway.
+				out, _ := m["content"].(string)
+				writePreview(&b, "[tool_result "+truncateDetailText(out, 400, "...")+"]")
+			case "thinking":
+				// Checked assertion: a thinking block whose payload is null or
+				// not a string used to panic the very request this log describes.
+				thought, _ := m["thinking"].(string)
+				writePreview(&b, "[thinking "+truncateDetailText(thought, 200, "...")+"]")
+			}
+			if text, ok := m["text"].(string); ok {
+				writePreview(&b, truncateDetailText(text, constants.MaxMessageContentLen, "..."))
 			}
 		}
-		return strings.Join(parts, " ")
+		return b.String()
 	default:
 		return fmt.Sprintf("%v", content)
 	}
+}
+
+// writePreview appends one separator-prefixed fragment, cut to whatever is left
+// of the shared budget. The cut happens before the copy, so a fragment the
+// budget cannot hold is never built.
+func writePreview(b *strings.Builder, fragment string) {
+	remaining := constants.MaxMessageContentLen - b.Len()
+	if remaining <= 0 {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteString(" ")
+		remaining--
+	}
+	if len(fragment) > remaining {
+		fragment = truncateDetailText(fragment, remaining, "")
+	}
+	b.WriteString(fragment)
+}
+
+// blockType names a content block by its own type field, falling back to the
+// key that carries its payload for clients that omit it.
+func blockType(m map[string]any) string {
+	if t, ok := m["type"].(string); ok && t != "" {
+		return t
+	}
+	switch {
+	case m["input"] != nil:
+		return "tool_use"
+	case m["tool_use_id"] != nil:
+		return "tool_result"
+	case m["thinking"] != nil:
+		return "thinking"
+	}
+	return ""
 }
 
 // upsertDailyUsage reads the existing daily aggregate, merges new tokens, and upserts.
