@@ -2940,7 +2940,7 @@ export const api = {
     request<{ ok: boolean; keyId: string; id: string; enabled: boolean; presetId: string }>(
       '/api/jailbreak/keys/model',
       {
-        method: 'POST',
+        method: 'PUT',
         body: JSON.stringify({ keyId, id, presetId, enabled }),
       },
     ),
