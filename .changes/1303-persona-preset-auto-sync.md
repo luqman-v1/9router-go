@@ -45,22 +45,66 @@ subscription follows a feed.
     not be undone by reading a log.
   - **Every source is removable**, and removing one changes nothing about the
     presets it already wrote — sync only ever adds and rewrites, it never clears.
-- **The worker reuses the importer's own machinery.** `collectFiles` and the
-  GitHub allowlist, the redirect re-check, the per-file and total size caps and
-  the claimed-stem keyword derivation are the ones `jailbreak_import.go` already
-  applied, so a synced preset carries the same keyword chain a manual import
-  produces and a short file name cannot steal a sibling's model.
+- **A target may point at a subfolder.** `github.com/owner/repo/tree/main/jailbreaks`,
+  `github.com/owner/repo/blob/main/prompts/jailbreaks` and the `owner/repo`
+  shorthand all work; a folder contributes everything inside it and a file path
+  imports exactly that file. Without this the collections that keep their
+  prompts in a subfolder contributed nothing at all, and the 404 the operator
+  saw read as "this repository has no prompts in it".
+- **`.md`, `.markdown`, `.mdown`, `.mkd` and `.txt` are prompt files.**
+  `.mkd` in particular is what several collections ship, and a filter that did
+  not know it imported 1 file out of a 43-prompt library.
+- The worker reuses the importer's own machinery — `collectFiles`, the GitHub
+  allowlist, the redirect re-check, the per-file and total size caps, and the
+  claimed-stem keyword derivation — so a synced preset carries the same keyword
+  chain a manual import produces, and a short file name cannot steal a sibling's
+  model. A collection that outgrows the caps reports what it dropped in the pass
+  result rather than reading as a clean success.
 
-**Verified:** 12 new Go tests over a fake store (an in-memory store, so no
+Verified: 17 new Go tests over a fake store (an in-memory store, so no
 SQLite and no GitHub in the unit path) covering the write path with its origin
 and id, the rewrite of only its own preset, the kept operator fields, an
 unchanged body not rewritten, the fetch failure reported rather than written,
-the orphan reported not deleted, the busy answer, the id and origin naming, and
-the three endpoints against a real database — the seeded default, the operator's
-own repository saved enabled, and a target the importer cannot parse refused
-with 400 naming the target. 11 new frontend tests over `web/src/lib/presetSync.ts`
+the orphan reported not deleted, the busy answer, the id and origin naming, the
+three endpoints against a real database — the seeded default, the operator's own
+repository saved enabled, and a target the importer cannot parse refused with 400
+naming the target — plus three more for the two import fixes below: a pointed
+subfolder importing its own files and not the repository's README, a single
+file path still importing one file, and the `treeHasSubtree`/`restrictToSubtree`
+helpers. 11 new frontend tests over `web/src/lib/presetSync.ts`
 (the summary, the relative time, the label and the pass totals) pin what the card
 shows before anything is pressed. `go test ./internal/handlers/... ./internal/db/...`
 green, `bun test src scripts` 943 pass / 0 fail, `bun run ratchet:svelte` 0
 unresolved identifiers at baseline 74, `bunx oxlint --deny-warnings` clean,
 `go build ./...` clean.
+
+Seven collections were followed live against the gateway
+(`e2sy/jailbreak-archives`, `elder-plinius/L1B3RT4S`,
+`7API/glm-5.3-abliterated`, `routerhubSI/glm-5.3-abliterated/jailbreaks`,
+`4ndr0666/gpt/prompts/jailbreaks`, `2knoah-glitch/ABYSS-AI-REWORK` and
+`RJKaler/Grok-Jailbreak`), which is where the last two fixes in this entry came
+from. The library reached 512 presets, 335 of them sync-owned.
+
+### fix(import): a GitHub path naming a directory is a subtree, not a file
+
+The seven collections above exposed a gap the one-shot import had never met.
+
+- **A GitHub path naming a directory was read as a file.** `collectFiles`
+  treated a non-empty `src.Path` as one file, so
+  `github.com/owner/repo/tree/main/jailbreaks` and
+  `github.com/owner/repo/blob/main/prompts/jailbreaks` fetched the directory
+  itself — a 404 the operator reads as "this repository has no prompts in it".
+  The tree listing now keeps `tree` entries so the code can tell a pointed
+  subfolder from a pointed file, collects everything under a folder, and keeps a
+  file path importing exactly that one file. Live: `routerhubSI/…/jailbreaks`
+  went from 0 imported to 34, `4ndr0666/gpt/prompts/jailbreaks` to 195.
+
+### fix(sync): a capped collection reports what it dropped
+
+A 337-file collection contributes only what fits under the import caps, and the
+sync pass was discarding the importer's skip list — so 195 presets were written
+and the pass reported a clean success, leaving the operator believing two thirds
+of a library was synced. `FetchFiles` now returns the skip list as part of its
+contract and each dropped file is reported in the pass result with the reason
+that dropped it, so a trimmed collection reads "195 written, 142 failed — import
+is capped at 200 files" rather than a clean pass.

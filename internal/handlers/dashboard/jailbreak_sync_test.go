@@ -21,6 +21,9 @@ type fakeSyncStore struct {
 	presets []*db.JailbreakDoc
 	// files is what FetchFiles reports for the source under test.
 	files []githubFile
+	// skipped is what the caps dropped, reported to the pass exactly as the
+	// importer reports it.
+	skipped []jailbreakImportRefusal
 	// texts maps a file path to its body.
 	texts map[string]string
 	// fetchErr makes FetchFiles fail, for the pass that must report rather
@@ -57,11 +60,11 @@ func (f *fakeSyncStore) SavePreset(_ context.Context, p *db.JailbreakDoc) error 
 	return nil
 }
 
-func (f *fakeSyncStore) FetchFiles(context.Context, JailbreakSyncSource) ([]githubFile, string, error) {
+func (f *fakeSyncStore) FetchFiles(context.Context, JailbreakSyncSource) ([]githubFile, []jailbreakImportRefusal, string, error) {
 	if f.fetchErr != nil {
-		return nil, "", f.fetchErr
+		return nil, nil, "", f.fetchErr
 	}
-	return f.files, "main", nil
+	return f.files, f.skipped, "main", nil
 }
 
 func (f *fakeSyncStore) FetchText(_ context.Context, _ JailbreakSyncSource, path string) (string, error) {
@@ -496,5 +499,69 @@ func TestJailbreakSyncPersistsSourceStatus(t *testing.T) {
 	}
 	if store2.savedSources[0].LastSyncAt != "" {
 		t.Error("a disabled source was stamped as synced")
+	}
+}
+
+// A collection the caps trimmed must report what it dropped. Without this a
+// 337-file repository contributes 195 and the operator reads the pass as a
+// complete sync of two thirds of a library.
+func TestJailbreakSyncReportsCappedFiles(t *testing.T) {
+	store := &fakeSyncStore{
+		sources: []JailbreakSyncSource{source()},
+		files:   []githubFile{{Path: "kept.md", Type: "blob"}},
+		texts:   map[string]string{"kept.md": "body"},
+		skipped: []jailbreakImportRefusal{
+			{Path: "huge.md", Reason: "file is 900000 bytes (max 524288)"},
+			{Path: "late.md", Reason: "import is capped at 200 files"},
+		},
+	}
+	s := newSync(store)
+	outcomes, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	res := outcomes[0].Result
+	if res.Failed != 2 {
+		t.Errorf("failed = %d, want the two capped files", res.Failed)
+	}
+	for _, want := range []string{"huge.md", "late.md"} {
+		found := false
+		for _, f := range res.Files {
+			if f.Path == want && f.Action == "failed" && f.Reason != "" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s is not reported with its reason", want)
+		}
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved %d presets, want the one file that fit", len(store.saved))
+	}
+}
+
+func TestJailbreakImportCandidateExtensions(t *testing.T) {
+	// L1B3RT4S ships its whole library as `.mkd`. A filter that only knew .md and
+	// .txt imported 1 file out of that repository's 44.
+	cases := map[string]bool{
+		"beam.md":          true,
+		"beam.markdown":    true,
+		"beam.mdown":       true,
+		"beam.mkd":         true,
+		"beam.txt":         true,
+		"BEAM.MKD":         true,
+		"jailbreaks/x.md":  true,
+		"beam.yaml":        false,
+		"beam.json":        false,
+		"beam":             false,
+		"README.md":        false,
+		"readme.txt":       false,
+		".github/x.md":     false,
+		"assets/logo.png":  false,
+	}
+	for p, want := range cases {
+		if got := jailbreakImportCandidate(p); got != want {
+			t.Errorf("candidate(%q) = %v, want %v", p, got, want)
+		}
 	}
 }

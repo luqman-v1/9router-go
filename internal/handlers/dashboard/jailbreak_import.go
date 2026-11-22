@@ -213,12 +213,16 @@ type githubJailbreakSource struct {
 // githubFile is one prompt file to fetch.
 type githubFile struct {
 	Path string
+	Type string
 	Size int
 }
 
-// githubTreeEntry is one blob in a repository tree.
+// githubTreeEntry is one entry in a repository tree. Type is "blob" for a file
+// and "tree" for a directory; the caller needs the directories to tell a pointed
+// path that names a subfolder from one that names a single file.
 type githubTreeEntry struct {
 	Path string
+	Type string
 	Size int
 }
 
@@ -533,16 +537,23 @@ func (imp *jailbreakImporter) collectFiles(ctx context.Context, src githubJailbr
 		}
 		ref = def
 	}
-	if src.Path != "" {
-		return []githubFile{{Path: src.Path}}, nil, ref, nil
-	}
-
 	entries, truncated, err := imp.tree(ctx, src, ref)
 	if err != nil {
 		return nil, nil, "", err
 	}
 	if truncated {
 		return nil, nil, "", fmt.Errorf("repository %s/%s tree is too large to list", src.Owner, src.Repo)
+	}
+	// A path may name one file or a directory. A directory is the common shape
+	// for a collection that keeps its prompts in a subfolder — `owner/repo/tree/
+	// main/jailbreaks`, `owner/repo/blob/main/prompts/jailbreaks` — and treating
+	// it as a single file fetched the directory itself, which is a 404 the
+	// operator reads as "this repository has no prompts in it".
+	if src.Path != "" && !treeHasSubtree(entries, src.Path) {
+		return []githubFile{{Path: src.Path}}, nil, ref, nil
+	}
+	if src.Path != "" {
+		entries = restrictToSubtree(entries, src.Path)
 	}
 
 	files := make([]githubFile, 0, len(entries))
@@ -570,9 +581,44 @@ func (imp *jailbreakImporter) collectFiles(ctx context.Context, src githubJailbr
 	return files, skipped, ref, nil
 }
 
+// treeHasSubtree reports whether a tree entry at p is a directory in the
+// listing. A blob at p means the path named one file; a directory means it named
+// a subtree, and the caller collects everything under it instead of fetching the
+// directory (which no raw endpoint serves).
+func treeHasSubtree(entries []githubTreeEntry, p string) bool {
+	for _, e := range entries {
+		if e.Path == p && e.Type == "tree" {
+			return true
+		}
+	}
+	return false
+}
+
+// restrictToSubtree keeps only the entries inside the directory p, so a pointed
+// subfolder imports its own files and not the repository's README along with
+// them. A blob named exactly p is kept too, because a path may name either.
+func restrictToSubtree(entries []githubTreeEntry, p string) []githubTreeEntry {
+	prefix := strings.TrimSuffix(p, "/") + "/"
+	out := make([]githubTreeEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Path == p || strings.HasPrefix(e.Path, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // jailbreakImportCandidate keeps prompt files and drops repository furniture:
 // dot-directories such as .github, and the README that describes a collection
 // rather than being one of its prompts.
+// jailbreakImportExtensions are the file extensions a prompt collection may
+// use. `.md` and `.txt` cover almost everything, but L1B3RT4S ships its whole
+// library as `.mkd` — a Markdown shorthand several collections use — and a
+// candidate filter that did not know it imported 1 file out of that
+// repository's 44.
+var jailbreakImportExtensions = []string{".md", ".markdown", ".mdown", ".mkd", ".txt"}
+
+// jailbreakImportCandidate keeps prompt files and drops repository furniture.
 func jailbreakImportCandidate(p string) bool {
 	for _, seg := range strings.Split(p, "/") {
 		if strings.HasPrefix(seg, ".") {
@@ -580,10 +626,17 @@ func jailbreakImportCandidate(p string) bool {
 		}
 	}
 	base := strings.ToLower(path.Base(p))
-	if base == "readme.md" || base == "readme.markdown" || base == "readme.txt" {
-		return false
+	for _, readme := range []string{"readme.md", "readme.markdown", "readme.txt"} {
+		if base == readme {
+			return false
+		}
 	}
-	return strings.HasSuffix(base, ".md") || strings.HasSuffix(base, ".txt")
+	for _, ext := range jailbreakImportExtensions {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // importOne downloads one file from GitHub and writes it as a preset.
@@ -776,8 +829,10 @@ func (imp *jailbreakImporter) tree(ctx context.Context, src githubJailbreakSourc
 	}
 	entries := make([]githubTreeEntry, 0, len(out.Tree))
 	for _, e := range out.Tree {
-		if e.Type == "blob" {
-			entries = append(entries, githubTreeEntry{Path: e.Path, Size: e.Size})
+		// Both kinds are kept: a blob is a candidate file, and a tree is what
+		// tells the caller a pointed path named a subfolder rather than a file.
+		if e.Type == "blob" || e.Type == "tree" {
+			entries = append(entries, githubTreeEntry{Path: e.Path, Type: e.Type, Size: e.Size})
 		}
 	}
 	return entries, out.Truncated, nil

@@ -123,8 +123,12 @@ type jailbreakSyncStore interface {
 	Presets(ctx context.Context) ([]*db.JailbreakDoc, error)
 	// SavePreset writes one preset, owned by the source named in origin.
 	SavePreset(ctx context.Context, preset *db.JailbreakDoc) error
-	// FetchFiles lists the .md/.txt files of one source, in repository order.
-	FetchFiles(ctx context.Context, src JailbreakSyncSource) ([]githubFile, string, error)
+	// FetchFiles lists the files of one source, in repository order, and reports
+	// the ones the caps dropped. The skip list is part of the contract, not a
+	// side channel: a 337-file collection contributes 195, and a pass that
+	// discarded the other 142 silently would leave the operator believing the
+	// collection is fully synced when two thirds of it was capped.
+	FetchFiles(ctx context.Context, src JailbreakSyncSource) ([]githubFile, []jailbreakImportRefusal, string, error)
 	// FetchText reads one file's body.
 	FetchText(ctx context.Context, src JailbreakSyncSource, path string) (string, error)
 }
@@ -225,9 +229,18 @@ func (s *jailbreakSync) runOne(ctx context.Context, src JailbreakSyncSource) Jai
 		return JailbreakSyncOutcome{Source: src, Result: result}
 	}
 
-	files, ref, err := s.store.FetchFiles(ctx, src)
+	files, skipped, ref, err := s.store.FetchFiles(ctx, src)
 	if err != nil {
 		return fail(err)
+	}
+	// A collection larger than the caps contributes only what fits, and the rest
+	// is reported as failed with the reason: 195 of 337 written and no mention of
+	// the other 142 is a library that silently stops at two thirds.
+	for _, drop := range skipped {
+		result.Failed++
+		result.Files = append(result.Files, JailbreakSyncFile{
+			Path: drop.Path, Action: "failed", Reason: drop.Reason,
+		})
 	}
 	presets, err := s.store.Presets(ctx)
 	if err != nil {
@@ -512,20 +525,20 @@ func (s *jailbreakSyncRepoStore) SavePreset(ctx context.Context, preset *db.Jail
 	return s.repo.SaveJailbreakPresetContext(ctx, preset)
 }
 
-func (s *jailbreakSyncRepoStore) FetchFiles(ctx context.Context, src JailbreakSyncSource) ([]githubFile, string, error) {
+func (s *jailbreakSyncRepoStore) FetchFiles(ctx context.Context, src JailbreakSyncSource) ([]githubFile, []jailbreakImportRefusal, string, error) {
 	parsed, err := parseJailbreakImportTarget(src.Target)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if parsed.Github == nil {
-		return nil, "", errJailbreakBadTarget
+		return nil, nil, "", errJailbreakBadTarget
 	}
 	gh := *parsed.Github
 	if src.Ref != "" {
 		gh.Ref = src.Ref
 	}
-	files, _, ref, err := defaultJailbreakImporter.collectFiles(ctx, gh)
-	return files, ref, err
+	files, skipped, ref, err := defaultJailbreakImporter.collectFiles(ctx, gh)
+	return files, skipped, ref, err
 }
 
 func (s *jailbreakSyncRepoStore) FetchText(ctx context.Context, src JailbreakSyncSource, filePath string) (string, error) {

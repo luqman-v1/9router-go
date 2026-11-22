@@ -268,15 +268,30 @@ func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
 		case "/repos/owner/repo":
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case "/repos/owner/repo/git/trees/main":
+			// Directories are emitted alongside the blobs, because that is what
+			// GitHub returns and what tells a pointed path named a subfolder from
+			// one that named a single file.
 			var b strings.Builder
 			b.WriteString(`{"truncated":false,"tree":[`)
 			first := true
-			for p := range files {
+			emit := func(path, typ string, size int) {
 				if !first {
 					b.WriteByte(',')
 				}
 				first = false
-				fmt.Fprintf(&b, `{"path":%q,"type":"blob","size":%d}`, p, len(files[p]))
+				fmt.Fprintf(&b, `{"path":%q,"type":%q,"size":%d}`, path, typ, size)
+			}
+			dirs := map[string]bool{}
+			for p := range files {
+				if i := strings.LastIndex(p, "/"); i > 0 {
+					dirs[p[:i]] = true
+				}
+			}
+			for d := range dirs {
+				emit(d, "tree", 0)
+			}
+			for p, body := range files {
+				emit(p, "blob", len(body))
 			}
 			b.WriteString(`]}`)
 			fmt.Fprint(w, b.String())
@@ -966,5 +981,117 @@ func TestJailbreakURLName(t *testing.T) {
 				t.Fatalf("jailbreakURLName(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+// A path that names a subfolder imports everything inside it. A collection that
+// keeps its prompts under `jailbreaks/` is the shape five of the seven
+// repositories an operator pointed the page at use, and treating the folder as
+// one file fetched the directory itself — a 404 the operator reads as "this
+// repository has no prompts in it".
+func TestJailbreakImportSubfolder(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{
+		"README.md":              "# index only",
+		"jailbreaks/beam.md":     "BEAM RULE",
+		"jailbreaks/deepseek.md":  "DEEPSEEK RULE",
+		"jailbreaks/nested/x.md": "NESTED RULE",
+	})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	res, err := fg.importer().importSource(t.Context(), repo, githubJailbreakSource{
+		Owner: "owner", Repo: "repo", Ref: "main", Path: "jailbreaks",
+	})
+	if err != nil {
+		t.Fatalf("importSource: %v", err)
+	}
+	paths := make([]string, 0, len(res.Imported))
+	for _, e := range res.Imported {
+		paths = append(paths, e.Path)
+	}
+	// The repository's own README is outside the folder, so it is not part of
+	// this import: the operator pointed at a subfolder, not the repository.
+	if len(paths) != 3 {
+		t.Fatalf("imported %v, want the three files under jailbreaks/", paths)
+	}
+	want := map[string]bool{"jailbreaks/beam.md": true, "jailbreaks/deepseek.md": true, "jailbreaks/nested/x.md": true}
+	for _, p := range paths {
+		if !want[p] {
+			t.Errorf("imported %q, which is not under jailbreaks/", p)
+		}
+	}
+}
+
+// The same path form on the import endpoint, which is what the browser sends.
+func TestJailbreakImportSubfolderThroughEndpoint(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{
+		"jailbreaks/beam.md": "BEAM RULE",
+		"other.md":           "OUTSIDE",
+	})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	h := NewDashboardHandler(repo)
+	h.jailbreakImport = fg.importer()
+
+	body := `{"target":"https://github.com/owner/repo/tree/main/jailbreaks"}`
+	rr := httptest.NewRecorder()
+	h.HandleImportJailbreak(rr, httptest.NewRequest(http.MethodPost, "/api/jailbreak/import", strings.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	presets, err := repo.ListJailbreakPresets()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Prompt != "BEAM RULE" {
+		t.Fatalf("presets = %+v, want only the file under jailbreaks/", presets)
+	}
+}
+
+// A path that names a single file still imports that one file: the fix must not
+// turn every pointed path into a directory walk.
+func TestJailbreakImportSubfolderKeepsSingleFile(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{
+		"jailbreaks/beam.md": "BEAM RULE",
+		"jailbreaks/other.md": "OTHER RULE",
+	})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	res, err := fg.importer().importSource(t.Context(), repo, githubJailbreakSource{
+		Owner: "owner", Repo: "repo", Ref: "main", Path: "jailbreaks/beam.md",
+	})
+	if err != nil {
+		t.Fatalf("importSource: %v", err)
+	}
+	if len(res.Imported) != 1 || res.Imported[0].Path != "jailbreaks/beam.md" {
+		t.Fatalf("imported %+v, want only beam.md", res.Imported)
+	}
+}
+
+// treeHasSubtree and restrictToSubtree are the two decisions the folder walk
+// rests on, so a listing with no directories at all still works.
+func TestTreeSubtreeHelpers(t *testing.T) {
+	entries := []githubTreeEntry{
+		{Path: "jailbreaks", Type: "tree"},
+		{Path: "jailbreaks/beam.md", Type: "blob", Size: 10},
+		{Path: "README.md", Type: "blob", Size: 4},
+	}
+	if !treeHasSubtree(entries, "jailbreaks") {
+		t.Error("a directory in the listing is not recognised as one")
+	}
+	if treeHasSubtree(entries, "jailbreaks/beam.md") {
+		t.Error("a blob is not a subtree")
+	}
+	if treeHasSubtree(entries, "missing") {
+		t.Error("an absent path is not a subtree")
+	}
+	got := restrictToSubtree(entries, "jailbreaks")
+	if len(got) != 2 {
+		t.Fatalf("restricted to %d entries, want the directory and its file", len(got))
+	}
+	for _, e := range got {
+		if e.Path == "README.md" {
+			t.Error("the repository's own README leaked into the subfolder")
+		}
 	}
 }
