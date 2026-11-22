@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	json "encoding/json/v2"
@@ -15,16 +14,36 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/proxy"
+
+	"github.com/google/uuid"
 )
 
 const (
-	freebuffSessionPath  = "/api/v1/freebuff/session"
+	freebuffSessionPath = "/api/v1/freebuff/session"
+
+	// freebuffAdmissionPath is where a session is admitted. The 0.2.36 CLI posts
+	// here rather than to freebuffSessionPath: a POST to the bare session path is
+	// now answered 400 "Desktop purchase admission requires an instance id", so
+	// admission moved to its own route and took a CLI-minted instance id with it.
+	// GET and DELETE still use freebuffSessionPath.
+	freebuffAdmissionPath = "/api/v1/freebuff/session/admission"
+
 	freebuffSessionTTL   = 60 * time.Minute
 	freebuffCLIUserAgent = "Freebuff-CLI/0.2.36"
+	freebuffCLIVersion   = "0.2.36"
+
+	// freebuffInstancePrefix tags an instance id as CLI-minted; the release
+	// binary prepends it to a uuid v4.
+	freebuffInstancePrefix = "cli:"
 
 	// freebuffInstanceHeader names the session a release (DELETE) targets. The
 	// CLI sends the same header only on GET and DELETE — POST takes the model.
 	freebuffInstanceHeader = "x-freebuff-instance-id"
+
+	// freebuffDesktopAttemptHeader carries the attempt id the purchase is bound
+	// to; the CLI sends it on every non-GET call alongside the instance id.
+	freebuffDesktopAttemptHeader = "x-freebuff-desktop-attempt-id"
+	freebuffClientVersionHeader  = "x-freebuff-client-version"
 )
 
 type freebuffSession struct {
@@ -327,6 +346,51 @@ func freebuffCountryRefusal(body []byte) bool {
 	return false
 }
 
+// freebuffThirdPartyRefusal reports the anti-abuse answer Freebuff now gives
+// anything that is not its own CLI, Desktop app or site. Upstream counts each
+// such attempt as a strike against the account (five suspend it), so the answer
+// is terminal here: it is surfaced, never retried.
+func freebuffThirdPartyRefusal(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	for _, marker := range []string{"third_party_client_warning", "third-party client"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// newThirdPartyClientError reports that Freebuff refuses this client on
+// anti-abuse grounds and records the attempt against the account.
+func newThirdPartyClientError(w http.ResponseWriter, strikes, limit int) *proxy.UpstreamError {
+	msg := "Freebuff refuses third-party clients: its free mode only serves the official Freebuff CLI, Freebuff Desktop and freebuff.com."
+	if strikes > 0 {
+		msg += fmt.Sprintf(" This attempt was recorded as strike %d", strikes)
+		if limit > 0 {
+			msg += fmt.Sprintf(" of %d", limit)
+		}
+		msg += " against the account."
+	}
+	msg += " 9router stops here rather than retrying."
+	errBody, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": msg,
+			"type":    "third_party_client_warning",
+			"code":    "third_party_client_warning",
+			"strikes": strikes,
+		},
+	})
+	if w != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(errBody)
+	}
+	return &proxy.UpstreamError{
+		StatusCode: http.StatusForbidden,
+		Body:       errBody,
+	}
+}
+
 // newCountryBlockedError reports that Freebuff refuses this region.
 func newCountryBlockedError(w http.ResponseWriter, countryCode, reason string) *proxy.UpstreamError {
 	msg := "Freebuff refuses this region for this account."
@@ -398,17 +462,31 @@ func requestFreebuffSessionWithStore(ctx context.Context, store LeaseStore, clie
 	return sess, nil
 }
 
+// newFreebuffInstanceID mints the id an admission carries: the CLI builds
+// `cli:` + a uuid v4 per attempt, and the server binds the purchase to it.
+func newFreebuffInstanceID() string {
+	return freebuffInstancePrefix + uuid.NewString()
+}
+
 func postFreebuffSession(ctx context.Context, client *http.Client, baseURL, token, model string, headers map[string]string) (*freebuffSession, error) {
 	origin := freebuffOrigin(baseURL)
-	reqURL := origin + freebuffSessionPath
+	reqURL := origin + freebuffAdmissionPath
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader([]byte("{}")))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create freebuff session request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	// The instance id is minted here rather than read out of the response: the
+	// admission call is what binds the purchase, and it refuses a multi-session
+	// POST that arrives without one. The attempt header carries the bare uuid —
+	// the server rejects the prefixed form with invalid_attempt_id — while the
+	// instance header carries the whole `cli:`-tagged id.
+	instanceID := newFreebuffInstanceID()
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
+	req.Header.Set(freebuffClientVersionHeader, freebuffCLIVersion)
+	req.Header.Set(freebuffInstanceHeader, instanceID)
+	req.Header.Set(freebuffDesktopAttemptHeader, strings.TrimPrefix(instanceID, freebuffInstancePrefix))
 	req.Header.Set("x-freebuff-model", model)
 	req.Header.Set("x-freebuff-wallet-spend-limit", "session")
 	req.Header.Set("x-freebuff-multi-session", "1")
@@ -434,6 +512,8 @@ func postFreebuffSession(ctx context.Context, client *http.Client, baseURL, toke
 		Error              string `json:"error"`
 		CountryCode        string `json:"countryCode"`
 		CountryBlockReason string `json:"countryBlockReason"`
+		Strikes            int    `json:"strikes"`
+		StrikeLimit        int    `json:"strikeLimit"`
 	}
 	_ = json.Unmarshal(respBytes, &data)
 
@@ -462,6 +542,9 @@ func postFreebuffSession(ctx context.Context, client *http.Client, baseURL, toke
 		return nil, newModelLockedError(nil, currentModel, model)
 	}
 
+	if freebuffThirdPartyRefusal(respBytes) {
+		return nil, newThirdPartyClientError(nil, data.Strikes, data.StrikeLimit)
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Only a refusal counts here: a successful admission also carries
 		// countryBlockReason, and failing on that would break every turn.

@@ -65,14 +65,14 @@ func assertLanded(t *testing.T, relay *relayFake, wantPath string) {
 	}
 }
 
-func TestFreebuffRelay_SessionRequestLandsOnSessionEndpoint(t *testing.T) {
+func TestFreebuffRelay_SessionRequestLandsOnAdmissionEndpoint(t *testing.T) {
 	relay := newRelayFake(t, `{"status":"active","instanceId":"inst-1","expiresAt":"2099-01-01T00:00:00Z"}`)
 	client := newFreebuffRelayedClient(t, relay.URL)
 
 	if _, err := postFreebuffSession(context.Background(), client, "https://www.codebuff.com", "tok", "m-1", nil); err != nil {
 		t.Fatalf("postFreebuffSession through a relay: %v", err)
 	}
-	assertLanded(t, relay, "/api/v1/freebuff/session")
+	assertLanded(t, relay, freebuffAdmissionPath)
 }
 
 func TestFreebuffRelay_RunStartLandsOnRunEndpoint(t *testing.T) {
@@ -108,7 +108,7 @@ func TestFreebuffRelay_SessionReleaseLandsOnSessionEndpoint(t *testing.T) {
 	if refund != 3 {
 		t.Errorf("refund = %d, want 3", refund)
 	}
-	assertLanded(t, relay, "/api/v1/freebuff/session")
+	assertLanded(t, relay, freebuffSessionPath)
 }
 
 // A connection that is not relayed sends no relay headers.
