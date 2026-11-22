@@ -65,6 +65,7 @@ type Client struct {
 	notifyMu sync.Mutex
 	notifyCh chan notification
 	done     chan struct{}
+	waitDone chan struct{} // closed after cmd.Wait returns
 	errMu    sync.Mutex
 	exitErr  error
 	// stderrTail holds a bounded tail for diagnostics. Guarded by errMu.
@@ -103,6 +104,7 @@ func Start(ctx context.Context, cmd *exec.Cmd) (*Client, error) {
 		pending:  make(map[string]*rpcRequest),
 		notifyCh: make(chan notification, 256),
 		done:     make(chan struct{}),
+		waitDone: make(chan struct{}),
 	}
 	go c.readLoop()
 	go c.waitLoop()
@@ -143,6 +145,7 @@ func (c *Client) waitLoop() {
 	c.errMu.Lock()
 	c.exitErr = err
 	c.errMu.Unlock()
+	close(c.waitDone)
 	c.closeDone()
 }
 
@@ -278,6 +281,23 @@ func (c *Client) Notify(id json.RawMessage, result any) error {
 	return err
 }
 
+// Notification sends a JSON-RPC notification (no id, no reply expected),
+// e.g. session/cancel to abort an in-flight prompt on a pooled worker.
+func (c *Client) Notification(method string, params any) error {
+	payload, err := json.Marshal(struct {
+		JSONRPC string `json:"jsonrpc"`
+		Method  string `json:"method"`
+		Params  any    `json:"params"`
+	}{"2.0", method, params})
+	if err != nil {
+		return err
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_, err = fmt.Fprintf(c.stdin, "%s\n", payload)
+	return err
+}
+
 // Notifications exposes the bounded notification queue.
 func (c *Client) Notifications() <-chan notification { return c.notifyCh }
 
@@ -293,7 +313,9 @@ func (c *Client) processError() error {
 	return fmt.Errorf("acp subprocess exited")
 }
 
-// Close terminates the subprocess and releases its pipes. Idempotent.
+// Close terminates the subprocess and releases its pipes. Idempotent. It
+// waits for the process to fully exit so callers may delete its executable
+// (Windows holds the image file until exit).
 func (c *Client) Close() {
 	c.closeDone()
 	_ = c.stdin.Close()
@@ -301,5 +323,6 @@ func (c *Client) Close() {
 	_ = c.stderr.Close()
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
+		<-c.waitDone
 	}
 }

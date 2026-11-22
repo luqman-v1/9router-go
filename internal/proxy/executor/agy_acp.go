@@ -335,8 +335,7 @@ func acpError(err error) error {
 		status = http.StatusForbidden
 	case errors.Is(err, agy.ErrBinary):
 		status = http.StatusServiceUnavailable
-	case errors.Is(err, agy.ErrNoModel), errors.Is(err, agy.ErrNoCred):
-		status = http.StatusBadRequest
+	case errors.Is(err, agy.ErrNoModel), errors.Is(err, agy.ErrNoCred), errors.Is(err, agy.ErrStall):
 	}
 	return &proxy.UpstreamError{StatusCode: status, Body: jsonError("agy-acp: " + err.Error())}
 }

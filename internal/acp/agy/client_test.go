@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var exeSuffix = map[bool]string{true: ".exe"}[runtime.GOOS == "windows"]
+
 // fakeACP is a tiny scripted ACP server used as a stand-in for the agy binary.
 // It speaks NDJSON on stdin/stdout and drives the client through the full
 // initialize -> session/new -> session/prompt handshake.
@@ -186,6 +188,8 @@ func TestClientCall(t *testing.T) {
 }
 
 func TestRunTurnStream(t *testing.T) {
+	p := isolatedPoolDeferred(t)
+	defer p.Close()
 	fake, cleanup := fakeACP(t)
 	defer cleanup()
 	// Force the fake binary through AGY_PATH.

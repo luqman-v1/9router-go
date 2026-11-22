@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Errors surfaced to the executor for HTTP status mapping.
@@ -20,6 +21,7 @@ var (
 	ErrBinary  = errors.New("agy binary not found; set AGY_PATH")
 	ErrNoModel = errors.New("agy-acp model is not in the agy catalogue")
 	ErrNoCred  = errors.New("agy-acp connection has no usable credentials")
+	ErrStall   = errors.New("agy-acp agent returned only a status message and no answer")
 )
 
 // TurnEvent is one observable event from a turn. The executor maps these to
@@ -58,9 +60,11 @@ type TurnOptions struct {
 	MCPSeeded map[string]string
 }
 
-// RunTurn spawns one agy ACP subprocess, performs the full handshake, sends a
-// single prompt and streams updates to onEvent until the turn ends. It is
-// cancellation-aware: closing ctx cancels the prompt and kills the worker.
+// RunTurn runs one prompt on an agy ACP worker and streams updates to onEvent
+// until the turn ends. Workers come from the warm pool (pre-spawned and
+// pre-initialized per account); AGY_ACP_POOL=0 restores the cold
+// spawn-per-turn path. It is cancellation-aware: closing ctx cancels the
+// prompt; a pooled worker survives, a cold worker is killed.
 func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []PromptBlock, onEvent func(TurnEvent)) error {
 	bin, err := resolveBinary(opts.Binary)
 	if err != nil {
@@ -71,6 +75,55 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 		return fmt.Errorf("%w: %q", ErrNoModel, model)
 	}
 
+	if poolEnabled() {
+		return runPooledTurn(ctx, opts, bin, canonical, prompt, onEvent)
+	}
+	return runColdTurn(ctx, opts, bin, canonical, prompt, onEvent)
+}
+
+// runPooledTurn leases a warm worker, reuses its prepared session when the
+// turn is text-only and the model matches, and returns the worker on success.
+// Error paths discard the worker: a banner or half-finished prompt must never
+// poison the next turn on the same account.
+func runPooledTurn(ctx context.Context, opts TurnOptions, bin, canonical string, prompt []PromptBlock, onEvent func(TurnEvent)) error {
+	l, err := DefaultPool().acquire(ctx, opts, bin, canonical)
+	if err != nil {
+		return err
+	}
+	defer l.release()
+
+	var bridge *MCPBridge
+	sid := l.sid
+	if sid == "" {
+		mcpServers := []any{}
+		if len(opts.MCPTools) > 0 {
+			bridge, err = StartMCPBridge(ctx, opts.MCPTools, opts.MCPSeeded)
+			if err != nil {
+				l.dirty = true
+				return err
+			}
+			defer func() { _ = bridge.Close() }()
+			mcpServers = append(mcpServers, map[string]any{"name": "router_client_tools", "url": bridge.URL()})
+		}
+		sid, err = l.newSession(ctx, canonical, mcpServers)
+		if err != nil {
+			return err
+		}
+	}
+	// model was set under the pool lock at acquire time.
+
+	if err := streamPrompt(ctx, l.entry.client, sid, prompt, bridge, onEvent); err != nil {
+		// Client disconnect cancels the session but leaves the worker healthy;
+		// only agent-side faults poison it.
+		l.dirty = ctx.Err() == nil
+		return err
+	}
+	return nil
+}
+
+// runColdTurn is the original spawn-per-turn path, kept as the AGY_ACP_POOL=0
+// fallback and for callers that must not share worker state.
+func runColdTurn(ctx context.Context, opts TurnOptions, bin, canonical string, prompt []PromptBlock, onEvent func(TurnEvent)) error {
 	root := opts.AccountRoot
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "9router-agy-acp-default")
@@ -79,8 +132,7 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 	if err != nil {
 		return err
 	}
-	seed := opts.Credentials.AccessToken != "" && opts.Credentials.RefreshToken != ""
-	if seed {
+	if opts.Credentials.AccessToken != "" && opts.Credentials.RefreshToken != "" {
 		if err := dir.WriteCredentials(opts.Credentials); err != nil {
 			return err
 		}
@@ -95,25 +147,22 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 	defer client.Close()
 
 	// initialize — protocolVersion 1 is what agy 1.5.9 answers.
-	initResult, err := client.Call(ctx, "initialize", map[string]any{
+	if _, err := client.Call(ctx, "initialize", map[string]any{
 		"protocolVersion":    1,
 		"clientInfo":         map[string]any{"name": "9router", "version": "1.0"},
 		"clientCapabilities": map[string]any{},
-	})
-	if err != nil {
+	}); err != nil {
 		return classifyError(err)
 	}
-	_ = initResult
 
 	// Start a loopback MCP server when the client supplied tools, so agy can
 	// discover them without an external `nc` shim.
 	var bridge *MCPBridge
 	mcpServers := []any{}
 	if len(opts.MCPTools) > 0 {
-		var berr error
-		bridge, berr = StartMCPBridge(ctx, opts.MCPTools, opts.MCPSeeded)
-		if berr != nil {
-			return berr
+		bridge, err = StartMCPBridge(ctx, opts.MCPTools, opts.MCPSeeded)
+		if err != nil {
+			return err
 		}
 		defer func() { _ = bridge.Close() }()
 		mcpServers = append(mcpServers, map[string]any{"name": "router_client_tools", "url": bridge.URL()})
@@ -133,12 +182,49 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 	if err := json.Unmarshal(newResult, &session); err != nil || session.SessionID == "" {
 		return fmt.Errorf("agy-acp: session/new returned no sessionId")
 	}
+	return streamPrompt(ctx, client, session.SessionID, prompt, bridge, onEvent)
+}
 
+// errStatusOnly signals that agy ended a turn with only a deferred-status
+// line ("checking model/config in the background") and no answer.
+var errStatusOnly = errors.New("agy-acp: status-only turn")
+
+// nudgePrompt is sent on the same session when agy defers the answer. It is
+// short and explicit so a fresh agy process also understands it.
+const nudgePrompt = "Continue and finish the previous request now. Provide the actual answer in this turn; do not defer it to the background."
+
+// streamPrompt runs one prompt on a session. When agy ends the turn with only
+// a deferred-status line, it re-prompts on the same session with a nudge (up
+// to 2 times) instead of returning an empty success; if all attempts are
+// status-only it returns ErrStall so the router can fail over.
+func streamPrompt(ctx context.Context, client *Client, sid string, prompt []PromptBlock, bridge *MCPBridge, onEvent func(TurnEvent)) error {
+	for attempt := range 3 {
+		current := prompt
+		if attempt > 0 {
+			current = []PromptBlock{{Type: "text", Text: nudgePrompt}}
+		}
+		err := streamPromptOnce(ctx, client, sid, current, bridge, onEvent)
+		if !errors.Is(err, errStatusOnly) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: agent kept deferring the answer to the background", ErrStall)
+}
+
+// streamPrompt sends one prompt on an ACP session and pumps notifications to
+// onEvent until the turn ends. If agy only emits a "checking model/config in
+// the background" status line, it follows up on the same session with a nudge
+// (up to 2 times) asking for the answer now. That keeps the turn alive
+// instead of ending with a silent status message.
+func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []PromptBlock, bridge *MCPBridge, onEvent func(TurnEvent)) error {
 	promptParams := map[string]any{
-		"sessionId": session.SessionID,
+		"sessionId": sid,
 		"prompt":    prompt,
 	}
-	turnCtx, cancel := context.WithCancel(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	turnCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 
 	promptResultCh := make(chan json.RawMessage, 1)
@@ -167,23 +253,45 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 		}
 	}
 	for {
+		// select picks a ready channel at random; check cancellation first so
+		// a cancelled turn never reports success from a racing prompt result.
+		if err := ctx.Err(); err != nil {
+			_ = client.Notification("session/cancel", map[string]any{"sessionId": sid})
+			return err
+		}
 		select {
 		case <-ctx.Done():
+			_ = client.Notification("session/cancel", map[string]any{"sessionId": sid})
+			select {
+			case cerr := <-promptErrCh: // drain; error irrelevant on cancellation
+				_ = cerr
+			case <-promptResultCh:
+			case <-client.done:
+			case <-time.After(2 * time.Second):
+			}
 			return ctx.Err()
 		case err := <-promptErrCh:
 			return classifyError(err)
 		case res := <-promptResultCh:
 			text, stop := FinalResult(res)
 			if text != "" {
-				if !leadAlive && isAgentDiagnostic(lead.String()+text) {
-					return classifyError(fmt.Errorf("agy-acp: %s", strings.TrimSpace(lead.String()+text)))
+				whole := strings.TrimSpace(lead.String() + text)
+				if !leadAlive && (isAgentDiagnostic(whole) || isDeferredStatus(whole)) {
+					if isDeferredStatus(whole) {
+						return errStatusOnly
+					}
+					return classifyError(fmt.Errorf("agy-acp: %s", whole))
 				}
 				flushLead()
 				onEvent(TurnEvent{Kind: UpdateText, Text: text})
 			}
+			d := strings.TrimSpace(lead.String())
 			if !leadAlive {
-				if d := strings.TrimSpace(lead.String()); isAgentDiagnostic(d) {
+				if isAgentDiagnostic(d) {
 					return classifyError(fmt.Errorf("agy-acp: %s", d))
+				}
+				if isDeferredStatus(d) {
+					return errStatusOnly
 				}
 				flushLead()
 			}
@@ -207,7 +315,9 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 					continue
 				}
 				lead.WriteString(text)
-				if !isAgentDiagnosticPrefix(lead.String()) {
+				// Hold a possible status line: "checking model/config in
+				// background" must not be flushed as a fake answer.
+				if !isAgentDiagnosticPrefix(lead.String()) && !isDeferredStatus(lead.String()) {
 					leadAlive = true
 					flushLead()
 				}
@@ -223,9 +333,13 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 			case UpdateError:
 				return classifyError(fmt.Errorf("agy-acp: %s", text))
 			case UpdateDone:
+				d := strings.TrimSpace(lead.String())
 				if !leadAlive {
-					if d := strings.TrimSpace(lead.String()); isAgentDiagnostic(d) {
+					if isAgentDiagnostic(d) {
 						return classifyError(fmt.Errorf("agy-acp: %s", d))
+					}
+					if isDeferredStatus(d) {
+						return errStatusOnly
 					}
 					flushLead()
 				}
@@ -243,6 +357,27 @@ func RunTurn(ctx context.Context, opts TurnOptions, model string, prompt []Promp
 			return classifyError(client.processError())
 		}
 	}
+}
+
+// isDeferredStatus reports whether the whole turn is one of agy's "I'll check
+// the model/config in the background" status lines. agy 1.5.x emits these as
+// ordinary agent_message_chunk text and ends the turn with end_turn, with no
+// answer following — the client sees one line and the stream closes. Treat it
+// as a stalled turn so the router can surface an error instead of a fake
+// empty success (and so failover can try another account).
+func isDeferredStatus(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" || len(t) > 300 || strings.Contains(t, "\n") {
+		return false
+	}
+	// agy's own status (English) or the model's translated status (Indonesian
+	// "di latar belakang") both count. Require a check/model/config word plus
+	// a background phrase so ordinary prose that mentions "model" is safe.
+	hasCheck := strings.Contains(t, "checking") || strings.Contains(t, "check ") ||
+		strings.Contains(t, "model") || strings.Contains(t, "configur") ||
+		strings.Contains(t, "konfigurasi")
+	hasBackground := strings.Contains(t, "background") || strings.Contains(t, "latar belakang")
+	return hasCheck && hasBackground
 }
 
 // isAgentDiagnostic reports whether a whole turn's text is one of agy's

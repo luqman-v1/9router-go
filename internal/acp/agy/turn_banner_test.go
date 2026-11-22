@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -22,7 +21,7 @@ func fakeBannerACP(t *testing.T, banner string) string {
 	src := `package main
 import ("bufio";"encoding/json";"fmt";"os")
 func main(){
- banner:=os.Args[1]
+
  r:=bufio.NewReader(os.Stdin); w:=bufio.NewWriter(os.Stdout); defer w.Flush()
  for { line,err:=r.ReadString('\n'); if err!=nil{return}
   var m map[string]any; if json.Unmarshal([]byte(line),&m)!=nil{continue}
@@ -34,9 +33,12 @@ func main(){
   case "session/new":
    fmt.Fprintf(w,"{\"jsonrpc\":\"2.0\",\"id\":%v,\"result\":{\"sessionId\":\"s-1\"}}\n",id)
   case "session/prompt":
+   p,_:=m["params"].(map[string]any)
+   prompt,_:=p["prompt"].([]any)
+   banner:=""
+   if len(prompt)>0 { if b,ok:=prompt[0].(map[string]any);ok { banner,_=b["text"].(string) } }
    b,_:=json.Marshal(banner)
    fmt.Fprintf(w,"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":%s}}}}\n",b)
-   w.Flush()
    fmt.Fprintf(w,"{\"jsonrpc\":\"2.0\",\"id\":%v,\"result\":{\"stopReason\":\"end_turn\"}}\n",id)
   }
   w.Flush()
@@ -60,27 +62,8 @@ func main(){
 	if out, err := exec.Command(gobin, "build", "-o", binPath, helper).CombinedOutput(); err != nil {
 		t.Fatalf("build fake banner ACP: %v: %s", err, out)
 	}
-	// Wrap so the banner argument is fixed: RunTurn invokes <bin> acp …
-	// A shell script cannot be exec'd on Windows, so the wrapper is a
-	// compiled Go program that re-execs the banner binary with the fixed
-	// argument — the same trick the sh wrapper used, portable.
-	wrapSrc := "package main\n\nimport (\n\t\"os\"\n\t\"os/exec\"\n)\n\nfunc main() {\n\tcmd := exec.Command(" + strconv.Quote(binPath) + ", " + strconv.Quote(banner) + ")\n\tcmd.Stdout = os.Stdout\n\tcmd.Stderr = os.Stderr\n\tcmd.Stdin = os.Stdin\n\tif err := cmd.Run(); err != nil {\n\t\tos.Exit(1)\n\t}\n}\n"
-	wrapGo := filepath.Join(dir, "wrap.go")
-	if err := os.WriteFile(wrapGo, []byte(wrapSrc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	wrap := filepath.Join(dir, "fakeagy")
-	if runtime.GOOS == "windows" {
-		wrap += ".exe"
-	}
-	if out, err := exec.Command(gobin, "build", "-o", wrap, wrapGo).CombinedOutput(); err != nil {
-		t.Fatalf("build fake banner wrapper: %v: %s", err, out)
-	}
-	return wrap
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	// The banner comes from prompt[0].text, so no shell wrapper is needed.
+	return binPath
 }
 
 // Regression: agy delivers fatal faults as ordinary message text with
@@ -110,13 +93,15 @@ func TestRunTurnBannerIsError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			p := isolatedPoolDeferred(t)
+			defer p.Close()
 			fake := fakeBannerACP(t, tt.banner)
 			t.Setenv("AGY_PATH", fake)
 			var texts []string
 			err := RunTurn(context.Background(), TurnOptions{
 				AccountRoot: t.TempDir(),
 				Credentials: Credentials{AccessToken: "a", RefreshToken: "r"},
-			}, "gemini-3.8-flash-medium", []PromptBlock{{Type: "text", Text: "hi"}}, func(ev TurnEvent) {
+			}, "gemini-3.8-flash-medium", []PromptBlock{{Type: "text", Text: tt.banner}}, func(ev TurnEvent) {
 				if ev.Kind == UpdateText {
 					texts = append(texts, ev.Text)
 				}
@@ -137,6 +122,8 @@ func TestRunTurnBannerIsError(t *testing.T) {
 // Real model output that merely mentions a warning must still stream: the
 // buffer only holds text that could become a lone fatal banner.
 func TestRunTurnWarningContentStillStreams(t *testing.T) {
+	p := isolatedPoolDeferred(t)
+	defer p.Close()
 	fake, cleanup := fakeACP(t)
 	defer cleanup()
 	t.Setenv("AGY_PATH", fake)
