@@ -230,7 +230,9 @@ func hasCron() bool {
 // It is a var so tests can observe and stub supervisor calls without touching
 // the real init system.
 var run = func(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("service: %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

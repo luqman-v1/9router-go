@@ -275,8 +275,13 @@ cross: web-build
 cross-one:
 	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-go/
 
+TRAY_LDFLAGS := $(LDFLAGS)
+ifeq ($(CROSS_OS),windows)
+TRAY_LDFLAGS += -H=windowsgui
+endif
+
 cross-tray-one:
-	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
+	go build -ldflags="$(TRAY_LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	$(BINARY) mitm enable
