@@ -1,0 +1,4 @@
+### fix(acp/agy): drain queued notifications before completing prompt result
+
+- **Notification queue drain on turn completion** (`internal/acp/agy/turn.go`): drained all already-queued `client.Notifications()` entries inside `streamPromptOnce` when `session/prompt` completes (and on context cancellation) before evaluating buffered diagnostic/deferred-status text or returning pooled workers, eliminating missed `ErrAuth`/`ErrQuota`/`ErrStall` errors, dropped final chunks, and stale notification leaks across turns.
+- **Deterministic regression tests** (`internal/acp/agy/turn_banner_test.go`): added `TestStreamPromptDrainsQueuedNotifications` covering banner classification (`ErrAuth`), deferred status stall detection (`ErrStall`), and zero dropped or cross-turn leaked chunks across 30 consecutive turns.
