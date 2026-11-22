@@ -79,3 +79,27 @@ func TestImportPreservesSeededValues(t *testing.T) {
 		t.Fatalf("seed after import = %q, want {}", got)
 	}
 }
+
+// TestResetSequencesSkipsTextPrimaryKey pins the audit_log import failure:
+// resetSequences ran COALESCE(MAX(id), 0) on a TEXT primary key, which PG
+// rejects with SQLSTATE 42804. A table with a non-integer id has no sequence
+// to bump and must be skipped.
+func TestResetSequencesSkipsTextPrimaryKey(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set; needs a live PostgreSQL")
+	}
+	pg, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if _, err := pg.Exec(`DROP TABLE IF EXISTS dbmigrate_text_pk;
+		CREATE TABLE dbmigrate_text_pk (id TEXT PRIMARY KEY, data TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = pg.Exec(`DROP TABLE dbmigrate_text_pk`) }()
+	if err := resetSequences(context.Background(), pg, "dbmigrate_text_pk", []string{"id", "data"}); err != nil {
+		t.Fatalf("resetSequences on TEXT pk: %v", err)
+	}
+}
