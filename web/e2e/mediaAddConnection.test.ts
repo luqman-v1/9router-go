@@ -56,13 +56,13 @@ describe('media provider add connection', () => {
       expect(sent.name).toBe('Stability Primary')
       expect('key' in sent).toBe(false)
 
-      await page.getByText('Stability Primary').waitFor()
+      await page.getByText('Stability Primary').first().waitFor()
 
-      const connsRes = await page.evaluate(async () => {
+      const conns = await page.evaluate(async () => {
         const r = await fetch('/api/connections')
-        return r.json() as Promise<{ connections?: Array<Record<string, unknown>> }>
+        return r.json() as Promise<Array<Record<string, unknown>>>
       })
-      const created = (connsRes.connections || []).find(
+      const created = (Array.isArray(conns) ? conns : []).find(
         (c) => c.provider === 'stability-ai' && c.name === 'Stability Primary',
       )
       if (!created) throw new Error('expected stability-ai connection to be created')
