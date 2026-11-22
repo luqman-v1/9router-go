@@ -330,7 +330,8 @@
                   const isNewRequest =
                     newTop.timestamp !== prevTop.timestamp ||
                     newTop.model !== prevTop.model ||
-                    newTop.tokens !== prevTop.tokens
+                    newTop.promptTokens !== prevTop.promptTokens ||
+                    newTop.completionTokens !== prevTop.completionTokens
                   if (isNewRequest && newTop.provider) {
                     lastProvider = newTop.provider
                     triggerPulse(newTop.provider)

@@ -13,7 +13,7 @@
     resolveFilteredGroups,
     resolveModelPickerGroups,
   } from './pickerData'
-  import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
+  import { EMPTY_PICKER_EXTRAS, loadPickerExtras } from './pickerExtras'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { parseSearchQuery } from '../../lib/modelSearchFilter'
   import { pushEscapeHandler } from '../../lib/ui/escapeStack'
