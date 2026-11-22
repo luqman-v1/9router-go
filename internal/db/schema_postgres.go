@@ -489,12 +489,12 @@ func schemaPostgres(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
-	if _, err := db.ExecContext(ctx, 
+	if _, err := db.ExecContext(ctx,
 		`INSERT INTO _meta(key, value) VALUES('schemaVersion', '1') ON CONFLICT (key) DO NOTHING`,
 	); err != nil {
 		return fmt.Errorf("postgres schema: seed _meta: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, 
+	if _, err := db.ExecContext(ctx,
 		`INSERT INTO settings(id, data) VALUES(1, '{}') ON CONFLICT (id) DO NOTHING`,
 	); err != nil {
 		return fmt.Errorf("postgres schema: seed settings: %w", err)
@@ -510,7 +510,7 @@ func pgEnsureTable(ctx context.Context, db *sql.DB, t pgTableDef) error {
 	if t.primaryKey != "" {
 		defs = append(defs, t.primaryKey)
 	}
-	if _, err := db.ExecContext(ctx, 
+	if _, err := db.ExecContext(ctx,
 		fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", t.name, strings.Join(defs, ", ")),
 	); err != nil {
 		return fmt.Errorf("postgres schema: create table %s: %w", t.name, err)
@@ -545,7 +545,7 @@ func pgAddColumnIfMissing(ctx context.Context, db *sql.DB, table, column, defini
 	}
 	safe = strings.TrimSpace(safe)
 	safe = strings.Join(strings.Fields(safe), " ")
-	if _, err := db.ExecContext(ctx, 
+	if _, err := db.ExecContext(ctx,
 		fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, safe),
 	); err != nil {
 		return fmt.Errorf("postgres schema: add column %s.%s: %w", table, column, err)

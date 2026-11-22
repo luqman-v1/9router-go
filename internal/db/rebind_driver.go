@@ -57,7 +57,9 @@ func (c *rebindConn) Close() error { return c.inner.Close() }
 // deprecated, but the database/sql contract requires it when the inner driver
 // does not implement ConnBeginTx; the type assertion in BeginTx handles that
 // case.
-func (c *rebindConn) Begin() (driver.Tx, error) { //nolint:staticcheck
+//
+//nolint:staticcheck
+func (c *rebindConn) Begin() (driver.Tx, error) {
 	return c.inner.Begin()
 }
 
@@ -114,7 +116,9 @@ func (s rebindStmt) NumInput() int { return s.inner.NumInput() }
 // deprecated, but the database/sql contract requires it when the inner driver
 // does not implement StmtExecContext; the type assertion in ExecContext
 // handles that case.
-func (s rebindStmt) Exec(args []driver.Value) (driver.Result, error) { //nolint:staticcheck
+//
+//nolint:staticcheck
+func (s rebindStmt) Exec(args []driver.Value) (driver.Result, error) {
 	return s.inner.Exec(args)
 }
 
@@ -122,7 +126,9 @@ func (s rebindStmt) Exec(args []driver.Value) (driver.Result, error) { //nolint:
 // deprecated, but the database/sql contract requires it when the inner driver
 // does not implement StmtQueryContext; the type assertion in QueryContext
 // handles that case.
-func (s rebindStmt) Query(args []driver.Value) (driver.Rows, error) { //nolint:staticcheck
+//
+//nolint:staticcheck
+func (s rebindStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return s.inner.Query(args)
 }
 

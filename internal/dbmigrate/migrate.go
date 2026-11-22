@@ -101,7 +101,7 @@ func userTables(ctx context.Context, db *sql.DB) ([]string, error) {
 func exportTable(ctx context.Context, db *sql.DB, table, path string) (int, error) {
 	// ORDER BY nothing: rowid order is the insertion order and is stable for
 	// a read-only file, which keeps repeat exports comparable.
-	rows, err := db.QueryContext(ctx, `SELECT * FROM ` + quoteIdent(table))
+	rows, err := db.QueryContext(ctx, `SELECT * FROM `+quoteIdent(table))
 	if err != nil {
 		return 0, fmt.Errorf("dbmigrate: select %s: %w", table, err)
 	}
