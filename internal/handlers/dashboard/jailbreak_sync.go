@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -129,8 +130,8 @@ type jailbreakSyncStore interface {
 	// discarded the other 142 silently would leave the operator believing the
 	// collection is fully synced when two thirds of it was capped.
 	FetchFiles(ctx context.Context, src JailbreakSyncSource) ([]githubFile, []jailbreakImportRefusal, string, error)
-	// FetchText reads one file's body.
-	FetchText(ctx context.Context, src JailbreakSyncSource, path string) (string, error)
+	// FetchText reads one file's body at the ref the pass resolved.
+	FetchText(ctx context.Context, src JailbreakSyncSource, ref, path string) (string, error)
 }
 
 // jailbreakSync is the worker: one pass over every enabled source, guarded so
@@ -263,7 +264,7 @@ func (s *jailbreakSync) runOne(ctx context.Context, src JailbreakSyncSource) Jai
 	listed := make(map[string]bool, len(files))
 	for _, f := range files {
 		listed[f.Path] = true
-		text, err := s.store.FetchText(ctx, src, f.Path)
+		text, err := s.store.FetchText(ctx, src, ref, f.Path)
 		if err != nil {
 			result.Failed++
 			result.Files = append(result.Files, JailbreakSyncFile{Path: f.Path, Action: "failed", Reason: err.Error()})
@@ -541,16 +542,31 @@ func (s *jailbreakSyncRepoStore) FetchFiles(ctx context.Context, src JailbreakSy
 	return files, skipped, ref, err
 }
 
-func (s *jailbreakSyncRepoStore) FetchText(ctx context.Context, src JailbreakSyncSource, filePath string) (string, error) {
+// FetchText reads one file's body at the ref the pass resolved. The ref comes in
+// from the caller rather than being guessed: the default branch resolved during
+// the listing is the one whose files were chosen, and reading a file at "HEAD"
+// instead can miss a rename that happened mid-pass — on a mirror or a fork, that
+// is a 404 the operator reads as "this file has no content".
+func (s *jailbreakSyncRepoStore) FetchText(ctx context.Context, src JailbreakSyncSource, ref, filePath string) (string, error) {
 	parsed, err := parseJailbreakImportTarget(src.Target)
 	if err != nil {
 		return "", err
 	}
 	gh := *parsed.Github
-	if src.Ref != "" {
-		gh.Ref = src.Ref
+	if ref == "" {
+		ref = src.Ref
 	}
-	return defaultJailbreakImporter.fetchText(ctx, defaultJailbreakImporter.rawURL(gh, "HEAD", filePath), maxJailbreakImportFileBytes)
+	if ref != "" {
+		gh.Ref = ref
+	}
+	text, err := defaultJailbreakImporter.fetchText(ctx, defaultJailbreakImporter.rawURL(gh, ref, filePath), maxJailbreakImportFileBytes)
+	if err != nil {
+		// A pinned ref that a raw mirror refuses is retried unqualified, because
+		// that is how several proxies serve the same file: they resolve the ref
+		// themselves and reject a branch name in the path.
+		text, err = defaultJailbreakImporter.fetchText(ctx, defaultJailbreakImporter.rawURL(gh, "HEAD", filePath), maxJailbreakImportFileBytes)
+	}
+	return text, err
 }
 
 // HandleListJailbreakSyncSources lists the operator's preset sync sources.
@@ -635,6 +651,13 @@ func StartJailbreakSync(repo *db.Repo, ctx context.Context) *jailbreakSync {
 	if presetSyncWorker == nil || ctx == nil {
 		return presetSyncWorker
 	}
+	// The stored GitHub token is loaded before the first pass, so a restart does
+	// not lose it and then fail the first pass with a 403 the operator already
+	// fixed. The env var wins when both are set: a process started with
+	// GITHUB_TOKEN expects the environment to stay in charge.
+	if token, err := repo.GetKVContext(ctx, jailbreakSyncScope, jailbreakGithubTokenKey); err == nil && strings.TrimSpace(token) != "" {
+		defaultJailbreakImporter.SetGithubToken(firstNonEmpty(strings.TrimSpace(token), strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))))
+	}
 	presetSyncWorker.Start(ctx)
 	return presetSyncWorker
 }
@@ -661,4 +684,80 @@ func (h *DashboardHandler) syncWorker() *jailbreakSync {
 		return h.jailbreakSync
 	}
 	return presetSyncWorker
+}
+
+// jailbreakGithubTokenKey is the kv key of the GitHub token the operator pasted
+// into the persona page. It lives beside the sync sources rather than in the
+// settings schema, because it is a credential for one feature and the settings
+// row would be a wider surface for it than the persona card needs.
+const jailbreakGithubTokenKey = "githubToken"
+
+// HandleGetJailbreakGithub reports whether a GitHub token is in force, and where
+// it came from. GET /api/jailbreak/github.
+//
+// The token itself is never returned: a panel that needs to show "token set"
+// does not need the value, and a response body carrying it would land in browser
+// storage, in screenshots and in the request log. The source field is what tells
+// the operator which of the two knobs to turn — the env var, or the field.
+func (h *DashboardHandler) HandleGetJailbreakGithub(w http.ResponseWriter, r *http.Request) {
+	envToken := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")) != ""
+	stored, err := h.Repo.GetKVContext(r.Context(), jailbreakSyncScope, jailbreakGithubTokenKey)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	stored = strings.TrimSpace(stored)
+	apiBase := defaultJailbreakImporter.apiBase
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"tokenSet": stored != "" || envToken,
+		"source": func() string {
+			if stored != "" {
+				return "dashboard"
+			}
+			if envToken {
+				return "environment"
+			}
+			return "none"
+		}(),
+		// The mirror in force, so a panel can show that requests are being sent
+		// somewhere other than api.github.com before the operator wonders why a
+		// repository is unreachable.
+		"apiBase":  apiBase,
+		"rawBase":  defaultJailbreakImporter.rawBase,
+		"envToken": envToken,
+		"envMirror": strings.TrimSpace(os.Getenv("GITHUB_API_MIRROR")) != "" ||
+			strings.TrimSpace(os.Getenv("GITHUB_RAW_MIRROR")) != "",
+	})
+}
+
+// HandleSaveJailbreakGithubToken stores or clears the GitHub token.
+// PUT /api/jailbreak/github/token with {"token":"ghp_…"} — an empty string
+// clears it and falls back to the env var.
+//
+// Clearing is the important case: an operator who pastes a token and later
+// revokes it has to be able to take it back out, and a panel that could only
+// write would leave a dead credential in place reporting itself as active.
+func (h *DashboardHandler) HandleSaveJailbreakGithubToken(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8*1024))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if err := h.Repo.SetKVContext(r.Context(), jailbreakSyncScope, jailbreakGithubTokenKey, token); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The importer in force picks it up on its next request, so the quota change
+	// is visible without a restart. The env var still wins for a process that
+	// has one: an operator who set GITHUB_TOKEN expects it to stay in charge.
+	defaultJailbreakImporter.SetGithubToken(firstNonEmpty(token, strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))))
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "tokenSet": token != ""})
 }

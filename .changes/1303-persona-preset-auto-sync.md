@@ -108,3 +108,44 @@ of a library was synced. `FetchFiles` now returns the skip list as part of its
 contract and each dropped file is reported in the pass result with the reason
 that dropped it, so a trimmed collection reads "195 written, 142 failed — import
 is capped at 200 files" rather than a clean pass.
+
+### feat(persona): a GitHub token and a mirror, because 60 requests an hour is not enough
+
+`api.github.com` allows **60 anonymous requests an hour** and **5,000 with a
+token**. A library following seven collections — each pass being one repo lookup,
+one tree listing and one fetch per file — exhausts the anonymous quota on the
+third pass, after which every source reports `403` and none of them says why.
+The persona page now has a place to put a credential, and both endpoints can be
+pointed at a mirror.
+
+- **Token**, typed into the Auto-sync card and stored beside the sync sources.
+  `GET /api/jailbreak/github` reports whether one is in force and where it came
+  from (`dashboard`, `environment` or `none`) but **never the token itself** — a
+  response carrying it would put the credential in browser storage, in
+  screenshots and in the request log. `PUT /api/jailbreak/github/token` writes
+  it, and an empty string clears it, so a revoked credential is removable. It
+  takes effect on the next request without a restart, and it is loaded again at
+  boot so a restart does not lose it and fail the first pass with a 403 the
+  operator already fixed.
+- **Mirror**: `GITHUB_API_MIRROR` and `GITHUB_RAW_MIRROR` point the two bases at
+  a proxy, for a network that cannot reach GitHub directly or that wants a
+  self-hosted quota. The paths are unchanged, so every existing target form
+  still parses, and the card shows the base in force.
+- The token rides **only** the request to the configured API base, host *and*
+  port — never the file host. Proved by a test that asserts on what each fake
+  server actually received: the API server sees `Bearer …`, and the raw server
+  sees nothing. That port comparison is load-bearing, not defensive: two
+  stand-in servers on one loopback address share a hostname and differ only by
+  port, and a hostname-only check would have sent the credential to the file
+  server too.
+- `GITHUB_TOKEN` still works and still wins, for a process started with one.
+
+### fix(persona): sync read files at "HEAD" instead of the ref it listed
+
+`FetchText` hardcoded `"HEAD"` while the pass had already resolved a default
+branch — so a mirror or a fork that refuses a branch name in the path returned
+404 for every file, and the pass reported `written=0, failed=1` with a 404 the
+operator reads as "this file has no content". It now sends the resolved ref, and
+retries unqualified when a proxy refuses it, which is how several proxies serve
+the same file. Live against a local mirror: `written=0` before the fix,
+`written=1` after, with the preset's origin recording `owner/repo@main`.

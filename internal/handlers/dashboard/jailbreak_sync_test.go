@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"9router/proxy/internal/db"
 	"context"
 	"errors"
@@ -67,7 +68,7 @@ func (f *fakeSyncStore) FetchFiles(context.Context, JailbreakSyncSource) ([]gith
 	return f.files, f.skipped, "main", nil
 }
 
-func (f *fakeSyncStore) FetchText(_ context.Context, _ JailbreakSyncSource, path string) (string, error) {
+func (f *fakeSyncStore) FetchText(_ context.Context, _ JailbreakSyncSource, _, path string) (string, error) {
 	if f.fetchTextErr != nil {
 		if err, ok := f.fetchTextErr[path]; ok {
 			return "", err
@@ -563,5 +564,96 @@ func TestJailbreakImportCandidateExtensions(t *testing.T) {
 		if got := jailbreakImportCandidate(p); got != want {
 			t.Errorf("candidate(%q) = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// The token is stored, reported as set, and never returned in the body. The
+// last part is the point: a response that carries the credential puts it in
+// browser storage, in screenshots and in the request log.
+func TestJailbreakGithubTokenEndpoint(t *testing.T) {
+	conn, repo := newSyncTestRepo(t)
+	defer conn.Close()
+	h := NewDashboardHandler(repo)
+
+	// Before anything is saved, no token is in force.
+	rr := httptest.NewRecorder()
+	h.HandleGetJailbreakGithub(rr, httptest.NewRequest(http.MethodGet, "/api/jailbreak/github", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get status = %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"tokenSet":false`) {
+		t.Fatalf("body = %s, want tokenSet false", rr.Body.String())
+	}
+
+	t.Setenv("GITHUB_TOKEN", "")
+	body := `{"token":"ghp_abc123"}`
+	rr = httptest.NewRecorder()
+	h.HandleSaveJailbreakGithubToken(rr, httptest.NewRequest(http.MethodPut, "/api/jailbreak/github/token", strings.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body %s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	h.HandleGetJailbreakGithub(rr, httptest.NewRequest(http.MethodGet, "/api/jailbreak/github", nil))
+	got := rr.Body.String()
+	if !strings.Contains(got, `"tokenSet":true`) || !strings.Contains(got, `"source":"dashboard"`) {
+		t.Fatalf("body = %s, want a dashboard-sourced token", got)
+	}
+	if strings.Contains(got, "ghp_abc123") {
+		t.Error("the token itself must never appear in a response body")
+	}
+	if defaultJailbreakImporter.GithubToken() != "ghp_abc123" {
+		t.Errorf("the live importer did not pick up the token: %q", defaultJailbreakImporter.GithubToken())
+	}
+
+	// Clearing takes it back out, so a revoked credential is removable.
+	rr = httptest.NewRecorder()
+	h.HandleSaveJailbreakGithubToken(rr, httptest.NewRequest(http.MethodPut, "/api/jailbreak/github/token", strings.NewReader(`{"token":""}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear status = %d", rr.Code)
+	}
+	if defaultJailbreakImporter.GithubToken() != "" {
+		t.Errorf("the live importer still holds a cleared token: %q", defaultJailbreakImporter.GithubToken())
+	}
+	rr = httptest.NewRecorder()
+	h.HandleGetJailbreakGithub(rr, httptest.NewRequest(http.MethodGet, "/api/jailbreak/github", nil))
+	if !strings.Contains(rr.Body.String(), `"tokenSet":false`) {
+		t.Fatalf("body = %s, want tokenSet false after clearing", rr.Body.String())
+	}
+}
+
+// The token rides the request to the configured API base — api.github.com, or
+// the mirror an operator pointed apiBase at — and nowhere else. A mirror serves
+// the same API and needs the same credential; a paste service the operator
+// imported from must never receive it.
+func TestJailbreakGithubTokenHeader(t *testing.T) {
+	imp := newJailbreakImporter()
+	imp.SetGithubToken("ghp_live")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	cases := []struct {
+		name string
+		base string
+		url  string
+		want bool
+	}{
+		{"github api", "https://api.github.com", "https://api.github.com/repos/o/r", true},
+		{"mirror", "https://gh-proxy.example.com", "https://gh-proxy.example.com/repos/o/r", true},
+		{"mirror case-insensitive", "https://GH-Proxy.example.com", "https://gh-proxy.example.com/repos/o/r", true},
+		{"other host", "https://api.github.com", "https://raw.githubusercontent.com/o/r/main/x.md", false},
+		{"paste service", "https://api.github.com", "https://paste.example.com/abc", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			imp.apiBase = tc.base
+			u, err := url.Parse(tc.url)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got := sameHost(imp.apiBase, u)
+			if got != tc.want {
+				t.Errorf("sameHost(%q, %q) = %v, want %v", imp.apiBase, tc.url, got, tc.want)
+			}
+		})
 	}
 }

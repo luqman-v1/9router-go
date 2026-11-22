@@ -71,13 +71,53 @@ type jailbreakImporter struct {
 	// network — an internal paste service, a LAN host. Off by default; the
 	// production importer reads JAILBREAK_IMPORT_ALLOW_PRIVATE.
 	allowPrivate bool
+	// token is a GitHub personal access token sent as Authorization: Bearer on
+	// every api.github.com call. It exists because that API allows 60 anonymous
+	// requests an hour and 5,000 with a token, so a library that follows seven
+	// collections exhausts the anonymous quota on the third pass and every
+	// source after that reports 403. Off by default — an operator who wants it
+	// sets GITHUB_TOKEN, or types it in the dashboard, where it is stored in the
+	// settings row the rest of the dashboard credentials already use.
+	token string
+	// tokenMu guards token: the settings row is written by a request handler
+	// while a background pass is reading it, and the value is one string.
+	tokenMu sync.RWMutex
 }
 
 var defaultJailbreakImporter = newJailbreakImporter()
 
+// SetGithubToken installs or clears the token used for api.github.com calls.
+// It is called by the settings save and by the boot path that reads the stored
+// value, and it takes effect on the next request rather than requiring a
+// restart, so an operator pasting a token into the persona page sees the quota
+// change without a reboot.
+func (imp *jailbreakImporter) SetGithubToken(token string) {
+	if imp == nil {
+		return
+	}
+	imp.tokenMu.Lock()
+	imp.token = strings.TrimSpace(token)
+	imp.tokenMu.Unlock()
+}
+
+// GithubToken reports the token in force, or "" when none is configured.
+func (imp *jailbreakImporter) GithubToken() string {
+	if imp == nil {
+		return ""
+	}
+	imp.tokenMu.RLock()
+	defer imp.tokenMu.RUnlock()
+	return imp.token
+}
+
 // newJailbreakImporter builds the production importer. One client serves the
 // whole import, with a redirect policy and a dial guard that keep every hop
 // where the operator is allowed to reach.
+//
+// The GitHub endpoint and the token are both configurable: the endpoint because
+// an operator can put a mirror in front of api.github.com when the gateway's
+// network cannot reach it directly, and the token because the anonymous quota is
+// small enough that following several collections exhausts it within an hour.
 func newJailbreakImporter() *jailbreakImporter {
 	imp := &jailbreakImporter{
 		apiBase: "https://api.github.com",
@@ -85,6 +125,17 @@ func newJailbreakImporter() *jailbreakImporter {
 		// An operator importing from their own network has to say so; the
 		// default is public addresses only.
 		allowPrivate: os.Getenv("JAILBREAK_IMPORT_ALLOW_PRIVATE") == "1",
+		token:        strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+	}
+	// A mirror sits in front of both hosts. An operator whose network blocks
+	// api.github.com — or who wants the quota of a self-hosted gh-proxy — points
+	// both at it, and every existing parse rule keeps working because the paths
+	// are unchanged.
+	if mirror := strings.TrimSpace(os.Getenv("GITHUB_API_MIRROR")); mirror != "" {
+		imp.apiBase = strings.TrimSuffix(mirror, "/")
+	}
+	if mirror := strings.TrimSpace(os.Getenv("GITHUB_RAW_MIRROR")); mirror != "" {
+		imp.rawBase = strings.TrimSuffix(mirror, "/")
 	}
 	imp.client = &http.Client{
 		Timeout: jailbreakImportTimeout,
@@ -199,6 +250,41 @@ func isGithubHost(host string) bool {
 		return true
 	}
 	return false
+}
+
+// sameHost reports whether a request URL points at the configured base. The
+// token must go to the API base and nowhere else, so the comparison is against
+// that base rather than against a list of GitHub hosts: an operator pointing
+// apiBase at a mirror still has the token honoured, and a mirrored request is
+// the only other place it can appear.
+func sameHost(base string, u *url.URL) bool {
+	b, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	// Host and port, not host alone: two stand-in servers on one loopback address
+	// share a hostname and differ only by port, so a hostname-only comparison
+	// would send the token to the file server too. In production the two hosts
+	// are api.github.com and raw.githubusercontent.com, which differ by hostname
+	// already, but the port belongs in the comparison for the same reason it
+	// belongs in a firewall rule.
+	if !strings.EqualFold(b.Hostname(), u.Hostname()) {
+		return false
+	}
+	return normalizedPort(b) == normalizedPort(u)
+}
+
+// normalizedPort resolves an empty port to the scheme's default, so
+// "https://api.github.com" and "https://api.github.com:443" are the same base
+// and a mirror typed either way does not silently stop receiving the token.
+func normalizedPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 // githubJailbreakSource is a parsed import target. An empty Path means the
@@ -857,6 +943,14 @@ func (imp *jailbreakImporter) fetchText(ctx context.Context, u string, limit int
 		return "", err
 	}
 	req.Header.Set("User-Agent", "9router-go")
+	// The token rides every request that goes to the configured API base —
+	// api.github.com, or the mirror an operator pointed apiBase at, because a
+	// mirror serves the same API and needs the same credential. It is never sent
+	// to any other host: a token is not a credential for an arbitrary paste
+	// service the operator imported from.
+	if token := imp.GithubToken(); token != "" && sameHost(imp.apiBase, req.URL) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := imp.client.Do(req)
 	if err != nil {
 		return "", err

@@ -358,6 +358,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/jailbreak/sync/sources", dashH.HandleListJailbreakSyncSources)
 	r.Put("/api/jailbreak/sync/sources", dashH.HandleSaveJailbreakSyncSources)
 	r.Post("/api/jailbreak/sync/run", dashH.HandleRunJailbreakSync)
+	// GitHub credential and mirror: the api.github.com quota is 60 anonymous
+	// requests an hour, which a library following several collections exhausts
+	// inside one pass. A token raises it to 5,000, and an operator whose network
+	// cannot reach GitHub directly can point both endpoints at a mirror.
+	r.Get("/api/jailbreak/github", dashH.HandleGetJailbreakGithub)
+	r.Put("/api/jailbreak/github/token", dashH.HandleSaveJailbreakGithubToken)
 
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	// Provider Nodes (Custom Endpoints) — see dashboard/routes.go for the twin registration.

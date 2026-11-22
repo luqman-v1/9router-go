@@ -226,6 +226,8 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/jailbreak/sync/sources", h.HandleListJailbreakSyncSources)
 		r.Put("/jailbreak/sync/sources", h.HandleSaveJailbreakSyncSources)
 		r.Post("/jailbreak/sync/run", h.HandleRunJailbreakSync)
+		r.Get("/jailbreak/github", h.HandleGetJailbreakGithub)
+		r.Put("/jailbreak/github/token", h.HandleSaveJailbreakGithubToken)
 
 		// Models
 		r.Get("/models/custom", h.HandleGetCustomModels)

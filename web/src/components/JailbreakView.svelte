@@ -2271,6 +2271,22 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
   // derives.
   let syncDraftTarget = $state('')
   let syncDraftRef = $state('')
+  // GitHub credential. api.github.com allows 60 anonymous requests an hour and
+  // 5,000 with a token, so a library that follows several collections exhausts
+  // the anonymous quota inside one pass and every source after that reports
+  // 403. The value is write-only from here: the GET reports whether one is set
+  // and where it came from, never the token itself.
+  let syncGithub = $state<{
+    tokenSet: boolean
+    source: 'dashboard' | 'environment' | 'none'
+    apiBase: string
+    rawBase: string
+    envToken: boolean
+    envMirror: boolean
+  } | null>(null)
+  let syncTokenDraft = $state('')
+  let syncTokenSaving = $state(false)
+  let syncTokenStatus = $state('')
   let importResult = $state<JailbreakImportResult | null>(null)
   let importFileName = $state('')
   // Picked .md files waiting to be uploaded. Each entry keeps the File so the
@@ -2405,6 +2421,13 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
       models = modelMap || {}
       globalExcludes = excludeList?.excludes || []
       syncSources = syncList?.sources || []
+      try {
+        syncGithub = await api.getJailbreakGithub()
+      } catch {
+        // The GitHub credential panel is a convenience: without it the sync
+        // still runs on the anonymous quota, so a failure here is cosmetic.
+        syncGithub = null
+      }
       // #5 Per-preset hit counters. A failure here is cosmetic, so it is
       // swallowed: the preset list still renders without the counts.
       try {
@@ -2473,6 +2496,23 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
   function toggleSyncSource(id: string) {
     syncSources = syncSources.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s))
     void saveSyncSources()
+  }
+
+  async function saveSyncToken() {
+    syncTokenSaving = true
+    syncTokenStatus = ''
+    syncError = ''
+    try {
+      const token = syncTokenDraft.trim()
+      await api.setJailbreakGithubToken(token)
+      syncTokenDraft = ''
+      syncTokenStatus = token ? 'GitHub token saved.' : 'GitHub token cleared.'
+      syncGithub = await api.getJailbreakGithub()
+    } catch (e) {
+      syncError = errorMessage(e)
+    } finally {
+      syncTokenSaving = false
+    }
   }
 
   async function runSyncNow() {
@@ -3482,6 +3522,62 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
       <span class="text-text-muted">orphaned</span>, never deleted. Presets you write by hand have no
       origin and are invisible to every pass.
     </p>
+
+    <!-- GitHub credential. The quota api.github.com allows anonymously is 60
+         requests an hour, and eight collections exhaust that on the third pass —
+         after which every source reports 403 and none of them says why. A token
+         raises the ceiling to 5,000. The field is write-only: the GET reports
+         whether one is set and where it came from, so the value never lands in
+         browser storage or a screenshot. -->
+    <div class="pt-4 mt-4 border-t border-border-subtle space-y-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold text-text-main">GitHub token</span>
+        {#if syncGithub}
+          <span
+            class="rounded-md px-2 py-0.5 text-[10px] font-bold {syncGithub.tokenSet
+              ? 'bg-success/15 text-success'
+              : 'bg-warning/15 text-text-main'}"
+          >
+            {syncGithub.tokenSet
+              ? syncGithub.source === 'environment'
+                ? 'set (environment)'
+                : 'set'
+              : 'not set — 60 requests/hour'}
+          </span>
+          {#if syncGithub.envMirror && syncGithub.apiBase !== 'https://api.github.com'}
+            <span class="text-[10px] font-code text-text-subtle truncate" title={syncGithub.apiBase}>
+              mirror: {syncGithub.apiBase}
+            </span>
+          {/if}
+        {/if}
+      </div>
+      <p class="text-[10px] text-text-subtle">
+        Optional. Without one the sync runs on GitHub's anonymous quota — 60 requests an hour — which
+        several collections exhaust within one pass. A token raises it to 5,000. A mirror
+        (<span class="font-code">GITHUB_API_MIRROR</span> /
+        <span class="font-code">GITHUB_RAW_MIRROR</span>) is set when the gateway starts, so a network
+        that cannot reach GitHub directly can be pointed at a proxy.
+      </p>
+      <div class="flex flex-wrap items-center gap-2">
+        <input
+          type="password"
+          bind:value={syncTokenDraft}
+          placeholder="ghp_… (leave empty and save to clear)"
+          aria-label="GitHub token"
+          class="min-w-[280px] px-3 py-1.5 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-xs font-code placeholder:text-text-subtle outline-none focus:border-brand-500"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onclick={saveSyncToken}
+          disabled={syncTokenSaving}
+          icon="key"
+        >
+          {syncTokenSaving ? 'Saving…' : 'Save token'}
+        </Button>
+        {#if syncTokenStatus}<span class="text-xs text-text-muted">{syncTokenStatus}</span>{/if}
+      </div>
+    </div>
   </Card>
 
   <!-- Presets: the primary workspace. It gets the heaviest card on the page —

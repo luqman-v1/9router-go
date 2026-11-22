@@ -3001,6 +3001,24 @@ export const api = {
       '/api/jailbreak/sync/run',
       { method: 'POST' },
     ),
+  // GitHub credential and mirror. The api.github.com quota is 60 anonymous
+  // requests an hour and 5,000 with a token, so a library following several
+  // collections needs one. The token is never returned by the GET — only
+  // whether one is set and where it came from.
+  getJailbreakGithub: () =>
+    request<{
+      tokenSet: boolean
+      source: 'dashboard' | 'environment' | 'none'
+      apiBase: string
+      rawBase: string
+      envToken: boolean
+      envMirror: boolean
+    }>('/api/jailbreak/github'),
+  setJailbreakGithubToken: (token: string) =>
+    request<{ ok: boolean; tokenSet: boolean }>('/api/jailbreak/github/token', {
+      method: 'PUT',
+      body: JSON.stringify({ token }),
+    }),
   setJailbreakModel: (id: string, presetId: string, enabled: boolean) =>
     request<{ success: boolean }>('/api/jailbreak/models', {
       method: 'PUT',

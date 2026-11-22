@@ -257,6 +257,12 @@ type fakeGithub struct {
 	api  *httptest.Server
 	raw  *httptest.Server
 	tree map[string]string // path -> body
+	// authHeaders records every Authorization header the API server received,
+	// and rawAuth every one the raw server received. A test asserts on both,
+	// which is how "the token went to the API and not to the file host" is
+	// proved rather than restated.
+	authHeaders []string
+	rawAuth     []string
 }
 
 func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
@@ -264,6 +270,12 @@ func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
 	fg := &fakeGithub{tree: files}
 
 	fg.api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every request the importer makes is recorded with the header it
+		// carried, so a test can prove the token went to the API base and
+		// nowhere else rather than asserting on the code that sends it.
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.authHeaders = append(fg.authHeaders, a)
+		}
 		switch r.URL.Path {
 		case "/repos/owner/repo":
 			fmt.Fprint(w, `{"default_branch":"main"}`)
@@ -302,6 +314,9 @@ func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
 	t.Cleanup(fg.api.Close)
 
 	fg.raw = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.rawAuth = append(fg.rawAuth, a)
+		}
 		// A tree entry with no served body is a dead link: 404, so the import
 		// reports it instead of storing an empty prompt.
 		body, ok := files[strings.TrimPrefix(r.URL.Path, "/owner/repo/main/")]
@@ -1093,5 +1108,47 @@ func TestTreeSubtreeHelpers(t *testing.T) {
 		if e.Path == "README.md" {
 			t.Error("the repository's own README leaked into the subfolder")
 		}
+	}
+}
+
+// The token rides the request to the API base, and only there. Proved by what
+// the two fake servers actually received rather than by what the code means to
+// send: the API server must see it, and the file server must not — a credential
+// leaked to a paste service the operator imported from is the failure mode.
+func TestJailbreakImportSendsTokenToApiBaseOnly(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{"deepseek v4.md": "RULE"})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// The fake is on loopback, which means it is not api.github.com. Pointing
+	// apiBase at it is exactly the mirror shape, and the token must still ride.
+	imp := fg.importer()
+	t.Setenv("GITHUB_TOKEN", "")
+	imp.SetGithubToken("ghp_secret")
+
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("importPresets: %v", err)
+	}
+	if len(fg.authHeaders) == 0 {
+		t.Fatal("the API server received no Authorization header at all")
+	}
+	for _, h := range fg.authHeaders {
+		if h != "Bearer ghp_secret" {
+			t.Errorf("api header = %q, want Bearer ghp_secret", h)
+		}
+	}
+	if len(fg.rawAuth) != 0 {
+		t.Errorf("the file server received a token: %v — a credential must not go where the content is fetched from", fg.rawAuth)
+	}
+
+	// With no token there is no header, so a gateway that has none is not sending
+	// an empty bearer.
+	imp.SetGithubToken("")
+	fg.authHeaders, fg.rawAuth = nil, nil
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("importPresets: %v", err)
+	}
+	if len(fg.authHeaders) != 0 {
+		t.Errorf("an importer with no token sent one anyway: %v", fg.authHeaders)
 	}
 }
