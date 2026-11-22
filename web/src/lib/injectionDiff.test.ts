@@ -126,6 +126,19 @@ describe('responseVerdict', () => {
     const text = 'Sure — here is the explanation. A refusal would normally come first.'
     expect(responseVerdict(text)).toBe('ANSWERED')
   })
+
+  it('never answers for a request that failed, whatever its text opens with', () => {
+    // A 401 envelope reads "Authentication required. Provide an API key…" —
+    // not a refusal, so the phrase matcher would return ANSWERED and the card
+    // would claim the injection worked when the model was never called.
+    expect(responseVerdict('Authentication required. Provide an API key.', true)).toBe('UNCLEAR')
+    expect(responseVerdict("I can't help with that.", true)).toBe('UNCLEAR')
+    expect(responseVerdict('Here is how that works: ...', true)).toBe('UNCLEAR')
+  })
+
+  it('treats the default as not-failed, so a plain call keeps its verdict', () => {
+    expect(responseVerdict("I can't help with that.")).toBe('REFUSED')
+  })
 })
 
 describe('extractResult', () => {
@@ -133,7 +146,7 @@ describe('extractResult', () => {
     const out = extractResult({
       choices: [{ message: { content: 'the answer' }, finish_reason: 'stop' }],
     })
-    expect(out).toEqual({ text: 'the answer', finish: 'stop', note: '' })
+    expect(out).toEqual({ text: 'the answer', finish: 'stop', note: '', failed: false })
   })
 
   it('surfaces a reasoning-only answer instead of an empty card', () => {
@@ -142,12 +155,23 @@ describe('extractResult', () => {
     })
     expect(out.text).toBe('thinking...')
     expect(out.note).toBe('reasoning only — no final answer')
+    expect(out.failed).toBe(false)
   })
 
   it('surfaces a provider error envelope', () => {
     const out = extractResult({ error: { message: 'quota spent' } })
     expect(out.text).toBe('quota spent')
     expect(out.note).toBe('request failed')
+    expect(out.failed).toBe(true)
+  })
+
+  it('marks an empty choice list as failed, not answered', () => {
+    expect(extractResult({ choices: [] }).failed).toBe(true)
+  })
+
+  it('marks an unreadable body as failed, not answered', () => {
+    expect(extractResult(null).failed).toBe(true)
+    expect(extractResult('nope').failed).toBe(true)
   })
 
   it('surfaces an empty choice list rather than an exception', () => {

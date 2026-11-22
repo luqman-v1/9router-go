@@ -142,7 +142,7 @@
         aria-label="API key to resolve as"
         class="min-w-[220px] px-3 py-1.5 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-xs outline-none focus:border-brand-500"
       >
-        <option value="">Global only (no key scope)</option>
+        <option value="">Global scope only — no key</option>
         {#each keys as k (k.id)}
           <option value={k.id}>{k.name || k.keyDisplay || k.id}</option>
         {/each}
