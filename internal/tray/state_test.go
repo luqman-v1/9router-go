@@ -78,3 +78,24 @@ func TestResolve_SupervisedActiveIsRunning(t *testing.T) {
 		t.Error("supervised state offered the PID-based Stop")
 	}
 }
+
+func TestSnapshotTitle(t *testing.T) {
+	tests := []struct {
+		name string
+		snap Snapshot
+		want string
+	}{
+		{name: "running", snap: Snapshot{State: StateRunning, Port: 20128}, want: "9Router Go (Port 20128)"},
+		{name: "stopped", snap: Snapshot{State: StateStopped, Port: 20128}, want: "9Router Go (Stopped)"},
+		{name: "port conflict unknown pid", snap: Snapshot{State: StatePortConflict, Port: 20128, PID: 0}, want: "9Router Go (Port 20128 in use)"},
+		{name: "port conflict known pid", snap: Snapshot{State: StatePortConflict, Port: 20128, PID: 999}, want: "9Router Go (Port 20128 in use by foreign process (PID 999))"},
+		{name: "unknown", snap: Snapshot{State: StateUnknown, Port: 20128}, want: "9Router Go (Unknown)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.snap.Title(); got != tt.want {
+				t.Errorf("Title() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
