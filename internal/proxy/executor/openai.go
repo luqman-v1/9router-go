@@ -335,7 +335,8 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 			}
 		}
 	}
-	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream)
+	// The response body is transferred to bodyCloser below, not leaked here.
+	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream) //nolint:bodyclose
 	if err != nil && req.OnUpstreamError != nil {
 		// Non-2xx answers arrive as a typed UpstreamError with the body already
 		// captured. A provider-scoped hook may repair a fixable param; replay
@@ -345,7 +346,7 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 			if rewritten, ok := req.OnUpstreamError(upstreamErr.StatusCode, upstreamErr.Body); ok {
 				req.OnUpstreamError = nil
 				body = rewritten
-				resp, err = proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream)
+				resp, err = proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream) //nolint:bodyclose
 			}
 		}
 	}
