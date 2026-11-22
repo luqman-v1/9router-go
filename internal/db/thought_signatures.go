@@ -103,7 +103,7 @@ func (r *Repo) LoadThoughtSignatures(ctx context.Context, limit int) ([]ThoughtS
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT key, signature, family, expiresAt FROM thoughtSignatures
-		 WHERE expiresAt > ? ORDER BY updatedAt DESC, rowid DESC LIMIT ?`,
+		 WHERE expiresAt > ? ORDER BY updatedAt DESC, key DESC LIMIT ?`,
 		nowUTC(), limit,
 	)
 	if err != nil {
@@ -149,7 +149,7 @@ func (r *Repo) TrimThoughtSignatures(ctx context.Context, keep int) (int64, erro
 		ctx,
 		`DELETE FROM thoughtSignatures WHERE key IN (
 			SELECT key FROM thoughtSignatures
-			ORDER BY updatedAt DESC, rowid DESC
+			ORDER BY updatedAt DESC, key DESC
 			LIMIT -1 OFFSET ?
 		)`, keep,
 	)

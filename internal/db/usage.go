@@ -274,15 +274,15 @@ const usageClientKeyCachedTokens = `
 		CASE WHEN json_valid(tokens) THEN
 			CASE
 				WHEN json_extract(tokens, '$.cached_tokens') IS NOT NULL
-					THEN COALESCE(json_extract(tokens, '$.cached_tokens'), 0)
+					THEN COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), 0)
 				WHEN json_extract(tokens, '$.cache_read_input_tokens') IS NOT NULL
-					THEN COALESCE(json_extract(tokens, '$.cache_read_input_tokens'), 0)
+					THEN COALESCE(CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0)
 				WHEN json_extract(tokens, '$.prompt_tokens_details.cached_tokens') IS NOT NULL
-					THEN COALESCE(json_extract(tokens, '$.prompt_tokens_details.cached_tokens'), 0)
+					THEN COALESCE(CAST(json_extract(tokens, '$.prompt_tokens_details.cached_tokens') AS INTEGER), 0)
 				WHEN json_extract(tokens, '$.input_tokens_details.cached_tokens') IS NOT NULL
-					THEN COALESCE(json_extract(tokens, '$.input_tokens_details.cached_tokens'), 0)
+					THEN COALESCE(CAST(json_extract(tokens, '$.input_tokens_details.cached_tokens') AS INTEGER), 0)
 				WHEN json_extract(tokens, '$.prompt_eval_cached_count') IS NOT NULL
-					THEN COALESCE(json_extract(tokens, '$.prompt_eval_cached_count'), 0)
+					THEN COALESCE(CAST(json_extract(tokens, '$.prompt_eval_cached_count') AS INTEGER), 0)
 				ELSE 0
 			END
 		ELSE 0
@@ -428,10 +428,10 @@ func (r *Repo) GetUsageCacheHitTotalsSince(since string) (hit, total int64, err 
 	err = r.db.QueryRow( //nolint:noctx
 		`WITH raw AS (
 		   SELECT COALESCE(promptTokens, 0) AS prompt_column,
-		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.cached_tokens'), 0) ELSE 0 END AS cached_primary,
-		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.cache_read_input_tokens'), 0) ELSE 0 END AS cached_read,
-		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), 0) ELSE 0 END AS creation,
-		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.prompt_tokens'), 0) ELSE 0 END AS prompt_json
+		          CASE WHEN json_valid(tokens) THEN COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), 0) ELSE 0 END AS cached_primary,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0) ELSE 0 END AS cached_read,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(CAST(json_extract(tokens, '$.cache_creation_input_tokens') AS INTEGER), 0) ELSE 0 END AS creation,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(CAST(json_extract(tokens, '$.prompt_tokens') AS INTEGER), 0) ELSE 0 END AS prompt_json
 		     FROM usageHistory WHERE timestamp >= ?
 		 ), resolved AS (
 		   SELECT CASE WHEN cached_primary != 0 THEN cached_primary ELSE cached_read END AS cached,
@@ -474,10 +474,10 @@ type RequestDetailPerfRow struct {
 // observation" rather than take the whole read down.
 const requestDetailPerfSelect = `
 	SELECT COALESCE(provider, ''), COALESCE(model, ''),
-	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) AS INTEGER) ELSE 0 END
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.latency.ttft') AS INTEGER), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.latency.total') AS INTEGER), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.tokens.completion_tokens') AS INTEGER), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.tokens.output_tokens') AS INTEGER), 0) AS INTEGER) ELSE 0 END
 	FROM requestDetails`
 
 // GetRequestDetailPerf returns the latency observation of every request
@@ -583,10 +583,10 @@ func (r *Repo) GetModelTPSSince(ctx context.Context, since string) (map[string]f
 	}
 	query := `
 		SELECT COALESCE(provider, ''), COALESCE(model, ''),
-		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER) ELSE 0 END,
-		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) ELSE 0 END,
-		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) ELSE 0 END,
-		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) AS INTEGER) ELSE 0 END
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.latency.ttft') AS INTEGER), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.latency.total') AS INTEGER), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.tokens.completion_tokens') AS INTEGER), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(CAST(json_extract(data, '$.tokens.output_tokens') AS INTEGER), 0) AS INTEGER) ELSE 0 END
 		FROM requestDetails
 		WHERE (status = 'success' OR status = 'ok')`
 	args := []any{}
@@ -833,11 +833,11 @@ type RequestDetailListRow struct {
 const requestDetailListSelect = `
 	SELECT id, timestamp, COALESCE(provider, ''), COALESCE(model, ''), COALESCE(connectionId, ''),
 	       COALESCE(status, ''),
-	       CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER),
-	       CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER),
+	       CAST(COALESCE(CAST(json_extract(data, '$.latency.ttft') AS INTEGER), 0) AS INTEGER),
+	       CAST(COALESCE(CAST(json_extract(data, '$.latency.total') AS INTEGER), 0) AS INTEGER),
 	       COALESCE(json_extract(data, '$.tokens'), '{}'),
 	       COALESCE(json_extract(data, '$.account'), ''),
-	       COALESCE(json_extract(data, '$.cost'), 0.0),
+	       COALESCE(CAST(json_extract(data, '$.cost') AS REAL), 0.0),
 	       COALESCE(json_extract(data, '$.combo'), ''),
 	       COALESCE(json_extract(data, '$.protocol'), ''),
 	       COALESCE(json_extract(data, '$.loopWarning'), COALESCE(json_extract(data, '$.anomalies[0].message'), '')),
@@ -883,7 +883,7 @@ func (r *Repo) GetRequestDetailsPaged(ctx context.Context, limit, offset int, si
 	res := make([]RequestDetailListRow, 0, limit)
 	for rows.Next() {
 		var row RequestDetailListRow
-		var dataValid int
+		var dataValid any
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.Provider, &row.Model,
 			&row.ConnectionID, &row.Status, &row.LatencyTTFT, &row.LatencyTotal, &row.TokensJSON,
 			&row.Account, &row.Cost, &row.Combo, &row.Protocol,
@@ -896,7 +896,17 @@ func (r *Repo) GetRequestDetailsPaged(ctx context.Context, limit, offset int, si
 		// error; json_extract alone would fold it to the COALESCE defaults above
 		// and render the row as a request with zero tokens and no payload, which
 		// reads as real data. json_valid separates the two cases in the same pass.
-		if dataValid != 1 {
+		// SQLite returns 1/0 here, PG's shim returns bool — accept both.
+		valid := false
+		switch v := dataValid.(type) {
+		case bool:
+			valid = v
+		case int64:
+			valid = v != 0
+		case float64:
+			valid = v != 0
+		}
+		if !valid {
 			return nil, total, fmt.Errorf("requestDetails %s has an unreadable data column", row.ID)
 		}
 		res = append(res, row)

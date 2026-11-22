@@ -116,8 +116,8 @@ func (r *Repo) pruneRequestDetailsByAge(ctx context.Context, retention time.Dura
 			return fmt.Errorf("prune requestDetails by age: %w", err)
 		}
 		res, err := r.db.ExecContext(ctx,
-			`DELETE FROM requestDetails WHERE rowid IN (
-				SELECT rowid FROM requestDetails WHERE timestamp < ? LIMIT ?
+			`DELETE FROM requestDetails WHERE id IN (
+				SELECT id FROM requestDetails WHERE timestamp < ? LIMIT ?
 			)`, cutoff, retentionChunkSize)
 		if err != nil {
 			return fmt.Errorf("delete stale requestDetails: %w", err)
@@ -158,8 +158,8 @@ func (r *Repo) pruneRequestDetailsBySize(ctx context.Context, maxRows int, resul
 		}
 		limit := min(retentionChunkSize, overflow-removed)
 		res, err := r.db.ExecContext(ctx,
-			`DELETE FROM requestDetails WHERE rowid IN (
-				SELECT rowid FROM requestDetails ORDER BY timestamp ASC LIMIT ?
+			`DELETE FROM requestDetails WHERE id IN (
+				SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?
 			)`, limit)
 		if err != nil {
 			return fmt.Errorf("delete excess requestDetails: %w", err)

@@ -560,7 +560,7 @@ func (r *Repo) queryUsageHistoryBackfill(ctx context.Context, summary *Compressi
 	// The saved-token filter is what distinguishes a compressed row, so it
 	// leads; the window is appended to it rather than replacing it, for the same
 	// reason the provider breakdown above composes its two conditions.
-	whereClause := `WHERE tokens IS NOT NULL AND json_valid(tokens) AND CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) > 0`
+	whereClause := `WHERE tokens IS NOT NULL AND json_valid(tokens) AND CAST(COALESCE(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER), 0) AS INTEGER) > 0`
 	args := windowArgs(win)
 	if !win.Unbounded() {
 		whereClause += " AND timestamp >= ?"
@@ -570,7 +570,7 @@ func (r *Repo) queryUsageHistoryBackfill(ctx context.Context, summary *Compressi
 SELECT
 	COUNT(*) as total,
 	COALESCE(SUM(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER)), 0) as totalSaved,
-	COALESCE(AVG(CAST(COALESCE(json_extract(tokens, '$.saved_percent'), 0) AS REAL)), 0) as avgPct
+	COALESCE(AVG(CAST(COALESCE(CAST(json_extract(tokens, '$.saved_percent') AS INTEGER), 0) AS REAL)), 0) as avgPct
 FROM usageHistory %s`, whereClause)
 
 	var (
@@ -668,10 +668,10 @@ SELECT
 	COALESCE(provider, 'unknown') as prov,
 	COALESCE(model, 'unknown') as mdl,
 	'rtk' as md,
-	CAST(COALESCE(json_extract(tokens, '$.original_input_tokens'), promptTokens) AS INTEGER) as origTok,
-	CAST(COALESCE(json_extract(tokens, '$.compressed_input_tokens'), promptTokens) AS INTEGER) as compTok,
-	CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) as savedTok,
-	CAST(COALESCE(json_extract(tokens, '$.saved_percent'), 0) AS REAL) as pct,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.original_input_tokens') AS INTEGER), promptTokens) AS INTEGER) as origTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.compressed_input_tokens') AS INTEGER), promptTokens) AS INTEGER) as compTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER), 0) AS INTEGER) as savedTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.saved_percent') AS INTEGER), 0) AS REAL) as pct,
 	25 as durMs
 FROM usageHistory
 %s
@@ -733,17 +733,17 @@ SELECT
 	provider,
 	COALESCE(model, '') as model,
 	data,
-	CAST(COALESCE(json_extract(data, '$.tokens.original_input_tokens'), 0) AS INTEGER) as origTokens,
-	CAST(COALESCE(json_extract(data, '$.tokens.compressed_input_tokens'), 0) AS INTEGER) as compTokens,
-	CAST(COALESCE(json_extract(data, '$.tokens.saved_tokens'), 0) AS INTEGER) as savedTokens,
-	CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) as durMs,
-	CAST(COALESCE(json_extract(data, '$.tokens.prompt_tokens'), 0) AS INTEGER) as promptTokens,
-	CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) as compTokens2,
-	CAST(COALESCE(json_extract(data, '$.tokens.cached_tokens'), 0) AS INTEGER) as cachedTokens,
-	CAST(COALESCE(json_extract(data, '$.tokens.cache_creation_input_tokens'), 0) AS INTEGER) as cacheWriteTokens
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.original_input_tokens') AS INTEGER), 0) AS INTEGER) as origTokens,
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.compressed_input_tokens') AS INTEGER), 0) AS INTEGER) as compTokens,
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.saved_tokens') AS INTEGER), 0) AS INTEGER) as savedTokens,
+	CAST(COALESCE(CAST(json_extract(data, '$.latency.total') AS INTEGER), 0) AS INTEGER) as durMs,
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.prompt_tokens') AS INTEGER), 0) AS INTEGER) as promptTokens,
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.completion_tokens') AS INTEGER), 0) AS INTEGER) as compTokens2,
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.cached_tokens') AS INTEGER), 0) AS INTEGER) as cachedTokens,
+	CAST(COALESCE(CAST(json_extract(data, '$.tokens.cache_creation_input_tokens') AS INTEGER), 0) AS INTEGER) as cacheWriteTokens
 FROM requestDetails
 WHERE data IS NOT NULL AND json_valid(data)
-  AND CAST(COALESCE(json_extract(data, '$.tokens.saved_tokens'), 0) AS INTEGER) > 0`
+  AND CAST(COALESCE(CAST(json_extract(data, '$.tokens.saved_tokens') AS INTEGER), 0) AS INTEGER) > 0`
 
 	rows, err := db.QueryContext(ctx, rdQuery)
 	if err == nil {
@@ -797,16 +797,16 @@ SELECT
 	COALESCE(timestamp, ''),
 	COALESCE(provider, 'unknown'),
 	COALESCE(model, 'unknown'),
-	CAST(COALESCE(json_extract(tokens, '$.original_input_tokens'), promptTokens) AS INTEGER) as origTok,
-	CAST(COALESCE(json_extract(tokens, '$.compressed_input_tokens'), promptTokens) AS INTEGER) as compTok,
-	CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) as savedTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.original_input_tokens') AS INTEGER), promptTokens) AS INTEGER) as origTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.compressed_input_tokens') AS INTEGER), promptTokens) AS INTEGER) as compTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER), 0) AS INTEGER) as savedTok,
 	promptTokens,
 	completionTokens,
-	CAST(COALESCE(json_extract(tokens, '$.cached_tokens'), 0) AS INTEGER) as cachedTok,
-	CAST(COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), 0) AS INTEGER) as cacheWrTok
+	CAST(COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), 0) AS INTEGER) as cachedTok,
+	CAST(COALESCE(CAST(json_extract(tokens, '$.cache_creation_input_tokens') AS INTEGER), 0) AS INTEGER) as cacheWrTok
 FROM usageHistory
 WHERE tokens IS NOT NULL AND json_valid(tokens)
-  AND CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) > 0`
+  AND CAST(COALESCE(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER), 0) AS INTEGER) > 0`
 
 	uhRows, err := db.QueryContext(ctx, uhQuery)
 	if err == nil {
