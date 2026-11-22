@@ -67,7 +67,10 @@ export interface CustomModelData {
   providerAlias?: string
   type?: string
   /** Capability flags saved from the Add Custom Model modal (upstream parity). */
-  caps?: { vision?: boolean; reasoning?: boolean }
+  caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean }
+  contextWindow?: number
+  maxOutput?: number
+  extraBody?: unknown
 }
 
 // Artwork is filed under another provider's id when the two genuinely share a
