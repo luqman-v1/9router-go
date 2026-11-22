@@ -15,8 +15,10 @@ import (
 // in open-sse/handlers/imageProviders/codex.js. The stream is consumed frame
 // by frame rather than buffered whole: a Responses turn can emit many partial
 // images before the final one, and nothing here needs them once the result
-// arrives.
-func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage) {
+// arrives. When the upstream emits a failure instead of an image, the error
+// message it carried is returned so the caller surfaces it rather than a
+// generic entitlement message.
+func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage, streamErr string) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -42,6 +44,10 @@ func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage
 			if parsed := normalizeCodexImageUsage(codexResponseUsage(payload)); parsed != nil {
 				usage = parsed
 			}
+		case "response.failed", "error":
+			if msg := codexStreamErrorMessage(payload); msg != "" {
+				streamErr = msg
+			}
 		}
 	}
 
@@ -62,7 +68,65 @@ func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage
 		}
 	}
 	flush()
-	return imageB64, usage
+	return imageB64, usage, streamErr
+}
+
+// codexStreamErrorMessage digs the error message out of a failure frame. A
+// Responses error can sit at the top level (`data.error.message`), under the
+// response envelope (`data.response.error.message` / `data.response.error`), or
+// on an item (`data.item.error.message`), so each shape is checked in turn.
+func codexStreamErrorMessage(payload string) string {
+	var frame struct {
+		Error    jsontext.Value `json:"error"`
+		Response jsontext.Value `json:"response"`
+		Item     jsontext.Value `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+		return ""
+	}
+	if msg := codexErrorMessage(frame.Error); msg != "" {
+		return msg
+	}
+	if len(frame.Response) > 0 {
+		var nested struct {
+			Error jsontext.Value `json:"error"`
+		}
+		if json.Unmarshal(frame.Response, &nested) == nil {
+			if msg := codexErrorMessage(nested.Error); msg != "" {
+				return msg
+			}
+		}
+	}
+	if len(frame.Item) > 0 {
+		var nested struct {
+			Error jsontext.Value `json:"error"`
+		}
+		if json.Unmarshal(frame.Item, &nested) == nil {
+			if msg := codexErrorMessage(nested.Error); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
+// codexErrorMessage extracts a message from an error object, accepting either
+// the structured {message} form or a bare string.
+func codexErrorMessage(raw jsontext.Value) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && obj.Message != "" {
+		return obj.Message
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return ""
 }
 
 // codexResponseItem decodes the frame body and returns the item it carries,

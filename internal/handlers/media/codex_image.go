@@ -298,11 +298,6 @@ func codexImageBody(req *codexImageRequest, responsesModel, toolModel string) ([
 		"stream":              true,
 		"store":               false,
 	}
-	if toolModel != "" {
-		// The tool path is the only one that has to be told to think, and the
-		// Responses lane rejects a null reasoning object.
-		payload["reasoning"] = map[string]any{"effort": "medium", "summary": "auto"}
-	}
 
 	out, err := json.Marshal(payload)
 	if err != nil {
@@ -525,9 +520,12 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 			return h.codexImageUpstreamError(r, resp.StatusCode, respBody, conn, cleanModel)
 		}
 
-		image, usage := parseCodexImageStream(resp.Body)
+		image, usage, streamErr := parseCodexImageStream(resp.Body)
 		_ = resp.Body.Close()
 		if image == "" {
+			if streamErr != "" {
+				return fmt.Errorf("codex image generation failed: %s", streamErr)
+			}
 			return fmt.Errorf("codex did not return an image: the account may not be entitled (paid ChatGPT plan required)")
 		}
 
