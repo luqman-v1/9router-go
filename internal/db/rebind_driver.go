@@ -140,6 +140,7 @@ func (s rebindStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (
 	return ec.ExecContext(ctx, args)
 }
 
+//nolint:staticcheck
 func (s rebindStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	qc, ok := s.inner.(driver.StmtQueryContext)
 	if !ok {

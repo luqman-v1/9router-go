@@ -621,7 +621,7 @@ func pgEnsureSQLiteCompat(ctx context.Context, db *sql.DB) error {
 		   EXCEPTION WHEN OTHERS THEN
 		     RETURN NULL;
 		   END;
-		   RETURN jb#>>string_to_array(substring(path from 2), '.');
+		   RETURN jb#>>string_to_array(substring(path from 3), '.');
 		 EXCEPTION WHEN OTHERS THEN
 		   RETURN NULL;
 		 END;
@@ -648,7 +648,7 @@ func pgEnsureSQLiteCompat(ctx context.Context, db *sql.DB) error {
 		   WHILE i <= array_length(args, 1) - 1 LOOP
 		     path := args[i];
 		     val := args[i+1];
-		     jb := jsonb_set(jb, string_to_array(substring(path from 2), '.'), to_jsonb(val), true);
+		     jb := jsonb_set(jb, string_to_array(substring(path from 3), '.'), to_jsonb(val), true);
 		     i := i + 2;
 		   END LOOP;
 		   RETURN jb::text;
