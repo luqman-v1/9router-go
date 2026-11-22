@@ -1,7 +1,7 @@
 <script lang="ts">
   // Console Log page. Owns the authenticated SSE transport, the server log
   // level, and the buffer window; ConsoleLogStream owns how rows are read.
-  import { Pause, Play, Trash2 } from 'lucide-svelte'
+  import { Trash2 } from 'lucide-svelte'
   import ConsoleLogStream from './ConsoleLogStream.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Card from '../lib/ui/Card.svelte'

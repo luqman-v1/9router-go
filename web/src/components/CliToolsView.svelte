@@ -1,25 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
-    AlertCircle,
     Check,
-    Code2,
     Copy,
     ExternalLink,
-    FolderKanban,
-    HelpCircle,
     Key,
-    Layers,
-    Loader2,
     RefreshCw,
     Search,
-    Shield,
     Terminal,
-    Wrench,
-    X,
-    Zap
+    X
   } from 'lucide-svelte'
-  import Card from '../lib/ui/Card.svelte'
   import { copyToClipboard } from '../lib/clipboard'
   import { api, type APIKey } from '../api/client'
   import HermesToolCard from './cli-tools/HermesToolCard.svelte'
@@ -31,8 +21,7 @@
   }
 
   let {
-    apiKeys = [],
-    onRefresh
+    apiKeys = []
   }: Props = $props()
 
   let statuses = $state<Record<string, { installed?: boolean; version?: string | null; has9Router?: boolean } | null>>({})
@@ -99,7 +88,7 @@
     defaultKey?: string
   }
 
-  let toolsCatalog: ToolItem[] = $derived.by(() => [
+  let toolsCatalog = $derived.by((): ToolItem[] => [
     {
       id: 'claude',
       name: 'Claude Code',

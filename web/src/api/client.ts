@@ -793,6 +793,7 @@ export interface ConnectionQuotaInfo {
 
 export interface ConnectionUsageResponse {
   plan?: string
+  message?: string
   quotas?: Record<string, ConnectionQuotaInfo> | ConnectionQuotaInfo[]
   error?: string
 }

@@ -106,7 +106,6 @@
   let minimaxCheckinBusy = $state<Record<string, boolean>>({})
   let autoRefresh = $state(true)
   let hasHydratedAutoRefresh = $state(false)
-  let lastUpdated = $state<Date | null>(null)
   let refreshingAll = $state(false)
   let countdown = $state(60)
   let connectionsLoading = $state(true)
@@ -266,7 +265,6 @@
       },
       onComplete: () => {
         if (quotaCycleController === controller) quotaCycleController = null
-        lastUpdated = new Date()
         refreshingAll = false
       },
     })
@@ -638,7 +636,7 @@
   }
 
   function isActiveConn(conn: ProviderConnection): boolean {
-    return conn.isActive === 1 || conn.isActive === true
+    return conn.isActive === 1
   }
 
   function getConnectionLabel(conn: ProviderConnectionLike): string | null {
@@ -717,7 +715,6 @@
 
   async function refreshProvider(connectionId: string, provider: string): Promise<void> {
     await fetchQuota(connectionId, provider, { force: true })
-    lastUpdated = new Date()
   }
 
   // MiniMax Code daily check-in (magpie's /checkin). The background loop claims
@@ -910,12 +907,12 @@
   // ─── Derived ───────────────────────────────────────────────────────────────
   let sortedConnections = $derived.by<ProviderConnection[]>(() =>
     sortVisibleConnections(
-      connections as ProviderConnectionLike[],
+      connections,
       quotaData,
       expiringFirst,
       providerFilter,
       quotaSortMode,
-    ) as ProviderConnection[],
+    ),
   )
 
   // Group the sorted rows by provider so the tracker reads as collapsible
@@ -1771,7 +1768,7 @@
 {#if autoPingEditing}
   <AutoPingScheduleModal
     open
-    connectionName={autoPingEditing.name}
+    connectionName={autoPingEditing.name ?? undefined}
     reactive={autoPingMaps[autoPingEditing.provider as AutoPingProvider]?.[autoPingEditing.id] ===
       true}
     schedule={(autoPingSchedules[autoPingEditing.provider as AutoPingProvider]?.[

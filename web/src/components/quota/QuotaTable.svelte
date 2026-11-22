@@ -4,8 +4,6 @@
     formatResetTime,
     formatResetTimeDisplay,
     getRemainingPercentage,
-    getStatusColor,
-    getStatusEmoji,
     type NormalizedQuota,
   } from './types'
 
