@@ -12,6 +12,7 @@
  * rendered page is identical either way.
  */
 
+import type { Request } from '@playwright/test'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { Dashboard } from './harness'
 
@@ -70,10 +71,21 @@ afterAll(async () => {
   await app.stop()
 })
 
+/**
+ * Section switcher button inside `<AnalyticsView>`. Waiting on it guarantees
+ * `App.svelte`'s `loadData()` has already awaited `/api/connections` and
+ * `/api/provider-nodes` and flipped `isLoading` to `false`; `'Usage & Analytics'`
+ * in `<TopBar>` renders earlier while `loadData()` may still be awaiting the
+ * catalog and before those boot-time fetches start.
+ */
+function sectionMenuButton(page: Dashboard['page']) {
+  return page.getByRole('button', { name: /Overview|Details|Cache Analytics|Compression Analytics/ }).first()
+}
+
 /** Switches the Usage page to one of its four sections. */
 async function openSection(label: string): Promise<void> {
   const page = app.page
-  await page.getByRole('button', { name: /Overview|Details|Cache Analytics|Compression Analytics/ }).first().click()
+  await sectionMenuButton(page).click()
   await page.getByRole('option', { name: new RegExp(label) }).click()
 }
 
@@ -83,19 +95,24 @@ describe('usage page request economy', () => {
     async () => {
       const page = app.page
       await page.goto(`${app.baseURL}/dashboard/usage`)
-      await page.getByText('Usage & Analytics').waitFor({ timeout: SLOW })
+      await sectionMenuButton(page).waitFor({ timeout: SLOW })
 
       const reads: string[] = []
-      page.on('request', (req) => {
+      const onRequest = (req: Request) => {
         if (req.url().includes('/api/usage/dashboard')) reads.push(req.url())
-      })
+      }
+      page.on('request', onRequest)
 
-      // Five switches, three of which land on Details. The first is a genuine
-      // read; the rest are served from the module cache because the payload
-      // cannot have changed and the TTL has not elapsed.
-      for (const section of ['Details', 'Overview', 'Details', 'Cache Analytics', 'Details']) {
-        await openSection(section)
-        await page.waitForTimeout(900)
+      try {
+        // Five switches, three of which land on Details. The first is a genuine
+        // read; the rest are served from the module cache because the payload
+        // cannot have changed and the TTL has not elapsed.
+        for (const section of ['Details', 'Overview', 'Details', 'Cache Analytics', 'Details']) {
+          await openSection(section)
+          await page.waitForTimeout(900)
+        }
+      } finally {
+        page.off('request', onRequest)
       }
 
       expect(reads.length).toBe(1)
@@ -108,18 +125,23 @@ describe('usage page request economy', () => {
     async () => {
       const page = app.page
       await page.goto(`${app.baseURL}/dashboard/usage`)
-      await page.getByText('Usage & Analytics').waitFor({ timeout: SLOW })
+      await sectionMenuButton(page).waitFor({ timeout: SLOW })
 
       const polls: string[] = []
-      page.on('request', (req) => {
+      const onRequest = (req: Request) => {
         const url = req.url()
         if (url.includes('/api/connections') || url.includes('/api/provider-nodes')) polls.push(url)
-      })
+      }
+      page.on('request', onRequest)
 
-      // Two poll ticks. The Usage page renders nothing from these lists, so
-      // neither should be re-fetched; the navigation into the page already
-      // loaded them.
-      await page.waitForTimeout(23_000)
+      try {
+        // Two poll ticks. The Usage page renders nothing from these lists, so
+        // neither should be re-fetched; the navigation into the page already
+        // loaded them.
+        await page.waitForTimeout(23_000)
+      } finally {
+        page.off('request', onRequest)
+      }
 
       expect(polls).toEqual([])
     },

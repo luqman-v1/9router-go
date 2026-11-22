@@ -1,6 +1,18 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeAll, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { __setProviderCatalogForTest } from '../../lib/providers'
+import { parseProviderRegistry } from '../../lib/providers.registry-test'
 import { getIconPath, getProviderStats, providerAuthTypes } from './types'
 import type { ProviderConnection } from '../../api/client'
+
+const registryItems = parseProviderRegistry(
+  readFileSync(resolve(import.meta.dirname, '../../../../internal/providers/provider_registry.go'), 'utf8'),
+)
+
+beforeAll(() => {
+  __setProviderCatalogForTest(registryItems)
+})
 
 function conn(overrides: Partial<ProviderConnection> = {}): ProviderConnection {
   return {

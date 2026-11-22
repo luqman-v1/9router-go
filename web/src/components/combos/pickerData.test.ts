@@ -1,13 +1,24 @@
 import assert from 'node:assert'
-import { describe, it } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { beforeEach, describe, it } from 'node:test'
 import type { Combo, ProviderConnection, ProviderNode } from '../../api/client'
+import { __setProviderCatalogForTest } from '../../lib/providers'
+import { parseProviderRegistry } from '../../lib/providers.registry-test'
 import {
   resolveFilteredCombos,
   resolveFilteredGroups,
   resolveModelPickerGroups,
 } from './pickerData'
 
+const registryItems = parseProviderRegistry(
+  readFileSync(resolve(import.meta.dirname, '../../../../internal/providers/provider_registry.go'), 'utf8'),
+)
+
 describe('pickerData', () => {
+  beforeEach(() => {
+    __setProviderCatalogForTest(registryItems)
+  })
   it('includes connected providers and no-auth providers regardless of isActive', () => {
     const connections: ProviderConnection[] = [
       {
