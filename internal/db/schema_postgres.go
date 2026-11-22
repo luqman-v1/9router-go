@@ -141,6 +141,7 @@ var postgresTables = []pgTableDef{
 			{"status", "TEXT"},
 			{"tokens", "TEXT"},
 			{"meta", "TEXT"},
+			{"clientKey", "TEXT DEFAULT ''"},
 		},
 		indexes: []string{
 			"CREATE INDEX IF NOT EXISTS idx_uh_ts ON usageHistory(timestamp DESC)",
@@ -284,6 +285,110 @@ var postgresTables = []pgTableDef{
 		},
 		indexes: []string{
 			"CREATE INDEX IF NOT EXISTS idx_grl_ts ON guardrail_logs(created_at DESC)",
+		},
+	},
+	{
+		name: "files",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"filename", "TEXT NOT NULL"},
+			{"bytes", "BIGINT NOT NULL"},
+			{"purpose", "TEXT NOT NULL"},
+			{"created_at", "BIGINT NOT NULL"},
+			{"content", "BYTEA NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_files_purpose ON files(purpose)",
+			"CREATE INDEX IF NOT EXISTS idx_files_created ON files(created_at DESC)",
+		},
+	},
+	{
+		name: "batches",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"input_file_id", "TEXT NOT NULL"},
+			{"endpoint", "TEXT NOT NULL"},
+			{"completion_window", "TEXT NOT NULL"},
+			{"status", "TEXT NOT NULL"},
+			{"output_file_id", "TEXT"},
+			{"error_file_id", "TEXT"},
+			{"created_at", "BIGINT NOT NULL"},
+			{"completed_at", "BIGINT"},
+			{"cancelled_at", "BIGINT"},
+			{"metadata", "TEXT"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status)",
+			"CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC)",
+			"CREATE INDEX IF NOT EXISTS idx_batches_input_file ON batches(input_file_id)",
+		},
+	},
+	{
+		name: "plans",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL DEFAULT 'default'"},
+			{"name", "TEXT NOT NULL"},
+			{"description", "TEXT DEFAULT ''"},
+			{"limit_micros", "BIGINT NOT NULL DEFAULT 0"},
+			{"limit_tokens", "BIGINT NOT NULL DEFAULT 0"},
+			{"rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"tpm_limit", "BIGINT NOT NULL DEFAULT 0"},
+			{"concurrency_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"period", "TEXT NOT NULL DEFAULT 'monthly'"},
+			{"alert_pct", "INTEGER NOT NULL DEFAULT 80"},
+			{"hard_cutoff", "BOOLEAN NOT NULL DEFAULT TRUE"},
+			{"allowed_models", "TEXT DEFAULT ''"},
+			{"created_at", "TEXT NOT NULL"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+	},
+	{
+		name: "audit_log",
+		columns: []pgColumn{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL"},
+			{"actor", "TEXT NOT NULL DEFAULT ''"},
+			{"actor_type", "TEXT NOT NULL DEFAULT ''"},
+			{"action", "TEXT NOT NULL DEFAULT ''"},
+			{"target", "TEXT NOT NULL DEFAULT ''"},
+			{"resource_type", "TEXT NOT NULL DEFAULT ''"},
+			{"outcome", "TEXT NOT NULL DEFAULT ''"},
+			{"severity", "TEXT NOT NULL DEFAULT 'INFO'"},
+			{"client_ip", "TEXT NOT NULL DEFAULT ''"},
+			{"user_agent", "TEXT NOT NULL DEFAULT ''"},
+			{"http_method", "TEXT NOT NULL DEFAULT ''"},
+			{"http_route", "TEXT NOT NULL DEFAULT ''"},
+			{"status_code", "INTEGER NOT NULL DEFAULT 0"},
+			{"request_id", "TEXT NOT NULL DEFAULT ''"},
+			{"trace_id", "TEXT NOT NULL DEFAULT ''"},
+			{"span_id", "TEXT NOT NULL DEFAULT ''"},
+			{"detail", "TEXT NOT NULL DEFAULT '{}'"},
+			{"chain_id", "TEXT NOT NULL DEFAULT ''"},
+			{"chain_seq", "BIGINT NOT NULL DEFAULT 0"},
+			{"prev_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"hash", "TEXT NOT NULL DEFAULT ''"},
+			{"created_at", "BIGINT NOT NULL DEFAULT 0"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(created_at DESC)",
+			"CREATE INDEX IF NOT EXISTS idx_audit_log_tenant ON audit_log(tenant_id)",
+		},
+	},
+	{
+		name: "usageLedgerCarryover",
+		columns: []pgColumn{
+			{"keyId", "TEXT PRIMARY KEY"},
+			{"tokens", "BIGINT NOT NULL DEFAULT 0"},
+			{"updatedAt", "TEXT NOT NULL"},
+		},
+	},
+	{
+		name: "providerLedgerCarryover",
+		columns: []pgColumn{
+			{"providerId", "TEXT PRIMARY KEY"},
+			{"tokens", "BIGINT NOT NULL DEFAULT 0"},
+			{"updatedAt", "TEXT NOT NULL"},
 		},
 	},
 }
@@ -557,9 +662,10 @@ func pgEnsureSQLiteCompat(ctx context.Context, db *sql.DB) error {
 		   SELECT v::jsonb
 		 $$`,
 
-		// json_array(VARIADIC args TEXT[]) → jsonb. Mirrors SQLite's
-		// json_array which builds a JSON array from text values.
-		`CREATE OR REPLACE FUNCTION json_array(VARIADIC args TEXT[]) RETURNS jsonb
+		// "json_array" → jsonb. Mirrors SQLite's json_array which builds a JSON
+		// array from text values. The name is quoted because array is a reserved
+		// word in some PG contexts; callers still resolve it unquoted.
+		`CREATE OR REPLACE FUNCTION "json_array"(VARIADIC args TEXT[]) RETURNS jsonb
 		 LANGUAGE sql IMMUTABLE AS $$
 		   SELECT to_jsonb(args)
 		 $$`,
