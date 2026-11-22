@@ -35,12 +35,16 @@ func TestJunction_EvalSymlinksIsBlindAndReadlinkIsNot(t *testing.T) {
 		t.Errorf("junction reports ModeSymlink; the premise of the guard has changed")
 	}
 
+	evalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(base): %v", err)
+	}
 	eval, err := filepath.EvalSymlinks(junction)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	if eval != junction {
-		t.Errorf("EvalSymlinks resolved the junction to %q — the stdlib behaviour this test pins has changed", eval)
+	if eval != filepath.Join(evalBase, "evil") {
+		t.Errorf("EvalSymlinks resolved the junction to %q (expected %q) — the stdlib behaviour this test pins has changed", eval, filepath.Join(evalBase, "evil"))
 	}
 
 	target, err := os.Readlink(junction)

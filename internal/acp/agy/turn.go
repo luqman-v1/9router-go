@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -358,9 +359,20 @@ func buildCommand(ctx context.Context, bin string, dir *AccountDir, opts TurnOpt
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	env := os.Environ()
+	// Strip overridden isolation vars (including case-variant keys on Windows)
+	// plus ambient credentials before appending the account-scoped overrides.
+	for _, k := range []string{
+		"HOME", "USERPROFILE", "SSH_CONNECTION",
+		"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+		"BROWSER", "AGY_CLI_DISABLE_AUTO_UPDATE",
+		"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "ANTIGRAVITY_APP_DATA_DIR",
+	} {
+		env = removeEnv(env, k)
+	}
 	// Force file-backed token storage and isolate all cross-contaminating vars.
 	env = append(env,
 		"HOME="+home,
+		"USERPROFILE="+home,
 		"SSH_CONNECTION=127.0.0.1 0 127.0.0.1 22",
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
@@ -368,22 +380,26 @@ func buildCommand(ctx context.Context, bin string, dir *AccountDir, opts TurnOpt
 		"BROWSER="+filepath.Join(os.TempDir(), "false"),
 		"AGY_CLI_DISABLE_AUTO_UPDATE=true",
 	)
-	for _, k := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "ANTIGRAVITY_APP_DATA_DIR"} {
-		env = removeEnv(env, k)
-	}
 	env = append(env, opts.ExtraEnv...)
 	cmd.Env = env
 
 	return cmd
 }
 
+func envKeyMatches(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func removeEnv(env []string, key string) []string {
 	out := env[:0]
-	prefix := key + "="
 	for _, e := range env {
-		if !strings.HasPrefix(e, prefix) {
-			out = append(out, e)
+		if k, _, ok := strings.Cut(e, "="); ok && envKeyMatches(k, key) {
+			continue
 		}
+		out = append(out, e)
 	}
 	return out
 }
