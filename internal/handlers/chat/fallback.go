@@ -569,6 +569,17 @@ func upstreamRetryAfterSec(ue *upstreamError) (int, bool) {
 	return ceilSeconds(min(wait, maxCooldownFor("opencode"))), true
 }
 
+// preservesOpenRouterAnthropicCacheControl reports whether the filter must
+// keep cache_control markers on the outbound body (upstream OmniRoute #19755).
+// OpenRouter forwards the whole OpenAI body to the model provider named in the
+// model id; a model under the "anthropic/" prefix is served by Anthropic's
+// own API, which honours the breakpoints a Claude Code caller sent. Stripping
+// them there cost every Anthropic-backed OpenRouter model its prompt cache.
+// Providers registered with preserveCacheControl keep their existing behaviour.
+func preservesOpenRouterAnthropicCacheControl(provider, wireModel string) bool {
+	return provider == "openrouter" && strings.HasPrefix(strings.ToLower(wireModel), "anthropic/")
+}
+
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
 // isAnthropicUpstream reports whether the request is headed to Anthropic's
 // native Messages API (as opposed to an anthropic-compatible custom node).
@@ -994,7 +1005,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
 		if target == "openai" && !providerCfg.IsGeminiNative() {
 			filtered, filterErr := translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
-				PreserveCacheControl:    providers.PreservesCacheControl(provider),
+				PreserveCacheControl:    providers.PreservesCacheControl(provider) || preservesOpenRouterAnthropicCacheControl(provider, wireModel),
 				StrictReasoningRemoving: providers.StrictReasoningRemoving(provider),
 				FlattenContent:          provider == "cloudflare-ai",
 			})
