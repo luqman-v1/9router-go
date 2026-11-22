@@ -250,6 +250,20 @@ The gateway is expected to serve from a **1 vCPU box with a small memory ceiling
 - **Bound everything that grows.** A cache needs a size or a TTL, per-connection state needs a lifetime, and a goroutine per request needs a reason to exist. An unbounded map keyed by a client-supplied value is a memory leak with a schedule.
 - **Take the smaller mechanism when both meet the requirement** — a slice over a map, a counter over a histogram, `json.RawMessage` over `map[string]any` on a hot path. When the heavier one is genuinely needed, say which requirement needs it.
 
+### H. Dual-Engine Database Compatibility (STRICTLY MANDATORY)
+
+SQLite is the zero-config default; PostgreSQL is an opt-in backend selected by
+a `postgres://` / `postgresql://` `DATABASE_URL` and driven through the same
+`database/sql` API. They are **one logical schema**, so every schema or query
+change must hold on both engines.
+
+- **A new table, column, index, or constraint must land on both engines in the same PR.** The SQLite declarations live in `coreSchema()` and `keiRouterTables` (`internal/db/schema.go`); the PG declarations live in `postgresTables` (`internal/db/schema_postgres.go`). Adding to only one side is a blocker, not a follow-up: the engine missing the table/column fails at runtime while the other passes CI. Prefer one canonical declaration rendered per engine; if a PR keeps two lists, it must add a parity test comparing table names and column names (case-insensitive) and failing on drift. `portable_sql_test.go` only rejects forbidden SQL constructs; it is **not** a parity gate.
+- **Type mapping is explicit and travels with the schema change**: `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGINT GENERATED ALWAYS AS IDENTITY`, 0/1 `INTEGER` flags → `BOOLEAN`, `BLOB` → `BYTEA`, timestamps stay `TEXT` in v1. A new type, generated column, or engine-specific constraint needs a declared mapping on both sides plus a note in the `.changes/` fragment (§7.6).
+- **Keep query text engine-neutral.** `?` placeholders are translated centrally by the pgx rebind connector; never hand-rebind at call sites. SQLite-only functions (`json_extract`, `json_set`, `json_valid`, `json()`, `json_array`, `datetime('now')`) need either a PG compatibility function with the **same name and semantics** or an explicit engine guard. `PRAGMA` and other maintenance statements cannot be shimmed — guard them with `engineOf(db)` / `CurrentEngine()` or use the PG equivalent (`ANALYZE`, `pg_total_relation_size`).
+- **A shim is done only when it is proven equal.** Add differential tests that run the exact production expressions on SQLite and PG16 and compare values, including JSON array paths (`$.a[0].b`), JSON `null` vs SQL `NULL`, type coercion, and reserved keywords. Quote reserved identifiers in `CREATE FUNCTION` (`"json_array"`); unquoted calls still resolve after that. Green SQLite-only CI is not evidence for the PG path.
+- **CI must exercise PG, not just build it.** Any PR touching `internal/db` or `internal/dbmigrate` must pass a PG16 smoke job: boot with `DATABASE_URL`, run schema bootstrap, execute the shim expressions used in production, and complete an export/import round-trip. The SQLite suite staying green does not satisfy this.
+- **Reviewers:** before approving, verify both schema lists, the parity test, and the PG smoke result. A missing side, a missing differential test, or a missing PG smoke job is a blocker.
+
 ---
 
 ## 5. Idiomatic Go Unit Testing Convention (`testing.T`)
