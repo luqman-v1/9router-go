@@ -16,6 +16,20 @@ type ChatRequest struct {
 	MaxTokens int             `json:"max_tokens,omitempty"`
 }
 
+// gatewayPreamble is prepended to every folded prompt. agy 1.5.x sometimes
+// answers a turn with a single "checking model/config in background" status
+// line and then emits no further chunks, leaving the client waiting forever
+// with no answer. The preamble tells the agent to finish the answer in the
+// same turn; it is protocol data for this gateway, not a user message.
+const gatewayPreamble = `[9router gateway instruction]
+Answer the request below directly and completely in THIS turn. Do not reply
+with a status note such as "checking model and configuration in the
+background" and do not defer the answer to a later message. Any progress
+notice must be followed in the same turn by the actual answer, or by a tool
+call whose result you will use to produce the answer. If you cannot answer,
+end the turn with a short error explanation.
+`
+
 type ChatMessage struct {
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
@@ -58,6 +72,8 @@ type PromptBlock struct {
 // fresh instruction or prompt injection.
 func BuildPrompt(req *ChatRequest) []PromptBlock {
 	var out strings.Builder
+	out.WriteString(gatewayPreamble)
+	out.WriteString("\n\n")
 	for _, m := range req.Messages {
 		text := m.text()
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {

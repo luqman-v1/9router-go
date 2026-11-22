@@ -61,6 +61,7 @@ func main(){
 
 func TestForwardAGYACPNonStream(t *testing.T) {
 	fake := buildFakeAGY(t)
+	t.Cleanup(agy.DefaultPool().Close)
 	t.Setenv("AGY_PATH", fake)
 	body, _ := json.Marshal(map[string]any{
 		"model":    "gemini-3.8-flash-high",
@@ -105,6 +106,7 @@ func TestForwardAGYACPNonStream(t *testing.T) {
 
 func TestForwardAGYACPStream(t *testing.T) {
 	fake := buildFakeAGY(t)
+	t.Cleanup(agy.DefaultPool().Close)
 	t.Setenv("AGY_PATH", fake)
 	body, _ := json.Marshal(map[string]any{
 		"model":    "gemini-3.8-flash-high",
@@ -138,6 +140,7 @@ func TestForwardAGYACPStream(t *testing.T) {
 
 func TestForwardAGYACPNonStreamClaude(t *testing.T) {
 	fake := buildFakeAGY(t)
+	t.Cleanup(agy.DefaultPool().Close)
 	t.Setenv("AGY_PATH", fake)
 	body, _ := json.Marshal(map[string]any{
 		"model":      "gemini-3.8-flash-high",
@@ -203,6 +206,7 @@ func TestForwardAGYACPNonStreamClaude(t *testing.T) {
 
 func TestForwardAGYACPStreamClaude(t *testing.T) {
 	fake := buildFakeAGY(t)
+	t.Cleanup(agy.DefaultPool().Close)
 	t.Setenv("AGY_PATH", fake)
 	body, _ := json.Marshal(map[string]any{
 		"model":      "gemini-3.8-flash-high",
