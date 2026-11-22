@@ -91,6 +91,9 @@
   })
 
   let isLoading = $state(true)
+  // True once loadProviderCatalog() populates PROVIDER_CATALOG, because that
+  // array is non-reactive and derived lookups would otherwise stick on empty.
+  let catalogLoaded = $state(false)
   let isAuthChecking = $state(true)
   let isAuthenticatedState = $state(false)
   // A share link waiting to be reviewed, and the import surface that fills it.
@@ -168,6 +171,7 @@
     // install would render an error where the login form belongs.
     try {
       await loadProviderCatalog()
+      catalogLoaded = true
     } catch (err) {
       console.error('provider catalog failed to load', err)
     }
@@ -331,7 +335,7 @@
     connections.filter((c) => c.isActive === 1 && !!c.lastError).length
   )
   let selectedMediaCatalogItem = $derived.by(() => {
-    if (!selectedMedia) return null
+    if (!catalogLoaded || !selectedMedia) return null
     return PROVIDER_CATALOG.find((p) => p.id === selectedMedia!.providerId) || null
   })
   let selectedProviderMeta = $derived.by(() => {
@@ -344,7 +348,9 @@
     }
     if (activeTab !== 'connections' || !selectedProviderId) return null
     const node = providerNodes.find((n) => n.id === selectedProviderId)
-    const cat = PROVIDER_CATALOG.find((p) => p.id === selectedProviderId)
+    const cat = catalogLoaded
+      ? PROVIDER_CATALOG.find((p) => p.id === selectedProviderId)
+      : undefined
     return {
       id: selectedProviderId,
       name: node?.name || cat?.name || selectedProviderId,
