@@ -1,0 +1,4 @@
+### fix(media): rotate ElevenLabs music and sound-effects requests across connections
+
+- **ElevenLabs music & sound-effects failover** (`internal/handlers/media/elevenlabs_music.go`, `elevenlabs_sound.go`): rotated `HandleAudioMusic` and `HandleAudioSoundGeneration` across active `elevenlabs` connections via `excludeIDs` on retryable errors classified by `providers.ClassifyError`, locking/unlocking failing `(conn, model)` entries while keeping probe requests read-only (`!handlerutil.IsProbeContext`), honoring `x-connection-id` / `x-provider-connection-id` pinning, and preserving existing error response shapes.
+- **Regression tests** (`internal/handlers/media/elevenlabs_music_test.go`, `elevenlabs_sound_test.go`): added `TestHandleAudioMusic_ConnectionRotation` and `TestHandleAudioSoundGeneration_ConnectionRotation` covering `429` lock+skip, `401` rotation, non-retryable `400` passthrough, pinned header, exhausted pool, and probe lock isolation.

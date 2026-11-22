@@ -14,6 +14,8 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/usagetracker"
 )
 
@@ -56,25 +58,15 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), provider, "", nil, req.Model)
-	if err != nil || conn == nil {
-		handlerutil.WriteJSONError(w, http.StatusServiceUnavailable, "no active connection for elevenlabs")
-		return
+	// Reserve a non-empty lockModel for cooldown locks while passing req.Model
+	// to GetBestConnectionWithContext so model-less requests are not filtered out
+	// under StrictModelAssignment.
+	lockModel := req.Model
+	if lockModel == "" {
+		lockModel = "music"
 	}
 
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found for elevenlabs connection")
-		return
-	}
-
-	providerCfg, err := h.ChatH.GetProviderConfig("elevenlabs", connData)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "get elevenlabs config: "+err.Error())
-		return
-	}
-
-	// Build request body for ElevenLabs music API
+	// Build request body for ElevenLabs music API once before trying connections.
 	upstreamBody, err := json.Marshal(map[string]any{
 		"prompt":           req.Prompt,
 		"duration_seconds": req.DurationSeconds,
@@ -85,16 +77,82 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	pinned := imagePinnedConnectionID(r)
+	usePinned := pinned != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastStatus int
+	var lastMsg string
+	for {
+		if r.Context().Err() != nil {
+			if lastStatus != 0 {
+				handlerutil.WriteJSONError(w, lastStatus, lastMsg)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), provider, pinned, excludeIDs, req.Model)
+		if err != nil || conn == nil || connData == nil {
+			if lastStatus != 0 {
+				handlerutil.WriteJSONError(w, lastStatus, lastMsg)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusServiceUnavailable, "no active connection for elevenlabs")
+			return
+		}
+		if _, seen := tried[conn.ID]; seen {
+			if lastStatus != 0 {
+				handlerutil.WriteJSONError(w, lastStatus, lastMsg)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusServiceUnavailable, "no active connection for elevenlabs")
+			return
+		}
+		tried[conn.ID] = struct{}{}
+
+		status, msg, retryable, ok := h.tryElevenLabsMusicConn(w, r, body, upstreamBody, &req, lockModel, conn, connData)
+		if ok {
+			return
+		}
+		lastStatus, lastMsg = status, msg
+		if usePinned || !retryable || r.Context().Err() != nil {
+			handlerutil.WriteJSONError(w, lastStatus, lastMsg)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func (h *MediaHandler) tryElevenLabsMusicConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	upstreamBody []byte,
+	req *MusicGenerationRequest,
+	lockModel string,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) (int, string, bool, bool) {
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		return http.StatusUnauthorized, "no API key found for elevenlabs connection", true, false
+	}
+
+	providerCfg, err := h.ChatH.GetProviderConfig("elevenlabs", connData)
+	if err != nil {
+		return http.StatusInternalServerError, "get elevenlabs config: " + err.Error(), false, false
+	}
+
 	targetURL := "https://api.elevenlabs.io/v1/music"
-	if connData != nil && strings.TrimSpace(connData.BaseURL) != "" {
+	if strings.TrimSpace(connData.BaseURL) != "" {
 		targetURL = strings.TrimRight(strings.TrimSpace(connData.BaseURL), "/") + "/v1/music"
 	} else if providerCfg != nil && strings.TrimSpace(providerCfg.BaseURL) != "" {
 		targetURL = strings.TrimRight(strings.TrimSpace(providerCfg.BaseURL), "/") + "/v1/music"
 	}
 	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "create elevenlabs music request: "+err.Error())
-		return
+		return http.StatusInternalServerError, "create elevenlabs music request: " + err.Error(), false, false
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -111,28 +169,33 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
+		return http.StatusBadGateway, clientErr.Error(), true, false
 	}
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "elevenlabs music request failed: "+err.Error())
-		return
+		return http.StatusBadGateway, "elevenlabs music request failed: " + err.Error(), r.Context().Err() == nil, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "read response: "+err.Error())
-		return
+		return http.StatusBadGateway, "read response: " + err.Error(), r.Context().Err() == nil, false
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		snippet := string(respBody[:min(300, len(respBody))])
 		log.Warn("media", "elevenlabs music upstream error", "status", resp.StatusCode, "body", snippet)
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("elevenlabs music failed with status %d: %s", resp.StatusCode, snippet))
-		return
+		backoff := 0
+		if h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		classification := providers.ClassifyError(resp.StatusCode, snippet, backoff, respBody)
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, lockModel, cooldownSec, classification.NewBackoffLevel)
+		}
+		return http.StatusBadGateway, fmt.Sprintf("elevenlabs music failed with status %d: %s", resp.StatusCode, snippet), classification.ShouldFallback, false
 	}
 
 	// Stream audio/mpeg response back to client
@@ -142,6 +205,9 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 
 	if h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, lockModel)
+		}
 		h.ChatH.LogUsage(r.Context(), &shared.UsageLogInfo{
 			Provider:     "elevenlabs",
 			Model:        req.Model,
@@ -156,4 +222,5 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 		Provider:  "elevenlabs",
 		Status:    "ok",
 	}, h.Repo)
+	return 0, "", false, true
 }
