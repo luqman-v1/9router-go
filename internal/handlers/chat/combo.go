@@ -764,21 +764,54 @@ func (h *ChatHandler) applyComboStrategyWithSeats(strategy string, models []stri
 		// The model owning this turn. A new turn starts from the rotation
 		// pointer; a mid-turn request reuses the model serving the turn even
 		// after the pointer has advanced for the next turn.
-		servingIndex := state.Index % len(models)
-		if newTurn {
-			// Advance the rotation pointer at the turn boundary.
-			state.ConsecutiveUseCount++
-			if state.ConsecutiveUseCount >= stickyLimit {
-				state.Index = (servingIndex + 1) % len(models)
-				state.ConsecutiveUseCount = 0
-			}
-			state.ServingIndex = servingIndex
-		} else {
-			servingIndex = state.ServingIndex
+		//
+		// The pointer lives in the combo's initial configured target space, not
+		// in the list this turn can serve: a seat that capability or affinity
+		// filtering dropped still occupies its rotation slot, so filtering a
+		// seat out for one turn no longer skips it for good.
+		if len(state.Space) == 0 {
+			state.Space = slices.Clone(comboOwnModels)
 		}
+		if len(state.Space) == 0 {
+			state.Space = slices.Clone(models)
+		}
+		// Advance the pointer at the turn boundary, then read it: `Index` is
+		// always the seat the next turn starts from.
+		if !newTurn && slices.Equal(state.Models, models) && state.ServingIndex < len(models) {
+			rotated := make([]string, len(models))
+			for i := range models {
+				rotated[i] = models[(state.ServingIndex+i)%len(models)]
+			}
+			return rotated
+		}
+		state.Models = slices.Clone(models)
+
+		// Sticky serves the scheduled seat for stickyLimit turns, then
+		// advances. True round-robin (stickyLimit<=1) advances every turn.
+		if newTurn {
+			state.ConsecutiveUseCount++
+			if state.ConsecutiveUseCount > stickyLimit {
+				state.Index = (state.Index + 1) % len(state.Space)
+				state.ConsecutiveUseCount = 1
+			}
+		}
+		scheduled := state.Index % len(state.Space)
+
+		// Map the scheduled seat onto this turn's list: the seat itself, or the
+		// first seat after it when a filter dropped it.
+		servingIndex := slices.Index(models, state.Space[scheduled])
+		if servingIndex < 0 {
+			for at := scheduled + 1; servingIndex < 0 && at < scheduled+len(state.Space); at++ {
+				servingIndex = slices.Index(models, state.Space[at%len(state.Space)])
+			}
+		}
+		if servingIndex < 0 {
+			servingIndex = 0
+		}
+		state.ServingIndex = servingIndex
 
 		rotated := make([]string, len(models))
-		for i := 0; i < len(models); i++ {
+		for i := range models {
 			rotated[i] = models[(servingIndex+i)%len(models)]
 		}
 
