@@ -1503,66 +1503,141 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if preferredConnID == "" {
 		preferredConnID = modelInfo.ConnectionID
 	}
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, nil, modelInfo.Model)
-	if err != nil || connData == nil {
-		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			apiKey := cfg.DefaultAPIKey
-			if apiKey == "" {
-				apiKey = "public"
-			}
-			connData = &chat.ConnectionData{
-				APIKey:      apiKey,
-				ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
-			}
-		} else {
-			log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
-			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
-			return
-		}
-	}
 
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		log.Error("media", "get provider config failed", "endpoint", endpoint, "provider", modelInfo.Provider, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		if providerCfg != nil && providerCfg.DefaultAPIKey != "" {
-			apiKey = providerCfg.DefaultAPIKey
-		} else {
-			connIDStr := ""
-			if conn != nil {
-				connIDStr = conn.ID[:min(8, len(conn.ID))]
-			}
-			log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", connIDStr)
-			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-			return
-		}
-	}
-
-	finalBody := body
+	baseFinalBody := body
 	if !isMultipartRequest(r) {
-		finalBody = handlerutil.UpdateModelInBody(body, modelInfo.Model)
+		baseFinalBody = handlerutil.UpdateModelInBody(body, modelInfo.Model)
 	} else if model != "" && model != modelInfo.Model {
 		// Upstream parity (videoGeneration byte-exact multipart): never
 		// rewrite inside the binary payload — a byte.Replace could corrupt
 		// file bytes that happen to match. Rebuild only the model part.
 		if rebuilt, err := rewriteMultipartModelPart(body, r.Header.Get("Content-Type"), model, modelInfo.Model); err == nil {
-			finalBody = rebuilt
+			baseFinalBody = rebuilt
 		} else {
 			log.Warn("media", "multipart model rewrite skipped", "endpoint", endpoint, "error", err)
 		}
 	}
 	if isVideoCreateEndpoint(endpoint) && isXAIVideoProvider(modelInfo.Provider) && !isMultipartRequest(r) {
-		finalBody = formatXAIVideoPayload(finalBody)
+		baseFinalBody = formatXAIVideoPayload(baseFinalBody)
 	}
+
+	usePinned := preferredConnID != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr *mediaForwardAttemptErr
+
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, excludeIDs, modelInfo.Model)
+		if err != nil || connData == nil {
+			if len(excludeIDs) == 0 {
+				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+					apiKey := cfg.DefaultAPIKey
+					if apiKey == "" {
+						apiKey = "public"
+					}
+					conn = nil
+					connData = &chat.ConnectionData{
+						APIKey:      apiKey,
+						ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
+					}
+				}
+			}
+			if connData == nil {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
+				return
+			}
+		}
+		if conn != nil {
+			if _, seen := tried[conn.ID]; seen {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(nil, modelInfo.Provider))
+				return
+			}
+			tried[conn.ID] = struct{}{}
+		}
+
+		attemptErr := h.tryMediaForwardConn(w, r, body, baseFinalBody, modelInfo, endpoint, conn, connData)
+		if attemptErr == nil {
+			return
+		}
+		lastErr = attemptErr
+		if conn == nil || usePinned || !attemptErr.retryable || r.Context().Err() != nil {
+			lastErr.write(w)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+type mediaForwardAttemptErr struct {
+	status    int
+	headers   http.Header
+	rawBody   []byte
+	jsonMsg   string
+	retryable bool
+}
+
+func (e *mediaForwardAttemptErr) write(w http.ResponseWriter) {
+	if e.rawBody != nil {
+		if e.headers != nil {
+			copyUpstreamHeaders(w.Header(), e.headers)
+		}
+		w.WriteHeader(e.status)
+		_, _ = w.Write(e.rawBody)
+		return
+	}
+	handlerutil.WriteJSONError(w, e.status, e.jsonMsg)
+}
+
+func (h *MediaHandler) tryMediaForwardConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	baseFinalBody []byte,
+	modelInfo *chat.ModelInfo,
+	endpoint string,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) (attemptErr *mediaForwardAttemptErr) {
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		log.Error("media", "get provider config failed", "endpoint", endpoint, "provider", modelInfo.Provider, "error", err)
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: err.Error(), retryable: false}
+	}
+
+	connIDStr := ""
+	if conn != nil {
+		connIDStr = conn.ID[:min(8, len(conn.ID))]
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		if providerCfg != nil && providerCfg.DefaultAPIKey != "" {
+			apiKey = providerCfg.DefaultAPIKey
+		} else {
+			log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", connIDStr)
+			return &mediaForwardAttemptErr{status: http.StatusUnauthorized, jsonMsg: "no API key found", retryable: conn != nil}
+		}
+	}
+
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: clientErr.Error(), retryable: true}
 	}
 	// The client is the chat handler's shared one; the guard rides on a copy
 	// so a redirect on this fetch cannot walk into a private address.
@@ -1572,11 +1647,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if conn != nil {
 		connID = conn.ID
 	}
-	var fwdErr error
 	usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, true, false)
 	defer func() {
-		hasErr := fwdErr != nil
-		usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, false, hasErr)
+		usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, false, attemptErr != nil)
 	}()
 
 	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
@@ -1635,8 +1708,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if endpoint == "/v1/search" {
 		searchURL, err := resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
 		if err != nil {
-			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
-			return
+			return &mediaForwardAttemptErr{status: http.StatusBadRequest, jsonMsg: err.Error(), retryable: false}
 		}
 		targetURL = searchURL
 		if providerCfg.SearchMethod != "" {
@@ -1646,6 +1718,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	attemptBody := baseFinalBody
 	if endpoint == "/v1/search" && modelInfo.Provider == "keenable" {
 		// Keenable rejects unknown params (model, mode). Forward only query.
 		var sReq struct {
@@ -1654,7 +1727,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		if err := json.Unmarshal(body, &sReq); err == nil && sReq.Query != "" {
 			if b, err := json.Marshal(map[string]string{"query": sReq.Query}); err == nil {
-				finalBody = b
+				attemptBody = b
 			}
 		}
 	}
@@ -1680,27 +1753,37 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		case "ollama":
 			if fReq.URL != "" {
 				if b, err := json.Marshal(map[string]string{"url": fReq.URL}); err == nil {
-					finalBody = b
+					attemptBody = b
 				}
 			}
 		case "jina-reader", "jina":
 			if fetchFmt != "markdown" && fetchFmt != "text" && fetchFmt != "html" {
-				handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				rawErr, _ := json.Marshal(map[string]any{
 					"error": fmt.Sprintf("Unsupported format for %s. Supported: markdown, text, html", modelInfo.Provider),
 				})
-				return
+				return &mediaForwardAttemptErr{
+					status:    http.StatusBadRequest,
+					headers:   http.Header{constants.HeaderContentType: {constants.ContentTypeJSON}},
+					rawBody:   rawErr,
+					retryable: false,
+				}
 			}
 			if fReq.URL != "" {
 				if b, err := json.Marshal(map[string]string{"url": fReq.URL}); err == nil {
-					finalBody = b
+					attemptBody = b
 				}
 			}
 		case "tavily":
 			if fetchFmt != "markdown" && fetchFmt != "text" {
-				handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				rawErr, _ := json.Marshal(map[string]any{
 					"error": "Unsupported format for tavily. Supported: markdown, text",
 				})
-				return
+				return &mediaForwardAttemptErr{
+					status:    http.StatusBadRequest,
+					headers:   http.Header{constants.HeaderContentType: {constants.ContentTypeJSON}},
+					rawBody:   rawErr,
+					retryable: false,
+				}
 			}
 			tBody := map[string]any{
 				"urls":          []string{fReq.URL},
@@ -1708,7 +1791,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				"format":        fetchFmt,
 			}
 			if b, err := json.Marshal(tBody); err == nil {
-				finalBody = b
+				attemptBody = b
 			}
 		case "keenable":
 			// Keenable fetch is GET /v1/fetch with url as a query parameter.
@@ -1723,20 +1806,18 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					u.RawQuery = q.Encode()
 					targetURL = u.String()
 				}
-				finalBody = nil
+				attemptBody = nil
 			}
 		}
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(finalBody))
+	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(attemptBody))
 	if err != nil {
 		log.Error("media", "create request failed", "endpoint", endpoint, "error", err)
-		return
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: "failed to create request", retryable: false}
 	}
 
-	for k, v := range r.Header {
-		req.Header[k] = v
-	}
+	req.Header = r.Header.Clone()
 	req.Header.Del("Host")
 	req.Header.Del("Content-Length")
 	for k, v := range providerCfg.StaticHeaders {
@@ -1746,10 +1827,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		req.Header.Set("x-respond-with", fetchFmt)
 	}
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	connIDStr := ""
-	if conn != nil {
-		connIDStr = conn.ID[:min(8, len(conn.ID))]
-	}
+
 	// Log search query for observability (was "nebak" before)
 	if endpoint == "/v1/search" {
 		var qb struct {
@@ -1769,24 +1847,53 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	resp, err := doDirectOrClient(r.Context(), client, req)
 	if err != nil {
 		log.Error("media", "upstream request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "upstream request failed")
-		return
+		return &mediaForwardAttemptErr{
+			status:    http.StatusBadGateway,
+			jsonMsg:   "upstream request failed",
+			retryable: r.Context().Err() == nil && !isVideoCreateEndpoint(endpoint),
+		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024))
-		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "status", resp.StatusCode, "body", string(errBody))
-		// Need to re-create body for copying
-		resp.Body = io.NopCloser(bytes.NewReader(errBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if errBody == nil {
+			errBody = []byte{}
+		}
+		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "status", resp.StatusCode, "body", string(errBody[:min(1024, len(errBody))]))
+		backoff := 0
+		if conn != nil && h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		snippet := string(errBody[:min(500, len(errBody))])
+		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
+		shouldRotate := classification.ShouldFallback
+		if isVideoCreateEndpoint(endpoint) && resp.StatusCode >= 500 {
+			shouldRotate = false
+		}
+		if shouldRotate && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return &mediaForwardAttemptErr{
+			status:    resp.StatusCode,
+			headers:   resp.Header.Clone(),
+			rawBody:   errBody,
+			retryable: shouldRotate,
+		}
 	}
 
 	copyUpstreamHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 
 	if resp.StatusCode == http.StatusOK && conn != nil {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if h.Repo != nil {
+			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+			if !handlerutil.IsProbeContext(r.Context()) {
+				_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			}
+		}
 		latencyMs := time.Since(start).Milliseconds()
 		logInfo := &shared.UsageLogInfo{
 			Provider:     modelInfo.Provider,
@@ -1797,6 +1904,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
 	}
+	return nil
 }
 
 // rewriteMultipartModelPart rebuilds a multipart body with only the "model"
