@@ -352,6 +352,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/jailbreak/preview", dashH.HandlePreviewJailbreak)
 	r.Put("/api/jailbreak/presets/order", dashH.HandleReorderJailbreakPresets)
 	r.Post("/api/jailbreak/presets/upload", dashH.HandleUploadJailbreakPreset)
+	// Preset auto-sync: the standing-subscription version of the GitHub import
+	// above, so a collection whose prompts change updates without the operator
+	// re-importing it by hand.
+	r.Get("/api/jailbreak/sync/sources", dashH.HandleListJailbreakSyncSources)
+	r.Put("/api/jailbreak/sync/sources", dashH.HandleSaveJailbreakSyncSources)
+	r.Post("/api/jailbreak/sync/run", dashH.HandleRunJailbreakSync)
 
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	// Provider Nodes (Custom Endpoints) — see dashboard/routes.go for the twin registration.

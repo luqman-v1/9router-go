@@ -1,7 +1,7 @@
+import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib/presetSync'
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
 <<<<<<< HEAD
   import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
@@ -198,7 +198,6 @@
   async function load() {
     loading = true
     try {
-      const [presetList, modelMap, excludeList, keyList] = await Promise.all([
         api.listJailbreakPresets(),
         api.listJailbreakModels(),
         api.getJailbreakExcludes(),

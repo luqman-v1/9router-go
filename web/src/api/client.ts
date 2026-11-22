@@ -1190,6 +1190,48 @@ export interface JailbreakDoc {
   createdAt?: string
   /** RFC3339 UTC stamp of the last write. */
   updatedAt?: string
+  /**
+   * Provenance of a preset the auto-sync worker wrote: the repository it came
+   * from ("owner/repo@ref") and the file inside it. A preset carrying both is
+   * rewritten by every pass of that source; one carrying neither was typed,
+   * uploaded or imported by hand and sync never touches it.
+   */
+  syncOrigin?: string
+  syncPath?: string
+}
+
+/** One GitHub collection the preset library auto-syncs from. */
+export interface JailbreakSyncSource {
+  id: string
+  /** Anything the GitHub import accepts: owner/repo, a GitHub URL, or a raw file URL. */
+  target: string
+  /** Branch, tag or sha to follow. Empty follows the repository default. */
+  ref?: string
+  /** Paused sources are kept and never fetched. */
+  enabled: boolean
+  /** Label the panel shows; derived from the target when absent. */
+  name?: string
+  lastSyncAt?: string
+  lastError?: string
+  lastResult?: JailbreakSyncResult
+}
+
+/** What one pass of one source did. */
+export interface JailbreakSyncResult {
+  written: number
+  updated: number
+  orphaned: number
+  failed: number
+  files?: JailbreakSyncFile[]
+}
+
+/** One file of one pass. */
+export interface JailbreakSyncFile {
+  path: string
+  preset?: string
+  /** "written" | "updated" | "unchanged" | "orphaned" | "failed" */
+  action: string
+  reason?: string
 }
 
 /**
@@ -2931,6 +2973,8 @@ export const api = {
     keywords?: JailbreakKeyword[]
     excludes?: JailbreakKeyword[]
     order?: number
+    syncOrigin?: string
+    syncPath?: string
   }) =>
     request<{ success: boolean }>('/api/jailbreak/presets', {
       method: 'PUT',
@@ -2941,6 +2985,22 @@ export const api = {
       method: 'DELETE',
     }),
   listJailbreakModels: () => request<Record<string, JailbreakModelConfig>>('/api/jailbreak/models'),
+  // Preset auto-sync: the GitHub collections the library follows. One pass
+  // rewrites only the presets it wrote itself, so an operator's hand-made
+  // preset is never touched and a file upstream dropped is reported as
+  // orphaned rather than deleted.
+  listJailbreakSyncSources: () =>
+    request<{ sources: JailbreakSyncSource[] }>('/api/jailbreak/sync/sources'),
+  saveJailbreakSyncSources: (sources: JailbreakSyncSource[]) =>
+    request<{ sources: JailbreakSyncSource[]; ok: boolean }>('/api/jailbreak/sync/sources', {
+      method: 'PUT',
+      body: JSON.stringify({ sources }),
+    }),
+  runJailbreakSync: () =>
+    request<{ outcomes: { source: JailbreakSyncSource; result: JailbreakSyncResult }[]; ok: boolean }>(
+      '/api/jailbreak/sync/run',
+      { method: 'POST' },
+    ),
   setJailbreakModel: (id: string, presetId: string, enabled: boolean) =>
     request<{ success: boolean }>('/api/jailbreak/models', {
       method: 'PUT',
