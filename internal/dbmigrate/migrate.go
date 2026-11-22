@@ -207,7 +207,10 @@ func Import(ctx context.Context, dsn, dir string) ([]string, error) {
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("dbmigrate: pg unreachable: %w", err)
 	}
-	if err := coredb.EnsureCoreSchema(db); err != nil {
+	// Bootstrap without the default settings/_meta rows: seeding first would
+	// occupy settings(id=1) with '{}' and the import's ON CONFLICT DO NOTHING
+	// would then silently discard the exported real value.
+	if err := coredb.EnsureSchemaPostgresWithoutSeed(db); err != nil {
 		return nil, err
 	}
 
@@ -222,6 +225,10 @@ func Import(ctx context.Context, dsn, dir string) ([]string, error) {
 			return nil, err
 		}
 		summaries = append(summaries, fmt.Sprintf("%s: %d rows", table, n))
+	}
+	// Seed only genuinely empty rows now that the dump has been replayed.
+	if err := coredb.EnsureSchemaPostgres(db); err != nil {
+		return nil, err
 	}
 	return summaries, nil
 }

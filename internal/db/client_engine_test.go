@@ -31,6 +31,29 @@ func TestDetectEngine(t *testing.T) {
 	}
 }
 
+// TestCurrentEngineFollowsGlobalHandle pins that the process-wide engine
+// report is derived from the global handle's driver, so it can never drift
+// from what InitGlobalDatabase actually opened.
+func TestCurrentEngineFollowsGlobalHandle(t *testing.T) {
+	sqliteDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqliteDB.Close()
+	dbMu.Lock()
+	old := dbInstance
+	dbInstance = sqliteDB
+	dbMu.Unlock()
+	defer func() {
+		dbMu.Lock()
+		dbInstance = old
+		dbMu.Unlock()
+	}()
+	if got := CurrentEngine(); got != EngineSQLite {
+		t.Fatalf("CurrentEngine() = %v, want sqlite", got)
+	}
+}
+
 // TestEngineOfHandle pins the driver-sniffing path used by callers that open
 // a handle outside InitGlobalDatabase (the dbmigrate CLI).
 func TestEngineOfHandle(t *testing.T) {

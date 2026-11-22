@@ -459,6 +459,15 @@ var postgresSupersededIndexes = []string{
 // engine-portable rewrite. Skipping it on PG only delays a one-time telemetry
 // backfill; the gate that marks it done lives in _meta and stays unset.
 func schemaPostgres(ctx context.Context, db *sql.DB) error {
+	return schemaPostgresWithSeed(ctx, db, true)
+}
+
+// schemaPostgresWithSeed is the engine bootstrap with an explicit seed flag.
+// The migration CLI calls it with seed=false so an imported dump's own
+// settings/_meta rows are not shadowed by the default '{}' seed (ON CONFLICT
+// DO NOTHING would then silently discard the real values). It seeds after
+// the import instead, where the seed only fills genuinely empty databases.
+func schemaPostgresWithSeed(ctx context.Context, db *sql.DB, seed bool) error {
 	if db == nil {
 		return fmt.Errorf("postgres schema: nil db")
 	}
@@ -489,15 +498,17 @@ func schemaPostgres(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
-	if _, err := db.ExecContext(ctx,
-		`INSERT INTO _meta(key, value) VALUES('schemaVersion', '1') ON CONFLICT (key) DO NOTHING`,
-	); err != nil {
-		return fmt.Errorf("postgres schema: seed _meta: %w", err)
-	}
-	if _, err := db.ExecContext(ctx,
-		`INSERT INTO settings(id, data) VALUES(1, '{}') ON CONFLICT (id) DO NOTHING`,
-	); err != nil {
-		return fmt.Errorf("postgres schema: seed settings: %w", err)
+	if seed {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO _meta(key, value) VALUES('schemaVersion', '1') ON CONFLICT (key) DO NOTHING`,
+		); err != nil {
+			return fmt.Errorf("postgres schema: seed _meta: %w", err)
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO settings(id, data) VALUES(1, '{}') ON CONFLICT (id) DO NOTHING`,
+		); err != nil {
+			return fmt.Errorf("postgres schema: seed settings: %w", err)
+		}
 	}
 	return nil
 }
@@ -627,11 +638,11 @@ func pgEnsureSQLiteCompat(ctx context.Context, db *sql.DB) error {
 		 END;
 		 $$`,
 
-		// json_set(TEXT, VARIADIC args TEXT[]) → TEXT. Mirrors SQLite's
-		// json_set: walks the path list in (path, value) pairs and sets each.
-		// Value is inserted as-is (text scalar). Returns the modified JSON as
-		// text.
-		`CREATE OR REPLACE FUNCTION json_set(v TEXT, VARIADIC args TEXT[]) RETURNS text
+		// pg_json_set(TEXT, VARIADIC TEXT[]) → TEXT. PG counterpart of
+		// SQLite's json_set; rebind_query routes json_set here and casts every
+		// value argument to TEXT (json() → to_jsonb()) so int, NULL and JSON
+		// values all bind. The value string 'null' is stored as JSON null.
+		`CREATE OR REPLACE FUNCTION pg_json_set(v TEXT, VARIADIC args TEXT[]) RETURNS text
 		 LANGUAGE plpgsql IMMUTABLE AS $$
 		 DECLARE
 		   jb jsonb;
@@ -648,7 +659,17 @@ func pgEnsureSQLiteCompat(ctx context.Context, db *sql.DB) error {
 		   WHILE i <= array_length(args, 1) - 1 LOOP
 		     path := args[i];
 		     val := args[i+1];
-		     jb := jsonb_set(jb, string_to_array(substring(path from 3), '.'), to_jsonb(val), true);
+		     IF val IS NULL OR val = 'null' OR val = '"null"' THEN
+		       jb := jsonb_set(jb, string_to_array(substring(path from 3), '.'), 'null'::jsonb, true);
+		     ELSE
+		       BEGIN
+		         -- Numbers, booleans and JSON objects keep their JSON type;
+		         -- a plain string falls back to a JSON string scalar.
+		         jb := jsonb_set(jb, string_to_array(substring(path from 3), '.'), val::jsonb, true);
+		       EXCEPTION WHEN OTHERS THEN
+		         jb := jsonb_set(jb, string_to_array(substring(path from 3), '.'), to_jsonb(val), true);
+		       END;
+		     END IF;
 		     i := i + 2;
 		   END LOOP;
 		   RETURN jb::text;

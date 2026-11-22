@@ -209,8 +209,14 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 		log.Warn("config", "create data dir failed", "dir", dataDir, "error", err)
 	}
 
-	// Database file: DB_PATH overrides default DATA_DIR/db/data.sqlite
-	dbPath := v.GetString("DB_PATH")
+	// DATABASE_URL selects the engine via its DSN prefix (postgres:// →
+	// PostgreSQL, anything else → SQLite; see db.detectEngine). It takes
+	// precedence over DB_PATH so deployments switch engines with one variable.
+	dbPath := strings.TrimSpace(v.GetString("DATABASE_URL"))
+	if dbPath == "" {
+		// Database file: DB_PATH overrides default DATA_DIR/db/data.sqlite
+		dbPath = v.GetString("DB_PATH")
+	}
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "db", "data.sqlite")
 	} else if fi, err := os.Stat(dbPath); err == nil && fi.IsDir() {

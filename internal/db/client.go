@@ -17,14 +17,12 @@ import (
 
 // The global connection and its open error, guarded by dbMu. OpenDatabase has
 // no meaningful failure mode once the path is validated, so a bool would carry
-// no information the error does not. currentEngine records which backend the
-// global handle talks to so schema bootstrap can dispatch (see ensureSchema);
-// it is set under dbMu alongside dbInstance and reset by the same paths.
+// no information the error does not. The engine is derived from the handle's
+// driver by CurrentEngine so it cannot go stale.
 var (
-	dbMu          sync.Mutex
-	dbInstance    *sql.DB
-	initErr       error
-	currentEngine = EngineSQLite
+	dbMu       sync.Mutex
+	dbInstance *sql.DB
+	initErr    error
 )
 
 // Engine identifies the SQL backend a DSN selects. The gateway supports two:
@@ -186,9 +184,6 @@ func InitGlobalDatabase(path string) error {
 		return initErr
 	}
 	dbInstance, initErr = OpenDatabase(path)
-	if initErr == nil {
-		currentEngine = detectEngine(path)
-	}
 	return initErr
 }
 
@@ -216,7 +211,6 @@ func ResetGlobalDatabaseForTesting() {
 		_ = dbInstance.Close()
 	}
 	dbInstance, initErr = nil, nil
-	currentEngine = EngineSQLite
 }
 
 // GetConnection returns the global database connection.
@@ -230,11 +224,15 @@ func GetConnection() (*sql.DB, error) {
 }
 
 // CurrentEngine reports which backend the global handle (if any) talks to.
-// Defaults to SQLite before InitGlobalDatabase, matching the zero-config path.
+// It derives the answer from the handle's own driver so it can never go stale
+// relative to InitGlobalDatabase or a direct OpenDatabase used as the global.
 func CurrentEngine() Engine {
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	return currentEngine
+	if dbInstance == nil {
+		return EngineSQLite
+	}
+	return engineOfHandle(dbInstance)
 }
 
 // sqliteMaxOpenConns is the connection pool size. It is what turns a

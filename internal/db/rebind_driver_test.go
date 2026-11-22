@@ -23,9 +23,9 @@ func TestRebindQuery(t *testing.T) {
 			"SELECT $$a?b$$, $1",
 		},
 		{
-			"json_set path $ untouched, ? rewritten",
+			"json_set path $ untouched, ? rewritten and shimmed",
 			"json_set(data, ?, ?, '$.backoffLevel', ?)",
-			"json_set(data, $1, $2, '$.backoffLevel', $3)",
+			"pg_json_set(data, ($1)::text, ($2)::text, ('$.backoffLevel')::text, ($3)::text)",
 		},
 		{
 			"json_extract path $ untouched, ? rewritten",
