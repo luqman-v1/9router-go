@@ -121,6 +121,197 @@ func (h *MediaHandler) SelectMediaConnections(provider string, serviceKind ...st
 	return eligible, nil
 }
 
+type jsonMediaAttemptErr struct {
+	status    int
+	rawBody   []byte
+	jsonMsg   string
+	retryable bool
+}
+
+func (e *jsonMediaAttemptErr) write(w http.ResponseWriter) {
+	if e.rawBody != nil {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(e.status)
+		_, _ = w.Write(e.rawBody)
+		return
+	}
+	handlerutil.WriteJSONError(w, e.status, e.jsonMsg)
+}
+
+func (h *MediaHandler) forwardJSONMediaLane(
+	w http.ResponseWriter,
+	r *http.Request,
+	rawBody []byte,
+	finalBody []byte,
+	modelInfo *chat.ModelInfo,
+	endpoint string,
+	applyCopilotToken bool,
+	buildURL func(string) string,
+) {
+	pinned := modelInfo.ConnectionID
+	if pinned == "" {
+		pinned = imagePinnedConnectionID(r)
+	}
+	usePinned := pinned != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr *jsonMediaAttemptErr
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, pinned, excludeIDs, modelInfo.Model)
+		if err != nil || conn == nil || connData == nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
+			return
+		}
+		if _, seen := tried[conn.ID]; seen {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(nil, modelInfo.Provider))
+			return
+		}
+		tried[conn.ID] = struct{}{}
+
+		attemptErr := h.tryJSONMediaLaneConn(w, r, rawBody, finalBody, modelInfo, endpoint, applyCopilotToken, buildURL, conn, connData)
+		if attemptErr == nil {
+			return
+		}
+		lastErr = attemptErr
+		if usePinned || !attemptErr.retryable || r.Context().Err() != nil {
+			lastErr.write(w)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func (h *MediaHandler) tryJSONMediaLaneConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	rawBody []byte,
+	finalBody []byte,
+	modelInfo *chat.ModelInfo,
+	endpoint string,
+	applyCopilotToken bool,
+	buildURL func(string) string,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) *jsonMediaAttemptErr {
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		return &jsonMediaAttemptErr{status: http.StatusInternalServerError, jsonMsg: err.Error(), retryable: false}
+	}
+
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		return &jsonMediaAttemptErr{status: http.StatusUnauthorized, jsonMsg: "no API key found", retryable: true}
+	}
+
+	targetURL := buildURL(providerCfg.BaseURL)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
+	if err != nil {
+		return &jsonMediaAttemptErr{status: http.StatusInternalServerError, jsonMsg: fmt.Sprintf("create request: %v", err), retryable: false}
+	}
+
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	for k, v := range providerCfg.StaticHeaders {
+		if req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
+	if applyCopilotToken && providers.ResolveAlias(modelInfo.Provider) == "github" {
+		// GitHub Copilot hands out a short-lived token alongside the OAuth
+		// credential, and the embeddings endpoint is authenticated by that token
+		// rather than by the stored one. It is set after the static-header loop
+		// because it replaces the Authorization header on purpose.
+		//
+		// The override is scoped to the GitHub provider: the token is a GitHub
+		// credential, and upstream sends it only from the GitHub embeddings
+		// adapter (open-sse/handlers/embeddingProviders/github.js). Without the
+		// scope check the token was applied to whichever upstream the connection
+		// pointed at, so a connection for any other provider that happened to
+		// carry the key had its own key replaced and leaked the GitHub credential.
+		if copilotToken, ok := connData.ProviderSpecificData["copilotToken"].(string); ok && copilotToken != "" {
+			req.Header.Set("Authorization", "Bearer "+copilotToken)
+		}
+	}
+
+	// The connection's own client, not h.Client: an assigned proxy pool — a
+	// CONNECT proxy or an edge relay — is the operator's egress choice, and this
+	// lane used to skip it entirely and answer from the host's real IP.
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return &jsonMediaAttemptErr{status: http.StatusBadGateway, jsonMsg: clientErr.Error(), retryable: true}
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return &jsonMediaAttemptErr{
+			status:    http.StatusBadGateway,
+			jsonMsg:   fmt.Sprintf("upstream error: %v", err),
+			retryable: r.Context().Err() == nil,
+		}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if errBody == nil {
+			errBody = []byte{}
+		}
+		snippet := string(errBody[:min(500, len(errBody))])
+		backoff := 0
+		if h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return &jsonMediaAttemptErr{
+			status:    resp.StatusCode,
+			rawBody:   errBody,
+			retryable: classification.ShouldFallback,
+		}
+	}
+
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+
+	if h.Repo != nil {
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+		}
+	}
+	latencyMs := time.Since(start).Milliseconds()
+	logInfo := &shared.UsageLogInfo{
+		Provider:     modelInfo.Provider,
+		Model:        modelInfo.Model,
+		ConnectionID: conn.ID,
+		APIKey:       apiKey,
+		Endpoint:     endpoint,
+	}
+	h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, rawBody, nil)
+	return nil
+}
+
 // HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
 func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "embedding"))
@@ -152,108 +343,23 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-		return
-	}
-
-	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
-
 	// Google Gemini embeddings forward dimensions as outputDimensionality (upstream #1366).
 	if providers.ResolveAlias(modelInfo.Provider) == "gemini" {
 		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
 	}
-
 	if isGitHubCopilotProvider(modelInfo.Provider) {
 		finalBody = wrapCopilotEmbeddingInput(finalBody)
 	}
-	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
-		return
-	}
 
-	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	for k, v := range providerCfg.StaticHeaders {
-		if req.Header.Get(k) == "" {
-			req.Header.Set(k, v)
-		}
-	}
-	// GitHub Copilot hands out a short-lived token alongside the OAuth
-	// credential, and the embeddings endpoint is authenticated by that token
-	// rather than by the stored one. It is set after the static-header loop
-	// because it replaces the Authorization header on purpose.
-	//
-	// The override is scoped to the GitHub provider: the token is a GitHub
-	// credential, and upstream sends it only from the GitHub embeddings
-	// adapter (open-sse/handlers/embeddingProviders/github.js). Without the
-	// scope check the token was applied to whichever upstream the connection
-	// pointed at, so a connection for any other provider that happened to
-	// carry the key had its own key replaced and leaked the GitHub credential.
-	if connData != nil && providers.ResolveAlias(modelInfo.Provider) == "github" {
-		if copilotToken, ok := connData.ProviderSpecificData["copilotToken"].(string); ok && copilotToken != "" {
-			req.Header.Set("Authorization", "Bearer "+copilotToken)
-		}
-	}
-
-	// The connection's own client, not h.Client: an assigned proxy pool — a
-	// CONNECT proxy or an edge relay — is the operator's egress choice, and this
-	// lane used to skip it entirely and answer from the host's real IP.
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
-	}
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
-		return
-	}
-	defer resp.Body.Close()
-
-	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-
-	if resp.StatusCode == http.StatusOK {
-		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		latencyMs := time.Since(start).Milliseconds()
-		logInfo := &shared.UsageLogInfo{
-			Provider:     modelInfo.Provider,
-			Model:        modelInfo.Model,
-			ConnectionID: conn.ID,
-			APIKey:       apiKey,
-			Endpoint:     "/embeddings",
-		}
-		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
-	}
+	h.forwardJSONMediaLane(w, r, body, finalBody, modelInfo, "/embeddings", true, buildEmbeddingsURL)
 }
 
 // HandleRerank forwards /v1/rerank requests to upstream providers.
 //
 // Rerank is the same shape as embeddings — a model in, a JSON body out, no
-// streaming — so it follows the embeddings handler's structure exactly: resolve
-// the model, pick a connection, forward with the provider's auth and static
-// headers, and log the usage. The URL is derived from the provider's base the
-// same way buildEmbeddingsURL does, because a rerank lane lives on the same
-// OpenAI-compatible host as the embeddings one.
+// streaming — so it shares forwardJSONMediaLane with HandleEmbeddings and derives
+// its /rerank endpoint via buildRerankURL.
 func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "embedding"))
 	body, err := io.ReadAll(r.Body)
@@ -262,6 +368,7 @@ func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = r.Body.Close() }()
+
 	var reqBody struct {
 		Model string `json:"model"`
 	}
@@ -281,64 +388,9 @@ func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-		return
-	}
-	rerankURL := buildRerankURL(providerCfg.BaseURL)
+
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
-	req, err := http.NewRequestWithContext(r.Context(), "POST", rerankURL, strings.NewReader(string(finalBody)))
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
-		return
-	}
-	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	for k, v := range providerCfg.StaticHeaders {
-		if req.Header.Get(k) == "" {
-			req.Header.Set(k, v)
-		}
-	}
-	// The connection's own client, not h.Client: an assigned proxy pool is the
-	// operator's egress choice, and this lane must not bypass it.
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
-	}
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
-		latencyMs := time.Since(start).Milliseconds()
-		logInfo := &shared.UsageLogInfo{
-			Provider:     modelInfo.Provider,
-			Model:        modelInfo.Model,
-			ConnectionID: conn.ID,
-			APIKey:       apiKey,
-			Endpoint:     "/v1/rerank",
-		}
-		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
-	}
+	h.forwardJSONMediaLane(w, r, body, finalBody, modelInfo, "/v1/rerank", false, buildRerankURL)
 }
 
 // buildRerankURL derives the rerank lane from a provider's base URL. A base
