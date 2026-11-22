@@ -23,6 +23,20 @@ _site/
 # Data directory
 .9router/
 data/
+# A gateway database started from the repo root lands here. The
+# providerConnections table holds live provider tokens and OAuth data, so a
+# committed copy leaks every account; the -wal/-shm sidecars carry the same
+# rows. No fixture in this repo uses these extensions.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+# Local build output (`go build ./cmd/9router-go` with -o bin/…).
+/bin/
+# Scratch reports an agent writes for one session. Run output, not product.
+/docs/reports/
 
 # Local demo gateway: its SQLite data dir, engine key and captured streams. The
 # key alone is enough to talk to the running gateway as a client, so none of it
