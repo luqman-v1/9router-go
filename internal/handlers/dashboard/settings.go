@@ -950,6 +950,7 @@ func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[strin
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	h.Repo.InvalidateCustomModelExtraBody()
 	return report, nil
 }
 

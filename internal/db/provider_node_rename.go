@@ -136,6 +136,7 @@ func (r *Repo) RenameProviderNode(oldID, newID string) (*models.ProviderNode, er
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("rename provider node %s: commit: %w", oldID, err)
 	}
+	r.InvalidateCustomModelExtraBody()
 
 	node, _, err := r.GetProviderNodeByID(newID)
 	if err != nil {
