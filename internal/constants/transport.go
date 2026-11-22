@@ -2,6 +2,8 @@ package constants
 
 import (
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -29,11 +31,31 @@ type HTTPTransportConfig struct {
 	ResponseHeaderTimeout time.Duration
 }
 
-// DefaultHTTPTransportConfig defines the high-throughput production defaults for upstream LLM reverse-proxy connections.
+// defaultKeepAliveTimeout caps how long an idle keep-alive socket may be held in
+// the pool. Upstream/edge idle windows (Cloudflare, AWS Global Accelerator /
+// NVIDIA NIM) drop idle sockets without a TCP RST; a pool that outlives that
+// window hands the next request a poisoned socket. Matches upstream
+// decolua/9router@963787f73 (DEFAULT_KEEPALIVE_TIMEOUT_MS).
+const defaultKeepAliveTimeout = 4 * time.Second
+
+// resolveKeepAliveTimeout reads FETCH_KEEPALIVE_TIMEOUT_MS (milliseconds) and
+// caps the idle-connection TTL at that value; an unset, empty or invalid value
+// falls back to defaultKeepAliveTimeout. Matches upstream's envMs override.
+func resolveKeepAliveTimeout() time.Duration {
+	if raw := os.Getenv("FETCH_KEEPALIVE_TIMEOUT_MS"); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return defaultKeepAliveTimeout
+}
+
+// DefaultHTTPTransportConfig defines the high-throughput production defaults for
+// upstream LLM reverse-proxy connections.
 var DefaultHTTPTransportConfig = HTTPTransportConfig{
 	MaxIdleConns:          256,
 	MaxIdleConnsPerHost:   128,
-	IdleConnTimeout:       90 * time.Second,
+	IdleConnTimeout:       resolveKeepAliveTimeout(),
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
 	ResponseHeaderTimeout: 2 * time.Minute,

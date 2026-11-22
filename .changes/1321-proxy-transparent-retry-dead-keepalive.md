@@ -1,0 +1,5 @@
+### Fixed
+
+- **Transparent retry for dead keep-alive sockets** — Automatically retries requests once on a fresh socket when an idle keep-alive connection was dropped by an upstream edge before response bytes were received (upstream decolua/9router@963787f73 parity).
+- **Keep-alive idle timeout capped to 4s** — `IdleConnTimeout` now defaults to 4s (configurable via `FETCH_KEEPALIVE_TIMEOUT_MS` in milliseconds) instead of 90s, aligning the idle connection pool with upstream/edge idle windows (Cloudflare, AWS Global Accelerator / NVIDIA NIM) that drop idle sockets without a TCP RST, so the pool no longer holds dead sockets for 90s.
+- **Dead keep-alive classification uses `errors.Is`** — ECONNRESET and EPIPE are detected via `errors.Is(err, syscall.ECONNRESET)` / `errors.Is(err, syscall.EPIPE)` against the wrapped errno rather than substring matching (§4.E), so an error chain wrapping the errno at any depth is recognised and an unrelated message mentioning "broken pipe" is not. String matching remains only for the unexported `errServerClosedIdle` sentinel.
