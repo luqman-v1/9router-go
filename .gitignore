@@ -102,3 +102,9 @@ stitch-screenshots/
 # resolving without a second copy entering history. Add one here if you want it
 # kept; docs/screenshots/ is for the ones the site and README reference.
 /pr-*.png
+
+# Local SQLite -> PG migration dumps and snapshots (user data; never commit)
+deploy/migrate/
+deploy/migrate-src/
+deploy/migrate-out/
+deploy/docker-compose.override.yml

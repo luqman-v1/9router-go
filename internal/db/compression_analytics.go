@@ -417,7 +417,7 @@ LIMIT %d`, modelWhere, maxBreakdownGroups)
 	// is worse than none.
 	trendQuery := `
 SELECT
-	strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hr,
+	SUBSTR(timestamp, 1, 13) || ':00:00Z' as hr,
 	COUNT(*) as cnt,
 	COALESCE(SUM(tokensSaved), 0) as saved
 FROM compressionAnalytics` + windowPredicate(win) + `
@@ -626,7 +626,7 @@ LIMIT %d`, whereClause, maxBreakdownGroups)
 	// for the same reason the table path does.
 	trendQuery := fmt.Sprintf(`
 SELECT
-	strftime('%%Y-%%m-%%dT%%H:00:00Z', timestamp) as hr,
+	SUBSTR(timestamp, 1, 13) || ':00:00Z' as hr,
 	COUNT(*) as cnt,
 	COALESCE(SUM(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER)), 0) as saved
 FROM usageHistory
@@ -713,14 +713,14 @@ LIMIT 10`, whereClause)
 
 // BackfillCompressionAnalytics migrates historical compression telemetry from requestDetails
 // and usageHistory into compressionAnalytics if not already performed.
-func BackfillCompressionAnalytics(db *sql.DB) error {
+func BackfillCompressionAnalytics(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
 
 	// 1. Check if migration already ran
 	var done string
-	err := db.QueryRow(`SELECT value FROM _meta WHERE key = 'migration_compression_backfill_done'`).Scan(&done)
+	err := db.QueryRowContext(ctx, `SELECT value FROM _meta WHERE key = 'migration_compression_backfill_done'`).Scan(&done)
 	if err == nil && done == "true" {
 		return nil
 	}
@@ -745,7 +745,7 @@ FROM requestDetails
 WHERE data IS NOT NULL AND json_valid(data)
   AND CAST(COALESCE(json_extract(data, '$.tokens.saved_tokens'), 0) AS INTEGER) > 0`
 
-	rows, err := db.Query(rdQuery)
+	rows, err := db.QueryContext(ctx, rdQuery)
 	if err == nil {
 		defer rows.Close()
 
@@ -787,6 +787,7 @@ WHERE NOT EXISTS (SELECT 1 FROM compressionAnalytics ca WHERE ca.requestId = ?)`
 					)
 				}
 			}
+			_ = rows.Err()
 		}
 	}
 
@@ -807,7 +808,7 @@ FROM usageHistory
 WHERE tokens IS NOT NULL AND json_valid(tokens)
   AND CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) > 0`
 
-	uhRows, err := db.Query(uhQuery)
+	uhRows, err := db.QueryContext(ctx, uhQuery)
 	if err == nil {
 		defer uhRows.Close()
 
@@ -850,11 +851,12 @@ WHERE NOT EXISTS (
 					)
 				}
 			}
+			_ = uhRows.Err()
 		}
 	}
 
 	// 4. Mark migration done in _meta
-	_, err = db.Exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES ('migration_compression_backfill_done', 'true')`)
+	_, err = db.ExecContext(ctx, `INSERT INTO _meta (key, value) VALUES ('migration_compression_backfill_done', 'true') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
 	if err != nil {
 		return fmt.Errorf("BackfillCompressionAnalytics mark done: %w", err)
 	}

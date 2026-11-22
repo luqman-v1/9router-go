@@ -154,9 +154,13 @@ func (p *PersistentLRUStore) Put(ctx context.Context, key string, e Entry) error
 	if p.db != nil {
 		storedAtStr := formatStoredAt(e.StoredAt)
 		_, _ = p.db.ExecContext(ctx, `
-INSERT OR REPLACE INTO semanticCacheEntries (
+INSERT INTO semanticCacheEntries (
 	key, model, responseBody, contentType, storedAt, hitCount, tokensSaved
-) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET
+	model = excluded.model, responseBody = excluded.responseBody,
+	contentType = excluded.contentType, storedAt = excluded.storedAt,
+	hitCount = excluded.hitCount, tokensSaved = excluded.tokensSaved`,
 			key, e.Model, e.ResponseBody, e.ContentType, storedAtStr, e.HitCount, e.TokensSaved,
 		)
 	}

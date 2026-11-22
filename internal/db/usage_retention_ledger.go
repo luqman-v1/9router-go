@@ -136,8 +136,10 @@ func (r *Repo) PruneUsageHistory(ctx context.Context, retention time.Duration) (
 		// is no longer there, and the statements that read the ledger are the
 		// ones the dashboard polls. Fail-open: the rows are already gone, so a
 		// statistics refresh that cannot run costs query plans, not correctness.
-		if _, err := r.db.ExecContext(ctx, `PRAGMA optimize`); err != nil && ctx.Err() == nil {
-			log.Printf("[RETENTION] ledger PRAGMA optimize failed: %v", err)
+		if engineOf(r.db) == EngineSQLite {
+			if _, err := r.db.ExecContext(ctx, `PRAGMA optimize`); err != nil && ctx.Err() == nil {
+				log.Printf("[RETENTION] ledger PRAGMA optimize failed: %v", err)
+			}
 		}
 	}
 	return result, nil
@@ -475,11 +477,11 @@ func (w *ledgerWatchIndex) foldProviders(chunk []ledgerRow) map[string]int64 {
 // the scan and block retention forever on every pass.
 func (r *Repo) readLedgerChunk(ctx context.Context, cursor int64, cutoff string) ([]ledgerRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT rowid, COALESCE(clientKey, ''), COALESCE(apiKey, ''), COALESCE(provider, ''),
+		SELECT id, COALESCE(clientKey, ''), COALESCE(apiKey, ''), COALESCE(provider, ''),
 		       CAST(COALESCE(promptTokens, 0) AS INTEGER) + CAST(COALESCE(completionTokens, 0) AS INTEGER)
 		  FROM usageHistory
-		 WHERE rowid > ? AND timestamp < ?
-		 ORDER BY rowid
+		 WHERE id > ? AND timestamp < ?
+		 ORDER BY id
 		 LIMIT ?`, cursor, cutoff, retentionChunkSize)
 	if err != nil {
 		return nil, fmt.Errorf("read usageHistory chunk: %w", err)
@@ -553,7 +555,7 @@ func (r *Repo) deleteLedgerChunk(ctx context.Context, chunk []ledgerRow, watched
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM usageHistory WHERE rowid IN (SELECT value FROM json_each(?))`, string(encoded),
+		`DELETE FROM usageHistory WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))`, string(encoded),
 	); err != nil {
 		return ledgerCarry{}, fmt.Errorf("delete usageHistory chunk: %w", err)
 	}

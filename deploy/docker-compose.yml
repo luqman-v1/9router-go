@@ -1,0 +1,84 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: router
+      POSTGRES_USER: router
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      # Tuning dasar untuk workload write-heavy
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - log_min_duration_statement=500
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U router -d router"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  router:
+    image: ghcr.io/luqman-v1/9router-go:latest
+    # atau build: . kalau build lokal
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://router:${POSTGRES_PASSWORD}@db:5432/router?sslmode=disable
+      DB_MAX_CONNS: "50"
+      DB_MAX_IDLE_CONNS: "10"
+      PORT: "20130"
+    ports:
+      - "20130:20130"
+    networks: [backend]
+    # Kalau butuh data SQLite lama untuk migrasi pertama:
+    # volumes:
+    #   - ~/.9router:/root/.9router:ro
+
+  migrate:
+    image: ghcr.io/luqman-v1/9router-go:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://router:${POSTGRES_PASSWORD}@db:5432/router?sslmode=disable
+    volumes:
+      - ~/.9router/db:/sqlite-src:ro
+      - ./migrate:/migrate
+    command: >
+      sh -c "
+        9router-go db export --from /sqlite-src/data.sqlite --out /migrate/ &&
+        9router-go db import --to $$DATABASE_URL --from /migrate/
+      "
+    profiles: ["migrate"]   # hanya jalan kalau: docker compose --profile migrate up migrate
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  backend:
+    driver: bridge
