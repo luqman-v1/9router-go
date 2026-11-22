@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,10 +10,11 @@ import (
 )
 
 type hostStub struct {
-	goos string
-	euid int
-	bins map[string]string
-	dirs map[string]bool
+	goos        string
+	euid        int
+	nonElevated bool
+	bins        map[string]string
+	dirs        map[string]bool
 }
 
 // stubHost swaps the OS and privilege seams so every branch runs on one host.
@@ -20,13 +22,60 @@ func stubHost(t *testing.T, h hostStub) {
 	t.Helper()
 	previousGoos, previousEuid := goos, geteuid
 	previousLook, previousIsDir := lookPath, isDir
+	previousElevated := windowsIsElevated
+	previousRead, previousWrite, previousDelete := windowsRunRead, windowsRunWrite, windowsRunDelete
 	goos = h.goos
 	geteuid = func() int { return h.euid }
 	lookPath = func(name string) string { return h.bins[name] }
 	isDir = func(path string) bool { return h.dirs[path] }
+	windowsIsElevated = func() bool { return !h.nonElevated }
+	runEntries := map[string]string{}
+	windowsRunRead = func(name string) (string, bool, error) {
+		val, ok := runEntries[name]
+		return val, ok, nil
+	}
+	windowsRunWrite = func(name, value string) error {
+		runEntries[name] = value
+		return nil
+	}
+	windowsRunDelete = func(name string) (bool, error) {
+		if _, ok := runEntries[name]; !ok {
+			return false, nil
+		}
+		delete(runEntries, name)
+		return true, nil
+	}
 	t.Cleanup(func() {
 		goos, geteuid, lookPath, isDir = previousGoos, previousEuid, previousLook, previousIsDir
+		windowsIsElevated = previousElevated
+		windowsRunRead, windowsRunWrite, windowsRunDelete = previousRead, previousWrite, previousDelete
 	})
+}
+
+func stubWindowsRun(t *testing.T, initial map[string]string) map[string]string {
+	t.Helper()
+	previousRead, previousWrite, previousDelete := windowsRunRead, windowsRunWrite, windowsRunDelete
+	entries := map[string]string{}
+	maps.Copy(entries, initial)
+	windowsRunRead = func(name string) (string, bool, error) {
+		val, ok := entries[name]
+		return val, ok, nil
+	}
+	windowsRunWrite = func(name, value string) error {
+		entries[name] = value
+		return nil
+	}
+	windowsRunDelete = func(name string) (bool, error) {
+		if _, ok := entries[name]; !ok {
+			return false, nil
+		}
+		delete(entries, name)
+		return true, nil
+	}
+	t.Cleanup(func() {
+		windowsRunRead, windowsRunWrite, windowsRunDelete = previousRead, previousWrite, previousDelete
+	})
+	return entries
 }
 
 func stubRunFunc(t *testing.T, fn func(name string, args ...string) (string, error)) *[]svcCall {
