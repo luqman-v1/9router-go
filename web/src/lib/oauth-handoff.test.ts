@@ -4,6 +4,7 @@ import {
   clearPending,
   dashboardCallbackURL,
   loadPendings,
+  loopbackPeerOrigin,
   matchPending,
   OAUTH_CALLBACK_KEY,
   OAUTH_PENDING_KEY,
@@ -133,6 +134,15 @@ describe('oauthLoopbackCallbackURL', () => {
     expect(oauthLoopbackCallbackURL('20130', false)).toBe('http://localhost:20130/callback')
     expect(oauthLoopbackCallbackURL('', false)).toBe('http://localhost:80/callback')
     expect(oauthLoopbackCallbackURL('', true)).toBe('http://localhost:443/callback')
+  })
+})
+
+describe('loopbackPeerOrigin', () => {
+  test('swaps localhost and 127.0.0.1 preserving scheme and port', () => {
+    expect(loopbackPeerOrigin('http://localhost:20130')).toBe('http://127.0.0.1:20130')
+    expect(loopbackPeerOrigin('http://127.0.0.1:20130')).toBe('http://localhost:20130')
+    expect(loopbackPeerOrigin('https://example.com')).toBeNull()
+    expect(loopbackPeerOrigin('not-a-url')).toBeNull()
   })
 })
 

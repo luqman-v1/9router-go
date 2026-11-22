@@ -164,6 +164,20 @@ export function oauthLoopbackCallbackURL(port: string, secure: boolean): string 
   return `http://localhost:${callbackPort}/callback`
 }
 
+/** Swap localhost <-> 127.0.0.1 while keeping scheme and port for cross-origin
+ * loopback postMessage between the dashboard and /callback tabs. */
+export function loopbackPeerOrigin(origin: string): string | null {
+  try {
+    const u = new URL(origin)
+    if (u.hostname === 'localhost') u.hostname = '127.0.0.1'
+    else if (u.hostname === '127.0.0.1') u.hostname = 'localhost'
+    else return null
+    return u.origin
+  } catch {
+    return null
+  }
+}
+
 /** Codex's OAuth client (app_EMoamEEZ73f0CkXaXp7hrann) has exactly one
  * registered loopback redirect URI. auth.openai.com validates redirect_uri
  * during the authorize step and answers `invalid_authorize_request` for any
