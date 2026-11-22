@@ -162,17 +162,26 @@ func TestPoolDisabledFallsBackToColdPath(t *testing.T) {
 }
 
 // TestPoolCancelledTurnKeepsWorker proves session/cancel keeps the pooled
-// worker reusable instead of killing it on client disconnect.
+// worker reusable instead of killing it on client disconnect. Cancellation is
+// triggered from the first streamed update so the worker is already pooled and
+// the cancel lands mid-prompt (not before spawn, which now aborts early).
 func TestPoolCancelledTurnKeepsWorker(t *testing.T) {
 	p := isolatedPoolDeferred(t)
 	defer p.Close()
 	fake := poolACP(t)
 	t.Setenv("AGY_PATH", fake)
+	root := t.TempDir()
+	opts := TurnOptions{AccountRoot: root, Credentials: Credentials{AccessToken: "a", RefreshToken: "r"}}
+	if err := RunTurn(context.Background(), opts, "gemini-3.8-flash-high", []PromptBlock{{Type: "text", Text: "hi"}}, func(TurnEvent) {}); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled: streamPrompt takes the cancel branch
-	err := RunTurn(ctx, TurnOptions{
-		AccountRoot: t.TempDir(), Credentials: Credentials{AccessToken: "a", RefreshToken: "r"},
-	}, "gemini-3.8-flash-high", []PromptBlock{{Type: "text", Text: "hi"}}, func(TurnEvent) {})
+	defer cancel()
+	err := RunTurn(ctx, opts, "gemini-3.8-flash-high", []PromptBlock{{Type: "text", Text: "hi"}}, func(ev TurnEvent) {
+		if ev.Kind == UpdateText {
+			cancel()
+		}
+	})
 	if err == nil {
 		t.Fatal("cancelled turn returned nil error")
 	}
@@ -306,3 +315,61 @@ func TestIsDeferredStatus(t *testing.T) {
 
 func filepathJoin(dir, name string) string     { return filepath.Join(dir, name) }
 func writeTestFile(path, content string) error { return os.WriteFile(path, []byte(content), 0o600) }
+
+// TestSpawnRespectsCancelledCallerContext pins that spawn aborts when the
+// caller's context is already cancelled, without spawning a worker that would
+// outlive the turn. Handshake must honour ctx even though the process itself
+// is intentionally started on a background context (so it can be pooled).
+func TestSpawnRespectsCancelledCallerContext(t *testing.T) {
+	p := NewPool(1, time.Minute)
+	defer p.Close()
+	fake := poolACP(t)
+	t.Setenv("AGY_PATH", fake)
+	root := t.TempDir()
+	dir, err := NewAccountDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = p.spawn(ctx, &poolEntry{dir: dir}, TurnOptions{}, fake)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("spawn error = %v, want context.Canceled", err)
+	}
+}
+
+// TestPoolCloseClearsCredentialsAndWorker pins the shutdown contract used by
+// the gateway's OnStop hook: Close kills the worker and clears its on-disk
+// token files, so a clean exit leaves no credential material behind.
+func TestPoolCloseClearsCredentialsAndWorker(t *testing.T) {
+	p := NewPool(1, time.Minute)
+	fake := poolACP(t)
+	t.Setenv("AGY_PATH", fake)
+	root := t.TempDir()
+	dir, err := NewAccountDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.WriteCredentials(Credentials{AccessToken: "a", RefreshToken: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	tokenFile := filepath.Join(root, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	if _, err := os.Stat(tokenFile); err != nil {
+		t.Fatalf("token file not seeded: %v", err)
+	}
+	e := &poolEntry{dir: dir}
+	if err := p.spawn(context.Background(), e, TurnOptions{}, fake); err != nil {
+		t.Fatal(err)
+	}
+	p.entries[e.key] = e
+	if e.client == nil {
+		t.Fatal("worker not started")
+	}
+	p.Close()
+	if _, err := os.Stat(tokenFile); !os.IsNotExist(err) {
+		t.Errorf("token file survived Close: %v", err)
+	}
+	if len(p.entries) != 0 {
+		t.Errorf("pool entries after Close = %d, want 0", len(p.entries))
+	}
+}

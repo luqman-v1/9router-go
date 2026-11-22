@@ -35,3 +35,19 @@
   over. A gateway preamble in `BuildPrompt` asks agy not to defer in the
   first place. Regression tests cover both the nudge-then-answer and the
   repeated-deferral paths, in English and Indonesian.
+
+### shutdown cleanup & context lifetime
+
+- `DefaultPool().Close()` is now wired into the gateway's Fx `OnStop` hook
+  (`internal/app/server.go`), after HTTP requests drain. It kills idle workers
+  and clears their on-disk OAuth token files; previously the OS reaped the
+  child process on exit but the token files were left behind.
+- `Pool.spawn` now honours the caller's context: it aborts before spawning a
+  worker for an already-cancelled turn and bounds `initialize` by the caller's
+  deadline as well as the 30 s handshake TTL. The worker process itself still
+  runs under a background context so it can outlive the turn and be pooled —
+  `exec.CommandContext` would kill it when the request context ended.
+- Regression tests: `TestSpawnRespectsCancelledCallerContext`,
+  `TestPoolCloseClearsCredentialsAndWorker`, and an updated
+  `TestPoolCancelledTurnKeepsWorker` (cancels mid-prompt on an already-pooled
+  worker, which is the scenario the contract actually covers).

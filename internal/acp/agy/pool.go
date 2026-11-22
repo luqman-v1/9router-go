@@ -161,19 +161,27 @@ func (p *Pool) acquire(ctx context.Context, opts TurnOptions, bin, canonical str
 // a hung binary cannot pin the slot forever. The worker process itself runs
 // under a background context: its lifetime belongs to the pool, not the turn.
 func (p *Pool) spawn(ctx context.Context, e *poolEntry, opts TurnOptions, bin string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if opts.Credentials.AccessToken != "" && opts.Credentials.RefreshToken != "" {
 		if err := e.dir.WriteCredentials(opts.Credentials); err != nil {
 			return err
 		}
 	}
-	// Handshake runs detached: a cancelled caller must not kill a worker
-	// that later turns will share. Bounded by TTL only.
-	hctx, cancel := context.WithTimeout(context.Background(), poolHandshakeTTL)
+	// The worker belongs to the pool, not the turn: exec.CommandContext kills
+	// the process when its ctx ends, so Start and buildCommand must stay on a
+	// background ctx. The handshake must still respect the caller's deadline.
+	// WithoutCancel drops the cancel signal but keeps values and any deadline;
+	// WithTimeout then caps it at the handshake TTL.
+	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), poolHandshakeTTL)
 	defer cancel()
-	// The worker outlives the handshake: Start's ctx kills the process when
-	// it ends, so it gets a background ctx; hctx bounds only initialize.
 	client, err := Start(context.Background(), buildCommand(context.Background(), bin, e.dir, opts))
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		client.Close()
 		return err
 	}
 	if _, err := client.Call(hctx, "initialize", map[string]any{

@@ -13,6 +13,7 @@ import (
 
 	"go.uber.org/fx"
 
+	"9router/proxy/internal/acp/agy"
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
@@ -172,6 +173,11 @@ func ProvideServer(p ServerParams) *http.Server {
 			} else {
 				log.Println("Server stopped gracefully")
 			}
+			// Close the agy-acp warm pool after requests have drained: this
+			// kills idle worker processes and clears their on-disk credential
+			// files. The child process would be reaped by the OS on exit, but
+			// the token files would otherwise be left on disk.
+			agy.DefaultPool().Close()
 			// Responses are all done by now, so every usage write they enqueued
 			// is in the queue: drain it so the last turns are not billed into
 			// nothing by the exit.
