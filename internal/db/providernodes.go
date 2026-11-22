@@ -90,7 +90,15 @@ func (r *Repo) GetProviderNodeByID(id string) (*models.ProviderNode, *ProviderNo
 
 // GetProviderNodeByPrefix searches providerNodes for one whose data JSON "prefix" field matches.
 // Returns nil, nil when no row matches.
+//
+// An empty prefix never matches: a chat-compatible node may store one (the
+// create/update paths allow it), and letting "" resolve would make every
+// prefixless lookup — a split of "/model", an unset provider — land on
+// whichever prefixless node the scan reaches first.
 func (r *Repo) GetProviderNodeByPrefix(prefix string) (*models.ProviderNode, *ProviderNodeData, error) {
+	if prefix == "" {
+		return nil, nil, nil
+	}
 	rows, err := r.db.Query("SELECT " + providerNodeColumns + " FROM providerNodes")
 	if err != nil {
 		return nil, nil, err

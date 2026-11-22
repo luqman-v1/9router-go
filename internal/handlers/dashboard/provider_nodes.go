@@ -158,15 +158,26 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if req.Prefix == "" {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
-		return
+	nodeType := req.Type
+	if nodeType == "" {
+		nodeType = "openai-compatible"
 	}
 	// A prefix is the alias every model this node serves is published under, so
 	// two owners of one prefix is not a cosmetic clash: resolution walks the
 	// registry aliases first, so a node claiming `gh` shadows GitHub Copilot
 	// entirely and its models answer from the wrong upstream. Refuse rather
 	// than let the operator discover it from a misrouted request.
+	//
+	// Leaving it blank is allowed for the chat-compatible providers: the node
+	// then publishes its models under its own id (models_list falls back to
+	// the provider id when no prefix is registered), so nothing resolves to an
+	// empty namespace. custom-embedding keeps the requirement — its catalog is
+	// addressed as `<prefix>/<model>` everywhere and a blank prefix would make
+	// two embedding nodes indistinguishable.
+	if req.Prefix == "" && nodeType == "custom-embedding" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
+		return
+	}
 	if conflict := h.providerNodePrefixConflict(req.Prefix, ""); conflict != "" {
 		handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
 			"error":    "Prefix \"" + req.Prefix + "\" is already used by " + conflict + ". Choose a different prefix.",
@@ -175,11 +186,6 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 			"conflict": conflict,
 		})
 		return
-	}
-
-	nodeType := req.Type
-	if nodeType == "" {
-		nodeType = "openai-compatible"
 	}
 
 	apiType := req.APIType
@@ -229,6 +235,13 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	id, suffix, ok := h.resolveProviderNodeID(w, nodeType, apiType, req.URLSuffix, "")
 	if !ok {
 		return
+	}
+	// A blank prefix is filled only now, because the value it is filled from —
+	// the URL suffix — is not settled until the id resolves above. The conflict
+	// guard already ran on any prefix the operator typed; this call checks the
+	// derived one, and never rewrites a prefix they chose.
+	if nodeType != "custom-embedding" {
+		req.Prefix = h.fillBlankPrefix(req.Prefix, suffix, "")
 	}
 
 	dataBytes, _ := json.Marshal(map[string]any{
@@ -314,7 +327,13 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if prefix == "" {
+	nodeType := ""
+	if node.Type != nil {
+		nodeType = *node.Type
+	}
+	// Same rule as create: the chat-compatible providers may leave the prefix
+	// blank and publish under the node id; custom-embedding still needs one.
+	if prefix == "" && nodeType == "custom-embedding" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
 		return
 	}
@@ -331,10 +350,6 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 			"conflict": conflict,
 		})
 		return
-	}
-	nodeType := ""
-	if node.Type != nil {
-		nodeType = *node.Type
 	}
 	if nodeType == "openai-compatible" && req.APIType != "chat" && req.APIType != "responses" && req.APIType != customjson.APIType {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid OpenAI compatible API type")
@@ -383,6 +398,12 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 	renamedID, ok := h.applyProviderNodeRename(w, id, newID)
 	if !ok {
 		return
+	}
+	// Same fill as create, once the suffix is settled. excludeID is the node
+	// being edited: its own stored prefix must not read as a collision with
+	// itself when the derived value happens to equal what it already carries.
+	if nodeType != "custom-embedding" {
+		prefix = h.fillBlankPrefix(prefix, suffix, id)
 	}
 
 	dataBytes, _ := json.Marshal(map[string]any{
@@ -854,13 +875,13 @@ func (h *DashboardHandler) providerNodePrefixConflict(prefix, excludeID string) 
 		return ""
 	}
 	// A registry alias wins resolution over any node, so claiming one is the
-	// more damaging of the two collisions and is checked first.
-	if _, taken := providers.ProviderAliasMap[prefix]; taken {
-		return "provider alias \"" + prefix + "\""
-	}
-	// A canonical registry id is published under itself when it has no alias,
-	// so it is an owner too.
-	if _, taken := providers.KnownProviders[prefix]; taken {
+	// more damaging of the two collisions and is checked first. Membership is
+	// read from the same set the dashboard receives, so the suggestion the
+	// client shows and the refusal here can never disagree.
+	if providers.IsReservedProviderPrefix(prefix) {
+		if _, alias := providers.ProviderAliasMap[prefix]; alias {
+			return "provider alias \"" + prefix + "\""
+		}
 		return "provider \"" + prefix + "\""
 	}
 	nodes, err := h.Repo.GetProviderNodes()

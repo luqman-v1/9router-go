@@ -354,7 +354,10 @@ func TestTeamPageCreditsEveryContributor(t *testing.T) {
 	if !strings.Contains(body, "imgbot[bot]") {
 		t.Error("the excluded bot account is not mentioned: its absence looks like an oversight")
 	}
-	if !strings.Contains(body, "not a person") {
+	// The reason is singular with one bot ("is not a person") and plural with
+	// several ("are not people"), because the roster's bot count is data the
+	// refresh job owns — a second bot lands here as soon as it commits.
+	if !strings.Contains(body, "not a person") && !strings.Contains(body, "not people") {
 		t.Error("the reason for excluding the bot is not stated")
 	}
 }

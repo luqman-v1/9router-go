@@ -115,6 +115,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 
 		// Provider Nodes (Custom Endpoints)
 		r.Get("/provider-nodes", h.HandleGetProviderNodes)
+		r.Post(AvailabilityRoutePath, h.HandleCheckProviderNodeAvailability)
 		r.Post("/provider-nodes", h.HandleCreateProviderNode)
 		r.Put("/provider-nodes/{id}", h.HandleUpdateProviderNode)
 		r.Post("/provider-nodes/validate", h.HandleValidateProviderNode)

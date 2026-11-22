@@ -354,6 +354,8 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/jailbreak/presets/upload", dashH.HandleUploadJailbreakPreset)
 
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
+	// Provider Nodes (Custom Endpoints) — see dashboard/routes.go for the twin registration.
+	r.Post("/api"+dashboard.AvailabilityRoutePath, dashH.HandleCheckProviderNodeAvailability)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
 	r.Put("/api/provider-nodes/{id}", dashH.HandleUpdateProviderNode)
 	r.Delete("/api/provider-nodes/{id}", dashH.HandleDeleteProviderNode)

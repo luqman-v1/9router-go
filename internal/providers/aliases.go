@@ -1,5 +1,11 @@
 package providers
 
+import (
+	"sort"
+	"strings"
+	"sync"
+)
+
 // ProviderAliasMap maps short aliases to canonical provider IDs.
 var ProviderAliasMap = map[string]string{
 	"b-ai":           "bai",
@@ -213,4 +219,54 @@ func GetProviderAlias(providerID string) string {
 		return alias
 	}
 	return providerID
+}
+
+// reservedPrefixesOnce memoizes the set: both maps are package-level literals
+// that never change after init, and callers are on the request path.
+var reservedPrefixesOnce = sync.OnceValue(func() map[string]struct{} {
+	reserved := make(map[string]struct{}, len(KnownProviders)+len(ProviderAliasMap))
+	for id := range KnownProviders {
+		reserved[id] = struct{}{}
+	}
+	for alias := range ProviderAliasMap {
+		reserved[alias] = struct{}{}
+	}
+	return reserved
+})
+
+// ReservedProviderPrefixes is every string a provider node may not claim as its
+// prefix, keyed by the lowercase name: canonical provider ids and their
+// resolution aliases.
+//
+// The dashboard needs this set on the client, not only on the server. A prefix
+// is the alias every model a node serves is published under, and model
+// resolution walks the aliases first, so a node claiming one shadows that
+// provider outright — every `gh/*` request answering from the wrong upstream
+// with no error anywhere. The create/update handlers therefore refuse such a
+// prefix (see providerNodePrefixConflict), and a client that suggests prefixes
+// from a name has to know which suggestions are refused: the provider catalog
+// is NOT a superset of this set, so guessing from it produces values the server
+// answers 409 for.
+//
+// Returned as a sorted slice because it is serialized to the dashboard; the
+// order keeps that payload stable between requests.
+func ReservedProviderPrefixes() []string {
+	reserved := reservedPrefixesOnce()
+	out := make([]string, 0, len(reserved))
+	for name := range reserved {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// IsReservedProviderPrefix reports whether a prefix belongs to a registry
+// provider or alias. The comparison is case-insensitive, matching the
+// conflict guard that uses this set.
+func IsReservedProviderPrefix(prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	_, taken := reservedPrefixesOnce()[strings.ToLower(strings.TrimSpace(prefix))]
+	return taken
 }
