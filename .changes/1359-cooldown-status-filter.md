@@ -1,0 +1,5 @@
+### fix(dashboard): treat unlocked and expired cooldowns as active in status filter
+
+- **Cooldown timestamp parsing** (`internal/providers/connection_status.go`): updated `HasActiveCooldown` to parse RFC3339 timestamps for `modelLock_*` and `rateLimitedUntil` keys instead of matching on key prefix alone, so `null` (post-unlock) and lapsed locks no longer permanently fail status checks while live `rateLimitedUntil` windows are honored.
+- **Quota Tracker & connection status consistency** (`internal/handlers/dashboard/connections.go`): aligned `HandleGetProvidersClient` `?accountStatus=active|inactive` filtering with `providers.ConnectionStatus` (considering `testStatus` and `lastError`) and safely extracted `testStatus` in `sanitizeProviderConnection` so unset values no longer emit `"<nil>"`.
+- **Regression tests** (`internal/providers/connection_status_test.go`, `internal/handlers/dashboard/providers_client_test.go`): covered live, expired, `null`-unlocked, `rateLimitedUntil`, malformed payloads, and credit-exhausted connections across status filters.
