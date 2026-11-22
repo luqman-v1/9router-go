@@ -756,10 +756,14 @@
                 </div>
               {/if}
               {#if caps.vision}
-                <Eye class="w-3 h-3 text-blue-500 shrink-0" title="Vision — Supports image input" />
+                <span class="inline-flex shrink-0" title="Vision — Supports image input">
+                  <Eye class="w-3 h-3 text-blue-500" />
+                </span>
               {/if}
               {#if caps.reasoning}
-                <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
+                <span class="inline-flex shrink-0" title="Reasoning — Supports reasoning / thinking">
+                  <Brain class="w-3 h-3 text-amber-500" />
+                </span>
               {/if}
               <div class="flex shrink-0 items-center gap-0.5">
                 <button

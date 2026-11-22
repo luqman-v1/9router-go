@@ -3,7 +3,6 @@
   import { Loader2 } from 'lucide-svelte'
   import {
     api,
-    getStoredAPIKey,
     onUnauthorized,
     type APIKey,
     type Combo,
@@ -28,7 +27,6 @@
   import MediaWebView from './components/media/MediaWebView.svelte'
   import QuotaTrackerView from './components/QuotaTrackerView.svelte'
   import SkillsView from './components/SkillsView.svelte'
-  import SettingsView from './components/SettingsView.svelte'
   import SecurityPanel from './components/security/SecurityPanel.svelte'
   import PlansView from './components/plans/PlansView.svelte'
   import Sidebar from './components/Sidebar.svelte'
@@ -181,7 +179,7 @@
         api.getProviderNodes().catch(() => []),
         api.getCombos().catch(() => []),
         api.getApiKeys().catch(() => []),
-        api.getSettings().catch(() => ({})),
+        api.getSettings().catch((): Settings => ({})),
       ])
       connections = connsRes
       providerNodes = nodesRes
@@ -374,6 +372,7 @@
     'media-image': { title: 'Text to Image', description: 'Image generation and transformation models' },
     'media-tts': { title: 'Text to Speech', description: 'Voice synthesis and audio generation models' },
     'media-stt': { title: 'Speech to Text', description: 'Audio transcription and speech recognition models' },
+    'media-video': { title: 'Video', description: 'Manage your Video providers' },
     'media-systemone': { title: 'System One', description: 'Structured state evaluation models' },
     'media-web': { title: 'Web Fetch & Search', description: 'Configure web search and scrape tools' },
     'proxy-pools': { title: 'Proxy Pools', description: 'Manage your proxy pool configurations' },
@@ -387,12 +386,9 @@
     },
     plans: { title: 'Plans', description: 'Per-key quota plans and policy resolution' },
     jailbreak: { title: 'Persona', description: 'Per-model system-prompt injection and Gemini safety bypass' },
+    keys: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
   }
 
-  function handleOpenNewCombo() {
-    navigate('combos')
-    isCreateComboOpen = true
-  }
   let isUpdateModalOpen = $state(false)
   let systemUpdateInfo = $state<SystemVersionInfo | null>(null)
   let systemVersion = $state(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '')

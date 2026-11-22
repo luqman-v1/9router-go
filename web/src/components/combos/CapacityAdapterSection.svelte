@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowDown, ArrowUp, Brain, Eye, Headphones, X } from 'lucide-svelte'
+  import { ArrowDown, ArrowUp, Brain, Eye, X } from 'lucide-svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import Toggle from '../../lib/ui/Toggle.svelte'
@@ -93,10 +93,14 @@
                   >
                     <span>{model}</span>
                     {#if vcaps.vision}
-                      <Eye class="w-3 h-3 text-blue-500 shrink-0" title="Vision — Supports image input" />
+                      <span class="inline-flex shrink-0" title="Vision — Supports image input">
+                        <Eye class="w-3 h-3 text-blue-500" />
+                      </span>
                     {/if}
                     {#if vcaps.reasoning}
-                      <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
+                      <span class="inline-flex shrink-0" title="Reasoning — Supports reasoning / thinking">
+                        <Brain class="w-3 h-3 text-amber-500" />
+                      </span>
                     {/if}
                     <button
                       type="button"
