@@ -1,0 +1,4 @@
+### fix(media): rotate Gemini image requests across connections on quota and retryable errors
+
+- **Gemini image connection failover** (`internal/handlers/media/gemini_image.go`): rotated `handleGeminiImage` across active `gemini` connections via `excludeIDs` on retryable upstream errors (`providers.ClassifyError` / `geminiQuotaResetSeconds`), locking failing `(conn, model)` entries while keeping probe requests read-only (`!handlerutil.IsProbeContext`), honoring pinned `x-connection-id` / `modelInfo.ConnectionID`, and pre-building the `generateContent` payload once before the loop.
+- **Regression tests** (`internal/handlers/media/gemini_image_test.go`): added `TestHandleGeminiImage_ConnectionRotation` covering quota `429` with `quotaResetTimeStamp`, `401`/`429` without reset timestamp, non-retryable `400`, pinned connection header, all-connections-exhausted, and probe lock isolation.
