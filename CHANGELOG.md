@@ -1,5 +1,353 @@
 # Changelog
 
+## [v1.9.17-exp.12] - 2026-11-22
+
+### fix(kiro): keep both credit pools apart in the quota view
+- A `KIRO POOLING` seat answers `getUsageLimits` with **two** rows both carrying `resourceType: "CREDIT"`: a `NON_POOLED` row that has usage but no limit, and the `POOLED` row that carries the shared pool. Both were keyed by `resourceType`, so the later row overwrote the earlier and the dashboard showed whichever AWS happened to send last.
+- When the limit-less row came last, the panel said `total 0, remaining -0.59` — a pool reading as over-drawn that was never granted at all, which is what made a healthy 84k-credit seat look broken.
+- `dimensionType` now always joins the key (`credit_pooled`, `credit_non_pooled`), so the classification no longer depends on row order.
+- A row with no `usageLimitWithPrecision` is reported as `unlimited` with `remaining: 0` instead of `total - used` going negative.
+
+### chore(web): fix svelte-check type errors in quota, cli-tools, settings, and terminal views
+
+- **Type cleanup & `svelte-check` ratchet (`73 -> 37`)** (`web/src/components/quota/types.ts`, `web/src/api/client.ts`, `QuotaTrackerView.svelte`, `QuotaTable.svelte`, `CliToolsView.svelte`, `SettingsView.svelte`, `TerminalView.svelte`, `web/scripts/svelte-check-baseline.json`): removed the spurious index signature on `ProviderConnectionLike`, added `message?: string` to `ConnectionUsageResponse`, cleaned up unused imports/state/casts and contextual typing for `toolsCatalog`, and tightened `svelte-check-baseline.json` from `73` to `37` errors with zero runtime UI changes.
+
+### fix(media): rotate ElevenLabs music and sound-effects requests across connections
+
+- **ElevenLabs music & sound-effects failover** (`internal/handlers/media/elevenlabs_music.go`, `elevenlabs_sound.go`): rotated `HandleAudioMusic` and `HandleAudioSoundGeneration` across active `elevenlabs` connections via `excludeIDs` on retryable errors classified by `providers.ClassifyError`, locking/unlocking failing `(conn, model)` entries while keeping probe requests read-only (`!handlerutil.IsProbeContext`), honoring `x-connection-id` / `x-provider-connection-id` pinning, and preserving existing error response shapes.
+- **Regression tests** (`internal/handlers/media/elevenlabs_music_test.go`, `elevenlabs_sound_test.go`): added `TestHandleAudioMusic_ConnectionRotation` and `TestHandleAudioSoundGeneration_ConnectionRotation` covering `429` lock+skip, `401` rotation, non-retryable `400` passthrough, pinned header, exhausted pool, and probe lock isolation.
+
+### fix(media): rotate Gemini image requests across connections on quota and retryable errors
+
+- **Gemini image connection failover** (`internal/handlers/media/gemini_image.go`): rotated `handleGeminiImage` across active `gemini` connections via `excludeIDs` on retryable upstream errors (`providers.ClassifyError` / `geminiQuotaResetSeconds`), locking failing `(conn, model)` entries while keeping probe requests read-only (`!handlerutil.IsProbeContext`), honoring pinned `x-connection-id` / `modelInfo.ConnectionID`, and pre-building the `generateContent` payload once before the loop.
+- **Regression tests** (`internal/handlers/media/gemini_image_test.go`): added `TestHandleGeminiImage_ConnectionRotation` covering quota `429` with `quotaResetTimeStamp`, `401`/`429` without reset timestamp, non-retryable `400`, pinned connection header, all-connections-exhausted, and probe lock isolation.
+
+### test(web): isolate provider catalog state and wait for Usage view mount in E2E (#1340)
+
+- **Catalog state isolation (`web/src/lib/providers.test.ts` & consumers)**: Restores the parsed Go registry catalog via `beforeEach` / `afterEach` in `web/src/lib/providers.test.ts` so `reserved prefixes served with the catalog` tests calling `__setProviderCatalogForTest([], [], ...)` no longer leave `PROVIDER_CATALOG` empty for sibling suites. Seeds the registry catalog in test hooks across `web/src/components/analytics/types.test.ts`, `web/src/components/combos/pickerData.test.ts`, `web/src/components/connections/types.test.ts`, `web/src/lib/commandPalette.test.ts` (also calling `resetPaletteIndex()`), and `web/src/lib/models.test.ts` so every suite passes regardless of discovery order and when executed standalone.
+- **Usage E2E boot readiness (`web/e2e/usageRequestEconomy.test.ts`)**: Waits for `<AnalyticsView>`'s section switcher button (`sectionMenuButton`) instead of `<TopBar>`'s `'Usage & Analytics'` title and detaches `page.off('request', ...)` in `finally`. `<TopBar>` renders while `App.svelte`'s `loadData()` is still awaiting `loadProviderCatalog()`, allowing `page.on('request', ...)` to attach before the boot-time `/api/connections` and `/api/provider-nodes` fetches fire; `<AnalyticsView>` mounts only after `loadData()` completes and sets `isLoading = false`.
+- **Scope**: Test-only changes addressing both known CI flakes; zero production code or dashboard bundle changes.
+
+### fix(media): retry Cloudflare image requests across connections on upstream quota errors (#1339, Closes #988)
+
+- **Bounded connection failover (`internal/handlers/media/cloudflare_ai.go`)**: `handleCloudflareImage` now keeps request body parsing, reference/mask URL resolution, dimension calculation, and JSON/multipart payload assembly before the connection loop while rotating up to `cloudflareMaxRetries = 6` connections via `excludeIDs` and a `tried` guard, rebuilding target URLs (`buildCloudflareTargetURL`), auth, and HTTP clients per attempt (`sendCloudflareImageAttempt`).
+- **Single-pass error & cooldown classification**: `classifyCloudflareFailure` parses Cloudflare `errors[]` once per refusal — persisting a cooldown via `LockConnectionRateLimit` until the next UTC midnight (`cloudflareCooldownUntil`) on daily neuron exhaustion (`4006`), persisting a 5-minute cooldown (`cloudflareRetryCooldown`) on `429`, `401`, `403`, or `400` with code `7003`, skipping cooldown writes under `handlerutil.IsProbeContext`, and passing through non-retryable client/upstream errors (e.g. `400` code `5006`, `404`) without rotation.
+- **Pinned connections & exhaustion fallback**: Honors pinned requests (`modelInfo.ConnectionID` / `x-connection-id` / `x-provider-connection-id`) by surfacing refusals directly without rotating, and writes the last upstream refusal (`writeCloudflareRawResponse`) when all eligible connections exhaust instead of a generic error.
+- **Regression tests (`internal/handlers/media/cloudflare_ai_test.go`)**: Added `TestHandleImages_CloudflareRotationOnQuota`, `TestClassifyCloudflareFailure`, and `TestCloudflareCooldownUntil`.
+
+### Fixed
+- **Retry transient OpenCode free-tier overload 429 and drop spent sessions** — Transparently retries transient 429 overload errors with backoff and clears invalidated session IDs from cache on quota exhaustion (upstream decolua/9router@989b1eecb parity).
+
+### feat(service,windows): add per-user windows-run backend with non-elevated fallback (#1329, Closes #1328)
+
+- **Dedicated per-user `windows-run` backend**: Adds `BackendWindowsRun` (`"windows-run"`), which registers the cmd-quoted `"<exe>" start <args>` command under the current user's Registry Run key (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\9router-go`) via `golang.org/x/sys/windows/registry` — introducing zero new dependencies, staying pure-Go (`CGO_ENABLED=0`), and starts the detached daemon at logon.
+- **Elevation-aware, locale-independent install fallback**: When `9ROUTER_SERVICE_BACKEND` is unset, `Install()` on Windows delegates `BackendWindowsTask` through `installWindowsAuto()`. It switches directly to `windows-run` when the process token is unelevated (`windows.GetCurrentProcessToken().IsElevated()`), and falls back on any non-zero `schtasks.exe /create` exit (`*exec.ExitError`) instead of string-matching localized `"Access is denied"` text — preserving the raw `schtasks` diagnostic if the fallback write also fails. Explicit `9ROUTER_SERVICE_BACKEND=windows-task` or `windows-run` overrides remain strict and do not silently fall back.
+- **Status, uninstall, daemon control, tray, and CLI alignment**: `Status()` and `Uninstall()` inspect and remove both `windows-task` and `windows-run` entries; `control()` returns `ErrNoSupervisor` for `BackendWindowsRun` so `service start|stop|restart` falls back to the pid-file daemon; `tray.DecideStop` and `tray.IsSupervised` treat `windows-run` as unsupervised (requiring verified socket ownership instead of `StopSupervised`); CLI `--backend` usage text and `inspectHint` (`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v 9router-go`) are updated; `windows-task` behavior and `internal/service/service_backends_task_test.go` assertions remain unchanged.
+- **Net-new justification (Closes #1328)**: Checked `decolua/9router` `master` and confirmed it has no `HKCU\Run` or Windows auto-start equivalent. Standard (non-Administrator) Windows desktop and tray users previously hit `Access is denied` from `schtasks.exe /create` when enabling auto-start; returning the actual `BackendWindowsRun` in `Info.Backend` rather than faking `windows-task` lets status queries, uninstall, CLI hints, and the tray behave honestly without UAC elevation.
+
+### fix(web): expose per-provider Thinking selector and Off option for compatible nodes (#1326, Closes #1214)
+- **Compatible-node Thinking control (`web/src/components/connections/ProviderDetailView.svelte`, `providerThinking.ts`)**: Compatible custom nodes (`openai-compatible-*`, `anthropic-compatible-*`) now render the `Available Models` header with the accessible `Thinking:` selector (`aria-label="Provider thinking mode"`) offering `Auto`, `Off`, `On`, and any discovered levels even when custom models carry no static `thinkingLevels` metadata.
+- **Explicit `Off` option for disable-capable built-in providers**: `computeProviderThinkingOptions` includes `off` right after `auto` whenever any model advertises `'none'` capability, keeps upstream hiding for built-in non-reasoning providers unless a persisted override is active so operators can still reset it, and ensures `resolveProviderThinkingSuffix` never appends `(auto)`, `(off)`, or `(on)` to copied/displayed model IDs.
+- **State hygiene & verification**: Guarded `loadData()` against stale provider switches, reset `thinkingLevel` on provider switch, rolled back UI state when `PUT /api/settings` fails, and added unit (`web/src/components/connections/providerThinking.test.ts`), Go backend (`internal/handlers/chat/compatible_node_thinking_test.go`), and live Chromium E2E (`web/e2e/providerThinkingSelector.test.ts`) coverage.
+
+### fix(tray): update tray icon to 9r GO mark and omit unknown PID 0 in port-conflict title
+
+- Net-new local tray icon alignment and UX fix (conflict-free with #1308).
+- **`9r GO` tray icon parity** (`cmd/9router-tray/tray.ico`): synced the embedded multi-resolution tray icon (`16x16`, `24x24`, `32x32`, `48x48` 32bpp frames from `web/public/favicon.ico`) with the #1060 `9r GO` rebrand.
+- **Compact unknown-PID port-conflict title** (`internal/tray/state.go`, `state_test.go`): omitted `(PID 0)` in `Snapshot.Title()` when `StatePortConflict` has no attributed owner PID (`"9Router Go (Port %d in use)"`), preserving `"by foreign process (PID %d)"` whenever `s.PID > 0`.
+
+### fix(windows): isolate USERPROFILE in agy-acp and fix Windows test portability
+
+- Net-new local Windows bugfix and test portability cleanup (keeps `internal/daemon` and `internal/proc` untouched).
+- **Windows `agy-acp` env isolation** (`internal/acp/agy/turn.go`): updated `removeEnv` to match variable names before `=` using `envKeyMatches` (`strings.EqualFold` on Windows), stripped all overridden isolation and ambient credential variables before appending, and set `USERPROFILE` alongside `HOME` to the account root directory (`TestBuildCommandIsolatesEnv`).
+- **Windows test portability** (`internal/clientconfig/paths_test.go`, `internal/clientconfig/atomicwrite_windows_test.go`, `internal/qodercheckin/checkin_test.go`): guarded the POSIX ledger mode check in `TestQoderCheckinLedgerSurvivesRestart` on Windows and handled Windows 8.3 short temp directory paths cleanly in `TestPathResolution` and `TestJunction_EvalSymlinksIsBlindAndReadlinkIsNot`.
+
+### fix(proxy-pools): return field-level validation errors on POST/PUT /api/proxy-pools
+
+- Net-new local schema validation (Refs #1024; resolves the `POST /api/proxy-pools` `invalid JSON` defect without claiming upstream `decolua/9router` URL-validation parity).
+- **Field-level JSON decode & schema errors** (`internal/handlers/dashboard/proxypools_validate.go`, `proxypools.go`): validates empty/non-object bodies, `encoding/json/v2` `SemanticError` and `jsontext.SyntacticError` (including duplicate keys and type mismatches such as numeric `isActive`), single-URL consistency, `proxyPoolType` (`http`, `socks5`, `vercel`, `cloudflare`, `deno`, `netlify`), URL scheme dialability, and type-vs-scheme compatibility, returning `400` responses with `error.field`, `error.reason`, and `error.message` (and `404` on missing `PUT /api/proxy-pools/{id}` targets).
+- **Explicit `isActive` on create** (`internal/db/proxyPools.go`): added `ProxyPoolData.IsActive *bool` (`json:"-"`) so `InsertProxyPool` honors `isActive: false` without altering the 7-key `data` JSON schema.
+
+### Fixed
+
+- **Transparent retry for dead keep-alive sockets** — Automatically retries requests once on a fresh socket when an idle keep-alive connection was dropped by an upstream edge before response bytes were received (upstream decolua/9router@963787f73 parity).
+- **Keep-alive idle timeout capped to 4s** — `IdleConnTimeout` now defaults to 4s (configurable via `FETCH_KEEPALIVE_TIMEOUT_MS` in milliseconds) instead of 90s, aligning the idle connection pool with upstream/edge idle windows (Cloudflare, AWS Global Accelerator / NVIDIA NIM) that drop idle sockets without a TCP RST, so the pool no longer holds dead sockets for 90s.
+- **Dead keep-alive classification uses `errors.Is`** — ECONNRESET and EPIPE are detected via `errors.Is(err, syscall.ECONNRESET)` / `errors.Is(err, syscall.EPIPE)` against the wrapped errno rather than substring matching (§4.E), so an error chain wrapping the errno at any depth is recognised and an unrelated message mentioning "broken pipe" is not. String matching remains only for the unexported `errServerClosedIdle` sentinel.
+
+---
+### Fixed
+- **Combo round-robin rotation skew** — The unweighted round-robin pointer now advances across the combo's initial configured target space (`comboStickyState.Space`) rather than the dynamic post-filtered candidate list, eliminating rotation skew and seat pinning when models are filtered out by capability or affinity.
+- **Regression test** — `TestApplyComboStrategy_RoundRobinInitialSpaceFilteredEveryTurn` discriminates and fails on base (`heads: got map[p/a:3 p/c:3], want map[p/a:2 p/c:4]`), passing on head with the expected 2/4 split.
+
+### Changed
+- **Combo returns first rejecting member's 4xx on total refusal** — When all members in a combo fail, return the first member's request-scoped 4xx response instead of the last error or generic 503 (upstream decolua/9router#5057 parity).
+
+### feat(provider-nodes): optional prefix with name-driven autofill
+- On the Add dialog for OpenAI-compatible and Anthropic-compatible nodes, typing the custom name now suggests both the provider prefix and custom URL suffix. The slug lowercases capitals, turns whitespace/punctuation runs into one dash, folds accents (e.g. `Café Gateway` → `cafe-gateway`), caps prefix at 24 characters and suffix at the server's 64-character limit. The values keep following the name until the operator types into that field; then they are operator-owned (including when cleared to blank). `custom-embedding` and the Edit dialog are unchanged.
+- A registry provider id or resolution alias is never suggested as a prefix: such a prefix would shadow that provider's routing. The catalog endpoint now includes the exact reserved set the create/update guard checks (`KnownProviders` + `ProviderAliasMap`), since catalog sections alone omit 57 of 292 guard keys. Both client suggestion and server conflict rejection read the same source of truth; reserved prefixes leave the prefix suggestion blank so the existing server fill chooses the URL suffix when safe, then a short random token.
+- The suffix is distinct from the prefix: it identifies the provider node, so it can use a slug which is reserved as a model prefix. Changing a suffix changes the provider id and rewrites saved combos; this autofill runs only on Add, never on Edit, to avoid changing a live node identity as someone edits its name.
+- Prefix remains optional when creating/editing OpenAI/Anthropic compatible providers. Blank prefixes are filled once on the server (safe URL suffix, then random 8-character token); typed prefixes are never rewritten. `custom-embedding` still requires an explicit prefix.
+- The Add dialog now reports live availability under the prefix and suffix fields, the way a username picker does: `POST /api/provider-nodes/availability` checks a candidate prefix against the same owners the create handler refuses (registry ids and aliases via the shared reserved set, then every stored node's prefix, case-insensitively) and a candidate URL suffix against the composed provider id it would produce. Statuses are `available`, `taken` (with the owner named), `invalid` (pattern/length), and the blank-field states `automatic`/`random`. The route is registered in both route tables; the check is advisory and create re-validates, since a value can be claimed between check and save.
+- Verified with slug/reserved-set table tests, Go coverage that reserved prefixes exactly cover the server guard, availability handler table tests (free/reserved/node-owned/invalid/blank on both fields), and `web/e2e/optionalProviderPrefix.test.ts` (name follow, operator takeover, persisted values, live availability rows), `bun run build`, Svelte ratchet, and oxlint.
+
+### feat(combo): skip disabled members at runtime and prune deleted models/providers
+
+- Net-new local feature (Closes #1215; no upstream `decolua/9router` parity claimed).
+- **Runtime skip for disabled models/providers** (`internal/handlers/chat/combo_availability.go`, `combo.go`): filters disabled models (`disabledModels`) and providers whose stored connections are all inactive (`ProviderActiveStatus(ctx)`) once per combo dispatch before strategy selection across `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, and `fusion`, preserving saved plain-combo entries so re-enabling resumes automatically. Falls back to `fallbackCombos` or returns `503 Service Unavailable` when all members are disabled; in `fusion`, a disabled or inactive `customJudgeModel` falls back to the default judge (`panel[0]`).
+- **Batched DB pruning on permanent deletes** (`internal/db/combos_prune.go`, `providernodes.go`, `internal/handlers/dashboard/combos_prune.go`, `models.go`, `connections.go`): prunes permanently deleted custom models (`HandleDeleteCustomModel`, `HandleDeleteProviderModels`), deleted provider nodes (`DeleteProviderNode`), and built-in providers whose last stored connection is deleted (`HandleDeleteConnection` / `DeleteProviderConnectionWithCount`, excluding keyless `NoAuth`/`DefaultAPIKey` providers) from plain and weighted combos via batched `UPDATE ... CASE id ... WHERE id IN (...)` statements inside a single transaction, matching strictly on exact provider/node identity without cross-provider aliasing.
+
+### PostgreSQL as a pluggable database engine
+
+The gateway now runs on either SQLite (default) or PostgreSQL, selected by the `DATABASE_URL` DSN prefix. Self-host single-user installs keep zero-config SQLite; deployments that need more write throughput set `DATABASE_URL` to a `postgres://` DSN and the same binary switches engines at startup.
+
+- **Engine detection** via `DATABASE_URL` prefix (`postgres://` or `postgresql://`). PG connection pool defaults to 50 open / 10 idle, overridable with `DB_MAX_CONNS` and `DB_MAX_IDLE_CONNS`.
+- **Dual schema** (`internal/db/schema_postgres.go`): a PG mirror of the core schema using `BIGINT GENERATED ALWAYS AS IDENTITY`, `BOOLEAN`, and `BYTEA`, all `IF NOT EXISTS`, so bootstrap stays idempotent. Timestamps remain TEXT in v1 so the SQLite -> PG export/import is a straight copy.
+- **Portable queries across the repo**: `INSERT OR IGNORE/REPLACE` replaced with `ON CONFLICT`, `datetime('now')` replaced with Go-computed timestamps passed as bind args, and SQLite-only `PRAGMA` calls guarded behind an engine check. A repo-wide lint test (`portable_sql_test.go`) fails the build if a SQLite-only construct reappears outside tests and schema files.
+- **Migration tooling**: `9router-go db export --from <sqlite> --out <dir>` writes one JSONL per user table; `9router-go db import --to <pg-dsn> --from <dir>` replays them in chunked `ON CONFLICT DO NOTHING` transactions and resets `IDENTITY` sequences. Export opens SQLite read-only, and both commands are safe to re-run.
+- **Docker Compose** (`deploy/`): `postgres:16-alpine` plus the gateway service with write-heavy PG tuning, and a one-shot `migrate` profile that mounts the existing SQLite file read-only and runs export + import inside the compose network. Cutover and rollback steps are in `deploy/README.md`.
+
+**Why**: SQLite's WAL mode allows only one writer at a time. Every `INSERT usageHistory`, `UPDATE api_keys`, and `INSERT requestDetails` queues on `busy_timeout`, and the four-connection pool turns that queue into the dominant tail latency once write throughput climbs. PostgreSQL's MVCC removes the single-writer lock, and its connection pool hands the load to many connections instead of one.
+
+**How verified**: `go test ./...` green on SQLite. `detectEngine` covered by a table-driven unit test. The Postgres path is exercised through the `deploy/` compose stack on a live PostgreSQL 16 instance.
+
+Upstream decolua/9router keeps SQLite as its only engine; this is a `9router-go` extension and diverges deliberately.
+
+### Fix review blockers for PostgreSQL engine (#1312 follow-up)
+
+Follow-up fixes for the four issues raised in review of #1312:
+
+- **`DATABASE_URL` now selects the engine**: `LoadConfigFromViper` maps `DATABASE_URL` to `DatabasePath`, taking precedence over `DB_PATH`. The documented `deploy/docker-compose.yml` setup now actually starts on PostgreSQL instead of silently using SQLite.
+- **Import no longer loses seeded data**: `dbmigrate.Import` bootstraps the PG schema without the default `settings`/`_meta` rows, replays the dump, then seeds only genuinely empty rows. A regression test asserts the exported `settings.data` value survives (the CI smoke previously only checked `COUNT(1)`).
+- **`json_set` works with production argument shapes on PG**: the rebind driver rewrites SQLite `json_set(...)` to a new `pg_json_set` shim that accepts TEXT args; integers, `json()`, `NULL` and JSON objects now bind correctly. Added an integration test covering `LockConnectionModel`, `RecordConnectionError`, `UnlockConnectionModel`, `ClearConnectionRateLimit` and OAuth lock shapes.
+- **`CurrentEngine()` can no longer go stale**: it derives the engine from the global handle's driver instead of a separately-maintained variable.
+
+Verified: `go test ./...`, PG16 integration tests against `postgres:16-alpine` (`TestPGJSONSetProductionShapes`, `TestImportPreservesSeededValues`, `TestJSONShimDifferential`), `go mod tidy`, `CGO_ENABLED=0` build.
+
+### Added — Edit custom models; delete no longer parks them under "Disabled models"
+
+- Every custom model row on a provider page now has an Edit button that
+  reopens the Add Custom Model modal in edit mode (id and type locked,
+  fields prefilled, extraBody pretty-printed). Save re-posts the full stored
+  row under the same key, so `name` and other fields survive; blanking the
+  request body field sends `extraBody: null`, which clears it. Compatible-node
+  rows use a separate list and are not editable this way.
+- Fix: deleting a custom model (row X, trash, or "Delete selected") now removes
+  it instead of moving it to "Disabled models"; the id the delete endpoint
+  parks in `disabledModels` is pruned. Built-in models keep disable semantics.
+  Pre-existing (X button since 4f4b4aeaf, endpoint disable-append in 13cce967).
+
+### Added — Per-model custom request body for OpenRouter custom models
+
+- A custom model can now carry an `extraBody` JSON object (Add Custom Model
+  modal → "Custom request body (JSON, optional)", shown for OpenRouter only).
+  The gateway merges it into every OpenAI-format request it sends to
+  `openrouter` for that model, so operator sampling and reasoning knobs apply
+  without the client sending them.
+- Allowlist, not denylist. Only these top-level keys (exact, case-sensitive)
+  are accepted: `temperature`, `top_p`, `top_k`, `min_p`, `top_a`,
+  `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `seed`,
+  `stop`, `logit_bias`, `logprobs`, `top_logprobs`, `max_completion_tokens`,
+  `reasoning`, `reasoning_effort`. No provider routing (`provider`,
+  `plugins`, `models`, ...) and nothing the gateway owns (`model`, `messages`,
+  `stream`, `tools`, ...). Values are type-checked only (no numeric ranges;
+  integer keys accept integer-valued numbers; `null` is allowed).
+- `reasoning` may only hold `effort` (max|xhigh|high|medium|low|minimal|none),
+  `max_tokens` (int), `enabled`, `exclude` (bool), `summary`
+  (auto|concise|detailed), `context` (auto|all_turns|current_turn), `mode`
+  (standard|pro). `reasoning.max_tokens` together with `reasoning.effort` or
+  `reasoning_effort` is refused (OpenRouter answers 400).
+- Merge rule: shallow top-level override, operator wins; `reasoning` is
+  replaced whole.
+- Save is refused with `400 {"code":"INVALID_EXTRA_BODY"}` (message names the
+  offending key and lists the allowed ones) when the row's provider does not
+  resolve to `openrouter`, the value is not a JSON object, it exceeds 8 KB, or
+  a key/value fails the allowlist. The same allowlist is re-applied at merge
+  time, so a legacy or imported row (e.g. with `provider`) never forwards a
+  disallowed key. The stored extraBody keeps the request's exact bytes, so
+  large integers (e.g. a 17-digit `seed`) are not rounded. The modal mirrors
+  the rules inline and shows the accepted keys, an example and links to the
+  OpenRouter parameters and reasoning-token guides.
+- The lookup is an in-memory index built from the `customModels` kv scope and
+  invalidated (generation counter, so a racing build is never cached) on every
+  custom-model write, provider-node rename/delete and database import — no
+  SQLite read per request; a failed read is retried, not cached as empty.
+  A client body the merge cannot decode is forwarded unchanged. Other
+  providers, including a sibling with the same model id, are untouched (§3
+  provider isolation).
+- Divergence: no merged `decolua/9router` equivalent exists; this is a
+  9router-go addition.
+- Verified by db round-trip, dashboard validation, merge unit tests and an
+  `integration` test that asserts the fake OpenRouter upstream receives the
+  merged body (direct and through a combo) while a sibling provider does not.
+
+### fix(daemon,tray): preserve spaces in Windows pidfile paths and polish Windows tray build
+
+- `internal/daemon/pidfile.go` (`parseClaim`): split only on the first space/tab on the first line instead of `strings.Fields`, so executable paths containing spaces (such as `C:\Program Files\...` or `C:\Users\<Name With Space>\...`) no longer fail `claim.owner()` and wipe `gateway.pid`. Added unit tests in `internal/daemon/pidfile_test.go`.
+- `internal/proc/executable.go` (`Executable`): normalize image paths via `resolveImagePath` (`filepath.EvalSymlinks`) as documented, fixing Windows 8.3 short-path mismatches (`TestLiveExecutableMatchesSelfExecutable`).
+- `Makefile` (`cross-tray-one`): pass `-H=windowsgui` when `CROSS_OS=windows` so `9router-go-tray` launches without a console window.
+- `cmd/9router-tray/` and `internal/service/`: set `HideWindow: true` + `CREATE_NO_WINDOW` on Windows child CLI/service probes (`runGatewayCLI`, `service.run`) so GUI tray actions and the 1 s `schtasks.exe` status poll do not flash console windows, and surface Windows tray action errors via `windows.MessageBox` instead of invisible `fmt.Println` (preserving C6).
+- `cmd/9router-tray/actions.go` (`setAutostart`): delegate autostart install/uninstall to the sibling gateway CLI (`service install` / `service uninstall`) instead of calling `service.Install` in-process, which previously used `proc.SelfExecutable()` and registered `9router-go-tray` as the boot service instead of `9router-go`. Added a unit test in `cmd/9router-tray/actions_test.go`.
+
+### chore(gitignore): keep a local gateway database out of the tree
+- A gateway started from the repo root leaves its SQLite database beside the source, and `providerConnections` holds live provider tokens and OAuth data — the `-wal`/`-shm` sidecars carry the same rows. An accidental `git add -A` published every connected account.
+- `*.db*` and `*.sqlite*` are ignored, along with `/bin/` build output and `/docs/reports/`, which holds per-session run output rather than product.
+- No fixture in the repository uses those extensions, so nothing tracked becomes hidden.
+
+### Jailbreak scope per API key, chat-script mode, and append position
+
+The jailbreak (persona) injection system gains three controls that were the only real gaps against the Pro edition, plus one operational hardening.
+
+- **Scope per API key.** A binding can now be stored for one client key instead of every caller: `SetJailbreakKeyModelPreset(apiKeyID, modelID, presetID, enabled)` writes the row as `<apiKeyID>:<modelID>`, and a new `keyExact` map in the ruleset snapshot resolves it *ahead* of the same model's global binding. `ResolveJailbreakDoc` and `ExplainJailbreakDoc` take the key id, which the request path reads from `requestKeyFromContext` — so a resold client gets a different persona than the operator's own key without a second injection system living beside the first. An empty key id (or one the store does not know) sees only global scope; old rows keep their single-segment key and are unaffected.
+- **Injection mode and position.** `JailbreakDoc` gains `mode` (`""` = system prompt, `chat` = a scripted trailing user turn) and `position` (`""`/`system` = ahead of the original content, `append` = after it). `injectJailbreakPrompt` dispatches mode first, then position, falling through to the untouched `prependSystemPrompt` — so a zero-value document produces byte-identical output to the previous build, and no migration runs. `mode:"chat"` combined with `position:"append"` is rejected at validation time: a chat turn has no system prompt to order, so `append` would silently no-op and mislead the operator.
+- **Dashboard.** `PUT /api/jailbreak/keys/model` and `GET /api/jailbreak/keys/bindings` manage the per-key bindings, and `/api/jailbreak/resolve` plus `/api/jailbreak/preview` accept an `apiKeyId` so an operator resolves one id as a given client would see it. The explain handler previously dropped the model id into the key-id slot after the resolver signature changed, which made every explain answer `no-match`; that is fixed, and the same fix restores `TestJailbreakResolveRoute`. The UI adds a per-key editor and an A/B resolve panel that shows the global and key-scoped verdicts side by side, so a per-key override is seen outranking the global binding instead of being trusted unread.
+- **Stale-chunk self-heal.** A deploy swaps hashed chunk names, and a tab still running the old `index.html` then failed a dynamic import and showed a blank screen. `selfHealStaleChunks()` listens for `vite:preloadError`, clears the service-worker caches that may hold the stale index, and reloads once — guarded by `sessionStorage` so a persistently broken deploy cannot loop, and re-armed on the next clean load.
+
+Verified: `go build ./...`, `go vet`, and `go test` on `internal/db`, `internal/handlers/chat`, `internal/handlers/dashboard` and the `-tags=integration` suite (`TestJailbreakRoutesAreMounted` now covers all 14 jailbreak routes on the production router). `bun run build` and the Svelte ratchet pass unchanged (0 unresolved identifiers, baseline held at 74).
+Screenshots: `docs/screenshots/pr1301-persona-before.png` (main, v1.9.17-exp.10) and `docs/screenshots/pr1301-persona-after.png` (this branch), same 1284x900 viewport, the same seeded state — one preset `Shot Persona` (`mode:chat`) plus one model binding — and the same scroll offset, so the pair differs only where the feature lives. The narrow pair is `pr1301-persona-{before,after}-narrow.png` at 420x900, captured from the same two builds with the same state. Live check on two scratch gateways isolated by `DATA_DIR`: `PUT /api/jailbreak/keys/model` returned `{"ok":true,..."presetId":"shot-persona"}`, `GET /api/jailbreak/keys/bindings?keyId=...` returned the row, and `POST /api/jailbreak/resolve` answered `{"injected":false,"reason":"no-match"}` globally versus `{"injected":true,"reason":"key-binding","presetId":"shot-persona"}` under the key — the key-scoped override outranking the global scope, which is what the UI shows after the binding list.
+
+The dashboard client sent `POST /api/jailbreak/keys/model` while the gateway registers `PUT`, so every key-scoped arm, toggle and disable answered `405 Method Not Allowed` — the exact code path the live probe above first hit, before it was re-run with the correct verb. The route-verb integration case exercises `http.MethodPut`, which is why CI stayed green with the client broken. Fixed to `PUT`.
+
+The Persona page's filtered "Select all (N)" checkbox for presets built its selection set and then discarded it: the handler never assigned the result back, so the click selected nothing and the batch toolbar never opened. One line restored (`selectedPresetIds = next`); the page-scoped sibling and both binding handlers already assigned correctly, and the diff against the previous head is that single line.
+
+The Model bindings section of the Persona page gains a provider-prefix filter beside the text search: model ids arrive as `provider/model`, so the select lists the prefixes the armed bindings actually use (built from the live rows, so an option that would match nothing never appears), each with its own count. The prefix narrows first and the existing substring/regex query then narrows that set, and the empty state names whichever filter excluded everything — prefix, query, or both — instead of blaming only the query.
+
+The bulk-arm model search in the bind modal used to require a byte-exact substring, so `deepseek chat` against `deepseek/chat-v3` and a one-character slip such as `glm-5.4` both answered "0 matches" and read as "this model does not exist". `web/src/lib/fuzzyMatch.ts` (`filterFuzzy`) keeps the exact substring as the strongest match, then compares with separators stripped for spacing and punctuation drift, then allows a bounded edit distance over a window of the candidate id. An explicit `/regex` query stays authoritative and untouched, so the RE2 escape hatch keeps its meaning. Two guards stop the filter from stopping filtering: no tolerance for a one or two character query, and none for a query longer than 24 characters. Matches rank exact > separator-equal > tolerance with a stable sort, so the list does not reshuffle per keypress. 13 cases in `fuzzyMatch.test.ts`.
+
+`JailbreakKeyScope.svelte` shipped with this feature and was imported by nobody — a grep for the component name outside its own file returns only its own definition, so the per-key editor was dead code and the two routes it drives (`PUT /api/jailbreak/keys/model`, `GET /api/jailbreak/keys/bindings`) had no caller in the dashboard. The backend resolver, the routes, the integration tests and the playground were all correct; the only way to arm a key-scoped binding was through the API. The editor is now mounted above the playground in the Persona page, and the view carries the client key list (`apiKeys`) it needs, fetched in the same `Promise.all` as the presets, models and excludes. Runtime-verified on a scratch gateway: the key dropdown lists the key, the model field arms it, and the table shows the row with `Armed "gpt-5-mini" for kscope-key.`
+
+The bulk-arm model filter hoists the per-id work that never changes between keystrokes out of the query path. `filterFuzzy` re-derived each id's lowercase and separator-stripped form on every keystroke over ~1,872 catalog ids, which measured 11-95 ms per keystroke in Chromium against 0.2-0.8 ms for the substring filter it replaced — on the 1-vCPU box the gateway serves from, visible input lag. `buildFuzzyIndex` (fuzzyMatch.ts) now computes those forms once when the catalog loads, and `filterFuzzyIndexed` runs the same three tests fuzzyMatch applies against the index instead. The edit-distance pass is additionally gated by a character-multiset check: a window within `budget` edits of the query matches at least `query.length - budget` of its characters, so an id that shares fewer is rejected in one pass without running the window loop. Measured at 2,025 ids: 9.8 ms → 1.12 ms (`glm 5.3`), 8.3 ms → 0.25 ms (`zzzzz`), with byte-identical results — the test file pins that agreement over a live-sized catalog, because the perf path must not become a behaviour change.
+
+Three new client behaviours now have a Chromium test that fails on the base commit. `web/e2e/personaKeyScope.test.ts` boots the real gateway, reveals the hidden Persona nav entry, creates a client key, then drives the page: the per-key editor mounts and lists the key, arming a binding issues `PUT /api/jailbreak/keys/model` and the row appears in the key's table, and resolving the same id shows the key's binding outranking the global one. Both defects this closes are invisible to every other gate — the editor shipped imported by nobody (dead code the resolver, the routes and the Go tests were all correct for), and the client sent `POST` where the route answers `PUT`, which the route-verb case in Go could not see because it exercises `http.MethodPut` directly. Verified both ways: on the base commit `getByLabel('API key', { exact: true })` never appears, and on this branch all three cases pass.
+
+`JailbreakDoc.APIKeyID` is removed. It was written on save and read by nothing: the resolver scopes through the binding's own `APIKeyID` (`JailbreakModelConfig`), and no Go or TypeScript consumer ever read the doc field, so a preset could not actually be scoped by it. Deleting it removes a field that claimed a feature that did not exist.
+
+### Fixed
+
+- **GitHub Copilot Claude 5.5 dotted ids** (`claude-opus-5.5`, `claude-sonnet-5.5`) now carry the same Anthropic per-model thinking rules as the dashed rows (upstream `decolua/9router@f3e1f716`). A thinking-off request from Claude Code's auto-mode permission classifier no longer reaches Copilot's `/v1/messages` shim as `thinking.type: "disabled"` and gets a 400 that held back every Bash call.
+  - `Capabilities` gains `ThinkingOffType` and `ForcedToolChoice` (tri-state `*bool`, nil = unspecified) so the Claude request builder can read them.
+  - Opus 5.5 (`thinkingCanDisable:false`): a `disabled` thinking block is dropped and `output_config.effort` clamped to `low`; a forced `tool_choice` is downgraded to `auto`.
+  - Sonnet 5.5 (`thinkingOffType:"between_tools"`): `disabled` is rewritten to `{type:"between_tools"}` with `xhigh`/`max` effort clamped to `high`; a forced `tool_choice` is downgraded to `auto`.
+  - `writeClaudeAdaptive` keeps a requested `display` for always-on adaptive Claude models when the level is not minimal; non-Claude always-on models stay effort-only.
+  - Thinking-level fixture divergences added for `github`/`gh`/`tokenharbor` × `claude-opus-5.5` (the v0.5.109 fixture predates f3e1f716; opus-5.5 now correctly drops `none`).
+
+upstream decolua/9router#1287 parity
+
+### fix(codex-image): send GPT Image edits to the native images/edits endpoint
+
+- Reference-image edit requests for Codex GPT Image models now route to the native Images edits endpoint (`https://chatgpt.com/backend-api/codex/images/edits`, the same one Codex CLI uses) whenever the request stays inside the native output scope (`n=1`, `size` auto or empty, `png`, no compression). The Responses `image_generation` tool path rejected every GPT Image edit with `Complexity 'medium' is not supported for this image model`, locking the model on each account in turn; quality and image_detail changes did not help.
+- The native edit body mirrors Codex CLI's `ImageEditRequest`: `{model, prompt, images: [{image_url}], n: 1, size: "auto", quality: quality || "auto", background: background || "auto"}`. Requests outside the native scope (fixed size, `n > 1`, webp/jpeg, output compression, non-default quality/background) keep the Responses path so their output controls are still honored.
+- Upstream parity: `decolua/9router@85c91c4e4` (Closes #1286).
+- Verified with `go test ./internal/handlers/media/... -v` (native single/multi-image edit routing, out-of-scope fallback, and the `codexUseNativeEdit` / `codexNativeEditBody` / `codexNativeEditJSON` / `codexNativeEditURL` unit tests).
+
+### fix(muse-web): normalize exported JSON cookie inputs
+- A cookie-based web provider's credential is the site's session `Cookie` header. The dashboard hands that credential over as the connection's `apiKey`, and a paste is often a Cookie-Editor / EditThisCookie JSON export — a bare array `[{"name":"__Secure-1PSID","value":"..."}]` or an object `{"cookies": [...]}` — rather than a header. The semicolon-delimited cookie parser only understood the header form, so an exported jar was read as a missing session cookie and every later turn sent a malformed `Cookie` header.
+- `browsercookies.NormalizeCookieHeaderInput` is now wired into the credential-ingest path, not just its unit test. It renders a JSON array or `{cookies: [...]}` export as `"name=value; ..."`, preserves an ordinary header string (including `=` inside values), and rejects malformed or unsupported JSON with an informative error before any request is made. Call sites:
+  - `internal/handlers/dashboard/connections.go` `HandleCreateConnection` — normalizes `apiKey` for `gemini-web` (the one provider whose credential is the whole site Cookie header) before the row is written; a malformed export is a `400` at the boundary rather than a stored credential the first turn would fail on.
+  - `internal/handlers/dashboard/validate.go` `validateProviderKey` — normalizes `gemini-web`'s `apiKey` before the probe, so "Check" judges the header the site will see.
+  - `internal/handlers/dashboard/validate_web_providers.go` `validateDeepSeekWeb` — normalizes the `deepSeekCookie` field from `providerSpecificData` before it is sent on the probe.
+- Deliberately **not** applied to `deepseek-web`, `grok-web`, `perplexity-web` or `uc-web`: their `apiKey` is a token or a single cookie value — `deepseek-web`'s `userToken` is itself a JSON object (`{"value":"..."}` from localStorage), which the JSON-cookie parser must not read as an export. Gating on the provider rather than on `AuthType == "cookie"` is what keeps that case working.
+- There is no cookie-based Muse Web provider in this repository: `providers.KnownProviders["muse"]` is `Muse (Meta Model API)` with `AuthType: "apikey"` (Meta device-code OAuth plus a minted Model API key), not the cookie-based `muse.ai` Hatch session the upstream fix targets. The normalizer is therefore generic — it serves every whole-header cookie credential — rather than a Muse-specific path; a `muse-web` provider would need its own registry row and executor before this normalization reaches it.
+- Ported from `decolua/9router@0760c302` (`open-sse/utils/webCookieAuth.js normalizeCookieHeaderInput`, fixing upstream #5582). Verified with `go test ./internal/browsercookies/... ./internal/handlers/dashboard/...` and `go test ./...`.
+
+### fix(security): require a structured credit code before a 400 parks a connection
+- An HTTP 400 that merely contained a credit phrase (`"quota exceeded"`, `"insufficient credits"`) was read as a spent balance and parked the connection for an hour. A 400 is how an upstream rejects the CALLER's request, and many quote that request back in `error.message`, so the phrase could be the user's own prompt: one request from one user took a shared connection out of rotation for every user until the recovery tick cleared it.
+- The quota reading is now gated on the upstream's own structured error code — `insufficient_quota`, `insufficient_user_quota`, `insufficient_balance`, `billing_hard_limit_reached`, `credit_balance_too_low`, `credit_balance_exhausted` — read from `error.code` then `code`, and any one of the six earns the quota cooldown on its own (`ShouldFallback=true`, `CooldownMs=QuotaExhaustedCooldownMs`) without needing a phrase from the prose table. That matters at a 400, where openai, azure and the new-api family report a spent balance with a terse or localized message (`"リクエストの上限に達しました"`, `"saldo tidak mencukupi"`) the prose table cannot read. Every other status keeps the plain prose match: a 402 is a spent balance by definition and a 429 that says `insufficient balance` is one too. Port of OmniRoute PR #20567, which upstream merged as `385474115`.
+- `providers.ClassifyError` and `ClassifyErrorForProvider` take an optional raw body, and every caller that had it in hand now passes it (chat account fallback, `comboLockRetryable`, and the eight media classifiers). `extractErrorText` also carries a string `error.code` into the classified text, so a caller holding only the extracted text still sees the code; a text that merely contains a code as part of a longer sentence is prose, and prose at a 400 stays request-scoped.
+- Two upstreams that do answer a spent balance with a 400 and no structured code keep the prose reading: `commandcode` (alias `cmc`), `bai` (alias `b-ai`), and any custom provider node id (`openai-compatible-`, `anthropic-compatible-`, `custom-embedding-`), matched by prefix from `providers.CompatibleNodeWires` and never by substring.
+- `internal/errclass` gets the same gate for the same reason: `ClassifyDetail` threads the resolved status into `classifyMessage`, so a 400 whose only credit evidence is prose falls through to `classifyStatus` (`KindBadRequest`, `ScopeRequest`) while `KindQuotaExhausted` still fires when the frame carries a credit code or a non-400 status.
+- Verified: `go test ./internal/errclass/... ./internal/providers/... ./internal/handlers/chat/... ./internal/handlers/media/...` passes. Two table tests pin the six codes end to end: `TestClassifyError_400CreditCodesParkOnAnyMessage` (`internal/providers`) runs each code through `ClassifyErrorForProvider(400, …, "openai", …)` with a localized message and asserts `ShouldFallback` + `QuotaExhaustedCooldownMs`, and `TestCreditsExhaustedForStatus_CreditCodeNeedsNoProse` (`internal/errclass`) asserts the same for `ClassifyDetail` and that prose without a code is still request-scoped. `TestClassifyError_CreditExhaustionParksForAnHour` now sends a structured code (the OmniRoute precedent), because that is what the upstream actually carries. `TestRetryableStatusCodes` is untouched: 400 is still not a retryable status, so the account-fallback loop never reached its lock on a 400 anyway — the path this closes is `comboLockRetryable` and the media locks.
+
+### Changed
+
+- **Tool name aliasing for 64-char limit providers** — For OpenAI-format providers that enforce a 64-character function-name limit (`openai`, `azure`, `azure-openai`, `azure-ai`), a tool name that the upstream would reject is now aliased to `${safePrefix}_${sha256(name)[:12]}` before the request leaves the gateway. Ported from OmniRoute #20258 (`normalizeOpenAIToolNames`).
+  - `safe` is the original name with every character outside `[A-Za-z0-9_-]` replaced by `_`, so a name carrying a dot, a slash or a space is repaired even when it fits the length limit.
+  - `safePrefix` is `safe` truncated to `64 - 12 - 1 = 51` chars; the alias is therefore always at most 64 chars.
+  - `hash12` is the first 12 hex chars of `sha256(original)`, so the alias is deterministic and the original name is recoverable from the alias alone.
+  - An alias that collides with another tool's name falls back to the bare hash, then to a truncated hash with a numeric suffix — every slice is clamped to `len(s)`, so a short fallback alias can never panic the way the previous `alias[:60]` did on a 53-char alias.
+
+### Internal
+
+- `translator`: `UsesToolNameHash` is now the single source of truth for which providers enforce the limit, backed by `toolNameMaxLength` (openai declares 64 in the registry; azure-openai and azure-ai have no registry entry and get the built-in 64, matching upstream's `BUILT_IN_TOOL_NAME_MAX_LENGTH`). The executor's duplicate `toolNameHashProviders` list is gone.
+- `translator`: new `FitToolNamesForProvider(body, provider)` entry point; `collectToolNames` also collects short names whose characters violate the charset for hash providers, so the constraint is enforced on the charset and not only on the length.
+- `handler/chat`: `fallback.go` calls `FitToolNamesForProvider` instead of `FitToolNames` so the alias is applied at the fallback forwarding site.
+- `proxy/executor`: `applyToolNameAlias` guard in `ForwardOpenAI` and `ForwardAzure`; fitted map merged into `req.ToolNameMap` for response restoration (streaming via `toolNameRestoringWriter`, non-streaming via `jsonResponse` + `DecloakClaudeResponseBody`).
+- `translator/tool_fit_uniqueness_test.go`: pass provider arg to `FitToolNamesInMap` for legacy truncation tests (`deepseek`).
+- `translator/tool_fit_test.go`: hash-alias tests pin the `${safePrefix}_${hash12}` wire format (ends in `_<12 hex>`, max 64), cover all four providers including `azure-ai`, invalid-char names, prefix collisions and an alias shadowing a declared short name; `TestFitToolNamesForProvider_NonHashProvider_KeepsTruncation` still pins the legacy `_N` path for `deepseek`.
+
+### Verification
+
+- `go test ./internal/translator/...` — PASS
+- `go test ./internal/proxy/executor/...` — PASS
+- Verified the new tests fail on the previous implementation: the old `alias[:60]` slice panics with `slice bounds out of range [:25] with length 12` on a fallback alias, and the old `tool_<sha256[:50]>` shape fails the new format assertion.
+
+### Security
+
+- **PEM private key detection in guardrails** ([#1282](https://github.com/luqman-v1/9router-go/pull/1282), closes [#1280](https://github.com/luqman-v1/9router-go/issues/1280)). Added a `private_key` detector to `piiDetectors` in `internal/guardrails/detectors.go` that matches PKCS#1, PKCS#8, EC, and encrypted PEM blocks and records a `PRIVATE_KEY` finding at `SeverityHigh`. Any policy enabling the `pii` detector set now blocks or masks PEM private keys; no engine change was required because `Engine.runs("pii")` already gates the set. The body class admits `-` because encrypted PKCS#1 carries `DEK-Info: AES-128-CBC`, and terminates on the `-----END` delimiter, so a match cannot bridge repeated `BEGIN` headers. RE2 scans this in O(N) regardless. Verified by `TestScanDetectsPEMPrivateKey` (RSA/EC/encrypted fixtures, block + mask paths) and `TestScanPEMPatternLinear` (1 MB of repeated `BEGIN` headers with no `END`, scanned in 0.20 s with zero findings; the test bound is 10 s per `engine_test.go:344`).
+
+### agy-acp: warm worker pool cuts per-turn latency
+
+- `agy-acp` previously spawned a fresh `agy acp` subprocess per turn and paid
+  process start + `initialize` + `session/new` before the first prompt byte —
+  measured ~1.0–1.7 s on agy 1.5.14 (Windows, warm FS cache). The new warm
+  pool (`internal/acp/agy/pool.go`) keeps one pre-initialized worker per
+  account config alive between turns and pre-creates the next session in the
+  background after each turn, so a steady-state text turn skips spawn,
+  handshake and `session/new` entirely. Measured `session/new` drops from
+  ~1.3 s cold to ~10–80 ms warm; the refill runs off the request path.
+- Bounds (§4.G): max 4 workers process-wide, 5-minute idle TTL, 30 s bounded
+  handshake; stale workers are killed and their credential files cleared.
+  `AGY_ACP_POOL=0` restores the exact old spawn-per-turn behavior.
+- Credential rotation replaces the worker instead of reusing a cached stale
+  token; tool turns always create a fresh session (the MCP bridge URL is
+  per-turn); agent faults/banners discard the worker so failover still works.
+- Client disconnect now sends `session/cancel` (new `Client.Notification`)
+  and keeps the healthy worker pooled instead of killing it; a cancelled
+  turn never reports success from a racing prompt result.
+- `Client.Close` waits for `cmd.Wait` so discarded workers fully exit before
+  their directory is cleared (Windows holds the exe image until exit).
+- Verified: `go test ./internal/acp/agy/ ./internal/proxy/executor/` (incl.
+  new `pool_test.go`: reuse, rotation, kill-switch, cancellation), `-race`
+  clean, `golangci-lint --new-from-rev=HEAD` 0 issues. Real-CLI probe: warm
+  turn ≈ 380–390 ms vs cold ≈ 370–480 ms on the auth-banner path; the win is
+  the removed ~1.3 s `session/new` on authenticated turns (measured directly
+  against agy 1.5.14: cold session/new 1.3–1.7 s, warm refill 13–80 ms).
+- agy 1.5.x sometimes ends a turn with only a "checking model/config in the
+  background" status line (also seen localized: "Cek model dan konfigurasi
+  sedang berjalan di latar belakang...") and no answer, leaving the client
+  with a silent stream. `streamPrompt` now holds that line, then re-prompts
+  on the same session with an explicit nudge (up to 2 times) to finish the
+  answer in the current turn. If agy keeps deferring, the turn returns
+  `ErrStall` (mapped to 502) instead of an empty 200, so the router can fail
+  over. A gateway preamble in `BuildPrompt` asks agy not to defer in the
+  first place. Regression tests cover both the nudge-then-answer and the
+  repeated-deferral paths, in English and Indonesian.
+
+### shutdown cleanup & context lifetime
+
+- `DefaultPool().Close()` is now wired into the gateway's Fx `OnStop` hook
+  (`internal/app/server.go`), after HTTP requests drain. It kills idle workers
+  and clears their on-disk OAuth token files; previously the OS reaped the
+  child process on exit but the token files were left behind.
+- `Pool.spawn` now honours the caller's context: it aborts before spawning a
+  worker for an already-cancelled turn and bounds `initialize` by the caller's
+  deadline as well as the 30 s handshake TTL. The worker process itself still
+  runs under a background context so it can outlive the turn and be pooled —
+  `exec.CommandContext` would kill it when the request context ended.
+- Regression tests: `TestSpawnRespectsCancelledCallerContext`,
+  `TestPoolCloseClearsCredentialsAndWorker`, and an updated
+  `TestPoolCancelledTurnKeepsWorker` (cancels mid-prompt on an already-pooled
+  worker, which is the scenario the contract actually covers).
+
+### Security
+
+- **Vision bridge image downloads now check the connected socket address (Closes #1279, port of OmniRoute #20475).** `resolveImageInput` (the Cloudflare reference/mask image fetch) used the shared media client, whose socket-level SSRF guard is disabled by the default `ALLOW_PRIVATE_NETWORKING=true`, and whose pre-flight literal-IP check only ran when private networking was off. A hostname that resolved public at check time and private at dial time (DNS rebinding), or a redirect to loopback / RFC1918 / cloud metadata (`169.254.169.254`), could therefore be followed. Remote images are now fetched through a dedicated `visionImageDownloadClient` whose dialer's `ControlContext` refuses any resolved private/loopback/link-local/metadata address unconditionally and re-checks every redirect hop. Verified with unit tests covering private/loopback literals, a reachable loopback server (positive control), a rebinding redirect, and the SSRF error naming.
+- The guarded client keeps the operator's egress proxy: it uses `proxy.NewStrictSafeTransport`, which sets `Proxy: http.ProxyFromEnvironment` and exempts the ambient proxy endpoint from the private-IP guard, so a local CONNECT proxy / sandbox sidecar / `.env` proxy still works while private *targets* stay refused. A bare `http.Transport` with `Proxy` nil would silently dial direct and drop that egress path.
+
+### fix(freebuff): admit on /session/admission, and stop at the third-party refusal
+- A freebuff session used to be admitted implicitly by its first chat call, so a seat whose admission was refused still consumed a turn and answered with a third-party refusal the client could not tell apart from a provider error.
+- The lease now asks `/session/admission` first and reports the refusal as its own upstream status, so the combo falls through to the next seat instead of surfacing a refusal from a provider the request never reached.
+- The switch path stubs the admission and device-key calls in its tests, which is what the closed #1176 was failing on: the tests now assert the admission round trip instead of relying on the real endpoint.
+
 ## [v1.9.17-exp.11] - 2026-11-21
 
 ### fix(kiro): refresh a dead bearer token, and answer a Messages client in Anthropic SSE

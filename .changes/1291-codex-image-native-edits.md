@@ -1,6 +1,0 @@
-### fix(codex-image): send GPT Image edits to the native images/edits endpoint
-
-- Reference-image edit requests for Codex GPT Image models now route to the native Images edits endpoint (`https://chatgpt.com/backend-api/codex/images/edits`, the same one Codex CLI uses) whenever the request stays inside the native output scope (`n=1`, `size` auto or empty, `png`, no compression). The Responses `image_generation` tool path rejected every GPT Image edit with `Complexity 'medium' is not supported for this image model`, locking the model on each account in turn; quality and image_detail changes did not help.
-- The native edit body mirrors Codex CLI's `ImageEditRequest`: `{model, prompt, images: [{image_url}], n: 1, size: "auto", quality: quality || "auto", background: background || "auto"}`. Requests outside the native scope (fixed size, `n > 1`, webp/jpeg, output compression, non-default quality/background) keep the Responses path so their output controls are still honored.
-- Upstream parity: `decolua/9router@85c91c4e4` (Closes #1286).
-- Verified with `go test ./internal/handlers/media/... -v` (native single/multi-image edit routing, out-of-scope fallback, and the `codexUseNativeEdit` / `codexNativeEditBody` / `codexNativeEditJSON` / `codexNativeEditURL` unit tests).

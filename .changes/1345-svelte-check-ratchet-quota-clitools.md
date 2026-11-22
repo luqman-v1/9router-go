@@ -1,3 +1,0 @@
-### chore(web): fix svelte-check type errors in quota, cli-tools, settings, and terminal views
-
-- **Type cleanup & `svelte-check` ratchet (`73 -> 37`)** (`web/src/components/quota/types.ts`, `web/src/api/client.ts`, `QuotaTrackerView.svelte`, `QuotaTable.svelte`, `CliToolsView.svelte`, `SettingsView.svelte`, `TerminalView.svelte`, `web/scripts/svelte-check-baseline.json`): removed the spurious index signature on `ProviderConnectionLike`, added `message?: string` to `ConnectionUsageResponse`, cleaned up unused imports/state/casts and contextual typing for `toolsCatalog`, and tightened `svelte-check-baseline.json` from `73` to `37` errors with zero runtime UI changes.

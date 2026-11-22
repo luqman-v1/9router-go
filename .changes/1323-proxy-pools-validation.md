@@ -1,5 +1,0 @@
-### fix(proxy-pools): return field-level validation errors on POST/PUT /api/proxy-pools
-
-- Net-new local schema validation (Refs #1024; resolves the `POST /api/proxy-pools` `invalid JSON` defect without claiming upstream `decolua/9router` URL-validation parity).
-- **Field-level JSON decode & schema errors** (`internal/handlers/dashboard/proxypools_validate.go`, `proxypools.go`): validates empty/non-object bodies, `encoding/json/v2` `SemanticError` and `jsontext.SyntacticError` (including duplicate keys and type mismatches such as numeric `isActive`), single-URL consistency, `proxyPoolType` (`http`, `socks5`, `vercel`, `cloudflare`, `deno`, `netlify`), URL scheme dialability, and type-vs-scheme compatibility, returning `400` responses with `error.field`, `error.reason`, and `error.message` (and `404` on missing `PUT /api/proxy-pools/{id}` targets).
-- **Explicit `isActive` on create** (`internal/db/proxyPools.go`): added `ProxyPoolData.IsActive *bool` (`json:"-"`) so `InsertProxyPool` honors `isActive: false` without altering the 7-key `data` JSON schema.
