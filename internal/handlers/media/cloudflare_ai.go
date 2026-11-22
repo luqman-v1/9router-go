@@ -48,6 +48,23 @@ var cloudflareOptionalFields = []string{
 	"strength",
 }
 
+const (
+	cloudflareMaxRetries    = 6
+	cloudflareRetryCooldown = 5 * time.Minute
+)
+
+type cloudflareFailure struct {
+	retryable bool
+	quota     bool
+	message   string
+}
+
+type cloudflareUpstreamResp struct {
+	status      int
+	contentType string
+	body        []byte
+}
+
 // isCloudflareImageModel reports whether info resolves to the cloudflare-ai
 // provider on an image endpoint.
 func isCloudflareImageModel(info *chat.ModelInfo) bool {
@@ -58,9 +75,83 @@ func isCloudflareImageModel(info *chat.ModelInfo) bool {
 		providers.ResolveAlias(info.Provider) == "cf"
 }
 
+// classifyCloudflareFailure inspects an upstream Cloudflare error response in a
+// single JSON pass, tagging daily-neuron quota exhaustion (code 4006) alongside
+// rate-limit, auth, and routing failures (429/401/403, or 400 with code 7003).
+func classifyCloudflareFailure(status int, raw []byte) cloudflareFailure {
+	var env struct {
+		Errors []struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	var hasQuota, hasRoute bool
+	var msg string
+	if json.Unmarshal(raw, &env) == nil {
+		for _, e := range env.Errors {
+			switch e.Code {
+			case 4006:
+				hasQuota = true
+			case 7003:
+				hasRoute = true
+			}
+			if msg == "" {
+				msg = strings.TrimSpace(e.Message)
+			}
+		}
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(string(raw))
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+	}
+	return cloudflareFailure{
+		retryable: hasQuota ||
+			status == http.StatusTooManyRequests ||
+			status == http.StatusUnauthorized ||
+			status == http.StatusForbidden ||
+			(status == http.StatusBadRequest && hasRoute),
+		quota:   hasQuota,
+		message: msg,
+	}
+}
+
+func cloudflareCooldownUntil(now time.Time, quota bool) time.Time {
+	u := now.UTC()
+	if quota {
+		return time.Date(u.Year(), u.Month(), u.Day()+1, 0, 0, 0, 0, time.UTC)
+	}
+	return u.Add(cloudflareRetryCooldown)
+}
+
+func buildCloudflareTargetURL(providerBaseURL, connBaseURL, model string) string {
+	// The run endpoint lives at <account root>/ai/run/<model>. The registry
+	// BaseURL (accountId already resolved by getProviderConfig) is the chat
+	// completions URL, so strip back to the account root; a custom connection
+	// baseUrl (proxy prefix / test mock) is used verbatim.
+	base := strings.TrimRight(providerBaseURL, "/")
+	if connBaseURL != "" {
+		base = strings.TrimRight(connBaseURL, "/")
+	}
+	base = strings.TrimSuffix(base, "/chat/completions")
+	base = strings.TrimSuffix(base, "/v1")
+	base = strings.TrimSuffix(base, "/ai")
+	return base + "/ai/run/" + model
+}
+
+func writeCloudflareRawResponse(w http.ResponseWriter, resp *cloudflareUpstreamResp) {
+	if resp.contentType != "" {
+		w.Header().Set(constants.HeaderContentType, resp.contentType)
+	}
+	w.WriteHeader(resp.status)
+	_, _ = w.Write(resp.body)
+}
+
 // handleCloudflareImage serves /v1/images/generations (and /images/edits) for
 // cloudflare-ai/cf, posting to /ai/run/<model> with the model-appropriate body
-// shape and returning a normalized OpenAI images response.
+// shape, rotating across active connections on quota/retryable refusals, and
+// returning a normalized OpenAI images response.
 func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Request, body []byte, modelInfo *chat.ModelInfo) error {
 	var req struct {
 		Prompt    string   `json:"prompt"`
@@ -76,37 +167,7 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 		return fmt.Errorf("parse cloudflare image body: %w", err)
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil || connData == nil {
-		return fmt.Errorf("%s", mediaConnectionError(err, modelInfo.Provider))
-	}
-
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		return err
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" && providerCfg != nil && providerCfg.DefaultAPIKey != "" {
-		apiKey = providerCfg.DefaultAPIKey
-	}
-	if apiKey == "" {
-		return errors.New("no API key found")
-	}
-
-	// The run endpoint lives at <account root>/ai/run/<model>. The registry
-	// BaseURL (accountId already resolved by getProviderConfig) is the chat
-	// completions URL, so strip back to the account root; a custom connection
-	// baseUrl (proxy prefix / test mock) is used verbatim.
-	base := strings.TrimRight(providerCfg.BaseURL, "/")
-	if connData != nil && connData.BaseURL != "" {
-		base = strings.TrimRight(connData.BaseURL, "/")
-	}
-	base = strings.TrimSuffix(base, "/chat/completions")
-	base = strings.TrimSuffix(base, "/v1")
-	base = strings.TrimSuffix(base, "/ai")
-	targetURL := base + "/ai/run/" + modelInfo.Model
-
-	// Resolve reference image (URL → base64).
+	// Resolve reference and mask images once before rotating across accounts.
 	reference := pickImage(req.Image, req.Images)
 	if reference != "" && (strings.HasPrefix(reference, "http://") || strings.HasPrefix(reference, "https://")) {
 		resolved, err := h.resolveImageInput(r.Context(), reference)
@@ -116,7 +177,6 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 		reference = resolved
 	}
 
-	// Resolve mask image.
 	maskStr := pickImage(req.MaskImage, nil)
 	if req.Mask != "" {
 		maskStr = req.Mask
@@ -138,6 +198,7 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 	}
 
 	var payload []byte
+	var err error
 	contentType := constants.ContentTypeJSON
 	if cloudflareMultipartModels[modelInfo.Model] {
 		payload, contentType, err = buildCloudflareMultipart(req.Prompt, width, height, reference, maskStr, body)
@@ -151,9 +212,119 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
+	pinned := modelInfo.ConnectionID
+	if pinned == "" {
+		pinned = imagePinnedConnectionID(r)
+	}
+	usePinned := pinned != ""
+
+	excludeIDs := make([]string, 0, cloudflareMaxRetries)
+	tried := make(map[string]bool, cloudflareMaxRetries)
+	var lastResp *cloudflareUpstreamResp
+	var lastErr error
+
+	for attempt := 0; attempt < cloudflareMaxRetries; attempt++ {
+		if ctxErr := r.Context().Err(); ctxErr != nil {
+			return ctxErr
+		}
+
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, pinned, excludeIDs, modelInfo.Model)
+		if err != nil || connData == nil {
+			if lastResp != nil {
+				writeCloudflareRawResponse(w, lastResp)
+				return nil
+			}
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("%s", mediaConnectionError(err, modelInfo.Provider))
+		}
+		if conn != nil {
+			if tried[conn.ID] {
+				break
+			}
+			tried[conn.ID] = true
+			excludeIDs = append(excludeIDs, conn.ID)
+		}
+
+		upstream, err := h.sendCloudflareImageAttempt(r.Context(), modelInfo, connData, payload, contentType)
+		if err != nil {
+			lastErr = err
+			if usePinned || conn == nil || r.Context().Err() != nil {
+				return lastErr
+			}
+			continue
+		}
+
+		if upstream.status != http.StatusOK {
+			failure := classifyCloudflareFailure(upstream.status, upstream.body)
+			if !failure.retryable {
+				writeCloudflareRawResponse(w, upstream)
+				return nil
+			}
+			if h.Repo != nil && conn != nil && !handlerutil.IsProbeContext(r.Context()) {
+				_ = h.Repo.LockConnectionRateLimit(
+					conn.ID,
+					cloudflareCooldownUntil(time.Now().UTC(), failure.quota),
+					1,
+					upstream.status,
+					failure.message,
+				)
+			}
+			if usePinned || conn == nil {
+				writeCloudflareRawResponse(w, upstream)
+				return nil
+			}
+			lastResp = upstream
+			lastErr = fmt.Errorf("cloudflare-ai upstream returned %d: %s", upstream.status, failure.message)
+			continue
+		}
+
+		normalized, err := normalizeCloudflareImageResponse(upstream.body)
+		if err != nil {
+			return err
+		}
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(normalized)
+		if h.Repo != nil && conn != nil {
+			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		}
+		return nil
+	}
+
+	if lastResp != nil {
+		writeCloudflareRawResponse(w, lastResp)
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no active connections for provider: %s", modelInfo.Provider)
+}
+
+func (h *MediaHandler) sendCloudflareImageAttempt(ctx context.Context, modelInfo *chat.ModelInfo, connData *chat.ConnectionData, payload []byte, contentType string) (*cloudflareUpstreamResp, error) {
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
 	if err != nil {
-		return fmt.Errorf("create cloudflare image request: %w", err)
+		return nil, err
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" && providerCfg != nil && providerCfg.DefaultAPIKey != "" {
+		apiKey = providerCfg.DefaultAPIKey
+	}
+	if apiKey == "" {
+		return nil, errors.New("no API key found")
+	}
+
+	connBaseURL := ""
+	if connData != nil {
+		connBaseURL = connData.BaseURL
+	}
+	targetURL := buildCloudflareTargetURL(providerCfg.BaseURL, connBaseURL, modelInfo.Model)
+
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create cloudflare image request: %w", err)
 	}
 	upstreamReq.Header.Set(constants.HeaderContentType, contentType)
 	handlerutil.SetAuthHeader(upstreamReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
@@ -165,37 +336,24 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
-		return clientErr
+		return nil, clientErr
 	}
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
-		return fmt.Errorf("upstream cloudflare image: %w", err)
+		return nil, fmt.Errorf("upstream cloudflare image: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return fmt.Errorf("read cloudflare image response: %w", err)
+		return nil, fmt.Errorf("read cloudflare image response: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		w.Header().Set(constants.HeaderContentType, resp.Header.Get(constants.HeaderContentType))
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(raw)
-		return nil
-	}
-
-	normalized, err := normalizeCloudflareImageResponse(raw)
-	if err != nil {
-		return err
-	}
-	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(normalized)
-	if conn != nil {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
-	}
-	return nil
+	return &cloudflareUpstreamResp{
+		status:      resp.StatusCode,
+		contentType: resp.Header.Get(constants.HeaderContentType),
+		body:        raw,
+	}, nil
 }
 
 // pickImage returns the first non-empty image string from the options.
