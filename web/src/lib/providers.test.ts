@@ -1,7 +1,7 @@
 import assert from 'node:assert'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 import {
   getProvidersByKind,
   getReservedPrefixes,
@@ -19,9 +19,14 @@ import { pathToTab, TAB_ROUTES } from './router'
 // reads it from that file rather than a TypeScript literal. Parsing the Go map
 // keeps this honest about what the server actually sends.
 const goRegistry = resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go')
-__setProviderCatalogForTest(parseProviderRegistry(readFileSync(goRegistry, 'utf8')))
+const registryItems = parseProviderRegistry(readFileSync(goRegistry, 'utf8'))
+__setProviderCatalogForTest(registryItems)
 
 describe('providers & media separation', () => {
+  beforeEach(() => {
+    __setProviderCatalogForTest(registryItems)
+  })
+
   it('correctly classifies chat vs pure media providers', () => {
     const openai = PROVIDER_CATALOG.find((p) => p.id === 'openai')
     const anthropic = PROVIDER_CATALOG.find((p) => p.id === 'anthropic')
@@ -214,6 +219,10 @@ describe('providers & media separation', () => {
 })
 
 describe('reserved prefixes served with the catalog', () => {
+  afterEach(() => {
+    __setProviderCatalogForTest(registryItems)
+  })
+
   it('exposes the guard set as a lookup the dialog can consult', () => {
     __setProviderCatalogForTest([], [], ['anthropic', 'gh', 'openai-compatible'])
     const reserved = getReservedPrefixes()
