@@ -1,0 +1,4 @@
+### fix(media): rotate embeddings and rerank requests across connections on retryable errors
+
+- **Shared JSON media failover** (`internal/handlers/media/media.go`): extracted `forwardJSONMediaLane` and `tryJSONMediaLaneConn` for `HandleEmbeddings` and `HandleRerank`, rotating across active connections via `excludeIDs` on retryable errors classified by `providers.ClassifyErrorForProvider`, locking/unlocking failing `(conn, model)` entries while keeping probe contexts read-only (`!handlerutil.IsProbeContext`), honoring pinned connection headers, and preserving provider-scoped `copilotToken` override and raw error passthrough.
+- **Regression tests** (`internal/handlers/media/embeddings_test.go`, `rerank_test.go`): added `TestHandleEmbeddings_ConnectionRotation` and `TestHandleRerank_ConnectionRotation` covering `429` lock+skip, `401` rotation, non-retryable `400` passthrough, pinned header, exhausted pool, and probe lock isolation.
