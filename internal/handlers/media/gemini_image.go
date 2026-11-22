@@ -14,6 +14,8 @@ import (
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 )
 
 // Gemini's native generateContent image lane — port of upstream
@@ -60,29 +62,6 @@ func (h *MediaHandler) handleGeminiImage(w http.ResponseWriter, r *http.Request,
 		model = "gemini-3.1-flash-image"
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "gemini", modelInfo.ConnectionID, nil, model)
-	if err != nil || connData == nil {
-		return fmt.Errorf("no active connection for gemini: %w", err)
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	providerCfg, err := h.ChatH.GetProviderConfig("gemini", connData)
-	if err != nil {
-		return fmt.Errorf("get gemini config: %w", err)
-	}
-
-	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
-	if connData != nil && strings.TrimSpace(connData.BaseURL) != "" {
-		baseURL = strings.TrimRight(strings.TrimSpace(connData.BaseURL), "/")
-	}
-	if baseURL == "" {
-		baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-	}
-	// The chat base is the OpenAI-compat surface; the image lane is the
-	// native one two segments up.
-	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
-	baseURL = strings.TrimSuffix(baseURL, "/openai")
-	targetURL := fmt.Sprintf("%s/models/%s:generateContent", baseURL, url.PathEscape(model))
-
 	parts := []any{}
 	for _, ref := range append(append([]string{}, reqBody.Images...), reqBody.Image) {
 		if inline := resolveGeminiImageInput(ref); inline != nil {
@@ -98,42 +77,120 @@ func (h *MediaHandler) handleGeminiImage(w http.ResponseWriter, r *http.Request,
 		return fmt.Errorf("build gemini image request: %w", err)
 	}
 
+	pinned := modelInfo.ConnectionID
+	if pinned == "" {
+		pinned = imagePinnedConnectionID(r)
+	}
+	usePinned := pinned != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr error
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return r.Context().Err()
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "gemini", pinned, excludeIDs, model)
+		if err != nil || conn == nil || connData == nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("no active connection for gemini: %w", err)
+		}
+		if _, seen := tried[conn.ID]; seen {
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("no active connection for gemini: all connections already tried")
+		}
+		tried[conn.ID] = struct{}{}
+
+		retryable, attemptErr := h.tryGeminiImageConn(w, r, model, prompt, payload, conn, connData)
+		if attemptErr == nil {
+			return nil
+		}
+		lastErr = attemptErr
+		if usePinned || !retryable || r.Context().Err() != nil {
+			return lastErr
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func (h *MediaHandler) tryGeminiImageConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	model string,
+	prompt string,
+	payload []byte,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) (bool, error) {
+	apiKey := chat.ExtractAPIKey(connData)
+	providerCfg, err := h.ChatH.GetProviderConfig("gemini", connData)
+	if err != nil {
+		return false, fmt.Errorf("get gemini config: %w", err)
+	}
+
+	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
+	if strings.TrimSpace(connData.BaseURL) != "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(connData.BaseURL), "/")
+	}
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+	}
+	// The chat base is the OpenAI-compat surface; the image lane is the
+	// native one two segments up.
+	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+	baseURL = strings.TrimSuffix(baseURL, "/openai")
+	targetURL := fmt.Sprintf("%s/models/%s:generateContent", baseURL, url.PathEscape(model))
+
 	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return false, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	handlerutil.SetAuthHeader(httpReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
-		return clientErr
+		return true, clientErr
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("gemini image request failed: %w", err)
+		return r.Context().Err() == nil, fmt.Errorf("gemini image request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return fmt.Errorf("read gemini image response: %w", err)
+		return r.Context().Err() == nil, fmt.Errorf("read gemini image response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Warn("media", "gemini image error", "status", resp.StatusCode, "body", string(respBody[:min(500, len(respBody))]))
-		if !handlerutil.IsProbeContext(r.Context()) {
-			cooldownSec, ok := geminiQuotaResetSeconds(respBody)
-			// (int seconds; LockConnectionModel takes an int)
-			if ok {
-				_ = h.Repo.LockConnectionModel(conn.ID, model, int(cooldownSec), 0)
-			}
+		errText := string(respBody[:min(500, len(respBody))])
+		log.Warn("media", "gemini image error", "status", resp.StatusCode, "body", errText)
+		backoff := 0
+		if h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
 		}
-		return fmt.Errorf("gemini image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
+		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
+		resetSec, hasReset := geminiQuotaResetSeconds(respBody)
+		shouldRotate := classification.ShouldFallback || hasReset
+		if shouldRotate && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			if hasReset {
+				cooldownSec = int(resetSec)
+			}
+			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return shouldRotate, fmt.Errorf("gemini image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
 	}
 
 	formatted, err := geminiImageResponseBody(respBody, prompt)
 	if err != nil {
-		return fmt.Errorf("format gemini image response: %w", err)
+		return false, fmt.Errorf("format gemini image response: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -142,8 +199,11 @@ func (h *MediaHandler) handleGeminiImage(w http.ResponseWriter, r *http.Request,
 
 	if h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		}
 	}
-	return nil
+	return false, nil
 }
 
 // geminiQuotaResetSeconds extracts a cooldown from Google's
