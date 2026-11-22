@@ -229,7 +229,7 @@ bench-go:
 # Instead the per-target OS/ARCH go through `export`, which is a Make directive
 # and therefore identical under sh and cmd. The export is scoped to cross-one
 # so an empty GOARCH can never leak into the normal build target.
-CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
+CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 android-arm64
 
 ifneq ($(filter cross-one cross-tray-one,$(MAKECMDGOALS)),)
 export GOOS := $(CROSS_OS)
@@ -264,7 +264,26 @@ cross-windows-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-windows-amd64.exe
 	@$(MAKE) --no-print-directory cross-tray-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-tray-windows-amd64.exe
 
-CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-amd64-noavx cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
+# The Android build of the same binary, which the APK bundles as lib9router.so
+# and — this is why it is a release asset — what the app's in-place gateway
+# updater downloads when a new gateway must ship without a new APK.
+#
+# It is not a platform Go treats like the others: no os/user, no /etc lookups,
+# and no NDK here because the only ABI published is arm64, which needs no
+# external linker. The name has to stay `9router-go-android-arm64`; the app
+# matches the release asset by that exact string.
+#
+# WHAT AN ANDROID GATEWAY CANNOT DO ON ITS OWN: it cannot reach the network
+# without DNS. There is no /etc/resolv.conf on Android, so the pure Go resolver
+# falls back to [::1]:53 and every outbound call fails with "connection
+# refused" — which reads as a provider outage. The app therefore sets
+# DNS_SERVERS (from the active network's link properties) when it spawns this
+# binary. A gateway started any other way on Android will serve locally and
+# fail every upstream request.
+cross-android-arm64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=android CROSS_ARCH=arm64 OUT=$(CROSS_BIN)-android-arm64
+
+CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-amd64-noavx cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64 cross-android-arm64
 
 cross: web-build
 	@$(MAKE) -j $(CROSS_BUILD_TARGETS)
