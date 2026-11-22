@@ -958,49 +958,54 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 
 	var settings, _ = h.Repo.GetSettings()
 
-	// 1. Apply combo rotation strategy first. The smart strategy orders the
-	// models itself (System One evaluation + session stickiness) and carries
-	// its routing state on the context for the failure loop below.
-	//
-	// RespectStoredOrder skips the rotation and walks the stored list as-is,
-	// so the order the operator arranged in the editor is the fallback chain.
-	// The smart, tokenmaxxing, and cascade strategies are exempt: they compute
-	// dynamic ranking (by task suitability, quota allowance, and unit price
-	// respectively), so honoring stored order would defeat the evaluation they
-	// exist to perform.
 	var models []string
-	if strategy == "smart" {
-		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
-	} else if strategy == "tokenmaxxing" {
-		models = h.applyTokenmaxxingRouting(ctx, comboModels)
-	} else if strategy == "cascade" {
-		models = OrderModelsByCascade(comboModels)
-	} else if h.comboRespectsStoredOrder(comboName) {
-		models = slices.Clone(comboModels)
+	comboModels, adapterModels = h.filterAvailableComboModels(ctx, comboModels, adapterModels)
+	if len(comboModels) == 0 {
+		lastErr = allComboModelsUnavailableError()
 	} else {
-		var comboOwn []string
-		if len(adapterModels) > 0 && len(comboModels) >= len(adapterModels) {
-			comboOwn = comboModels[len(adapterModels):]
+		// 1. Apply combo rotation strategy first. The smart strategy orders the
+		// models itself (System One evaluation + session stickiness) and carries
+		// its routing state on the context for the failure loop below.
+		//
+		// RespectStoredOrder skips the rotation and walks the stored list as-is,
+		// so the order the operator arranged in the editor is the fallback chain.
+		// The smart, tokenmaxxing, and cascade strategies are exempt: they compute
+		// dynamic ranking (by task suitability, quota allowance, and unit price
+		// respectively), so honoring stored order would defeat the evaluation they
+		// exist to perform.
+		if strategy == "smart" {
+			ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
+		} else if strategy == "tokenmaxxing" {
+			models = h.applyTokenmaxxingRouting(ctx, comboModels)
+		} else if strategy == "cascade" {
+			models = OrderModelsByCascade(comboModels)
+		} else if h.comboRespectsStoredOrder(comboName) {
+			models = slices.Clone(comboModels)
+		} else {
+			var comboOwn []string
+			if len(adapterModels) > 0 && len(comboModels) >= len(adapterModels) {
+				comboOwn = comboModels[len(adapterModels):]
+			}
+			models = h.applyComboStrategyWithSeats(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body), comboOwn)
 		}
-		models = h.applyComboStrategyWithSeats(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body), comboOwn)
-	}
 
-	// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
-	// This ensures that if the rotated model lacks required capabilities (e.g., vision), a capable model overrides it.
-	if required := DetectRequiredCapabilities(body); len(required) > 0 {
-		reordered := ReorderByCapabilities(models, required)
-		if reordered[0] != models[0] {
-			log.Info("combo", "auto-switch", "caps", keysString(required), "model", reordered[0])
+		// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
+		// This ensures that if the rotated model lacks required capabilities (e.g., vision), a capable model overrides it.
+		if required := DetectRequiredCapabilities(body); len(required) > 0 && len(models) > 0 {
+			reordered := ReorderByCapabilities(models, required)
+			if len(reordered) > 0 && reordered[0] != models[0] {
+				log.Info("combo", "auto-switch", "caps", keysString(required), "model", reordered[0])
+			}
+			models = reordered
 		}
-		models = reordered
+		// A model that recently timed out sits out its grace period.
+		models = h.withoutBenchedModels(comboName, models, timeoutGrace)
 	}
-	// A model that recently timed out sits out its grace period.
-	models = h.withoutBenchedModels(comboName, models, timeoutGrace)
 
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
 	// 429 to the client.
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 2 && len(models) > 0; attempt++ {
 		if attempt > 0 {
 			wait := retry.wait()
 			if wait == 0 {
@@ -1501,33 +1506,38 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 	var models []string
-	// smart, tokenmaxxing, and cascade compute dynamic rankings and override stored order.
-	if strategy == "smart" {
-		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
-	} else if strategy == "tokenmaxxing" {
-		models = h.applyTokenmaxxingRouting(ctx, comboModels)
-	} else if strategy == "cascade" {
-		models = OrderModelsByCascade(comboModels)
-	} else if h.comboRespectsStoredOrder(comboName) {
-		models = slices.Clone(comboModels)
+	comboModels, adapterModels = h.filterAvailableComboModels(ctx, comboModels, adapterModels)
+	if len(comboModels) == 0 {
+		lastErr = allComboModelsUnavailableError()
 	} else {
-		var comboOwn []string
-		if len(adapterModels) > 0 && len(comboModels) >= len(adapterModels) {
-			comboOwn = comboModels[len(adapterModels):]
+		// smart, tokenmaxxing, and cascade compute dynamic rankings and override stored order.
+		if strategy == "smart" {
+			ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
+		} else if strategy == "tokenmaxxing" {
+			models = h.applyTokenmaxxingRouting(ctx, comboModels)
+		} else if strategy == "cascade" {
+			models = OrderModelsByCascade(comboModels)
+		} else if h.comboRespectsStoredOrder(comboName) {
+			models = slices.Clone(comboModels)
+		} else {
+			var comboOwn []string
+			if len(adapterModels) > 0 && len(comboModels) >= len(adapterModels) {
+				comboOwn = comboModels[len(adapterModels):]
+			}
+			models = h.applyComboStrategyWithSeats(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON), comboOwn)
 		}
-		models = h.applyComboStrategyWithSeats(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON), comboOwn)
+		if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 && len(models) > 0 {
+			reordered := ReorderByCapabilities(models, required)
+			models = reordered
+		}
+		// A model that recently timed out sits out its grace period.
+		models = h.withoutBenchedModels(comboName, models, timeoutGrace)
 	}
-	if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 {
-		reordered := ReorderByCapabilities(models, required)
-		models = reordered
-	}
-	// A model that recently timed out sits out its grace period.
-	models = h.withoutBenchedModels(comboName, models, timeoutGrace)
 
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
 	// 429 to the client.
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 2 && len(models) > 0; attempt++ {
 		if attempt > 0 {
 			wait := retry.wait()
 			if wait == 0 {
@@ -2060,6 +2070,17 @@ var fusionDefaults = FusionTuning{
 // Matches JS handleFusionChat in combo.js.
 func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, customJudgeModel string) {
 	cw := newCommittedResponseWriter(w)
+	if h.Repo != nil {
+		avail := h.loadComboAvailability(ctx)
+		comboModels, _ = avail.filterModels(comboModels)
+		if len(comboModels) == 0 {
+			handlerutil.WriteJSONError(cw, http.StatusServiceUnavailable, "all fusion combo models are currently disabled or unavailable")
+			return
+		}
+		if customJudgeModel != "" && !avail.isEntryAvailable(customJudgeModel) {
+			customJudgeModel = ""
+		}
+	}
 	panel := h.ApplyComboStrategy(strategy, comboModels, comboName, stickyLimit)
 	if len(panel) == 0 {
 		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "fusion combo has no models")

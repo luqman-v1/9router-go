@@ -177,6 +177,7 @@ func (h *DashboardHandler) HandleDeleteCustomModel(w http.ResponseWriter, r *htt
 	if removedModelID != "" && removedProv != "" {
 		h.appendDisabledModels(removedProv, []string{removedModelID})
 		chat.InvalidateLiveCatalog(removedProv)
+		h.pruneDeletedModelsFromCombosBestEffort(r.Context(), removedProv, []string{removedModelID})
 	}
 
 	// The model is gone, so every combo a rule put it into must drop it. This
@@ -257,6 +258,7 @@ func (h *DashboardHandler) HandleDeleteProviderModels(w http.ResponseWriter, r *
 
 	sort.Strings(removedModels)
 	sort.Strings(removedAliases)
+	h.pruneDeletedModelsFromCombosBestEffort(r.Context(), provider, disabledIDs)
 	// A whole node's models just stopped existing, so every combo a rule put
 	// them into must drop them. Same best-effort rule as the single delete: the
 	// operator's write is already answered.

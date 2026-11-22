@@ -1100,7 +1100,8 @@ func (h *DashboardHandler) HandleExportProviderKeys(w http.ResponseWriter, r *ht
 }
 
 // HandleDeleteConnection handles DELETE /api/connections/{id}.
-// Calls DeleteProviderConnection.
+// Calls DeleteProviderConnectionWithCount and prunes combos when the last
+// connection for a non-keyless provider is removed.
 func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http.Request) {
 	id := getURLParam(r, "id")
 	if id == "" {
@@ -1108,11 +1109,15 @@ func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http
 		return
 	}
 
-	if err := h.Repo.DeleteProviderConnection(id); err != nil {
+	provider, remaining, err := h.Repo.DeleteProviderConnectionWithCount(r.Context(), id)
+	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	connlimit.Close(id) // release breaker/backoff state so nothing leaks
+	if provider != "" && remaining == 0 {
+		h.pruneDeletedProviderFromCombosBestEffort(r.Context(), provider)
+	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
 }
