@@ -1,8 +1,12 @@
 package agy
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,4 +166,141 @@ func TestIsAgentDiagnostic(t *testing.T) {
 			t.Errorf("isAgentDiagnostic(%q) = %v, want %v", tt.text, got, tt.want)
 		}
 	}
+}
+
+func newPipeClient(t *testing.T, reply func(id json.RawMessage, prompt string) string) *Client {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &Client{
+		cmd:      &exec.Cmd{},
+		stdin:    inW,
+		stdout:   outR,
+		stderr:   io.NopCloser(strings.NewReader("")),
+		pending:  make(map[string]*rpcRequest),
+		notifyCh: make(chan notification, 256),
+		done:     make(chan struct{}),
+		waitDone: make(chan struct{}),
+	}
+	close(c.waitDone)
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		defer func() { _ = inR.Close() }()
+		defer func() { _ = outW.Close() }()
+		scanner := bufio.NewScanner(inR)
+		for scanner.Scan() {
+			var req struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+				Params struct {
+					Prompt []struct {
+						Text string `json:"text"`
+					} `json:"prompt"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &req) != nil || req.Method != "session/prompt" {
+				continue
+			}
+			promptText := ""
+			if len(req.Params.Prompt) > 0 {
+				promptText = req.Params.Prompt[0].Text
+			}
+			payload := reply(req.ID, promptText)
+			if payload != "" {
+				if _, err := outW.Write([]byte(payload)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		c.readLoop()
+	}()
+
+	t.Cleanup(func() {
+		c.Close()
+		_ = inR.Close()
+		<-serverDone
+		<-readDone
+		<-c.done
+	})
+	return c
+}
+
+func singleChunkAndEndTurn(id json.RawMessage, chunk string) string {
+	b, _ := json.Marshal(chunk)
+	// Emit several updates before the real chunk and final result in one write so
+	// both Notifications() and promptResultCh become ready together in select.
+	var sb strings.Builder
+	for range 16 {
+		sb.WriteString("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"tool_call_update\"}}}\n")
+	}
+	fmt.Fprintf(&sb,
+		"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":%s}}}}\n{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"stopReason\":\"end_turn\"}}\n",
+		b, id,
+	)
+	return sb.String()
+}
+
+func TestStreamPromptDrainsQueuedNotifications(t *testing.T) {
+	t.Run("banner_error_never_returns_nil", func(t *testing.T) {
+		c := newPipeClient(t, func(id json.RawMessage, _ string) string {
+			return singleChunkAndEndTurn(id, "⚠ needs sign-in: run agy to log in")
+		})
+		for i := range 30 {
+			var texts []string
+			err := streamPromptOnce(context.Background(), c, "s-1", []PromptBlock{{Type: "text", Text: "hi"}}, nil, func(ev TurnEvent) {
+				if ev.Kind == UpdateText {
+					texts = append(texts, ev.Text)
+				}
+			})
+			if !errors.Is(err, ErrAuth) {
+				t.Fatalf("iter %d: error = %v, want ErrAuth", i, err)
+			}
+			if len(texts) != 0 {
+				t.Fatalf("iter %d: leaked banner text %q", i, texts)
+			}
+		}
+	})
+
+	t.Run("deferred_status_always_triggers_stall", func(t *testing.T) {
+		c := newPipeClient(t, func(id json.RawMessage, _ string) string {
+			return singleChunkAndEndTurn(id, "Checking model and configuration in the background...")
+		})
+		for i := range 30 {
+			err := streamPrompt(context.Background(), c, "s-1", []PromptBlock{{Type: "text", Text: "hi"}}, nil, func(TurnEvent) {})
+			if !errors.Is(err, ErrStall) {
+				t.Fatalf("iter %d: error = %v, want ErrStall", i, err)
+			}
+		}
+	})
+
+	t.Run("streamed_text_is_not_dropped_or_leaked_across_pooled_turns", func(t *testing.T) {
+		c := newPipeClient(t, func(id json.RawMessage, prompt string) string {
+			return singleChunkAndEndTurn(id, prompt)
+		})
+		for i := range 30 {
+			want := fmt.Sprintf("turn-%d", i)
+			var got strings.Builder
+			err := streamPromptOnce(context.Background(), c, "s-1", []PromptBlock{{Type: "text", Text: want}}, nil, func(ev TurnEvent) {
+				if ev.Kind == UpdateText {
+					got.WriteString(ev.Text)
+				}
+			})
+			if err != nil {
+				t.Fatalf("iter %d: unexpected error: %v", i, err)
+			}
+			if got.String() != want {
+				t.Fatalf("iter %d: got text %q, want %q", i, got.String(), want)
+			}
+			if leftover := len(c.Notifications()); leftover != 0 {
+				t.Fatalf("iter %d: %d unread notifications left in queue", i, leftover)
+			}
+		}
+	})
 }

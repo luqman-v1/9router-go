@@ -252,6 +252,58 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 			lead.Reset()
 		}
 	}
+	handleNote := func(note notification) (bool, error) {
+		if note.Method != "session/update" && note.Method != "$/update" {
+			return false, nil
+		}
+		kind, text, update, err := ParseUpdate(note.Params)
+		if err != nil {
+			return false, nil
+		}
+		switch kind {
+		case UpdateText:
+			if text == "" {
+				return false, nil
+			}
+			if leadAlive {
+				onEvent(TurnEvent{Kind: UpdateText, Text: text})
+				return false, nil
+			}
+			lead.WriteString(text)
+			// Hold a possible status line: "checking model/config in
+			// background" must not be flushed as a fake answer.
+			if !isAgentDiagnosticPrefix(lead.String()) && !isDeferredStatus(lead.String()) {
+				leadAlive = true
+				flushLead()
+			}
+		case UpdateThinking:
+			leadAlive = true
+			flushLead()
+			onEvent(TurnEvent{Kind: UpdateThinking, Text: text})
+		case UpdateToolCall:
+			// agy calls client tools through loopback MCP, not through
+			// session/update. A tool_call notification here is advisory;
+			// the bridge emits the actual OpenAI tool_call.
+			return false, nil
+		case UpdateError:
+			return true, classifyError(fmt.Errorf("agy-acp: %s", text))
+		case UpdateDone:
+			d := strings.TrimSpace(lead.String())
+			if !leadAlive {
+				if isAgentDiagnostic(d) {
+					return true, classifyError(fmt.Errorf("agy-acp: %s", d))
+				}
+				if isDeferredStatus(d) {
+					return true, errStatusOnly
+				}
+				flushLead()
+			}
+			onEvent(TurnEvent{Kind: UpdateDone, Done: true})
+			return true, nil
+		}
+		_ = update
+		return false, nil
+	}
 	for {
 		// select picks a ready channel at random; check cancellation first so
 		// a cancelled turn never reports success from a racing prompt result.
@@ -269,10 +321,32 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 			case <-client.done:
 			case <-time.After(2 * time.Second):
 			}
+		drainCancelNotes:
+			for {
+				select {
+				case <-client.Notifications():
+				default:
+					break drainCancelNotes
+				}
+			}
 			return ctx.Err()
 		case err := <-promptErrCh:
 			return classifyError(err)
 		case res := <-promptResultCh:
+			// client.dispatch() enqueues every preceding session/update into
+			// Notifications() before delivering the session/prompt response, so drain
+			// all already-queued notifications before finalizing the turn.
+		drainNotes:
+			for {
+				select {
+				case note := <-client.Notifications():
+					if done, err := handleNote(note); done {
+						return err
+					}
+				default:
+					break drainNotes
+				}
+			}
 			text, stop := FinalResult(res)
 			if text != "" {
 				whole := strings.TrimSpace(lead.String() + text)
@@ -298,55 +372,9 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 			onEvent(TurnEvent{Kind: UpdateDone, Done: true})
 			return stopReasonError(stop)
 		case note := <-client.Notifications():
-			if note.Method != "session/update" && note.Method != "$/update" {
-				continue
+			if done, err := handleNote(note); done {
+				return err
 			}
-			kind, text, update, err := ParseUpdate(note.Params)
-			if err != nil {
-				continue
-			}
-			switch kind {
-			case UpdateText:
-				if text == "" {
-					continue
-				}
-				if leadAlive {
-					onEvent(TurnEvent{Kind: UpdateText, Text: text})
-					continue
-				}
-				lead.WriteString(text)
-				// Hold a possible status line: "checking model/config in
-				// background" must not be flushed as a fake answer.
-				if !isAgentDiagnosticPrefix(lead.String()) && !isDeferredStatus(lead.String()) {
-					leadAlive = true
-					flushLead()
-				}
-			case UpdateThinking:
-				leadAlive = true
-				flushLead()
-				onEvent(TurnEvent{Kind: UpdateThinking, Text: text})
-			case UpdateToolCall:
-				// agy calls client tools through loopback MCP, not through
-				// session/update. A tool_call notification here is advisory;
-				// the bridge emits the actual OpenAI tool_call.
-				continue
-			case UpdateError:
-				return classifyError(fmt.Errorf("agy-acp: %s", text))
-			case UpdateDone:
-				d := strings.TrimSpace(lead.String())
-				if !leadAlive {
-					if isAgentDiagnostic(d) {
-						return classifyError(fmt.Errorf("agy-acp: %s", d))
-					}
-					if isDeferredStatus(d) {
-						return errStatusOnly
-					}
-					flushLead()
-				}
-				onEvent(TurnEvent{Kind: UpdateDone, Done: true})
-				return nil
-			}
-			_ = update
 		case call := <-bridgeCalls(bridge):
 			flushLead()
 			onEvent(TurnEvent{Kind: UpdateToolCall, ToolCall: &ToolCall{
