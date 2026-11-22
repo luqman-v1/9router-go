@@ -3000,6 +3000,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ id, messages }),
     }),
+  /**
+   * The same preview, resolved under one client API key's scope.
+   *
+   * The gateway's preview endpoint already reads `apiKeyId` from the body — the
+   * tester needs both scopes of one id to diff them, and passing the key here is
+   * what makes the second body the one that key would actually carry.
+   */
+  previewJailbreakKey: (
+    id: string,
+    messages: { role: string; content: string }[],
+    apiKeyId: string,
+  ) =>
+    request<{
+      injected: boolean
+      reason: string
+      presetId?: string
+      presetName?: string
+      prompt?: string
+      messages: { role: string; content: string }[]
+    }>('/api/jailbreak/preview', {
+      method: 'POST',
+      body: JSON.stringify({ id, messages, apiKeyId }),
+    }),
   reorderJailbreakPresets: (order: string[]) =>
     request<{ ok: boolean }>('/api/jailbreak/presets/order', {
       method: 'PUT',

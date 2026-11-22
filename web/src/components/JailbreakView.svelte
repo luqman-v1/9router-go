@@ -17,6 +17,7 @@
   import Toggle from '../lib/ui/Toggle.svelte'
   import JailbreakPlayground from './jailbreak/JailbreakPlayground.svelte'
   import JailbreakKeyScope from './jailbreak/JailbreakKeyScope.svelte'
+  import JailbreakTester from './jailbreak/JailbreakTester.svelte'
   // Preset library.
   let presets = $state<JailbreakDoc[]>([])
   let loading = $state(false)
@@ -1490,6 +1491,14 @@
   <Card padding="md">
     <JailbreakPlayground presets={presets} />
   </Card>
+
+  <!-- The injection tester. The playground above proves what the resolver
+       decided; this one shows what the decision does — the outbound body
+       diffed word by word at zero cost, and optionally the model's raw reply
+       under one or both scopes. -->
+  <Card padding="md">
+    <JailbreakTester />
+  </Card>
 </div>
 
 {#if testMatchOpen}
@@ -1682,12 +1691,13 @@
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm outline-none focus:border-brand-500"
         />
       </label>
-      <label class="block space-y-1.5">
-        <span class="text-xs text-text-muted">Prompt</span>
-        <textarea
-          bind:value={presetForm.prompt}
-          rows="6"
-          class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500 resize-y"
+<label class="block space-y-1.5">
+      <span class="text-xs text-text-muted">Prompt</span>
+      <textarea
+        bind:value={presetForm.prompt}
+        aria-label="Preset prompt"
+        rows="6"
+        class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500 resize-y"
         ></textarea>
         <button
           type="button"
