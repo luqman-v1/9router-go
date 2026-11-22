@@ -1,0 +1,2 @@
+### Changed
+- **Combo returns first rejecting member's 4xx on total refusal** — When all members in a combo fail, return the first member's request-scoped 4xx response instead of the last error or generic 503 (upstream decolua/9router#5057 parity).
