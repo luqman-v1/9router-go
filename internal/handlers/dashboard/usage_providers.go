@@ -71,6 +71,9 @@ func (r usageResult) toResponse() map[string]any {
 func fetchProviderUsage(ctx context.Context, provider string, data map[string]any) (usageResult, bool) {
 	accessToken, apiKey, psd := usageCreds(data)
 	switch provider {
+	case "cloudflare-ai":
+		// Workers AI has no quota API: read today's neurons from GraphQL Analytics.
+		return fetchCloudflareAiUsage(ctx, apiKey, psd), true
 	case "deepseek":
 		return fetchDeepseekUsage(ctx, apiKey), true
 	case "deeprelay":
