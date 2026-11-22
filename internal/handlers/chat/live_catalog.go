@@ -86,6 +86,10 @@ type LiveModel struct {
 	ContextLength int
 	MaxOutput     int
 	Capabilities  *LiveCapabilities
+	// CompletionChat is Mistral's capabilities.completion_chat flag. Nil means
+	// the feed did not state one; false marks an embedding/OCR/speech model
+	// that must not appear in the Vibe chat catalog.
+	CompletionChat *bool
 	// LimitsAuthoritative marks a catalogue whose ContextLength/MaxOutput are
 	// the provider's own numbers for this exact model, not a best guess. They
 	// then outrank the static substring table, which only knows model families
