@@ -708,8 +708,13 @@ func (h *DashboardHandler) HandleGetJailbreakGithub(w http.ResponseWriter, r *ht
 	}
 	stored = strings.TrimSpace(stored)
 	apiBase := defaultJailbreakImporter.apiBase
+	cached, cacheMax := defaultJailbreakImporter.CacheStats()
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"tokenSet": stored != "" || envToken,
+		// What the conditional-request cache is holding, so the panel can show
+		// that a second pass with no upstream change is costing nothing.
+		"cached":    cached,
+		"cacheMax":  cacheMax,
 		"source": func() string {
 			if stored != "" {
 				return "dashboard"

@@ -140,6 +140,36 @@ pointed at a mirror.
   server too.
 - `GITHUB_TOKEN` still works and still wins, for a process started with one.
 
+### feat(persona): a conditional re-fetch, so an unchanged collection costs nothing
+
+A mirror and a token both raise the ceiling, but neither reduces what is fetched:
+without one, **every pass of every collection re-downloads the whole tree and
+every file**, and the quota a token buys is spent on bytes that have not changed.
+The GitHub API answers `If-None-Match` with a `304` that costs nothing.
+
+- Every body the server tags with an `ETag` is held in a bounded in-memory cache
+  (`githubETagCacheMax` entries, oldest written evicted), and the next fetch of
+  the same URL sends it back. A `304` answers from the cache — no body crosses
+  the wire and no quota is spent — and a `200` replaces the entry. The cache is a
+  cache, not a store: the authoritative copy of every preset is the database, so
+  a restart re-fetches and the worst case is one pass that spends what the cache
+  would have saved. It is bounded because it is keyed by a URL the operator
+  controls, and an unbounded map keyed by user input is a memory leak with a
+  schedule.
+- The panel reports what the cache holds (`cache: 512/4096`), so an operator can
+  see that a second pass with no upstream change is not costing anything rather
+  than taking the saving on faith.
+- The tree listing is cached the same way as a file, so the one call that decides
+  whether a pass has anything to do at all is also conditional.
+
+Verified by a test that runs two passes against a fake that answers `304` to a
+conditional request: the first fills the cache, the second spends no body bytes
+on the file, and both write the same preset from the same prompt. Without the
+cache the second pass would re-fetch, and the preset would be identical anyway —
+which is exactly the waste the quota was being spent on. `go test ./internal/
+handlers/dashboard/` green, `go build ./...` clean, `bun run ratchet:svelte` 0
+unresolved at baseline 74, `oxlint` clean.
+
 ### fix(persona): sync read files at "HEAD" instead of the ref it listed
 
 `FetchText` hardcoded `"HEAD"` while the pass had already resolved a default

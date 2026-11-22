@@ -3013,6 +3013,9 @@ export const api = {
       rawBase: string
       envToken: boolean
       envMirror: boolean
+      /** Bodies held for a conditional (If-None-Match) re-fetch. */
+      cached: number
+      cacheMax: number
     }>('/api/jailbreak/github'),
   setJailbreakGithubToken: (token: string) =>
     request<{ ok: boolean; tokenSet: boolean }>('/api/jailbreak/github/token', {

@@ -1152,3 +1152,72 @@ func TestJailbreakImportSendsTokenToApiBaseOnly(t *testing.T) {
 		t.Errorf("an importer with no token sent one anyway: %v", fg.authHeaders)
 	}
 }
+
+// A second pass with nothing changed upstream must not re-download the files.
+// The first pass fills the ETag cache; the second sends If-None-Match and the
+// fake answers 304, which is the shape GitHub uses to say "unchanged, and this
+// costs you nothing against the hourly quota".
+func TestJailbreakImportServesSecondPassFromCache(t *testing.T) {
+	fg := &fakeGithub{}
+	fg.tree = map[string]string{"deepseek v4.md": "RULE"}
+	// Count fetches of the file URL, which is the only thing the cache can save.
+	fg.raw = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.rawAuth = append(fg.rawAuth, a)
+		}
+		body, ok := fg.tree[strings.TrimPrefix(r.URL.Path, "/owner/repo/main/")]
+		if !ok || body == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// A conditional request the fake has already answered is a 304, so the
+		// second pass costs no body bytes.
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(fg.raw.Close)
+
+	fg.api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.authHeaders = append(fg.authHeaders, a)
+		}
+		switch r.URL.Path {
+		case "/repos/owner/repo":
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		case "/repos/owner/repo/git/trees/main":
+			w.Header().Set("ETag", `"tree"`)
+			fmt.Fprint(w, `{"truncated":false,"tree":[{"path":"deepseek v4.md","type":"blob","size":5}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(fg.api.Close)
+
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	imp := fg.importer()
+	t.Setenv("GITHUB_TOKEN", "")
+
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if entries, _ := imp.CacheStats(); entries == 0 {
+		t.Fatal("nothing was cached after the first pass, so the second cannot be conditional")
+	}
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	// Both passes wrote the same preset from the same body, and the second
+	// reached no bytes for it.
+	presets, err := repo.ListJailbreakPresets()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Prompt != "RULE" {
+		t.Fatalf("presets = %+v, want one preset with the cached prompt", presets)
+	}
+}

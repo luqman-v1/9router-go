@@ -82,6 +82,10 @@ type jailbreakImporter struct {
 	// tokenMu guards token: the settings row is written by a request handler
 	// while a background pass is reading it, and the value is one string.
 	tokenMu sync.RWMutex
+	// etagCache and etagMu hold fetched bodies keyed by URL, so the next fetch
+	// can be conditional and a 304 answers from memory instead of re-downloading.
+	etagCache map[string]githubETagEntry
+	etagMu    sync.RWMutex
 }
 
 var defaultJailbreakImporter = newJailbreakImporter()
@@ -287,6 +291,75 @@ func normalizedPort(u *url.URL) string {
 	return "80"
 }
 
+// githubETagCache holds one fetched body per URL so the next fetch can be
+// conditional.
+//
+// The GitHub API tags the tree listing and each raw file with an ETag, and a
+// 304 costs nothing against the hourly quota. The cache is what turns that into
+// a quota saving: without a stored body to fall back on, a 304 is an empty
+// response and the caller would store an empty prompt.
+//
+// It is bounded — githubETagCacheMax entries, oldest written dropped first — and
+// it lives in memory only. It is a cache, not a store: the authoritative copy of
+// every preset is in the database, so a restart re-fetches and the worst case is
+// one pass that spends quota the cache would have saved. An unbounded map keyed
+// by a URL the operator controls is a memory leak with a schedule, which is why
+// the bound and the eviction exist.
+const githubETagCacheMax = 4096
+
+type githubETagEntry struct {
+	etag     string
+	body     string
+	seenUnix int64
+}
+
+// cacheGet reports the stored entry for a URL, or ok=false when none is held.
+// One lookup returns both halves, because a caller that needed two would either
+// race (an entry evicted between the two reads) or take the lock twice for one
+// answer.
+func (imp *jailbreakImporter) cacheGet(u string) (body string, etag string, ok bool) {
+	if imp.etagCache == nil {
+		return "", "", false
+	}
+	imp.etagMu.RLock()
+	defer imp.etagMu.RUnlock()
+	e, found := imp.etagCache[u]
+	if !found {
+		return "", "", false
+	}
+	return e.body, e.etag, true
+}
+
+// cachePut stores a body under its URL and evicts the oldest entry when the
+// cache is full. Eviction is by write order, not by use: a collection is fetched
+// in the same order every pass, so recency of use adds nothing and a clock read
+// per entry costs more than it saves.
+func (imp *jailbreakImporter) cachePut(u, etag, body string) {
+	imp.etagMu.Lock()
+	defer imp.etagMu.Unlock()
+	if imp.etagCache == nil {
+		imp.etagCache = make(map[string]githubETagEntry, 64)
+	}
+	if _, exists := imp.etagCache[u]; !exists && len(imp.etagCache) >= githubETagCacheMax {
+		oldestKey, oldestSeen := "", int64(0)
+		for k, e := range imp.etagCache {
+			if oldestKey == "" || e.seenUnix < oldestSeen {
+				oldestKey, oldestSeen = k, e.seenUnix
+			}
+		}
+		if oldestKey != "" {
+			delete(imp.etagCache, oldestKey)
+		}
+	}
+	imp.etagCache[u] = githubETagEntry{etag: etag, body: body, seenUnix: time.Now().Unix()}
+}
+
+// CacheStats reports the ETag cache's size, for the persona panel and for tests.
+func (imp *jailbreakImporter) CacheStats() (entries int, max int) {
+	imp.etagMu.RLock()
+	defer imp.etagMu.RUnlock()
+	return len(imp.etagCache), githubETagCacheMax
+}
 // githubJailbreakSource is a parsed import target. An empty Path means the
 // whole repository; a non-empty one means a single file.
 type githubJailbreakSource struct {
@@ -935,8 +1008,14 @@ func (imp *jailbreakImporter) getJSON(ctx context.Context, u string, out any) er
 	return nil
 }
 
-// fetchText GETs u and returns at most limit bytes. A body past the limit is
-// an error rather than a truncation: half a prompt would inject half a rule.
+// fetchText GETs u and returns at most limit bytes. A body past the limit is an
+// error rather than a truncation: half a prompt would inject half a rule.
+//
+// A body the server tagged with an ETag is cached, and the next fetch of the
+// same URL sends If-None-Match. A 304 answers from the cache and costs nothing
+// against the quota; a 200 replaces it. Without this, every pass of every
+// collection re-downloads every file, and the quota a token buys is spent on
+// bytes that have not changed.
 func (imp *jailbreakImporter) fetchText(ctx context.Context, u string, limit int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -951,12 +1030,24 @@ func (imp *jailbreakImporter) fetchText(ctx context.Context, u string, limit int
 	if token := imp.GithubToken(); token != "" && sameHost(imp.apiBase, req.URL) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	// The conditional request: the cache from the previous pass is sent as
+	// If-None-Match, and a 304 costs nothing against the quota while still
+	// proving the body is current.
+	cached, etag, ok := imp.cacheGet(u)
+	if ok && etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 	resp, err := imp.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	switch {
+	case resp.StatusCode == http.StatusNotModified && ok:
+		// A 304 only reaches here when this request carried an If-None-Match,
+		// so the cached body is the answer and no byte crosses the wire.
+		return cached, nil
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return "", fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -966,7 +1057,11 @@ func (imp *jailbreakImporter) fetchText(ctx context.Context, u string, limit int
 	if int64(len(body)) > limit {
 		return "", fmt.Errorf("GET %s: body exceeds %d bytes", u, limit)
 	}
-	return string(body), nil
+	text := string(body)
+	if tag := resp.Header.Get("ETag"); tag != "" {
+		imp.cachePut(u, tag, text)
+	}
+	return text, nil
 }
 
 // fetchBytes is fetchText with the content type kept, so the caller can tell a

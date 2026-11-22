@@ -2283,6 +2283,9 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
     rawBase: string
     envToken: boolean
     envMirror: boolean
+    /** Bodies held for a conditional re-fetch; a second pass costs none of these. */
+    cached: number
+    cacheMax: number
   } | null>(null)
   let syncTokenDraft = $state('')
   let syncTokenSaving = $state(false)
@@ -3532,6 +3535,11 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
     <div class="pt-4 mt-4 border-t border-border-subtle space-y-2">
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs font-semibold text-text-main">GitHub token</span>
+        {#if syncGithub && syncGithub.cached > 0}
+          <span class="text-[10px] text-text-subtle" title="Bodies held for a conditional re-fetch. A pass that finds no change upstream spends no quota on these.">
+            cache: {syncGithub.cached}/{syncGithub.cacheMax}
+          </span>
+        {/if}
         {#if syncGithub}
           <span
             class="rounded-md px-2 py-0.5 text-[10px] font-bold {syncGithub.tokenSet
@@ -3556,7 +3564,8 @@ import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib
         several collections exhaust within one pass. A token raises it to 5,000. A mirror
         (<span class="font-code">GITHUB_API_MIRROR</span> /
         <span class="font-code">GITHUB_RAW_MIRROR</span>) is set when the gateway starts, so a network
-        that cannot reach GitHub directly can be pointed at a proxy.
+        that cannot reach GitHub directly can be pointed at a proxy. Bodies already fetched are
+        re-checked conditionally, so a pass that finds no change upstream spends no quota on them.
       </p>
       <div class="flex flex-wrap items-center gap-2">
         <input
