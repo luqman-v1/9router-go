@@ -465,4 +465,49 @@ func TestHandleAudioMusic_ConnectionRotation(t *testing.T) {
 			t.Errorf("follow-up hits = (%d, %d), want (2, 2)", conn1Hits.Load(), conn2Hits.Load())
 		}
 	})
+
+	t.Run("model_less_request_succeeds_with_strict_model_assignment", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("xi-api-key") != "sk-el-strict" {
+				t.Errorf("unexpected api key: %q", r.Header.Get("xi-api-key"))
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "audio/mpeg")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("mp3-strict"))
+		}))
+		defer upstream.Close()
+
+		database, cleanup := setupEmbeddingsTestDB(t)
+		defer cleanup()
+		if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT NOT NULL)`); err != nil {
+			t.Fatalf("create settings table: %v", err)
+		}
+		if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?)`, `{"providerStrategies":{"elevenlabs":{"strictModelAssignment":true}}}`); err != nil {
+			t.Fatalf("seed settings: %v", err)
+		}
+		connData, err := json.Marshal(map[string]any{
+			"apiKey":        "sk-el-strict",
+			"baseUrl":       upstream.URL,
+			"assignedModel": "elevenlabs/music-v1",
+		})
+		if err != nil {
+			t.Fatalf("marshal conn data: %v", err)
+		}
+		if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+			('conn-el-strict', 'elevenlabs', 'apikey', 'ElevenLabs Strict', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+			t.Fatalf("seed strict connection: %v", err)
+		}
+
+		handler := newTestMediaHandler(db.NewRepo(database))
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/music", strings.NewReader(`{"prompt":"jazz"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.HandleAudioMusic(rec, req)
+
+		if rec.Code != http.StatusOK || rec.Body.String() != "mp3-strict" {
+			t.Fatalf("response = (%d, %q), want (200, mp3-strict)", rec.Code, rec.Body.String())
+		}
+	})
 }

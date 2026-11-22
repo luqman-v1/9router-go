@@ -58,6 +58,9 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Reserve a non-empty lockModel for cooldown locks while passing req.Model
+	// to GetBestConnectionWithContext so model-less requests are not filtered out
+	// under StrictModelAssignment.
 	lockModel := req.Model
 	if lockModel == "" {
 		lockModel = "music"
@@ -89,7 +92,7 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
 			return
 		}
-		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), provider, pinned, excludeIDs, lockModel)
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), provider, pinned, excludeIDs, req.Model)
 		if err != nil || conn == nil || connData == nil {
 			if lastStatus != 0 {
 				handlerutil.WriteJSONError(w, lastStatus, lastMsg)
