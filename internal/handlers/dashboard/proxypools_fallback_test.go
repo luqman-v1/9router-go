@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"9router/proxy/internal/db"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -204,9 +205,18 @@ func TestHandleTestProxyPool_FallbackProbe(t *testing.T) {
 		}
 	})
 
-	// 4. Invalid proxy URL
+	// 4. Invalid proxy URL (seeded directly in DB since POST /api/proxy-pools now rejects malformed URLs;
+	// /test must still handle legacy or hand-edited rows safely).
 	t.Run("Invalid proxy URL", func(t *testing.T) {
-		poolID := createPool("Invalid URL Pool", "://invalid-url")
+		seeded, err := repo.InsertProxyPool(db.ProxyPoolData{
+			Name:     "Invalid URL Pool",
+			ProxyURL: "://invalid-url",
+			Type:     "http",
+		})
+		if err != nil {
+			t.Fatalf("seed invalid URL pool: %v", err)
+		}
+		poolID := seeded["id"].(string)
 		testReq := httptest.NewRequest(http.MethodPost, "/api/proxy-pools/"+poolID+"/test", nil)
 		testRec := httptest.NewRecorder()
 		router.ServeHTTP(testRec, testReq)
