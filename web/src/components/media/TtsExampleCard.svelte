@@ -24,7 +24,6 @@
   let config = $derived(TTS_PROVIDER_CONFIG[providerId] || TTS_PROVIDER_CONFIG['edge-tts'])
 
   let selectedVoice = $state('')
-  let selectedVoiceName = $state('')
   let voiceId = $state('')
   let countryVoices = $state<Array<{ id: string; name: string }>>([])
   let selectedLang = $state('')
@@ -128,7 +127,6 @@
     countryVoices = voices
     if (voices.length > 0) {
       selectedVoice = voices[0].id
-      selectedVoiceName = voices[0].name
       if (config.hasVoiceIdInput) voiceId = voices[0].id
     }
   }
@@ -332,7 +330,6 @@
               type="button"
               onclick={() => {
                 selectedVoice = v.id
-                selectedVoiceName = v.name
                 if (config.hasVoiceIdInput) voiceId = v.id
               }}
               class="text-xs px-2.5 py-1 rounded-lg border transition-colors cursor-pointer {activeVoiceId === v.id ? 'border-primary bg-primary/10 text-primary font-medium' : 'border-border text-text-muted hover:border-primary/40 hover:text-text-main'}"

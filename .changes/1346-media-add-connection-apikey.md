@@ -1,0 +1,4 @@
+### fix(web): send apiKey when creating media provider connections and clear media svelte-check errors
+
+- **Fix dropped API key on media connection creation** (`web/src/components/media/MediaProviderDetail.svelte`): switched `handleSaveNewConnection` from `key` to `apiKey` (matching `POST /api/connections`) so credentials added from Media provider detail pages are persisted on the backend.
+- **Media `svelte-check` cleanup (`37 -> 26`) & E2E test** (`MediaProviderDetail.svelte`, `MediaProviderCard.svelte`, `TtsExampleCard.svelte`, `web/scripts/svelte-check-baseline.json`, `web/e2e/mediaAddConnection.test.ts`): cleared all 11 diagnostics under `web/src/components/media/`, lowered `svelte-check-baseline.json` to `26`, and added an E2E regression test asserting `apiKey` submission and persisted `apiKeyMasked`.

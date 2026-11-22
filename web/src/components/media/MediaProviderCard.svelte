@@ -46,7 +46,7 @@
     }).length
   )
   let total = $derived(providerConns.length)
-  let allDisabled = $derived(total > 0 && providerConns.every((c) => c.isActive === 0 || c.isActive === false))
+  let allDisabled = $derived(total > 0 && providerConns.every((c) => c.isActive === 0))
 
   let bgColor = $derived(
     provider.color && provider.color.length > 7

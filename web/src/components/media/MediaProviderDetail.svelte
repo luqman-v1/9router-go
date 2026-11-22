@@ -195,9 +195,8 @@
       await api.createConnection({
         provider: provider.id,
         authType: 'apikey',
-        key: newConnKey.trim(),
+        apiKey: newConnKey.trim(),
         name: newConnName.trim() || undefined,
-        isActive: 1
       })
       showAddConnModal = false
       newConnKey = ''
@@ -398,8 +397,6 @@
   let exampleResponse = $state<string | null>(null)
   let exampleLatency = $state<number | null>(null)
 
-  const ttsVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer']
-
   $effect(() => {
     if (kind === 'video') {
       exampleInput = 'A serene lake at sunset'
@@ -526,7 +523,7 @@
         headers['x-provider-connection-id'] = selectedConnId
       }
 
-      let res: Response
+      let res: Response | undefined = undefined
       if (kind === 'video') {
         headers['Content-Type'] = 'application/json'
         res = await fetch('/v1/videos/generations', {
@@ -610,6 +607,7 @@
         })
       }
 
+      if (!res) return
       exampleLatency = Math.round(performance.now() - start)
       const cType = res.headers.get('content-type') || ''
       if (cType.includes('application/json')) {
@@ -1030,55 +1028,6 @@
             {/if}
           </div>
         </div>
-      {:else if kind === 'tts'}
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Voice</span>
-          <div class="w-full min-w-0 flex-1">
-            <select
-              bind:value={selectedVoice}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
-            >
-              {#each ttsVoices as v}
-                <option value={v}>{v.charAt(0).toUpperCase() + v.slice(1)}</option>
-              {/each}
-            </select>
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Input</span>
-          <div class="w-full min-w-0 flex-1 relative">
-            <input
-              bind:value={exampleInput}
-              class="w-full px-3 py-1.5 pr-7 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main font-mono"
-            />
-            {#if exampleInput}
-              <button
-                type="button"
-                onclick={() => (exampleInput = '')}
-                class="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-primary transition-colors cursor-pointer"
-              >
-                <span class="material-symbols-outlined text-[14px]">close</span>
-              </button>
-            {/if}
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Format</span>
-          <div class="w-full min-w-0 flex-1">
-            <select
-              bind:value={ttsResponseFormat}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
-            >
-              <option value="json">json (base64 preview)</option>
-              <option value="mp3">mp3 (direct audio)</option>
-              <option value="opus">opus</option>
-              <option value="aac">aac</option>
-              <option value="flac">flac</option>
-              <option value="wav">wav</option>
-              <option value="pcm">pcm</option>
-            </select>
-          </div>
-        </div>
       {:else if kind === 'embedding'}
         <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
           <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Input</span>
@@ -1096,32 +1045,6 @@
                 <span class="material-symbols-outlined text-[14px]">close</span>
               </button>
             {/if}
-          </div>
-        </div>
-      {:else if kind === 'stt'}
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Audio File</span>
-          <div class="w-full min-w-0 flex-1">
-            <input
-              type="text"
-              bind:value={exampleInput}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main font-mono"
-            />
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Response Format</span>
-          <div class="w-full min-w-0 flex-1">
-            <select
-              bind:value={sttResponseFormat}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
-            >
-              <option value="json">json</option>
-              <option value="text">text</option>
-              <option value="srt">srt</option>
-              <option value="verbose_json">verbose_json</option>
-              <option value="vtt">vtt</option>
-            </select>
           </div>
         </div>
       {:else if kind === 'systemone'}
