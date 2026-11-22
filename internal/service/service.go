@@ -259,6 +259,16 @@ var run = func(name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// appendSubcommand places forwarded global flags before the subcommand so
+// urfave/cli parses them (e.g. `--rtk=true start` or `--rtk=true serve`)
+// instead of rejecting them after the subcommand.
+func appendSubcommand(args []string, sub string) []string {
+	out := make([]string, 0, len(args)+1)
+	out = append(out, args...)
+	out = append(out, sub)
+	return out
+}
+
 // commandLine joins the executable and args for display and for unit files
 // that take a plain command line.
 func commandLine(exe string, args []string) string {

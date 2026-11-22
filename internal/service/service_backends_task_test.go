@@ -65,8 +65,20 @@ func TestInstallWindowsTaskOnWindows(t *testing.T) {
 	if slices.Contains(create.args, "/rl") {
 		t.Errorf("schtasks /create args = %v, must not request /rl highest", create.args)
 	}
-	if got := argAfter(create.args, "/tr"); got != `C:\9router-go.exe --rtk=true` {
-		t.Errorf("/tr value = %q, want the cmd.exe command line", got)
+	if got := argAfter(create.args, "/tr"); got != `C:\9router-go.exe --rtk=true serve` {
+		t.Errorf("/tr value = %q, want global flags before serve", got)
+	}
+
+	*calls = nil
+	if _, err := installWindowsTask(`C:\9router-go.exe`, nil); err != nil {
+		t.Fatalf("installWindowsTask(nil args) error = %v", err)
+	}
+	for _, c := range *calls {
+		if c.name == "schtasks.exe" && slices.Contains(c.args, "/create") {
+			if got := argAfter(c.args, "/tr"); got != `C:\9router-go.exe serve` {
+				t.Errorf("no-args /tr value = %q, want %q", got, `C:\9router-go.exe serve`)
+			}
+		}
 	}
 }
 

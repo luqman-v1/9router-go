@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v2"
 )
 
 // TestGuideMisplacedRootFlag covers the message an operator sees when a global
@@ -112,3 +114,45 @@ func TestInstallUsageGuidanceCoversSubcommands(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func TestServeSubcommand(t *testing.T) {
+	app := newApp("9router-go")
+	var serveCmd *cli.Command
+	for _, c := range app.Commands {
+		if c.Name == "serve" {
+			serveCmd = c
+			break
+		}
+	}
+	if serveCmd == nil {
+		t.Fatal("missing serve subcommand")
+	}
+	if serveCmd.Action == nil {
+		t.Fatal("serve subcommand Action is nil")
+	}
+	if serveCmd.OnUsageError == nil {
+		t.Fatal("serve subcommand OnUsageError is nil")
+	}
+
+	var called bool
+	var gotRTK bool
+	serveCmd.Action = func(cCtx *cli.Context) error {
+		called = true
+		gotRTK = cCtx.Bool("rtk")
+		return nil
+	}
+
+	if err := app.Run([]string{"9router-go", "--rtk=false", "serve"}); err != nil {
+		t.Fatalf("app.Run(serve) error = %v", err)
+	}
+	if !called {
+		t.Fatal("serve Action was not called")
+	}
+	if gotRTK {
+		t.Error("cCtx.Bool(\"rtk\") = true, want false")
+	}
+
+	if err := app.Run([]string{"9router-go", "serve", "--rtk=false"}); err == nil || !strings.Contains(err.Error(), "before the sub-command") {
+		t.Fatalf("misplaced flag error = %v, want guidance pointing before the sub-command", err)
+	}
+}

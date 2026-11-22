@@ -213,6 +213,11 @@ func buildApp(self string) *cli.App {
 				},
 			},
 			{
+				Name:   "serve",
+				Usage:  "Run the gateway in the foreground without the interactive menu",
+				Action: runServer,
+			},
+			{
 				Name:   "start",
 				Usage:  "Start the gateway in the background and return (same as --background)",
 				Action: startDetached,
