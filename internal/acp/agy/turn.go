@@ -246,11 +246,25 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 	// a lone diagnostic into a classified error instead.
 	var lead strings.Builder
 	leadAlive := false // real output seen; leading text is no longer suspect
-	flushLead := func() {
-		if lead.Len() > 0 {
-			onEvent(TurnEvent{Kind: UpdateText, Text: lead.String()})
-			lead.Reset()
+	// emit checks the caller's context right after every delivered event:
+	// onEvent may cancel (client disconnect), and the prompt result can be
+	// delivered in the same select iteration. Returning success after that
+	// would bill a cancelled turn as a completed one (CI run 45047563683).
+	emit := func(ev TurnEvent) error {
+		onEvent(ev)
+		if err := ctx.Err(); err != nil {
+			_ = client.Notification("session/cancel", map[string]any{"sessionId": sid})
+			return err
 		}
+		return nil
+	}
+	flushLead := func() error {
+		if lead.Len() == 0 {
+			return nil
+		}
+		text := lead.String()
+		lead.Reset()
+		return emit(TurnEvent{Kind: UpdateText, Text: text})
 	}
 	handleNote := func(note notification) (bool, error) {
 		if note.Method != "session/update" && note.Method != "$/update" {
@@ -266,7 +280,9 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 				return false, nil
 			}
 			if leadAlive {
-				onEvent(TurnEvent{Kind: UpdateText, Text: text})
+				if err := emit(TurnEvent{Kind: UpdateText, Text: text}); err != nil {
+					return true, err
+				}
 				return false, nil
 			}
 			lead.WriteString(text)
@@ -278,8 +294,12 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 			}
 		case UpdateThinking:
 			leadAlive = true
-			flushLead()
-			onEvent(TurnEvent{Kind: UpdateThinking, Text: text})
+			if err := flushLead(); err != nil {
+				return true, err
+			}
+			if err := emit(TurnEvent{Kind: UpdateThinking, Text: text}); err != nil {
+				return true, err
+			}
 		case UpdateToolCall:
 			// agy calls client tools through loopback MCP, not through
 			// session/update. A tool_call notification here is advisory;
@@ -296,9 +316,13 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 				if isDeferredStatus(d) {
 					return true, errStatusOnly
 				}
-				flushLead()
+				if err := flushLead(); err != nil {
+					return true, err
+				}
 			}
-			onEvent(TurnEvent{Kind: UpdateDone, Done: true})
+			if err := emit(TurnEvent{Kind: UpdateDone, Done: true}); err != nil {
+				return true, err
+			}
 			return true, nil
 		}
 		_ = update
@@ -356,8 +380,12 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 					}
 					return classifyError(fmt.Errorf("agy-acp: %s", whole))
 				}
-				flushLead()
-				onEvent(TurnEvent{Kind: UpdateText, Text: text})
+				if err := flushLead(); err != nil {
+					return err
+				}
+				if err := emit(TurnEvent{Kind: UpdateText, Text: text}); err != nil {
+					return err
+				}
 			}
 			d := strings.TrimSpace(lead.String())
 			if !leadAlive {
@@ -367,19 +395,27 @@ func streamPromptOnce(ctx context.Context, client *Client, sid string, prompt []
 				if isDeferredStatus(d) {
 					return errStatusOnly
 				}
-				flushLead()
+				if err := flushLead(); err != nil {
+					return err
+				}
 			}
-			onEvent(TurnEvent{Kind: UpdateDone, Done: true})
+			if err := emit(TurnEvent{Kind: UpdateDone, Done: true}); err != nil {
+				return err
+			}
 			return stopReasonError(stop)
 		case note := <-client.Notifications():
 			if done, err := handleNote(note); done {
 				return err
 			}
 		case call := <-bridgeCalls(bridge):
-			flushLead()
-			onEvent(TurnEvent{Kind: UpdateToolCall, ToolCall: &ToolCall{
+			if err := flushLead(); err != nil {
+				return err
+			}
+			if err := emit(TurnEvent{Kind: UpdateToolCall, ToolCall: &ToolCall{
 				ID: call.ID, Name: call.Name, Input: call.Args,
-			}})
+			}}); err != nil {
+				return err
+			}
 			return nil // turn ends; the client will send the result next turn
 		case <-client.done:
 			return classifyError(client.processError())
