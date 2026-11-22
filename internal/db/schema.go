@@ -116,6 +116,19 @@ func coreSchema() []tableDef {
 			},
 		},
 		{
+			name: "thoughtSignatures",
+			columns: [][2]string{
+				{"key", "TEXT PRIMARY KEY"},
+				{"signature", "TEXT NOT NULL"},
+				{"family", "TEXT NOT NULL DEFAULT ''"},
+				{"expiresAt", "TEXT NOT NULL"},
+				{"updatedAt", "TEXT NOT NULL"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_ts_expires ON thoughtSignatures(expiresAt)",
+			},
+		},
+		{
 			name: "kv",
 			columns: [][2]string{
 				{"scope", "TEXT NOT NULL"},

@@ -335,7 +335,7 @@ func (r *Repo) IsProviderAvailable(ctx context.Context, provider, model string) 
 		return true
 	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT data FROM providerConnections WHERE provider = ? AND isActive = 1`,
+		`SELECT data FROM providerConnections WHERE provider = ? AND isActive = TRUE`,
 		provider,
 	)
 	if err != nil {

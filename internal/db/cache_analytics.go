@@ -70,16 +70,16 @@ const (
 	// json_valid keeps a truncated or non-JSON payload a zero rather than a
 	// parse failure that would fail the whole aggregate.
 	sqlCachedTokensExpr = `CASE WHEN tokens IS NOT NULL AND json_valid(tokens)
-		THEN CAST(COALESCE(json_extract(tokens, '$.cached_tokens'), json_extract(tokens, '$.cache_read_input_tokens'), 0) AS INTEGER)
+		THEN CAST(COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0) AS INTEGER)
 		ELSE 0 END`
 	defaultAvgInputPricePerMillion = 3.0
 	defaultCacheSavingsDiscount    = 0.9
 	sqlCacheCreationTokensExpr     = `CASE
-		WHEN tokens IS NOT NULL AND json_valid(tokens) AND CAST(COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), json_extract(tokens, '$.cache_creation_tokens'), 0) AS INTEGER) > 0
-		THEN CAST(COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), json_extract(tokens, '$.cache_creation_tokens'), 0) AS INTEGER)
-		WHEN tokens IS NOT NULL AND json_valid(tokens) AND promptTokens > CAST(COALESCE(json_extract(tokens, '$.cached_tokens'), json_extract(tokens, '$.cache_read_input_tokens'), 0) AS INTEGER)
-		     AND CAST(COALESCE(json_extract(tokens, '$.cached_tokens'), json_extract(tokens, '$.cache_read_input_tokens'), 0) AS INTEGER) > 0
-		THEN promptTokens - CAST(COALESCE(json_extract(tokens, '$.cached_tokens'), json_extract(tokens, '$.cache_read_input_tokens'), 0) AS INTEGER)
+		WHEN tokens IS NOT NULL AND json_valid(tokens) AND CAST(COALESCE(CAST(json_extract(tokens, '$.cache_creation_input_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_creation_tokens') AS INTEGER), 0) AS INTEGER) > 0
+		THEN CAST(COALESCE(CAST(json_extract(tokens, '$.cache_creation_input_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_creation_tokens') AS INTEGER), 0) AS INTEGER)
+		WHEN tokens IS NOT NULL AND json_valid(tokens) AND promptTokens > CAST(COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0) AS INTEGER)
+		     AND CAST(COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0) AS INTEGER) > 0
+		THEN promptTokens - CAST(COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0) AS INTEGER)
 		ELSE 0 END`
 )
 

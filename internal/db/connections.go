@@ -23,11 +23,30 @@ const connectionSortOrder = `ORDER BY CASE WHEN priority IS NULL THEN 999999 ELS
 // providerConnectionColumns. Both *sql.Row and *sql.Rows satisfy it, so the
 // single-row and list readers cannot drift apart in column order.
 func scanConnection(scan func(dest ...any) error, conn *models.ProviderConnection) error {
-	return scan(
+	var isActive any
+	err := scan(
 		&conn.ID, &conn.Provider, &conn.AuthType, &conn.Name, &conn.Email,
-		&conn.Priority, &conn.IsActive, &conn.Data, &conn.LastUsedAt, &conn.ConsecutiveUseCount,
+		&conn.Priority, &isActive, &conn.Data, &conn.LastUsedAt, &conn.ConsecutiveUseCount,
 		&conn.CreatedAt, &conn.UpdatedAt,
 	)
+	if err != nil {
+		return err
+	}
+	switch v := isActive.(type) {
+	case bool:
+		if v {
+			conn.IsActive = 1
+		} else {
+			conn.IsActive = 0
+		}
+	case int64:
+		conn.IsActive = int(v)
+	case float64:
+		conn.IsActive = int(v)
+	case nil:
+		conn.IsActive = 0
+	}
+	return nil
 }
 
 // CreateProviderConnection inserts a new provider connection carrying just an
@@ -179,7 +198,7 @@ func (r *Repo) ResolveConnectionRoutingByPrefix(prefix string) (provider string,
 	// 1. Direct ID lookup
 	err := r.db.QueryRowContext(
 		context.Background(),
-		`SELECT provider, id FROM providerConnections WHERE id = ? AND isActive = 1 LIMIT 1`,
+		`SELECT provider, id FROM providerConnections WHERE id = ? AND isActive = TRUE LIMIT 1`,
 		prefix,
 	).Scan(&p, &id)
 	if err == nil && id != "" {
@@ -189,7 +208,7 @@ func (r *Repo) ResolveConnectionRoutingByPrefix(prefix string) (provider string,
 	err = r.db.QueryRowContext(
 		context.Background(),
 		`SELECT provider, id FROM providerConnections
-		 WHERE isActive = 1 AND (name = ? COLLATE NOCASE OR replace(name, ' ', '-') = ? COLLATE NOCASE)
+		 WHERE isActive = TRUE AND (name = ? COLLATE NOCASE OR replace(name, ' ', '-') = ? COLLATE NOCASE)
 		 LIMIT 1`,
 		prefix, normPrefix,
 	).Scan(&p, &id)
@@ -255,13 +274,13 @@ func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*mode
 
 	switch {
 	case provider != "" && activeOnly:
-		query += "WHERE provider = ? AND isActive = 1 "
+		query += "WHERE provider = ? AND isActive = TRUE "
 		args = append(args, provider)
 	case provider != "":
 		query += "WHERE provider = ? "
 		args = append(args, provider)
 	case activeOnly:
-		query += "WHERE isActive = 1 "
+		query += "WHERE isActive = TRUE "
 	}
 	query += connectionSortOrder
 
