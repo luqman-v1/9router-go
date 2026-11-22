@@ -39,7 +39,7 @@ func TestForwardOpenCodeRotating(t *testing.T) {
 				return okResponse()
 			},
 			func() (*http.Response, error) { return nil, context.Canceled },
-			func() { rotations++ })
+			func() { rotations++ }, nil)
 		if err != nil {
 			t.Fatalf("expected the replay to succeed, got %v", err)
 		}
@@ -54,7 +54,7 @@ func TestForwardOpenCodeRotating(t *testing.T) {
 		_, err := forwardOpenCodeRotating(context.Background(),
 			func() (*http.Response, error) { attempts++; return nil, usageLimitErr() },
 			func() (*http.Response, error) { return nil, context.Canceled },
-			nil)
+			nil, nil)
 		var ue *proxy.UpstreamError
 		if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("expected the usage-limit error untouched, got %v", err)
@@ -70,7 +70,7 @@ func TestForwardOpenCodeRotating(t *testing.T) {
 		_, err := forwardOpenCodeRotating(context.Background(),
 			func() (*http.Response, error) { attempts++; return nil, usageLimitErr() },
 			func() (*http.Response, error) { return nil, context.Canceled },
-			func() { rotations++ })
+			func() { rotations++ }, nil)
 		var ue *proxy.UpstreamError
 		if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("expected the usage-limit error after the replay, got %v", err)
@@ -90,7 +90,7 @@ func TestForwardOpenCodeRotating(t *testing.T) {
 				}
 			},
 			func() (*http.Response, error) { return nil, context.Canceled },
-			func() { rotations++ })
+			func() { rotations++ }, nil)
 		var ue *proxy.UpstreamError
 		if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("expected the rate-limit error untouched, got %v", err)
@@ -179,7 +179,7 @@ func TestForwardOpenCodeRotating_ResponsePositionUsageLimit(t *testing.T) {
 			return okResponse()
 		},
 		func() (*http.Response, error) { return nil, context.Canceled },
-		func() { rotations++ })
+		func() { rotations++ }, nil)
 	if err != nil {
 		t.Fatalf("expected the replay to succeed, got %v", err)
 	}

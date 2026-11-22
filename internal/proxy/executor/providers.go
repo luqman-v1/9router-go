@@ -755,7 +755,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 			return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, transformedBody, req.IsStream)
 		}, opencodeSessionRotation(req, true, hint, func(session string) {
 			cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, req.IsStream)
-		}))
+		}), forgetOpencodeStableSession(req, true, hint))
 		if err != nil {
 			return fmt.Errorf("ForwardOpencode (muse-spark responses): %w", err)
 		}
@@ -846,7 +846,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, body, true)
 	}, opencodeSessionRotation(req, true, hint, func(session string) {
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, true)
-	}))
+	}), forgetOpencodeStableSession(req, true, hint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencode: %w", err)
 	}
@@ -1841,7 +1841,7 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		return forwardOpencodeRequestDirect(ctx, &cfg, "public", body, true)
 	}, opencodeSessionRotation(req, true, hint, func(session string) {
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, true)
-	}))
+	}), forgetOpencodeStableSession(req, true, hint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (free lane): %w", err)
 	}

@@ -149,6 +149,29 @@ func isOpencodeUsageLimit(ue *proxy.UpstreamError) bool {
 		bytes.Contains(ue.Body, []byte(openCodeUsageLimitToken))
 }
 
+// openCodeOverloadToken is the wording of the free lane's load shedding. Only
+// this 429 is transient: the quota 429 (FreeUsageLimitError) is an account
+// verdict and repeating it only delays the error the caller needs to see.
+const openCodeOverloadToken = "overloaded"
+
+// isOpenCodeOverload reports whether the gate shed this request under load —
+// the transient 429 the official CLI retries (decolua/9router@989b1eecb).
+func isOpenCodeOverload(ue *proxy.UpstreamError) bool {
+	return ue != nil && ue.StatusCode == http.StatusTooManyRequests &&
+		containsFoldASCII(ue.Body, openCodeOverloadToken)
+}
+
+// isOpenCodeSpentSession reports whether the gate answered 403 or a non-overload
+// 429: the session the request traveled on is spent or flagged, so the caller
+// must drop it rather than keep dialing with it (#5559).
+func isOpenCodeSpentSession(ue *proxy.UpstreamError) bool {
+	if ue == nil {
+		return false
+	}
+	return ue.StatusCode == http.StatusForbidden ||
+		(ue.StatusCode == http.StatusTooManyRequests && !isOpenCodeOverload(ue))
+}
+
 // refusedResponseToError moves a gate answer (403/429) from the response
 // position into the error position. The stealth forward and ForwardOpenAI both
 // return a non-200 as a plain response, while the refusal classifiers read the
@@ -254,30 +277,84 @@ func noteRefusedReplay(err error) {
 	}
 }
 
-// forwardOpenCodeRotating extends the free-lane forward with one session
-// rotation. The free tier accounts its quota per upstream session, and the
-// official CLI recovers a spent session the same way it starts every
-// conversation: with a freshly minted session id and a fresh budget. When the
-// gate answers 429 FreeUsageLimitError on a router-minted stable session, the
-// same recovery applies — rotate() installs a new session on the request and
-// the replay goes out once on it. A client-supplied session travels as rotate
-// == nil: it identifies the caller's own conversation upstream and is never
-// swapped behind its back.
+// Free-lane load shedding: total attempts (first try + retries) and backoff,
+// mirroring the official CLI (decolua/9router@989b1eecb). Live bursts last
+// ~20 s — a request that kept failing for 8 s succeeded at 19 s — so the
+// schedule below covers 800+1600+2400+3200+4000*3 ≈ 20 s.
+const openCodeOverloadAttempts = 8
+
+// The delays are vars so a test can shrink the ~20s budget; production never
+// writes them.
+var (
+	openCodeOverloadBaseDelay = 800 * time.Millisecond
+	openCodeOverloadMaxDelay  = 4 * time.Second
+)
+
+// forwardOpenCodeRotating extends the free-lane forward with the two recoveries
+// the free tier needs, in this order:
 //
-// Deliberately one rotation, like the refusal retry above: if the fresh
-// session also answers 429, the limit is not the session's (an egress-wide
-// budget or a genuine rate limit) and the caller's fallback machinery owns
-// the advance.
-func forwardOpenCodeRotating(ctx context.Context, send, sendDirect func() (*http.Response, error), rotate func()) (*http.Response, error) {
-	resp, err := forwardOpenCode(ctx, send, sendDirect)
-	if err == nil || rotate == nil {
-		return resp, err
+//   - Transient load shedding. The lane answers 429 "The inference service is
+//     overloaded. Please try again later." once it is busy, and the official CLI
+//     retries that rather than surfacing it. Only that wording is retried, so a
+//     quota 429 (FreeUsageLimitError) is reported without delay.
+//   - A spent session. The free tier accounts its quota per upstream session,
+//     and the official CLI recovers a spent session the same way it starts
+//     every conversation: with a freshly minted session id and a fresh budget.
+//     When the gate answers 429 FreeUsageLimitError on a router-minted stable
+//     session, rotate() installs a new session and the replay goes out once on
+//     it. A client-supplied session travels as rotate == nil: it identifies the
+//     caller's own conversation upstream and is never swapped behind its back.
+//
+// A 403 or a non-overload 429 means upstream spent or flagged the session the
+// request traveled on (#5559). drop() removes that id from the stable-session
+// cache, so the next request mints a fresh one instead of reusing the spent id
+// until restart.
+//
+// Each recovery is bounded: the overload backoff covers openCodeOverloadAttempts
+// attempts total, and the session rotation runs once. A replay still shedding
+// after that budget, or a fresh session that also answers 429, is the caller's
+// fallback machinery to advance, not another loop here.
+func forwardOpenCodeRotating(ctx context.Context, send, sendDirect func() (*http.Response, error), rotate, drop func()) (*http.Response, error) {
+	for attempt := 1; ; attempt++ {
+		resp, err := forwardOpenCode(ctx, send, sendDirect)
+		if err == nil {
+			return resp, nil
+		}
+		var ue *proxy.UpstreamError
+		if !errors.As(err, &ue) {
+			return nil, err
+		}
+		if isOpenCodeSpentSession(ue) && drop != nil {
+			drop()
+		}
+		if isOpenCodeOverload(ue) && attempt < openCodeOverloadAttempts {
+			delay := min(openCodeOverloadBaseDelay*time.Duration(attempt), openCodeOverloadMaxDelay)
+			log.Debug("opencode", "free lane overloaded, retrying with backoff",
+				"attempt", attempt, "max_attempts", openCodeOverloadAttempts, "delay", delay)
+			if !sleepOpenCode(ctx, delay) {
+				return nil, ue
+			}
+			continue
+		}
+		if rotate != nil && isOpencodeUsageLimit(ue) {
+			log.Warn("opencode", "free session budget spent, rotating session and replaying once")
+			rotate()
+			return forwardOpenCode(ctx, send, sendDirect)
+		}
+		return nil, err
 	}
-	var ue *proxy.UpstreamError
-	if !errors.As(err, &ue) || !isOpencodeUsageLimit(ue) {
-		return resp, err
+}
+
+// sleepOpenCode waits for delay unless the caller goes away first. It reports
+// false when the context ended, so the caller answers with the upstream status
+// instead of retrying for a client that has gone.
+func sleepOpenCode(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
-	log.Warn("opencode", "free session budget spent, rotating session and replaying once")
-	rotate()
-	return forwardOpenCode(ctx, send, sendDirect)
 }

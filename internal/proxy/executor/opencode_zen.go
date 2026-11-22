@@ -299,7 +299,7 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 		return forwardOpencodeRequestDirect(reqCtx(req), &cfg, req.APIKey, body, true)
 	}, opencodeSessionRotation(req, free, zenHint, func(session string) {
 		cfg.StaticHeaders = zenHeaders(&cfg, session, true, free)
-	}))
+	}), forgetOpencodeStableSession(req, free, zenHint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen: %w", err)
 	}
@@ -393,7 +393,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 		return forwardOpencodeRequestDirect(ctx, &cfg, req.APIKey, body, req.IsStream)
 	}, opencodeSessionRotation(req, free, zenHint, func(session string) {
 		cfg.StaticHeaders = zenHeaders(&cfg, session, req.IsStream, free)
-	}))
+	}), forgetOpencodeStableSession(req, free, zenHint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen (responses): %w", err)
 	}
@@ -485,7 +485,8 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 			return forwardOpencodeRequest(ctx, req.Client, &msgCfg, "public", body, req.IsStream)
 		}, func() (*http.Response, error) {
 			return forwardOpencodeRequestDirect(ctx, &msgCfg, "public", body, req.IsStream)
-		}, opencodeSessionRotation(req, free, msgHint, mergeZenSession))
+		}, opencodeSessionRotation(req, free, msgHint, mergeZenSession),
+			forgetOpencodeStableSession(req, free, msgHint))
 	} else {
 		resp, err = proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
 	}

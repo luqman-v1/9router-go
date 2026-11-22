@@ -378,12 +378,134 @@ func TestForwardOpenCodeCooldownDoesNotBlockRotation(t *testing.T) {
 			return okResponse()
 		},
 		func() (*http.Response, error) { return nil, context.Canceled },
-		func() { rotations++ })
+		func() { rotations++ }, nil)
 	if err != nil {
 		t.Fatalf("expected the rotated replay to succeed, got %v", err)
 	}
 	resp.Body.Close()
 	if rotations != 1 || attempts != 2 {
 		t.Errorf("rotation must still run inside the refusal cooldown, got attempts=%d rotations=%d", attempts, rotations)
+	}
+}
+
+// Free-lane load shedding: the lane answers 429 "The inference service is
+// overloaded. Please try again later." once it is busy, and the official CLI
+// retries that rather than surfacing it (decolua/9router@989b1eecb). Only that
+// wording is retried — the quota 429 is reported without delay.
+func overloadErr() *proxy.UpstreamError {
+	return &proxy.UpstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"error":{"type":"server_error","message":"The inference service is overloaded. Please try again later."}}`),
+	}
+}
+
+func TestForwardOpenCodeRetriesOverload(t *testing.T) {
+	origBase, origMax := openCodeOverloadBaseDelay, openCodeOverloadMaxDelay
+	openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = time.Millisecond, 2*time.Millisecond
+	t.Cleanup(func() { openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = origBase, origMax })
+
+	attempts := 0
+	resp, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, overloadErr()
+			}
+			return okResponse()
+		},
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	if err != nil {
+		t.Fatalf("expected the overload retry to succeed, got %v", err)
+	}
+	resp.Body.Close()
+	if attempts != 3 {
+		t.Errorf("expected three attempts before success, got %d", attempts)
+	}
+}
+
+// The overload retry is bounded: a lane that sheds every attempt must answer
+// with the 429, not spin. The backoff budget is ~20s (8 attempts), so the test
+// shrinks the delays to keep the suite fast.
+func TestForwardOpenCodeStopsRetryingOverload(t *testing.T) {
+	origBase, origMax := openCodeOverloadBaseDelay, openCodeOverloadMaxDelay
+	openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = time.Millisecond, 2*time.Millisecond
+	t.Cleanup(func() { openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = origBase, origMax })
+
+	attempts := 0
+	_, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) { attempts++; return nil, overloadErr() },
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected the overload 429 to surface after the budget, got %v", err)
+	}
+	if attempts != openCodeOverloadAttempts {
+		t.Errorf("expected %d attempts (first try + retries), got %d", openCodeOverloadAttempts, attempts)
+	}
+}
+
+// A caller that went away must not be held for the backoff: the retry aborts
+// and answers with the upstream status.
+func TestForwardOpenCodeOverloadRetryStopsOnCancelledContext(t *testing.T) {
+	origBase, origMax := openCodeOverloadBaseDelay, openCodeOverloadMaxDelay
+	openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = time.Second, time.Second
+	t.Cleanup(func() { openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = origBase, origMax })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	_, err := forwardOpenCodeRotating(ctx,
+		func() (*http.Response, error) {
+			attempts++
+			cancel()
+			return nil, overloadErr()
+		},
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	if err == nil {
+		t.Fatal("a cancelled request must not retry")
+	}
+	if attempts != 1 {
+		t.Errorf("expected the retry to abort on the first attempt, got %d", attempts)
+	}
+}
+
+// A quota 429 (FreeUsageLimitError) is an account verdict, not load shedding:
+// it must never enter the overload retry.
+func TestForwardOpenCodeDoesNotRetryQuota429(t *testing.T) {
+	attempts := 0
+	_, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) { attempts++; return nil, usageLimitErr() },
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected the quota 429 untouched, got %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("expected a single attempt, got %d", attempts)
+	}
+}
+
+func TestIsOpenCodeOverload(t *testing.T) {
+	cases := []struct {
+		name string
+		ue   *proxy.UpstreamError
+		want bool
+	}{
+		{"overload 429", &proxy.UpstreamError{StatusCode: 429, Body: []byte(`{"error":{"message":"The inference service is overloaded. Please try again later."}}`)}, true},
+		{"overload casing", &proxy.UpstreamError{StatusCode: 429, Body: []byte(`OVERLOADED`)}, true},
+		{"quota 429", usageLimitErr(), false},
+		{"overload text but 403", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`overloaded`)}, false},
+		{"plain 429", &proxy.UpstreamError{StatusCode: 429, Body: []byte(`{"error":{"message":"too many requests"}}`)}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOpenCodeOverload(tc.ue); got != tc.want {
+				t.Errorf("isOpenCodeOverload = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
