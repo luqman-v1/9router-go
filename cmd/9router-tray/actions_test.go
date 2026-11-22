@@ -38,3 +38,30 @@ func TestSetAutostartDelegatesToGatewayCLI(t *testing.T) {
 		t.Fatalf("setAutostart(true) error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestStartGatewayDelegatesToGatewayCLI(t *testing.T) {
+	orig := execGatewayCLI
+	t.Cleanup(func() { execGatewayCLI = orig })
+
+	var calls [][]string
+	var stubErr error
+	execGatewayCLI = func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return stubErr
+	}
+
+	if err := startGateway(); err != nil {
+		t.Fatalf("startGateway() unexpected error: %v", err)
+	}
+
+	want := [][]string{{"start"}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("execGatewayCLI calls = %v, want %v", calls, want)
+	}
+
+	wantErr := errors.New("already running")
+	stubErr = wantErr
+	if err := startGateway(); !errors.Is(err, wantErr) {
+		t.Fatalf("startGateway() error = %v, want %v", err, wantErr)
+	}
+}

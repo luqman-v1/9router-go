@@ -82,8 +82,10 @@ func trimOutput(b []byte) string {
 }
 
 // startGateway boots the gateway through the CLI's daemon path.
+// `9router-go start` already detaches into the background; `--background` is a
+// root-only flag and fails usage parsing when placed after a subcommand.
 func startGateway() error {
-	return runGatewayCLI("start", "--background")
+	return execGatewayCLI("start")
 }
 
 // stopSupervised stops through the init supervisor. No token is sent: systemd,
