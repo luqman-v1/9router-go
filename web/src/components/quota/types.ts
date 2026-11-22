@@ -77,7 +77,6 @@ export interface ProviderConnectionLike {
   isActive?: number | boolean
   testStatus?: string | null
   providerSpecificData?: { authMethod?: string; region?: string; profileArn?: string; [key: string]: unknown }
-  [key: string]: unknown
 }
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
