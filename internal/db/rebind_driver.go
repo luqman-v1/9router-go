@@ -51,8 +51,15 @@ func (c *rebindConn) Prepare(query string) (driver.Stmt, error) {
 	return rebindStmt{inner: stmt}, nil
 }
 
-func (c *rebindConn) Close() error              { return c.inner.Close() }
-func (c *rebindConn) Begin() (driver.Tx, error) { return c.inner.Begin() }
+func (c *rebindConn) Close() error { return c.inner.Close() }
+
+// Begin delegates to the wrapped driver's Begin. staticcheck flags it as
+// deprecated, but the database/sql contract requires it when the inner driver
+// does not implement ConnBeginTx; the type assertion in BeginTx handles that
+// case.
+func (c *rebindConn) Begin() (driver.Tx, error) { //nolint:staticcheck
+	return c.inner.Begin()
+}
 
 func (c *rebindConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
 	pc, ok := c.inner.(driver.ConnPrepareContext)
@@ -102,10 +109,20 @@ type rebindStmt struct{ inner driver.Stmt }
 
 func (s rebindStmt) Close() error  { return s.inner.Close() }
 func (s rebindStmt) NumInput() int { return s.inner.NumInput() }
-func (s rebindStmt) Exec(args []driver.Value) (driver.Result, error) {
+
+// Exec delegates to the wrapped driver's Exec. staticcheck flags it as
+// deprecated, but the database/sql contract requires it when the inner driver
+// does not implement StmtExecContext; the type assertion in ExecContext
+// handles that case.
+func (s rebindStmt) Exec(args []driver.Value) (driver.Result, error) { //nolint:staticcheck
 	return s.inner.Exec(args)
 }
-func (s rebindStmt) Query(args []driver.Value) (driver.Rows, error) {
+
+// Query delegates to the wrapped driver's Query. staticcheck flags it as
+// deprecated, but the database/sql contract requires it when the inner driver
+// does not implement StmtQueryContext; the type assertion in QueryContext
+// handles that case.
+func (s rebindStmt) Query(args []driver.Value) (driver.Rows, error) { //nolint:staticcheck
 	return s.inner.Query(args)
 }
 

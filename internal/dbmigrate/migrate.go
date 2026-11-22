@@ -48,26 +48,26 @@ var importOrder = []string{
 // Export dumps every user table of the SQLite database at sqlitePath into
 // outDir as <table>.jsonl, one JSON object per row. It returns the per-table
 // row counts in the order the tables were written.
-func Export(sqlitePath, outDir string) ([]string, error) {
+func Export(ctx context.Context, sqlitePath, outDir string) ([]string, error) {
 	dsn := "file:" + sqlitePath + "?mode=ro"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("dbmigrate: open sqlite %s: %w", sqlitePath, err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("dbmigrate: sqlite %s unreachable: %w", sqlitePath, err)
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, fmt.Errorf("dbmigrate: create out dir: %w", err)
 	}
-	tables, err := userTables(db)
+	tables, err := userTables(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 	summaries := make([]string, 0, len(tables))
 	for _, t := range tables {
-		n, err := exportTable(db, t, filepath.Join(outDir, t+".jsonl"))
+		n, err := exportTable(ctx, db, t, filepath.Join(outDir, t+".jsonl"))
 		if err != nil {
 			return nil, err
 		}
@@ -78,8 +78,8 @@ func Export(sqlitePath, outDir string) ([]string, error) {
 
 // userTables returns the names of every non-internal table, in name order so
 // repeated exports are byte-identical.
-func userTables(db *sql.DB) ([]string, error) {
-	rows, err := db.Query(
+func userTables(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
 	)
 	if err != nil {
@@ -98,10 +98,10 @@ func userTables(db *sql.DB) ([]string, error) {
 }
 
 // exportTable streams one table to path and returns the row count.
-func exportTable(db *sql.DB, table, path string) (int, error) {
+func exportTable(ctx context.Context, db *sql.DB, table, path string) (int, error) {
 	// ORDER BY nothing: rowid order is the insertion order and is stable for
 	// a read-only file, which keeps repeat exports comparable.
-	rows, err := db.Query(`SELECT * FROM ` + quoteIdent(table))
+	rows, err := db.QueryContext(ctx, `SELECT * FROM ` + quoteIdent(table))
 	if err != nil {
 		return 0, fmt.Errorf("dbmigrate: select %s: %w", table, err)
 	}

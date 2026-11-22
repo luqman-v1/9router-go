@@ -787,6 +787,7 @@ WHERE NOT EXISTS (SELECT 1 FROM compressionAnalytics ca WHERE ca.requestId = ?)`
 					)
 				}
 			}
+			_ = rows.Err()
 		}
 	}
 
@@ -850,6 +851,7 @@ WHERE NOT EXISTS (
 					)
 				}
 			}
+			_ = uhRows.Err()
 		}
 	}
 

@@ -42,7 +42,7 @@ func dbCommand() *cli.Command {
 func dbExportAction(cCtx *cli.Context) error {
 	from := cCtx.String("from")
 	out := cCtx.String("out")
-	summaries, err := dbmigrate.Export(from, out)
+	summaries, err := dbmigrate.Export(cCtx.Context, from, out)
 	if err != nil {
 		return err
 	}

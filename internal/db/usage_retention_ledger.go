@@ -136,8 +136,10 @@ func (r *Repo) PruneUsageHistory(ctx context.Context, retention time.Duration) (
 		// is no longer there, and the statements that read the ledger are the
 		// ones the dashboard polls. Fail-open: the rows are already gone, so a
 		// statistics refresh that cannot run costs query plans, not correctness.
-		if _, err := r.db.ExecContext(ctx, `PRAGMA optimize`); err != nil && ctx.Err() == nil {
-			log.Printf("[RETENTION] ledger PRAGMA optimize failed: %v", err)
+		if engineOf(r.db) == EngineSQLite {
+			if _, err := r.db.ExecContext(ctx, `PRAGMA optimize`); err != nil && ctx.Err() == nil {
+				log.Printf("[RETENTION] ledger PRAGMA optimize failed: %v", err)
+			}
 		}
 	}
 	return result, nil

@@ -41,7 +41,7 @@ func TestExportWritesJSONL(t *testing.T) {
 	defer closeDB()
 	out := t.TempDir()
 
-	summaries, err := Export(src, out)
+	summaries, err := Export(context.Background(), src, out)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -84,10 +84,10 @@ func TestExportDeterministic(t *testing.T) {
 	defer closeDB()
 	a := t.TempDir()
 	b := t.TempDir()
-	if _, err := Export(src, a); err != nil {
+	if _, err := Export(context.Background(), src, a); err != nil {
 		t.Fatalf("export a: %v", err)
 	}
-	if _, err := Export(src, b); err != nil {
+	if _, err := Export(context.Background(), src, b); err != nil {
 		t.Fatalf("export b: %v", err)
 	}
 	entries, err := os.ReadDir(a)
@@ -120,7 +120,7 @@ func TestImportRoundTripToSQLite(t *testing.T) {
 	src, closeDB := roundTripSQLite(t)
 	defer closeDB()
 	dump := t.TempDir()
-	if _, err := Export(src, dump); err != nil {
+	if _, err := Export(context.Background(), src, dump); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 	if _, err := Import(context.Background(), dsn, dump); err != nil {
