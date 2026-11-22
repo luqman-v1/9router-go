@@ -48,7 +48,6 @@
     buildAvailableModels,
     fetchProviderModelsData,
     fetchSuggestedModels,
-    getIconPath,
     isChatModel,
     isConnectionError,
     providerDisplayPrefix,
@@ -770,7 +769,7 @@
     const q = proxyPoolSearch.trim().toLowerCase()
     if (!q) return proxyPools
     return proxyPools.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.proxyUrl.toLowerCase().includes(q)
+      (p) => p.name.toLowerCase().includes(q) || (p.proxyUrl ?? '').toLowerCase().includes(q)
     )
   })
 
@@ -831,7 +830,6 @@
     }
     return providerConnections.find((c) => c.isActive === 1) ?? providerConnections[0]
   })
-  let freebuffConnection = $derived(targetFreebuffConn)
   let freebuffSession = $state<FreebuffSessionStatusResponse | null>(null)
   let isLoadingSession = $state(false)
   let isAuthorizingFreebuff = $state(false)
@@ -839,7 +837,7 @@
   let currentFreebuffInit = $state<{
     fingerprintId: string
     fingerprintHash: string
-    expiresAt: number
+    expiresAt: string | number
     loginUrl: string
   } | null>(null)
 
@@ -966,7 +964,7 @@
     try {
       const [modelsData, settingsData, poolsData, aliasesData, capsData] = await Promise.all([
         fetchProviderModelsData(providerId, storageAlias),
-        api.getSettings().catch(() => ({})),
+        api.getSettings().catch((): Settings => ({})),
         api.getProxyPools().catch(() => []),
         api.getModelAliases().catch(() => ({ aliases: {} })),
         // The caps endpoint answers for compatible nodes too: a node with
@@ -4878,7 +4876,7 @@
           isLoading={isLoadingSession}
           expiresInMin={sessionExpiresInMin}
           onRefresh={loadFreebuffSession}
-          models={visibleModels.map((m) => ({ id: m.id, name: m.name }))}
+          models={visibleModels.map((m) => ({ id: m.id, name: m.name ?? m.id }))}
           onSwitch={switchFreebuffModel}
           connections={providerConnections.map((c) => {
             const specific = c.providerSpecificData as Record<string, any> | undefined

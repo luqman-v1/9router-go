@@ -947,7 +947,7 @@ export interface FreebuffSessionSwitchResponse {
 }
 
 export interface FreebuffSessionStatusResponse {
-  status: 'active' | 'none' | 'unauthorized' | 'banned' | 'country_blocked'
+  status: 'active' | 'queued' | 'ended' | 'none' | 'unauthorized' | 'banned' | 'country_blocked'
   /** Account this report describes — set so the UI can name it. */
   connectionId?: string
   connectionName?: string
