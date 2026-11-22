@@ -1,4 +1,0 @@
-### chore(web): clear remaining svelte-check errors and tighten baseline to zero
-
-- **Zero-error `svelte-check` ratchet (`26 -> 0`)** (`web/scripts/svelte-check-baseline.json`, `web/src/App.svelte`, `web/src/api/client.ts`, `web/src/components/{analytics,combos,connections}/`): resolved the final 26 type and template diagnostics across the web dashboard and locked `svelte-check-baseline.json` at `0` errors.
-- **Type & runtime alignment** (`AnalyticsView.svelte`, `client.ts`, `ProviderDetailView.svelte`, `App.svelte`, combos components): compared `promptTokens`/`completionTokens` matching `RecentRequestItem`, added `'queued'` and `'ended'` to `FreebuffSessionStatusResponse.status`, guarded optional `p.proxyUrl`, added `'media-video'`/`keys` entries to `pageMeta`, and moved icon `title` tooltips onto `<span>` wrappers.
