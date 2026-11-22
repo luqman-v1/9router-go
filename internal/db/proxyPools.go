@@ -292,7 +292,7 @@ func (r *Repo) ActivePoolIDs() []string {
 // filter runs in SQL and the payload decodes into a typed struct, so a database
 // holding many pools does not pay for rows rotation can never pick.
 func (r *Repo) queryActivePoolIDs() []string {
-	rows, err := r.db.Query(`SELECT id, data FROM proxyPools WHERE isActive = TRUE ORDER BY createdAt`)
+	rows, err := r.db.Query(`SELECT id, data FROM proxyPools WHERE isActive = 1 ORDER BY createdAt`)
 	if err != nil {
 		return nil
 	}

@@ -148,9 +148,8 @@ func apiKeyScan(k *models.APIKey, withAdditive bool) (dest []any, apply func()) 
 	// there is no NULL to preserve.
 	var limitMicros, limitTokens int64
 	var budgetPeriod string
-	var isActive any
 	var alertPct, hardCutoff int
-	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &isActive, &k.CreatedAt,
+	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
 		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout}
 	if withAdditive {
 		dest = append(dest, &contextLimit)
@@ -161,16 +160,6 @@ func apiKeyScan(k *models.APIKey, withAdditive bool) (dest []any, apply func()) 
 		dest = append(dest, &limitMicros, &limitTokens, &budgetPeriod, &alertPct, &hardCutoff)
 	}
 	apply = func() {
-		switch v := isActive.(type) {
-		case bool:
-			if v {
-				k.IsActive = 1
-			} else {
-				k.IsActive = 0
-			}
-		case int64:
-			k.IsActive = int(v)
-		}
 		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount,
 			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
 		if withAdditive {

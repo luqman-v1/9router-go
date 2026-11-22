@@ -345,21 +345,6 @@ func insertChunks(ctx context.Context, db *sql.DB, table string, cols []string, 
 // legacy=false binds values natively and lets pgx encode per the declared
 // column type (TEXT, BIGINT, BOOLEAN, ...).
 func insertChunk(ctx context.Context, tx *sql.Tx, table string, cols []string, rows []map[string]any, legacy bool) error {
-	// SQLite stores booleans as 0/1 integers; pgx cannot encode those into a
-	// BOOLEAN column. Normalize by the target column type once per chunk.
-	boolCols := make(map[string]bool, len(cols))
-	if !legacy {
-		for _, c := range cols {
-			var dataType string
-			err := tx.QueryRowContext(ctx,
-				`SELECT data_type FROM information_schema.columns WHERE lower(table_name)=lower($1) AND lower(column_name)=lower($2)`,
-				table, c,
-			).Scan(&dataType)
-			if err == nil && strings.EqualFold(dataType, "boolean") {
-				boolCols[strings.ToLower(c)] = true
-			}
-		}
-	}
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO ")
 	sb.WriteString(quoteIdent(table))
@@ -394,7 +379,7 @@ func insertChunk(ctx context.Context, tx *sql.Tx, table string, cols []string, r
 					}
 					args = append(args, string(b))
 				} else {
-					args = append(args, normalizeValue(v, boolCols[strings.ToLower(c)]))
+					args = append(args, v)
 				}
 			} else {
 				args = append(args, nil)
@@ -409,31 +394,6 @@ func insertChunk(ctx context.Context, tx *sql.Tx, table string, cols []string, r
 	return nil
 }
 
-// normalizeValue adapts SQLite values for PG: 0/1 integers become bool for
-// BOOLEAN columns, and NUL bytes are stripped from TEXT values because PG's
-// UTF-8 encoding rejects 0x00 (SQLite accepts it in TEXT).
-func normalizeValue(v any, isBool bool) any {
-	if v == nil {
-		return nil
-	}
-	if isBool {
-		switch n := v.(type) {
-		case float64:
-			return n != 0
-		case int64:
-			return n != 0
-		case int:
-			return n != 0
-		case bool:
-			return n
-		}
-	}
-	if s, ok := v.(string); ok && strings.ContainsRune(s, 0) {
-		return strings.ReplaceAll(s, "\x00", "")
-	}
-	return v
-}
-
 // resetSequences bumps any IDENTITY/serial sequence past the largest id this
 // import wrote, so later inserts without an explicit id do not collide.
 func resetSequences(ctx context.Context, db *sql.DB, table string, cols []string) error {
@@ -445,14 +405,6 @@ func resetSequences(ctx context.Context, db *sql.DB, table string, cols []string
 		}
 	}
 	if !hasID {
-		return nil
-	}
-	// Only integer ids back a serial/identity sequence. A TEXT or UUID primary
-	// key (e.g. audit_log.id) has no sequence to bump, and running MAX(id) on
-	// it fails with "COALESCE types text and integer cannot be matched" on PG.
-	var dataType string
-	typeQ := `SELECT data_type FROM information_schema.columns WHERE table_name = ` + quoteLiteral(strings.ToLower(table)) + ` AND column_name = 'id'`
-	if err := db.QueryRowContext(ctx, typeQ).Scan(&dataType); err != nil || !isIntegerType(dataType) {
 		return nil
 	}
 	q := `SELECT COALESCE(MAX(id), 0) FROM ` + quoteIdent(table)
@@ -474,16 +426,6 @@ func resetSequences(ctx context.Context, db *sql.DB, table string, cols []string
 		return fmt.Errorf("dbmigrate: reset sequence %s: %w", table, err)
 	}
 	return nil
-}
-
-// isIntegerType reports whether a PG information_schema data_type can back a
-// serial/identity sequence. Anything else (text, uuid, ...) has no sequence.
-func isIntegerType(t string) bool {
-	switch strings.ToLower(t) {
-	case "smallint", "integer", "bigint", "smallserial", "serial", "bigserial":
-		return true
-	}
-	return false
 }
 
 // quoteIdent lowercases and double-quotes a SQL identifier, escaping
