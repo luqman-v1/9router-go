@@ -78,3 +78,19 @@ func rotateOpencodeStableSession(stableKey, failed string, install func(session 
 		}
 	}
 }
+
+// forgetOpencodeStableSession drops the stable session a failed request traveled
+// on, so the next request mints a fresh one. Upstream spends or flags a session
+// id after enough traffic, and every later request that reused it failed the
+// same way until restart (#5559).
+//
+// Called by forwardOpenCodeRotating for a 403 or a non-overload 429: those are
+// verdicts on the session, not on the request shape. A nil key (a client-supplied
+// session, or a keyed lane) yields a nil hook — neither is ours to drop.
+func forgetOpencodeStableSession(req *Request, free bool, failed string) func() {
+	stableKey := opencodeStableSessionKey(req, free)
+	if stableKey == "" {
+		return nil
+	}
+	return func() { proxy.ExpireStableOpenCodeSession(stableKey, failed) }
+}

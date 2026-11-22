@@ -1,0 +1,2 @@
+### Fixed
+- **Retry transient OpenCode free-tier overload 429 and drop spent sessions** — Transparently retries transient 429 overload errors with backoff and clears invalidated session IDs from cache on quota exhaustion (upstream decolua/9router@989b1eecb parity).
