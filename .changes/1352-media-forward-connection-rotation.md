@@ -1,0 +1,4 @@
+### fix(media): rotate forwardMediaRequest across connections on retryable errors
+
+- **Generic media failover** (`internal/handlers/media/media.go`): extracted per-attempt execution in `forwardMediaRequest` into `tryMediaForwardConn` and rotated across active connections via `excludeIDs` on retryable errors classified by `providers.ClassifyErrorForProvider`, locking/unlocking failing `(conn, model)` entries only on non-probe requests while preserving pinned headers, `NoAuth`/`DefaultAPIKey` fallback, and the `5xx`/transport no-rotation safeguard for billable async video creation.
+- **Regression tests** (`internal/handlers/media/media_forward_rotation_test.go`): added `TestForwardMediaRequest_ConnectionRotation` (7 subtests covering `429` rotation + lock, `401` audio speech failover, `400` passthrough, video create `429` rotate vs `500` no-rotate, pinned headers, exhausted pool headers/body preservation, and probe isolation).
