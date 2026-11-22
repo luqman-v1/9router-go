@@ -45,6 +45,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build web
+        run: cd web && bun install --frozen-lockfile && bun run build
+
       - name: Build
         run: go build ./...
 
@@ -60,7 +66,7 @@ jobs:
         env:
           TEST_PG_DSN: postgres://router:router@localhost:5432/router?sslmode=disable
         run: |
-          go build -o /tmp/9router-go ./cmd/9router-go/
+          go build -o /tmp/9router-go ./cmd/9router-go/  # web/dist already built above
 
           # Create a small SQLite fixture with one row in each core table.
           TMP=$(mktemp -d)
