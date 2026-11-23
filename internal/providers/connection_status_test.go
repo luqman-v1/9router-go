@@ -1,6 +1,9 @@
 package providers
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestEffectiveStatus(t *testing.T) {
 	tests := []struct {
@@ -163,6 +166,8 @@ func TestStatusVariant(t *testing.T) {
 }
 
 func TestHasActiveCooldown(t *testing.T) {
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
 	tests := []struct {
 		name string
 		data string
@@ -171,8 +176,14 @@ func TestHasActiveCooldown(t *testing.T) {
 		{"empty", "", false},
 		{"whitespace", "   ", false},
 		{"no lock", `{"testStatus":"active"}`, false},
-		{"lock present", `{"modelLock_gpt-5":"2026-10-30T00:00:00Z"}`, true},
-		{"null lock still counts as a key", `{"modelLock_gpt-5":null}`, true},
+		{"live model lock", `{"modelLock_gpt-5":"` + future + `"}`, true},
+		{"expired model lock", `{"modelLock_gpt-5":"` + past + `"}`, false},
+		{"null model lock after unlock", `{"modelLock_gpt-5":null}`, false},
+		{"empty model lock string", `{"modelLock_gpt-5":""}`, false},
+		{"live rateLimitedUntil", `{"rateLimitedUntil":"` + future + `"}`, true},
+		{"expired rateLimitedUntil", `{"rateLimitedUntil":"` + past + `"}`, false},
+		{"null rateLimitedUntil", `{"rateLimitedUntil":null}`, false},
+		{"malformed json with lock prefix", `{"modelLock_gpt-5":`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,6 +195,8 @@ func TestHasActiveCooldown(t *testing.T) {
 }
 
 func TestConnectionStatus(t *testing.T) {
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
 	tests := []struct {
 		name       string
 		isActive   int
@@ -197,6 +210,27 @@ func TestConnectionStatus(t *testing.T) {
 			data:       "",
 			wantStatus: StatusActive,
 			wantActive: true,
+		},
+		{
+			name:       "unlocked null modelLock reads as active",
+			isActive:   1,
+			data:       `{"modelLock_gpt-5":null}`,
+			wantStatus: StatusActive,
+			wantActive: true,
+		},
+		{
+			name:       "expired modelLock reads as active",
+			isActive:   1,
+			data:       `{"modelLock_gpt-5":"` + past + `"}`,
+			wantStatus: StatusActive,
+			wantActive: true,
+		},
+		{
+			name:       "live modelLock reads as unavailable",
+			isActive:   1,
+			data:       `{"modelLock_gpt-5":"` + future + `"}`,
+			wantStatus: StatusUnavailable,
+			wantActive: false,
 		},
 		{
 			name:       "quota exhausted in lastError is surfaced",

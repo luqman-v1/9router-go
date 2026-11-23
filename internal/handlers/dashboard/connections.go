@@ -89,10 +89,10 @@ func (h *DashboardHandler) HandleGetProvidersClient(w http.ResponseWriter, r *ht
 	accountFiltered := make([]*models.ProviderConnection, 0, len(providerFiltered))
 	for _, c := range providerFiltered {
 		// "active" means the account can serve a request, not that the toggle
-		// is on. A credit-exhausted connection with isActive=1 is not active,
-		// so filtering on the toggle alone hides the accounts the operator
-		// most needs to see.
-		active := providers.IsEffectivelyActive(c.IsActive, "", providers.HasActiveCooldown(c.Data))
+		// is on. A credit-exhausted or cooldown-locked connection with
+		// isActive=1 is not active, so filtering reads the same effective
+		// status derivation as sanitizeProviderConnection.
+		_, active := providers.ConnectionStatus(c.IsActive, c.Data)
 		if accountStatus == "active" && !active {
 			continue
 		}
@@ -396,10 +396,12 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 	// works. Derived from testStatus + live cooldown + stored lastError with
 	// the same vocabulary the request path uses, so the dashboard stops
 	// counting a credit-exhausted account as connected.
+	testStatus, _ := safe["testStatus"].(string)
 	lastError, _ := safe["lastError"].(string)
-	effective := providers.EffectiveStatusWithError(c.IsActive, fmt.Sprintf("%v", safe["testStatus"]), providers.HasActiveCooldown(c.Data), lastError)
+	cooldown := providers.HasActiveCooldown(c.Data)
+	effective := providers.EffectiveStatusWithError(c.IsActive, testStatus, cooldown, lastError)
 	safe["effectiveStatus"] = effective
-	safe["isEffectivelyActive"] = providers.IsEffectivelyActiveWithError(c.IsActive, fmt.Sprintf("%v", safe["testStatus"]), providers.HasActiveCooldown(c.Data), lastError)
+	safe["isEffectivelyActive"] = providers.IsEffectivelyActiveWithError(c.IsActive, testStatus, cooldown, lastError)
 	safe["statusVariant"] = providers.StatusVariant(c.IsActive, effective)
 	return safe
 }
