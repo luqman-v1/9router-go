@@ -192,7 +192,7 @@ func (d OpenAIReasoningDetail) MarshalJSON() ([]byte, error) {
 // OpenAIDelta holds the per-chunk delta in an OpenAI stream.
 type OpenAIDelta struct {
 	Role             string                  `json:"role"`
-	Content          string                  `json:"content"`
+	Content          any                     `json:"content"`
 	ReasoningContent string                  `json:"reasoning_content"`
 	ReasonResult     string                  `json:"reason_result"`
 	Reasoning        string                  `json:"reasoning"`
