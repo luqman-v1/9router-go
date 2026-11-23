@@ -358,3 +358,249 @@ func TestForwardMediaRequest_ConnectionRotation(t *testing.T) {
 		}
 	})
 }
+
+func TestForwardSystemoneRequest_ConnectionRotation(t *testing.T) {
+	const okSysPayload = `{"model":"gpt-4o","answers":{"q":{"type":"noul","noul":0.5}}}`
+	const sysBody = `{"model":"openai/gpt-4o","state":"ok","questions":{"q":{"type":"noul"}}}`
+
+	postSys := func(handler *MediaHandler, probe bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(sysBody))
+		req.Header.Set("Content-Type", "application/json")
+		if probe {
+			req = req.WithContext(handlerutil.WithProbeContext(req.Context()))
+		}
+		rec := httptest.NewRecorder()
+		handler.HandleSystemone(rec, req)
+		return rec
+	}
+
+	t.Run("rotates_on_429_and_locks_failed_connection", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer sk-sys-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded"}}`))
+			case "Bearer sk-sys-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okSysPayload))
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}))
+		defer upstream.Close()
+
+		database, cleanup := setupEmbeddingsTestDB(t)
+		defer cleanup()
+		seedJSONMediaConn(t, database, "conn-sys-1", "openai", "sk-sys-1", upstream.URL, 1)
+		seedJSONMediaConn(t, database, "conn-sys-2", "openai", "sk-sys-2", upstream.URL, 2)
+		handler := newTestMediaHandler(db.NewRepo(database))
+
+		rec := postSys(handler, false)
+		if rec.Code != http.StatusOK || rec.Body.String() != okSysPayload {
+			t.Fatalf("first response = (%d, %s), want (200, %s)", rec.Code, rec.Body.String(), okSysPayload)
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 1 {
+			t.Fatalf("first hits = (%d, %d), want (1, 1)", conn1Hits.Load(), conn2Hits.Load())
+		}
+
+		rec2 := postSys(handler, false)
+		if rec2.Code != http.StatusOK || rec2.Body.String() != okSysPayload {
+			t.Fatalf("second response = (%d, %s), want (200, %s)", rec2.Code, rec2.Body.String(), okSysPayload)
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 2 {
+			t.Errorf("second hits = (%d, %d), want (1, 2)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+
+	t.Run("does_not_rotate_or_lock_on_non_retryable_400", func(t *testing.T) {
+		const clientErr = `{"error":{"message":"bad state"}}`
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer sk-sys-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(clientErr))
+			case "Bearer sk-sys-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okSysPayload))
+			}
+		}))
+		defer upstream.Close()
+
+		database, cleanup := setupEmbeddingsTestDB(t)
+		defer cleanup()
+		seedJSONMediaConn(t, database, "conn-sys-1", "openai", "sk-sys-1", upstream.URL, 1)
+		seedJSONMediaConn(t, database, "conn-sys-2", "openai", "sk-sys-2", upstream.URL, 2)
+		handler := newTestMediaHandler(db.NewRepo(database))
+
+		rec := postSys(handler, false)
+		if rec.Code != http.StatusBadRequest || rec.Body.String() != clientErr {
+			t.Fatalf("first response = (%d, %s), want (400, %s)", rec.Code, rec.Body.String(), clientErr)
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 0 {
+			t.Fatalf("first hits = (%d, %d), want (1, 0)", conn1Hits.Load(), conn2Hits.Load())
+		}
+
+		rec2 := postSys(handler, false)
+		if rec2.Code != http.StatusBadRequest {
+			t.Fatalf("second status = %d, want 400", rec2.Code)
+		}
+		if conn1Hits.Load() != 2 || conn2Hits.Load() != 0 {
+			t.Errorf("second hits = (%d, %d), want (2, 0)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+
+	t.Run("probe_context_rotates_without_mutating_cooldown_locks", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer sk-sys-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"quota exceeded"}}`))
+			case "Bearer sk-sys-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okSysPayload))
+			}
+		}))
+		defer upstream.Close()
+
+		database, cleanup := setupEmbeddingsTestDB(t)
+		defer cleanup()
+		seedJSONMediaConn(t, database, "conn-sys-1", "openai", "sk-sys-1", upstream.URL, 1)
+		seedJSONMediaConn(t, database, "conn-sys-2", "openai", "sk-sys-2", upstream.URL, 2)
+		handler := newTestMediaHandler(db.NewRepo(database))
+
+		rec := postSys(handler, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("probe status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 1 {
+			t.Fatalf("probe hits = (%d, %d), want (1, 1)", conn1Hits.Load(), conn2Hits.Load())
+		}
+
+		rec2 := postSys(handler, false)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("follow-up status = %d, body = %s", rec2.Code, rec2.Body.String())
+		}
+		if conn1Hits.Load() != 2 || conn2Hits.Load() != 2 {
+			t.Errorf("follow-up hits = (%d, %d), want (2, 2)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+}
+
+func TestForwardMiMoSpeech_ConnectionRotation(t *testing.T) {
+	const mimoBody = `{"model":"xiaomi-mimo/mimo-v2.5-tts","input":"hello"}`
+	const okMiMoJSON = `{"choices":[{"message":{"audio":{"data":"aGVsbG8=","format":"wav"}}}]}`
+
+	postMiMo := func(handler *MediaHandler, headers map[string]string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(mimoBody))
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		handler.HandleAudioSpeech(rec, req)
+		return rec
+	}
+
+	t.Run("rotates_on_429_and_locks_failed_connection", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer sk-mimo-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"quota exceeded"}}`))
+			case "Bearer sk-mimo-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okMiMoJSON))
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}))
+		defer upstream.Close()
+
+		database, cleanup := setupEmbeddingsTestDB(t)
+		defer cleanup()
+		seedJSONMediaConn(t, database, "conn-mimo-1", "xiaomi-mimo", "sk-mimo-1", upstream.URL+"/v1/chat/completions", 1)
+		seedJSONMediaConn(t, database, "conn-mimo-2", "xiaomi-mimo", "sk-mimo-2", upstream.URL+"/v1/chat/completions", 2)
+		handler := newTestMediaHandler(db.NewRepo(database))
+
+		rec := postMiMo(handler, nil)
+		if rec.Code != http.StatusOK || rec.Body.String() != "hello" {
+			t.Fatalf("first response = (%d, %q), want (200, \"hello\")", rec.Code, rec.Body.String())
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 1 {
+			t.Fatalf("first hits = (%d, %d), want (1, 1)", conn1Hits.Load(), conn2Hits.Load())
+		}
+
+		rec2 := postMiMo(handler, nil)
+		if rec2.Code != http.StatusOK || rec2.Body.String() != "hello" {
+			t.Fatalf("second response = (%d, %q), want (200, \"hello\")", rec2.Code, rec2.Body.String())
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 2 {
+			t.Errorf("second hits = (%d, %d), want (1, 2)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+
+	t.Run("rotates_on_401_and_respects_pinned_connection", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer sk-mimo-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+			case "Bearer sk-mimo-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okMiMoJSON))
+			}
+		}))
+		defer upstream.Close()
+
+		database, cleanup := setupEmbeddingsTestDB(t)
+		defer cleanup()
+		seedJSONMediaConn(t, database, "conn-mimo-1", "xiaomi-mimo", "sk-mimo-1", upstream.URL+"/v1/chat/completions", 1)
+		seedJSONMediaConn(t, database, "conn-mimo-2", "xiaomi-mimo", "sk-mimo-2", upstream.URL+"/v1/chat/completions", 2)
+		handler := newTestMediaHandler(db.NewRepo(database))
+
+		rec := postMiMo(handler, nil)
+		if rec.Code != http.StatusOK || rec.Body.String() != "hello" {
+			t.Fatalf("unpinned response = (%d, %q), want (200, \"hello\")", rec.Code, rec.Body.String())
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 1 {
+			t.Fatalf("unpinned hits = (%d, %d), want (1, 1)", conn1Hits.Load(), conn2Hits.Load())
+		}
+
+		// Pinned connection on a fresh DB must not rotate on 401.
+		conn1Hits.Store(0)
+		conn2Hits.Store(0)
+		database2, cleanup2 := setupEmbeddingsTestDB(t)
+		defer cleanup2()
+		seedJSONMediaConn(t, database2, "conn-mimo-1", "xiaomi-mimo", "sk-mimo-1", upstream.URL+"/v1/chat/completions", 1)
+		seedJSONMediaConn(t, database2, "conn-mimo-2", "xiaomi-mimo", "sk-mimo-2", upstream.URL+"/v1/chat/completions", 2)
+		handler2 := newTestMediaHandler(db.NewRepo(database2))
+
+		recPinned := postMiMo(handler2, map[string]string{"X-Connection-ID": "conn-mimo-1"})
+		if recPinned.Code != http.StatusBadGateway {
+			t.Fatalf("pinned status = %d, want 502: %s", recPinned.Code, recPinned.Body.String())
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 0 {
+			t.Errorf("pinned hits = (%d, %d), want (1, 0)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+}
