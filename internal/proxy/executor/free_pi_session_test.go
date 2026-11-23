@@ -481,3 +481,171 @@ func TestFreePiForward_OpaqueTokenIsNotRefusedLocally(t *testing.T) {
 		t.Error("an opaque credential was refused locally instead of being sent upstream")
 	}
 }
+
+// --- rotation: a conversation locked by another account --------------------
+
+// freePiConversationLockBody is the refusal upstream returns when a conversation
+// opened under one account is replayed on another. It is prose, not a code: the
+// server states the ownership rule rather than naming an error class.
+const freePiConversationLockBody = `{"error":{"message":"This conversation belongs to another user/session. Account rotation is not allowed."}}`
+
+// TestFreePiSessionVariant_DiffersPerRotationAndIsStable proves the two halves
+// the rotation needs at once: step N never collides with step 0 or step N+1, and
+// the same step always derives the same id so a replay after a restart still
+// lands on the conversation it opened.
+func TestFreePiSessionVariant_DiffersPerRotationAndIsStable(t *testing.T) {
+	token := freePiTestToken("user_rotate")
+
+	base := freePiAccountSessionID(token)
+	if got := freePiSessionVariant(token, 0); got != base {
+		t.Errorf("step 0 = %q, want the base session %q", got, base)
+	}
+
+	seen := map[string]uint64{base: 0}
+	for step := uint64(1); step <= 8; step++ {
+		id := freePiSessionVariant(token, step)
+		if id == "" {
+			t.Fatalf("step %d derived an empty session id", step)
+		}
+		if prev, dup := seen[id]; dup {
+			t.Errorf("step %d collided with step %d on %q", step, prev, id)
+		}
+		seen[id] = step
+		if again := freePiSessionVariant(token, step); again != id {
+			t.Errorf("step %d is not stable: %q then %q", step, id, again)
+		}
+	}
+
+	// A different account must not share any of them.
+	other := freePiTestToken("user_other")
+	for step := uint64(0); step <= 8; step++ {
+		if freePiSessionVariant(token, step) == freePiSessionVariant(other, step) {
+			t.Errorf("accounts collided on step %d", step)
+		}
+	}
+}
+
+// TestFreePiForward_RotatesSessionOnConversationLock is the regression test for
+// the reported failure: a conversation-locked refusal must open a fresh session
+// and succeed, rather than replaying the bound id and refusing the account.
+func TestFreePiForward_RotatesSessionOnConversationLock(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		sessionIDs []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sessionIDs = append(sessionIDs, r.Header.Get("x-session-id"))
+		n := len(sessionIDs)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, freePiConversationLockBody)
+			return
+		}
+		_, _ = io.WriteString(w, freePiJSONCompletion)
+	}))
+	defer srv.Close()
+
+	token := freePiTestToken("user_lockrotate")
+	req := freePiTestRequest(t, srv, token, nil, false)
+	rec := httptest.NewRecorder()
+
+	if err := ForwardFreePi(rec, req); err != nil {
+		t.Fatalf("ForwardFreePi: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the rotated retry to succeed: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sessionIDs) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2 (refusal + rotated retry)", len(sessionIDs))
+	}
+	if sessionIDs[0] == sessionIDs[1] {
+		t.Errorf("the retry reused the locked session id %q", sessionIDs[0])
+	}
+	// The rotated id must be a real rotation of THIS account rather than the
+	// base session or an arbitrary value. The step comes from a process-wide
+	// counter, so the assertion is that the id is one of the account's rotation
+	// variants — reproducible, and distinct from the base.
+	base := freePiAccountSessionID(token)
+	if sessionIDs[1] == base {
+		t.Errorf("rotated session %q is the account's base session, not a rotation", sessionIDs[1])
+	}
+	variant := false
+	for step := uint64(1); step <= 64; step++ {
+		if sessionIDs[1] == freePiSessionVariant(token, step) {
+			variant = true
+			break
+		}
+	}
+	if !variant {
+		t.Errorf("rotated session %q is not a derivation of this account", sessionIDs[1])
+	}
+}
+
+// TestFreePiForward_DoesNotRotateOnUnrelatedRefusal keeps the rotation narrow: a
+// 403 that is not about conversation ownership must reach the client unchanged,
+// with no second upstream call.
+func TestFreePiForward_DoesNotRotateOnUnrelatedRefusal(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"code":"ads_not_showing","message":"Ads aren't showing for this account."}`)
+	}))
+	defer srv.Close()
+
+	req := freePiTestRequest(t, srv, freePiTestToken("user_other403"), nil, false)
+	rec := httptest.NewRecorder()
+
+	err := ForwardFreePi(rec, req)
+	if err == nil {
+		t.Fatal("the unrelated 403 was swallowed")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("upstream calls = %d, want exactly 1 (no retry for an unrelated refusal)", calls)
+	}
+}
+
+// TestFreePiForward_PinnedSessionIsNotRotated proves an operator's pin wins: if
+// the id cannot change, retrying only earns the same answer, so there is exactly
+// one attempt.
+func TestFreePiForward_PinnedSessionIsNotRotated(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, freePiConversationLockBody)
+	}))
+	defer srv.Close()
+
+	connData := map[string]any{"freePiSessionId": "pinned-session"}
+	req := freePiTestRequest(t, srv, freePiTestToken("user_pinned"), connData, false)
+
+	err := ForwardFreePi(httptest.NewRecorder(), req)
+	if err == nil {
+		t.Fatal("the conversation lock was swallowed")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("upstream calls = %d, want 1 (a pinned id cannot rotate)", calls)
+	}
+}

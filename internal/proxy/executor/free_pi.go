@@ -108,8 +108,17 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 			}
 			resp = retried
 		default:
-			freePiNoteAdGate(err)
-			return err
+			// A conversation-locked rejection means the session id that opened
+			// this conversation is now owned by another account, so replaying it
+			// earns the same answer. Open a fresh session on this account and
+			// retry once; only if that is also refused does the caller see the
+			// error, and its failover moves to the next account.
+			retried := freePiSessionRotateRetry(ctx, client, req, state, ue)
+			if retried == nil {
+				freePiNoteAdGate(err)
+				return err
+			}
+			resp = retried
 		}
 	}
 
@@ -323,6 +332,74 @@ func freePiExpiredTokenError() error {
 	// 401 so the existing auth-failure classification applies, with the body's
 	// code steering it to the long cooldown rule rather than the 2-minute one.
 	return &proxy.UpstreamError{StatusCode: http.StatusUnauthorized, Body: body}
+}
+
+// freePiConversationLocked reports whether upstream refused because the
+// conversation belongs to a different account.
+//
+// free-pi binds a conversation to the session id that opened it, and the
+// refusal text says so. It is a per-conversation property rather than a
+// credential or quota verdict: the account is healthy, the request is fine, and
+// the only thing wrong is that this session id has been seen on a conversation
+// another account now owns. The remedy is therefore a different session id, not
+// a cooldown and not a reset.
+//
+// Matched on the server's stable nouns ("conversation", "another session") and
+// deliberately not on the status code: the refusal has been observed as a 403
+// with prose in the body, and a status-only test would let a differently-coded
+// spelling through.
+func freePiConversationLocked(ue *proxy.UpstreamError) bool {
+	if ue == nil {
+		return false
+	}
+	body := strings.ToLower(string(ue.Body))
+	if !strings.Contains(body, "conversation") {
+		return false
+	}
+	return strings.Contains(body, "another") || strings.Contains(body, "different") ||
+		strings.Contains(body, "belongs to") || strings.Contains(body, "not allowed")
+}
+
+// freePiSessionRotateRetry handles the conversation-locked refusal: it advances
+// this account to a fresh session id and replays the request once.
+//
+// The retry is in-process rather than persisted, matching how the 409 path
+// treats state: the rotation step is a property of the request, and a step
+// written to the connection row on the request path would be a database write
+// per refused turn. The derived variant is still stable for the life of the
+// process, which is what stops two requests on the same conversation from
+// fighting over one id.
+//
+// Returns nil when the retry cannot help or also failed, leaving the caller to
+// report the original refusal.
+func freePiSessionRotateRetry(ctx context.Context, client *http.Client, req *Request, state freePiSessionState, first *proxy.UpstreamError) *http.Response {
+	if !freePiConversationLocked(first) {
+		return nil
+	}
+
+	next := state
+	next.SessionID = freePiRotatedSessionIDFor(req.APIKey, req.ConnData, state.RotationStep+1)
+	if next.SessionID == state.SessionID {
+		// An operator pinned the id: every step returns it, so there is nothing
+		// to rotate to and replaying would earn the same refusal.
+		log.Warn("free-pi", "conversation locked but the session id is pinned; not retrying",
+			"account", state.AccountKey, "session", state.SessionID)
+		return nil
+	}
+
+	log.Info("free-pi", "conversation locked by another account; retrying once on a fresh session",
+		"account", state.AccountKey, "from", state.SessionID, "to", next.SessionID)
+
+	resp, err := freePiDoChat(ctx, client, req, next)
+	if err != nil {
+		var ue *proxy.UpstreamError
+		if errors.As(err, &ue) && freePiConversationLocked(ue) {
+			log.Warn("free-pi", "fresh session was also refused as conversation-locked",
+				"account", state.AccountKey, "session", next.SessionID)
+		}
+		return nil
+	}
+	return resp
 }
 
 // freePiNoteAdGate names the one 403 that has a distinct cause and a distinct

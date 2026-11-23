@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +131,37 @@ func freePiJWSubject(token string) string {
 	return claims.Sub
 }
 
+// freePiAccountSessionID is the stable per-ACCOUNT session id, used as the
+// derivation input for every per-rotation variant.
+//
+// It is kept separate from freePiSessionIDFor because the two answer different
+// questions: this one is "which account is this?", the other is "which
+// conversation is this?". Only the account answer may be persisted.
+func freePiAccountSessionID(apiKey string) string {
+	return uuid.NewSHA1(freePiSessionNamespace, []byte(freePiAccountKey(apiKey))).String()
+}
+
+// freePiSessionVariant derives a distinct-but-stable session id for one
+// rotation step of one account.
+//
+// free-pi binds a conversation to the session id that opened it and refuses a
+// later request on that conversation from a different account — the rejection
+// reads as the conversation belonging to another session. Reusing one session
+// id across accounts therefore makes rotation impossible no matter how healthy
+// the credentials are. Deriving from (account, step) rather than minting a
+// random uuid keeps the mapping one-to-one, so a given step always names the
+// same id and a step already handed out is never re-derived differently. The
+// step itself comes from a process-local counter (freePiRotationCounter), so it
+// is monotonic within a run and restarts with the process — the derivation is
+// what is stable, not the counter's value.
+func freePiSessionVariant(apiKey string, step uint64) string {
+	if step == 0 {
+		return freePiAccountSessionID(apiKey)
+	}
+	name := fmt.Sprintf("%s/rotation/%d", freePiAccountKey(apiKey), step)
+	return uuid.NewSHA1(freePiSessionNamespace, []byte(name)).String()
+}
+
 // freePiSessionIDFor returns the upstream session id for one connection.
 //
 // precedence: an explicitly stored id (written at login) wins, so an operator
@@ -141,7 +173,19 @@ func freePiSessionIDFor(apiKey string, connData map[string]any) string {
 			return stored
 		}
 	}
-	return uuid.NewSHA1(freePiSessionNamespace, []byte(freePiAccountKey(apiKey))).String()
+	return freePiAccountSessionID(apiKey)
+}
+
+// freePiRotatedSessionIDFor returns the session id for one rotation step of one
+// account, honouring an operator's pinned id (a pin is a fixed point, so every
+// step returns it) and the stored rotation counter.
+func freePiRotatedSessionIDFor(apiKey string, connData map[string]any, step uint64) string {
+	if connData != nil {
+		if stored, ok := connData["freePiSessionId"].(string); ok && stored != "" {
+			return stored
+		}
+	}
+	return freePiSessionVariant(apiKey, step)
 }
 
 // FreePiSessionID is the exported form of the derivation, so the login handler

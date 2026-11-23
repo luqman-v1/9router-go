@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"9router/proxy/internal/db"
 )
@@ -80,6 +81,7 @@ type freePiSessionState struct {
 	ClientVersion string
 	AutoReset     bool
 	HeldLease     bool
+	RotationStep  uint64
 }
 
 // newFreePiSessionState derives everything one request needs from its
@@ -91,8 +93,28 @@ func newFreePiSessionState(apiKey string, connData map[string]any) freePiSession
 		SessionID:     freePiSessionIDFor(apiKey, connData),
 		ClientVersion: freePiClientVersionFor(connData),
 		AutoReset:     freePiAutoResetEnabled(connData),
+		RotationStep:  freePiNextRotationStep(),
 	}
 }
+
+// freePiNextRotationStep hands out the next rotation step for this process.
+//
+// A counter rather than a per-connection stored value: the step only has to
+// differ from the previous one, and a monotonic counter guarantees that without a
+// write to the connection row on the request path. The session id derived from
+// (account, step) is stable, so a request that has to be replayed after a
+// restart lands on a session id that still exists upstream rather than a fresh
+// slot it would have to re-open.
+//
+// The counter is process-local and monotonic, so a step is never reused within a
+// process. That is the whole requirement: reusing a step is what reopens the
+// conversation the refusal just locked.
+func freePiNextRotationStep() uint64 {
+	return atomic.AddUint64(&freePiRotationCounter, 1)
+}
+
+// freePiRotationCounter is the process-wide rotation step source.
+var freePiRotationCounter uint64
 
 // String renders the state for logs without leaking the credential: the account
 // key is already a subject id or a hash, never the token.
