@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/daemon"
@@ -18,8 +19,16 @@ import (
 // gatewayBinaryName mirrors cmd/9router-go's rename rule so an `opencode-go`
 // install looks for its own sibling rather than a different install's gateway.
 func gatewayBinaryName() string {
-	if base := filepath.Base(os.Args[0]); len(base) > 5 && base[len(base)-5:] == "-tray" {
-		return base[:len(base)-5]
+	return gatewayBinaryNameFromArg0(os.Args[0])
+}
+
+func gatewayBinaryNameFromArg0(arg0 string) string {
+	base := filepath.Base(arg0)
+	if len(base) >= 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
+		base = base[:len(base)-4]
+	}
+	if name, ok := strings.CutSuffix(base, "-tray"); ok && name != "" {
+		return name
 	}
 	return "9router-go"
 }

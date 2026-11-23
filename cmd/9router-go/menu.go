@@ -138,8 +138,15 @@ func parseChoice(line string) string {
 //
 // Only the sibling binary is tried: a PATH lookup could pick up a different
 // install's tray, which would then talk to a gateway that is not this one.
+var (
+	menuSelfExecutable = proc.SelfExecutable
+	menuDaemonRunning  = daemon.RunningPID
+	menuDaemonStart    = daemon.Start
+	menuSpawnTray      = spawnTrayProcess
+)
+
 func startTray(cCtx *cli.Context) error {
-	self, err := proc.SelfExecutable()
+	self, err := menuSelfExecutable()
 	if err != nil {
 		return fmt.Errorf("tray: locate this binary: %w", err)
 	}
@@ -151,10 +158,19 @@ func startTray(cCtx *cli.Context) error {
 		fmt.Printf("tray companion %s not found next to %s; falling back to background server...\n", filepath.Base(exe), filepath.Base(self))
 		return startDetached(cCtx)
 	}
+	if menuDaemonRunning() == 0 {
+		if _, err := menuDaemonStart(daemonURL(), forwardArgs(cCtx)); err != nil && !errors.Is(err, daemon.ErrAlreadyRunning) {
+			return err
+		}
+	}
+	return menuSpawnTray(exe, config.LoadConfig().Port)
+}
+
+func spawnTrayProcess(exe string, port int) error {
 	// CommandContext with a context that is never cancelled, not a deadline:
 	// this process is released immediately below and is meant to outlive the
 	// terminal, so a deadline here would kill the tray it just started.
-	cmd := exec.CommandContext(context.Background(), exe, "--port", strconv.Itoa(config.LoadConfig().Port))
+	cmd := exec.CommandContext(context.Background(), exe, "--port", strconv.Itoa(port))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("tray: start %s: %w", filepath.Base(exe), err)
