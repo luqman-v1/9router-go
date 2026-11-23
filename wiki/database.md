@@ -7,8 +7,9 @@ since: 1.9.14
 
 # Database
 
-9router-go reads the upstream 9Router database as-is. There is no import, export,
-or migration.
+No conversion is needed to read an upstream 9Router SQLite database — point
+9router-go at it and it renders the same data. (Moving 9router-go's own data
+to PostgreSQL is different, and is covered below.)
 
 ## Engines
 
@@ -91,8 +92,11 @@ keeps WAL mode and the per-connection PRAGMAs the Node/Bun upstream uses.
 
 - **No legacy JSON import.** If your 9Router data still lives in old JSON files,
   start upstream once to convert them, then switch.
-- **No destructive migrations or pre-migration backups.** Its bootstrap only ever
-  *adds* — create missing tables, add missing columns, seed missing rows.
+- **No destructive migrations or pre-migration backups.** The schema bootstrap
+  only ever *adds* — create missing tables, add missing columns, seed missing
+  rows. The SQLite-to-PostgreSQL import above is a separate command you run
+  explicitly; it writes the target database and never touches the SQLite
+  source.
 - **No interpretation of `_meta.schemaVersion`.** That is upstream's migration
   bookkeeping. A database written by a much newer 9Router release should be
   checked before you rely on it.
