@@ -1396,16 +1396,23 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 		// Anthropic allows only user/assistant/system; OpenAI's newer
 		// "developer" role is the same thing as system.
 		if role == "system" || role == "developer" {
+			// Upstream #5739: client billing headers vary per Claude Code turn and
+			// must not enter the cached system prompt. Anthropic only ignores the
+			// header when it is the separate system[0] block supplied by cloaking.
 			switch c := msgMap["content"].(type) {
 			case string:
-				if strings.TrimSpace(c) != "" {
-					systemParts = append(systemParts, c)
+				text := translator.StripAnthropicBillingHeader(c)
+				if strings.TrimSpace(text) != "" {
+					systemParts = append(systemParts, text)
 				}
 			case []any:
 				for _, block := range c {
 					if bMap, ok := block.(map[string]any); ok {
-						if text, ok := bMap["text"].(string); ok && strings.TrimSpace(text) != "" {
-							systemParts = append(systemParts, text)
+						if text, ok := bMap["text"].(string); ok {
+							text = translator.StripAnthropicBillingHeader(text)
+							if strings.TrimSpace(text) != "" {
+								systemParts = append(systemParts, text)
+							}
 						}
 					}
 				}
