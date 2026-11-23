@@ -123,7 +123,7 @@ func refreshKiroSocial(ctx context.Context, client *http.Client, refreshToken st
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	ua, amzUA := proxy.KiroServiceUserAgent(nil, refreshToken)
+	ua, amzUA := proxy.KiroRuntimeUserAgent(nil, refreshToken)
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("x-amz-user-agent", amzUA)
 

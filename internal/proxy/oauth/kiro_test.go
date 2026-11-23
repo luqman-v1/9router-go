@@ -30,6 +30,12 @@ func TestRefreshKiroSocial_SendsIDEIdentityHeaders(t *testing.T) {
 	if res.AccessToken != "new-access" {
 		t.Errorf("AccessToken = %q, want new-access", res.AccessToken)
 	}
+	if !strings.Contains(capturedUA, "api/codewhispererruntime") {
+		t.Errorf("User-Agent missing codewhispererruntime, got %q", capturedUA)
+	}
+	if !strings.Contains(capturedUA, "m/N,E") {
+		t.Errorf("User-Agent missing m/N,E, got %q", capturedUA)
+	}
 	if !strings.Contains(capturedUA, "KiroIDE-1.4.154-") {
 		t.Errorf("User-Agent missing KiroIDE-1.4.154-, got %q", capturedUA)
 	}

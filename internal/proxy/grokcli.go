@@ -162,7 +162,7 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 		if strings.Contains(endpoint, "://codewhisperer.") {
 			headers["X-Amz-Target"] = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
 		}
-		ua, amzUA := KiroServiceUserAgent(psd, apiKey)
+		ua, amzUA := KiroServiceUserAgent("streaming", psd, apiKey)
 		headers["User-Agent"] = ua
 		headers["X-Amz-User-Agent"] = amzUA
 		if apiKey != "" {
@@ -226,14 +226,27 @@ func resolveKiroMachineID(psd map[string]any, accessToken string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func KiroServiceUserAgent(psd map[string]any, accessToken string) (string, string) {
+func KiroServiceUserAgent(clientKind string, psd map[string]any, accessToken string) (string, string) {
+	if clientKind == "" {
+		clientKind = "streaming"
+	}
 	machineID := resolveKiroMachineID(psd, accessToken)
+	api := "codewhispererstreaming"
+	metrics := "E"
+	if clientKind == "runtime" {
+		api = "codewhispererruntime"
+		metrics = "N,E"
+	}
 	ua := fmt.Sprintf(
-		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererstreaming#%s m/E KiroIDE-%s-%s",
-		KiroRuntimeSDKVersion, KiroAgentOS, KiroAgentOSVersion, KiroNodeVersion, KiroRuntimeSDKVersion, KiroIDEVersion, machineID,
+		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/%s#%s m/%s KiroIDE-%s-%s",
+		KiroRuntimeSDKVersion, KiroAgentOS, KiroAgentOSVersion, KiroNodeVersion, api, KiroRuntimeSDKVersion, metrics, KiroIDEVersion, machineID,
 	)
 	amzUA := fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s", KiroRuntimeSDKVersion, KiroIDEVersion, machineID)
 	return ua, amzUA
+}
+
+func KiroRuntimeUserAgent(psd map[string]any, accessToken string) (string, string) {
+	return KiroServiceUserAgent("runtime", psd, accessToken)
 }
 
 // kiroTokenType mirrors upstream buildHeaders: API-key connections announce

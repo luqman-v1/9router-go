@@ -119,7 +119,7 @@ func TestKiroIdentity_FingerprintAndMachineID(t *testing.T) {
 
 	t.Run("user agent carries KiroIDE version and machine id", func(t *testing.T) {
 		psd := map[string]any{"clientId": "client-test"}
-		ua, amzUA := KiroServiceUserAgent(psd, "token")
+		ua, amzUA := KiroServiceUserAgent("streaming", psd, "token")
 		machineID := resolveKiroMachineID(psd, "token")
 
 		expectedSuffix := "KiroIDE-" + KiroIDEVersion + "-" + machineID
