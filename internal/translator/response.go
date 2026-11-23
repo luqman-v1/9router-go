@@ -10,8 +10,64 @@ import (
 	"time"
 )
 
+// extractTextContent flattens an OpenAI `content` value into visible text. It
+// accepts the classic plain string and Mistral's array of typed parts; only
+// parts with type "text" contribute, in arrival order and without a separator.
+// A part's `text` may itself be a string or an array of text parts, matching
+// the vendor's nested shapes. Non-text parts (image_url, thinking, ...) never
+// reach the visible stream.
+func extractTextContent(raw jsontext.Value) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string         `json:"type"`
+		Text jsontext.Value `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" {
+			b.WriteString(extractTextContent(part.Text))
+		}
+	}
+	return b.String()
+}
+
+// extractThinkingContent joins the text of Mistral `thinking` parts in an
+// array content delta. A thinking part's `thinking` value may itself be a
+// string or an array of {type:"text",text:"..."} parts. Reasoning collected
+// here is emitted as thinking_delta and never as visible text.
+func extractThinkingContent(raw jsontext.Value) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var parts []struct {
+		Type     string         `json:"type"`
+		Thinking jsontext.Value `json:"thinking"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		if part.Type == "thinking" {
+			b.WriteString(extractTextContent(part.Thinking))
+		}
+	}
+	return b.String()
+}
+
 // extractReasoningText pulls reasoning out of a Chat delta across the three
 // shapes vendors use: reasoning_content, reason_result, and reasoning_details.
+// Mistral's fourth shape is a thinking part inside the content array, decoded
+// into ContentThinking by OpenAIDelta.UnmarshalJSON.
 func extractReasoningText(delta OpenAIDelta) string {
 	if delta.ReasoningContent != "" {
 		return delta.ReasoningContent
@@ -21,6 +77,9 @@ func extractReasoningText(delta OpenAIDelta) string {
 	}
 	if delta.Reasoning != "" {
 		return delta.Reasoning
+	}
+	if delta.ContentThinking != "" {
+		return delta.ContentThinking
 	}
 
 	var b strings.Builder

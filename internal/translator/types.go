@@ -198,6 +198,29 @@ type OpenAIDelta struct {
 	Reasoning        string                  `json:"reasoning"`
 	ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
 	ToolCalls        []OpenAIToolCallStream  `json:"tool_calls"`
+	// ContentThinking carries Mistral thinking parts embedded in an array
+	// content delta (decolua/9router#213558f15). It is wire-only input and
+	// must never be emitted as visible text.
+	ContentThinking string `json:"-"`
+}
+
+// UnmarshalJSON accepts both the classic string content and Mistral's array of
+// typed content parts. Visible `text` parts are flattened into Content in
+// arrival order, while `thinking` parts are joined into ContentThinking so
+// they can be emitted as thinking_delta. Every other field decodes through the
+// alias exactly as before.
+func (d *OpenAIDelta) UnmarshalJSON(b []byte) error {
+	type alias OpenAIDelta
+	aux := struct {
+		Content jsontext.Value `json:"content"`
+		*alias
+	}{alias: (*alias)(d)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return fmt.Errorf("OpenAIDelta.UnmarshalJSON: %w", err)
+	}
+	d.Content = extractTextContent(aux.Content)
+	d.ContentThinking = extractThinkingContent(aux.Content)
+	return nil
 }
 
 // OpenAIToolCallStream holds a streaming tool call fragment.

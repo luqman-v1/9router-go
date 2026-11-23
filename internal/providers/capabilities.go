@@ -1017,8 +1017,18 @@ func init() {
 	// pixtral-12b: mistral files 128000/128000 (models.dev); the dated id is
 	// the same model. pixtral-large/mistral-small-4/saba have no published
 	// window yet and keep the conservative default.
+	//
+	// Mistral Large 4 publishes a 1,048,576-token window, but the live
+	// models.dev catalog still files these native ids at 256000. The provider
+	// table outranks the catalog in GetCapabilitiesDetailForModel, so pin the
+	// three native spellings here. Older Large ids and reseller-prefixed ids
+	// stay on the 256k *mistral-large* pattern.
+	mistralLarge4 := Capabilities{Vision: true, Tools: true, ContextWindow: 1048576}
 	providerCapabilities["mistral"] = map[string]Capabilities{
-		"pixtral-12b-2409": {Vision: true, Tools: true, ContextWindow: 128000, MaxOutput: 128000},
+		"pixtral-12b-2409":     {Vision: true, Tools: true, ContextWindow: 128000, MaxOutput: 128000},
+		"mistral-large-latest": mistralLarge4,
+		"mistral-large-4":      mistralLarge4,
+		"mistral-large-4-0":    mistralLarge4,
 	}
 
 	// Cloudflare llama-3.1 fast/awq variants share the 32000 window the
