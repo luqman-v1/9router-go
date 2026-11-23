@@ -272,6 +272,7 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 	if mode == "always" && hasConversationState {
 		crResp, crErr := tryKiroCreateResponse(ctx, req, body)
 		if crResp != nil {
+			defer func() { _ = crResp.Body.Close() }()
 			return writeKiroCreateResponse(w, req, crResp)
 		}
 		_ = crErr // network failure — continue to legacy
@@ -285,6 +286,7 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		if mode == "auto" && hasConversationState && kiroRateExceededError(err) {
 			crResp, crErr := tryKiroCreateResponse(ctx, req, body)
 			if crResp != nil {
+				defer func() { _ = crResp.Body.Close() }()
 				return writeKiroCreateResponse(w, req, crResp)
 			}
 			_ = crErr
@@ -343,7 +345,6 @@ func tryKiroCreateResponse(ctx context.Context, req *Request, kiroBody []byte) (
 // client's requested format. The CreateResponse output is SSE — never feed it
 // to the binary EventStream parser used by the legacy Kiro path.
 func writeKiroCreateResponse(w http.ResponseWriter, req *Request, resp *http.Response) error {
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
@@ -353,7 +354,7 @@ func writeKiroCreateResponse(w http.ResponseWriter, req *Request, resp *http.Res
 		model = "kiro"
 	}
 	stream := kiroCreateResponseStream(req.Ctx, resp.Body, model)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if req.IsStream {
 		return execSSEStream(w, stream, req)
 	}

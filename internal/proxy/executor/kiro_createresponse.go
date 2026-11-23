@@ -379,7 +379,7 @@ func executeKiroCreateResponse(ctx context.Context, client *http.Client, url str
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests && ctx.Err() == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		select {
 		case <-time.After(kiroCreateResponseRetryDelay):
 		case <-ctx.Done():
