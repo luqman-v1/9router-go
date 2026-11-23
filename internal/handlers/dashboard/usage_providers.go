@@ -1995,7 +1995,9 @@ var antigravityImportantModels = map[string]bool{
 	"gemini-4-carbon-high": true, "gemini-4-carbon-medium": true, "gemini-4-carbon-low": true,
 	"gemini-4-carbon":     true,
 	"gemini-4-argon-high": true, "gemini-4-argon-medium": true, "gemini-4-argon-low": true,
-	"gemini-4-argon":        true,
+	"gemini-4-argon":     true,
+	"gemini-4-neon-high": true, "gemini-4-neon-medium": true, "gemini-4-neon-low": true,
+	"gemini-4-neon":         true,
 	"gemini-3.8-flash-high": true, "gemini-3.8-flash-medium": true, "gemini-3.8-flash-low": true,
 	"gemini-3.7-flash-high": true, "gemini-3.7-flash-medium": true, "gemini-3.7-flash-low": true,
 	"gemini-3.6-flash-high": true, "gemini-3.6-flash-medium": true, "gemini-3.6-flash-low": true,
@@ -2118,6 +2120,8 @@ func fetchAntigravityDashboardUsage(ctx context.Context, accessToken, projectID 
 				antigravityReconcileFamily(quotas, "gemini-", "image", wq)
 			} else if key == "gemini_argon_weekly" || key == "argon_weekly" {
 				antigravityReconcileFamily(quotas, "gemini-4-argon", "", wq)
+			} else if key == "gemini_neon_weekly" || key == "neon_weekly" {
+				antigravityReconcileFamily(quotas, "gemini-4-neon", "", wq)
 			} else if key == "claude_gpt_weekly" {
 				antigravityReconcileFamily(quotas, "claude-", "", wq)
 			}
@@ -2191,6 +2195,11 @@ func fetchAntigravityDashboardWeekly(ctx context.Context, accessToken, projectID
 			pattern: "argon",
 			weekly:  familyTarget{"gemini_argon_weekly", "Gemini 4 Argon (Weekly)", "weekly"},
 			session: familyTarget{"gemini_argon_session", "Gemini 4 Argon (5h)", "5h"},
+		},
+		{
+			pattern: "neon",
+			weekly:  familyTarget{"gemini_neon_weekly", "Gemini 4 Neon (Weekly)", "weekly"},
+			session: familyTarget{"gemini_neon_session", "Gemini 4 Neon (5h)", "5h"},
 		},
 		{
 			pattern: "gemini",

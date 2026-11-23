@@ -210,6 +210,11 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     { "id": "gemini-4-hydrogen-medium", "name": "Gemini 4 Hydrogen Medium" },
     { "id": "gemini-4-hydrogen-low", "name": "Gemini 4 Hydrogen Low" },
     { "id": "gemini-4-hydrogen", "name": "Gemini 4 Hydrogen" },
+    { "id": "gemini-4-neon-xhigh", "name": "Gemini 4 Neon Xhigh" },
+    { "id": "gemini-4-neon-high", "name": "Gemini 4 Neon High" },
+    { "id": "gemini-4-neon-medium", "name": "Gemini 4 Neon Medium" },
+    { "id": "gemini-4-neon-low", "name": "Gemini 4 Neon Low" },
+    { "id": "gemini-4-neon", "name": "Gemini 4 Neon" },
     { "id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash High" },
     { "id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash Medium" },
     { "id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash Low" },
@@ -228,6 +233,8 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     { "id": "claude-opus-5-5-medium", "name": "Claude Opus 5 5 Medium" },
     { "id": "claude-opus-5-5-low", "name": "Claude Opus 5 5 Low" },
     { "id": "claude-opus-5-5", "name": "Claude Opus 5 5" },
+    { "id": "claude-sonnet-5-5-max", "name": "Claude Sonnet 5 5 Max" },
+    { "id": "claude-opus-5-5-max", "name": "Claude Opus 5 5 Max" },
     { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4 6" },
     { "id": "claude-opus-4-6-thinking", "name": "Claude Opus 4 6 Thinking" },
     { "id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B Medium" },
@@ -513,6 +520,31 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "upstreamModelId": "gemini-4-hydrogen-medium(medium)"
     },
     {
+      "id": "gemini-4-neon-xhigh",
+      "name": "Gemini 4 Neon (XHigh)",
+      "upstreamModelId": "gemini-4-neon-xhigh(xhigh)"
+    },
+    {
+      "id": "gemini-4-neon-high",
+      "name": "Gemini 4 Neon (High)",
+      "upstreamModelId": "gemini-4-neon-high(high)"
+    },
+    {
+      "id": "gemini-4-neon-medium",
+      "name": "Gemini 4 Neon (Medium)",
+      "upstreamModelId": "gemini-4-neon-medium(medium)"
+    },
+    {
+      "id": "gemini-4-neon-low",
+      "name": "Gemini 4 Neon (Low)",
+      "upstreamModelId": "gemini-4-neon-low(low)"
+    },
+    {
+      "id": "gemini-4-neon",
+      "name": "Gemini 4 Neon",
+      "upstreamModelId": "gemini-4-neon-high(high)"
+    },
+    {
       "id": "gemini-3.8-flash-high",
       "name": "Gemini 3.8 Flash (High)",
       "upstreamModelId": "gemini-3.8-flash-high(high)"
@@ -613,6 +645,16 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "claude-opus-5-5",
       "name": "Claude Opus 5.5 (Thinking)",
       "upstreamModelId": "claude-opus-5-5-high(high)"
+    },
+    {
+      "id": "claude-sonnet-5-5-max",
+      "name": "Claude Sonnet 5.5 (Max)",
+      "upstreamModelId": "claude-sonnet-5-5-max(max)"
+    },
+    {
+      "id": "claude-opus-5-5-max",
+      "name": "Claude Opus 5.5 (Max)",
+      "upstreamModelId": "claude-opus-5-5-max(max)"
     },
     {
       "id": "claude-sonnet-4-6",
