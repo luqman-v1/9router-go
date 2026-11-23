@@ -24,6 +24,7 @@ func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage
 
 	event := ""
 	data := strings.Builder{}
+	assistantText := ""
 	flush := func() {
 		name, payload := event, data.String()
 		event = ""
@@ -35,18 +36,30 @@ func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage
 		switch name {
 		case "response.output_item.done":
 			item := codexResponseItem(payload)
-			if item["type"] == "image_generation_call" {
+			switch item["type"] {
+			case "image_generation_call":
 				if result, _ := item["result"].(string); result != "" {
 					imageB64 = result
 				}
+			case "message":
+				assistantText = codexItemMessageText(item)
 			}
+		case "response.output_text.delta":
+			assistantText += codexOutputTextDelta(payload)
 		case "response.completed", "response.done":
 			if parsed := normalizeCodexImageUsage(codexResponseUsage(payload)); parsed != nil {
 				usage = parsed
 			}
+			if imageB64 == "" {
+				if result := codexCompletionImage(payload); result != "" {
+					imageB64 = result
+				}
+			}
 		case "response.failed", "error":
 			if msg := codexStreamErrorMessage(payload); msg != "" {
 				streamErr = msg
+			} else if streamErr == "" {
+				streamErr = "image generation failed"
 			}
 		}
 	}
@@ -68,63 +81,77 @@ func parseCodexImageStream(r io.Reader) (imageB64 string, usage *codexImageUsage
 		}
 	}
 	flush()
+	if imageB64 == "" && streamErr == "" {
+		if text := strings.TrimSpace(assistantText); text != "" {
+			if len([]rune(text)) > 300 {
+				text = string([]rune(text)[:300])
+			}
+			streamErr = "codex returned text instead of an image: \"" + text + "\""
+		}
+	}
 	return imageB64, usage, streamErr
 }
 
-// codexStreamErrorMessage digs the error message out of a failure frame. A
-// Responses error can sit at the top level (`data.error.message`), under the
-// response envelope (`data.response.error.message` / `data.response.error`), or
-// on an item (`data.item.error.message`), so each shape is checked in turn.
+// codexStreamErrorMessage digs the error message out of a failure frame,
+// mirroring extractStreamError in open-sse/handlers/imageProviders/codex.js.
+// It accepts every shape the Responses stream can carry the failure in: a bare
+// string, a top-level `message`, an `error` object (structured or bare string),
+// an `item.error`, and a `response.error` / `response.status_details.error`
+// nested under the response envelope. The checks run in the same order as
+// upstream so the first message the upstream reports wins.
 func codexStreamErrorMessage(payload string) string {
-	var frame struct {
-		Error    jsontext.Value `json:"error"`
-		Response jsontext.Value `json:"response"`
-		Item     jsontext.Value `json:"item"`
-	}
-	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+	var top any
+	if json.Unmarshal([]byte(payload), &top) != nil {
 		return ""
 	}
-	if msg := codexErrorMessage(frame.Error); msg != "" {
+	if s, ok := top.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	obj, ok := top.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if msg := codexNestedErrorMessage(obj, "error"); msg != "" {
 		return msg
 	}
-	if len(frame.Response) > 0 {
-		var nested struct {
-			Error jsontext.Value `json:"error"`
+	response, _ := obj["response"].(map[string]any)
+	if response != nil {
+		if msg := codexNestedErrorMessage(response, "error"); msg != "" {
+			return msg
 		}
-		if json.Unmarshal(frame.Response, &nested) == nil {
-			if msg := codexErrorMessage(nested.Error); msg != "" {
+		if statusDetails, ok := response["status_details"].(map[string]any); ok {
+			if msg := codexNestedErrorMessage(statusDetails, "error"); msg != "" {
 				return msg
 			}
 		}
 	}
-	if len(frame.Item) > 0 {
-		var nested struct {
-			Error jsontext.Value `json:"error"`
+	if item, ok := obj["item"].(map[string]any); ok {
+		if msg := codexNestedErrorMessage(item, "error"); msg != "" {
+			return msg
 		}
-		if json.Unmarshal(frame.Item, &nested) == nil {
-			if msg := codexErrorMessage(nested.Error); msg != "" {
-				return msg
-			}
-		}
+	}
+	if msg, ok := obj["message"].(string); ok {
+		return strings.TrimSpace(msg)
 	}
 	return ""
 }
 
-// codexErrorMessage extracts a message from an error object, accepting either
-// the structured {message} form or a bare string.
-func codexErrorMessage(raw jsontext.Value) string {
-	if len(raw) == 0 || string(raw) == "null" {
+// codexNestedErrorMessage extracts a message from obj[key], accepting the
+// structured {message} form or a bare string. Mirrors the `data.error?.message`
+// / `typeof data.error === "string"` fallbacks upstream.
+func codexNestedErrorMessage(obj map[string]any, key string) string {
+	raw, present := obj[key]
+	if !present || raw == nil {
 		return ""
 	}
-	var obj struct {
-		Message string `json:"message"`
+	if nested, ok := raw.(map[string]any); ok {
+		if msg, ok := nested["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return strings.TrimSpace(msg)
+		}
+		return ""
 	}
-	if json.Unmarshal(raw, &obj) == nil && obj.Message != "" {
-		return obj.Message
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
+	if s, ok := raw.(string); ok {
+		return strings.TrimSpace(s)
 	}
 	return ""
 }
@@ -177,6 +204,92 @@ func codexResponseUsage(payload string) any {
 		return nil
 	}
 	return nested.Usage
+}
+
+// codexItemMessageText joins the text of a message output item, mirroring the
+// `item.content` join upstream. Non-text parts are skipped.
+func codexItemMessageText(item map[string]any) string {
+	content, ok := item["content"].([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(content))
+	for _, part := range content {
+		switch p := part.(type) {
+		case string:
+			parts = append(parts, p)
+		case map[string]any:
+			text, _ := p["text"].(string)
+			if text == "" {
+				text, _ = p["output_text"].(string)
+			}
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// codexOutputTextDelta reads the incremental text from a response.output_text.delta
+// frame. Mirrors the `data.delta` accumulation upstream.
+func codexOutputTextDelta(payload string) string {
+	var frame struct {
+		Delta string `json:"delta"`
+	}
+	if json.Unmarshal([]byte(payload), &frame) != nil {
+		return ""
+	}
+	return frame.Delta
+}
+
+// codexCompletionImage returns the last image result carried in a completion
+// frame's output array, whether it sits under response or at the top level.
+// Mirrors the output-item scan upstream, which can surface an image even when
+// no response.output_item.done frame carried it.
+func codexCompletionImage(payload string) string {
+	var frame struct {
+		Response jsontext.Value `json:"response"`
+		Output   jsontext.Value `json:"output"`
+	}
+	if json.Unmarshal([]byte(payload), &frame) != nil {
+		return ""
+	}
+	if result := codexLastImageInOutput(frame.Output); result != "" {
+		return result
+	}
+	if len(frame.Response) == 0 {
+		return ""
+	}
+	var nested struct {
+		Output jsontext.Value `json:"output"`
+	}
+	if json.Unmarshal(frame.Response, &nested) != nil {
+		return ""
+	}
+	return codexLastImageInOutput(nested.Output)
+}
+
+// codexLastImageInOutput walks an output array and returns the result of the
+// last image_generation_call item that carried one.
+func codexLastImageInOutput(raw jsontext.Value) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var items []map[string]any
+	if json.Unmarshal(raw, &items) != nil {
+		return ""
+	}
+	result := ""
+	for _, item := range items {
+		if item["type"] != "image_generation_call" {
+			continue
+		}
+		if r, _ := item["result"].(string); r != "" {
+			result = r
+		}
+	}
+	return result
 }
 
 // normalizeCodexImageUsage validates the upstream counters. A missing,

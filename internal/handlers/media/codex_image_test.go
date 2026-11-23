@@ -414,6 +414,7 @@ func TestParseCodexImageStream(t *testing.T) {
 // A failed Responses turn carries the real upstream error in the SSE stream.
 // The parser must surface it so the caller reports it instead of the generic
 // "may not be entitled" message, no matter which envelope the error sits in.
+// Shapes mirror extractStreamError in decolua/9router@a6d3cdbf7.
 func TestParseCodexImageStream_SurfacesError(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -437,6 +438,29 @@ func TestParseCodexImageStream_SurfacesError(t *testing.T) {
 			stream: "event: response.failed\n" +
 				`data: {"item":{"error":{"message":"quota exceeded"}}}` + "\n\n",
 			wantMsg: "quota exceeded",
+		},
+		{
+			name: "response.failed with response.status_details.error.message",
+			stream: "event: response.failed\n" +
+				`data: {"type":"response.failed","response":{"status_details":{"error":{"message":"rate limit hit for image generation"}}}}` + "\n\n",
+			wantMsg: "rate limit hit for image generation",
+		},
+		{
+			name: "error event with top-level message field",
+			stream: "event: error\n" +
+				`data: {"message":"the upstream rejected this request"}` + "\n\n",
+			wantMsg: "the upstream rejected this request",
+		},
+		{
+			name: "error event with bare string payload",
+			stream: "event: error\n" +
+				`data: "upstream exploded"` + "\n\n",
+			wantMsg: "upstream exploded",
+		},
+		{
+			name:    "response.failed without a message falls back",
+			stream:  "event: response.failed\ndata: {\"type\":\"response.failed\"}\n\n",
+			wantMsg: "image generation failed",
 		},
 	}
 	for _, tt := range tests {
