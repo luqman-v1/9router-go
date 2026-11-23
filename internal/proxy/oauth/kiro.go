@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 	"bytes"
 	"context"
 	json "encoding/json/v2"
@@ -10,13 +12,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"9router/proxy/internal/proxy"
-	"9router/proxy/internal/providers"
 )
 
 func init() {
 	Register("kiro", refreshKiro)
 }
+
 // kiroRegionPattern guards the region interpolated into the IDC token URL.
 var kiroRegionPattern = regexp.MustCompile(`^[a-z]{2}-[a-z]+-[0-9]+$`)
 
