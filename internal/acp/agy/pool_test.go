@@ -2,6 +2,7 @@ package agy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,6 +12,52 @@ import (
 	"testing"
 	"time"
 )
+
+// cancelResultWriter responds to session/prompt with a complete answer inside
+// the stdin write itself. That makes the prompt result ready before the pump
+// starts, so a caller that cancels from an emitted event exercises the race
+// where cancellation lands while the result is being delivered — not the
+// simpler ctx.Done branch.
+type cancelResultWriter struct {
+	client *Client
+}
+
+func (w *cancelResultWriter) Write(p []byte) (int, error) {
+	var msg rpcMessage
+	if err := json.Unmarshal(p, &msg); err == nil && msg.Method == "session/prompt" {
+		response, _ := json.Marshal(rpcMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  json.RawMessage(`{"stopReason":"end_turn","content":[{"type":"text","text":"answer"}]}`),
+		})
+		w.client.dispatch(response)
+	}
+	return len(p), nil
+}
+
+func (*cancelResultWriter) Close() error { return nil }
+
+func TestStreamPromptCancelledWhileEmittingResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writer := &cancelResultWriter{}
+	client := &Client{
+		stdin:    writer,
+		pending:  make(map[string]*rpcRequest),
+		notifyCh: make(chan notification, 4),
+		done:     make(chan struct{}),
+	}
+	writer.client = client
+	err := streamPromptOnce(ctx, client, "s-1", []PromptBlock{{Type: "text", Text: "hi"}}, nil,
+		func(ev TurnEvent) {
+			if ev.Kind == UpdateText {
+				cancel()
+			}
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled during result emission: got %v, want context.Canceled", err)
+	}
+}
 
 // poolACP extends the fake ACP helper with a per-process call counter so a
 // test can tell that a second turn reused the worker/session instead of
