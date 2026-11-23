@@ -1018,7 +1018,10 @@ func init() {
 	// the same model. pixtral-large/mistral-small-4/saba have no published
 	// window yet and keep the conservative default.
 	providerCapabilities["mistral"] = map[string]Capabilities{
-		"pixtral-12b-2409": {Vision: true, Tools: true, ContextWindow: 128000, MaxOutput: 128000},
+		"mistral-large-latest": {Vision: true, Tools: true, ContextWindow: 1048576},
+		"mistral-large-4":      {Vision: true, Tools: true, ContextWindow: 1048576},
+		"mistral-large-4-0":    {Vision: true, Tools: true, ContextWindow: 1048576},
+		"pixtral-12b-2409":    {Vision: true, Tools: true, ContextWindow: 128000, MaxOutput: 128000},
 	}
 
 	// Cloudflare llama-3.1 fast/awq variants share the 32000 window the
