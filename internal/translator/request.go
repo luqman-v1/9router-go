@@ -29,6 +29,15 @@ func requiresMaxCompletionTokens(model string) bool {
 	return false
 }
 
+// StripAnthropicBillingHeader removes a leading client-supplied Anthropic
+// billing header from system text. The header changes every Claude Code turn
+// (workload, subagent flag, client version), so leaving it in the joined
+// system prompt splits the cached prefix. Upstream strips it on every
+// openai-to-claude system block before joining (#5739).
+func StripAnthropicBillingHeader(text string) string {
+	return stripAnthropicBillingHeader(text)
+}
+
 func stripAnthropicBillingHeader(text string) string {
 	return billingHeaderRegex.ReplaceAllString(text, "")
 }
