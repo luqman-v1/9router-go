@@ -69,7 +69,7 @@ func TestInstallWindowsRun(t *testing.T) {
 		if info.Path != wantPath {
 			t.Errorf("Path = %q, want %q", info.Path, wantPath)
 		}
-		wantCmd := `"C:\Program Files\9router\9router-go.exe" start --rtk=true`
+		wantCmd := `"C:\Program Files\9router\9router-go.exe" --rtk=true start`
 		if info.Exec != wantCmd || entries[windowsTaskName] != wantCmd {
 			t.Errorf("Exec=%q entry=%q, want %q", info.Exec, entries[windowsTaskName], wantCmd)
 		}

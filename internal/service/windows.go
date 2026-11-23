@@ -54,7 +54,9 @@ func installWindowsTask(exe string, args []string) (Info, error) {
 	if goos != "windows" {
 		return Info{}, fmt.Errorf("service.Install: windows-task backend only runs on windows")
 	}
-	taskCmd := windowsCommandLine(exe, args)
+	// Run `serve` explicitly so an `/it` interactive-logon console session
+	// starts the gateway instead of blocking on the interactive CLI menu.
+	taskCmd := windowsCommandLine(exe, appendSubcommand(args, "serve"))
 	// /it sets the task's logon type to InteractiveToken: it runs only while
 	// the run-as user is logged on and stores no password, so schtasks does not
 	// stop to prompt for one.

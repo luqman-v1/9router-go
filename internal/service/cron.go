@@ -17,7 +17,7 @@ const cronMarker = "# 9router-go-autostart"
 // renderCronLine renders the @reboot entry: cron has no supervisor, so it
 // launches the existing `start` daemon which detaches and owns its pid file.
 func renderCronLine(exe string, args []string) string {
-	return "@reboot " + commandLine(exe, append([]string{"start"}, args...)) + " " + cronMarker
+	return "@reboot " + commandLine(exe, appendSubcommand(args, "start")) + " " + cronMarker
 }
 
 // renderAutostartDesktop renders the XDG autostart entry, a companion for
@@ -29,7 +29,7 @@ func renderAutostartDesktop(exe string, args []string) string {
 		"Type=Application\n" +
 		"Name=9router-go gateway\n" +
 		"Comment=9router-go AI API proxy gateway\n" +
-		"Exec=" + commandLine(exe, append([]string{"start"}, args...)) + "\n" +
+		"Exec=" + commandLine(exe, appendSubcommand(args, "start")) + "\n" +
 		"Terminal=false\n" +
 		"X-GNOME-Autostart-enabled=true\n" +
 		cronMarker + "\n"

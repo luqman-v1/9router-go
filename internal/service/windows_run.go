@@ -50,10 +50,7 @@ func installWindowsRun(exe string, args []string) (Info, error) {
 	if goos != "windows" {
 		return Info{}, fmt.Errorf("service.Install: windows-run backend only runs on windows")
 	}
-	startArgs := make([]string, 0, len(args)+1)
-	startArgs = append(startArgs, "start")
-	startArgs = append(startArgs, args...)
-	cmd := windowsCommandLine(exe, startArgs)
+	cmd := windowsCommandLine(exe, appendSubcommand(args, "start"))
 	path := windowsRunDisplayPath()
 	if err := windowsRunWrite(windowsTaskName, cmd); err != nil {
 		return Info{Backend: BackendWindowsRun, Path: path, Exec: cmd}, fmt.Errorf("service: write %s: %w", path, err)

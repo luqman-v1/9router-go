@@ -178,8 +178,8 @@ func TestCronLineHasRebootSchedule(t *testing.T) {
 	if command == "" {
 		t.Fatal("cron line has an empty command")
 	}
-	if !strings.Contains(command, " start") {
-		t.Errorf("cron command = %q, want the `start` subcommand", command)
+	if !strings.Contains(command, "--rtk=true start") {
+		t.Errorf("cron command = %q, want global flags before `start`", command)
 	}
 }
 
@@ -198,8 +198,8 @@ func TestAutostartDesktopIsAValidEntry(t *testing.T) {
 	if keys["Name"] == "" {
 		t.Error("Name is required and empty")
 	}
-	if keys["Exec"] == "" || !strings.Contains(keys["Exec"], "start") {
-		t.Errorf("Exec = %q, want the start command", keys["Exec"])
+	if keys["Exec"] == "" || !strings.Contains(keys["Exec"], "--rtk=true start") {
+		t.Errorf("Exec = %q, want global flags before start command", keys["Exec"])
 	}
 	if keys["Terminal"] != "false" {
 		t.Errorf("Terminal = %q, want false", keys["Terminal"])
