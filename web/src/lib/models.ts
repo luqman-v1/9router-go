@@ -7627,13 +7627,33 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "elevenlabs": [
     {
+      "id": "eleven_v4",
+      "name": "Eleven v4",
+      "kind": "tts"
+    },
+    {
+      "id": "eleven_v4_turbo",
+      "name": "Eleven v4 Turbo",
+      "kind": "tts"
+    },
+    {
+      "id": "eleven_flash_v2_5",
+      "name": "Eleven Flash v2.5",
+      "kind": "tts"
+    },
+    {
+      "id": "eleven_flash_v2",
+      "name": "Eleven Flash v2",
+      "kind": "tts"
+    },
+    {
       "id": "eleven_multilingual_v2",
       "name": "Eleven Multilingual v2",
       "kind": "tts"
     },
     {
-      "id": "eleven_turbo_v2_5",
-      "name": "Eleven Turbo v2.5",
+      "id": "eleven_v3",
+      "name": "Eleven v3",
       "kind": "tts"
     },
     {
@@ -7652,6 +7672,19 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "scribe_v2",
       "name": "Scribe v2",
+      "params": [
+        "language",
+        "response_format",
+        "timestamps_granularity",
+        "tag_audio_events",
+        "diarize",
+        "num_speakers"
+      ],
+      "kind": "stt"
+    },
+    {
+      "id": "scribe_v3",
+      "name": "Scribe v3",
       "params": [
         "language",
         "response_format",

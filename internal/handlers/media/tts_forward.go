@@ -38,6 +38,15 @@ func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// ElevenLabs OpenAI-style: a bare `eleven_*` model id (or model/voice
+	// pair) has no provider prefix, so qualify it before access checks.
+	if strings.HasPrefix(req.Model, "eleven_") {
+		if !strings.Contains(req.Model, "/") {
+			req.Model = "elevenlabs/" + req.Model
+		} else if strings.Count(req.Model, "/") == 1 {
+			req.Model = "elevenlabs/" + req.Model
+		}
+	}
 	// Gate here, not in forwardMediaRequest: the edge-tts and google-tts
 	// branches below resolve the model and synthesise locally, never reaching
 	// the shared funnel. Gating only the funnel would leave those two paths
@@ -106,7 +115,13 @@ func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// 5. Default OpenAI-compatible TTS
+	// 5. elevenlabs TTS (native adapter, voice in model or OpenAI voice field)
+	if modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el" {
+		h.forwardElevenLabsTTS(w, r, body, modelInfo, req.Input, req.Voice, req.ResponseFormat)
+		return
+	}
+
+	// 6. Default OpenAI-compatible TTS
 	h.forwardMediaRequest(w, r, body, "tts-1", "/v1/audio/speech")
 }
 
