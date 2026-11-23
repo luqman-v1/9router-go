@@ -200,7 +200,7 @@ describe('persona page, per-key scope', () => {
         .getByText('empty scope')
         .locator('xpath=ancestor::div[contains(@class,"rounded-[10px]")][1]')
       await globalColumn.waitFor({ timeout: SLOW })
-      expect(await globalColumn.getByText('not injected').count()).toBeGreaterThan(0)
+      expect(await globalColumn.getByText('NOT INJECTED').count()).toBeGreaterThan(0)
     },
     SLOW,
   )

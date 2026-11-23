@@ -45,6 +45,10 @@ beforeAll(async () => {
   app = await startDashboard(PORT)
   page = app.page
   await page.setViewportSize({ width: 1284, height: 1100 })
+  // The seed issues its fetches from inside the page, so the page must already
+  // be on the gateway's origin — on about:blank the same fetch is cross-origin
+  // and fails, which strands the seed and every wait after it.
+  await page.goto(`${app.baseURL}/dashboard/endpoint`)
 }, SLOW)
 
 afterAll(async () => {
@@ -98,7 +102,7 @@ describe('persona injection tester', () => {
       // The injected prompt reaches the DOM as a message that exists only in
       // the body the gateway sends. Under a positional diff this reads "the
       // whole message changed" instead, and the assertion below never sees it.
-      await page.getByText('only in the body the gateway sends').waitFor({ timeout: SLOW })
+      await page.getByText('only in the gateway sends').waitFor({ timeout: SLOW })
       expect(await page.getByText(PRESET_PROMPT).count()).toBeGreaterThan(0)
 
       // And the operator's own turn is still there, unchanged, next to it — so
@@ -119,7 +123,9 @@ describe('persona injection tester', () => {
     async () => {
       // An unarmed id must read as "nothing injected", not as an error or as a
       // silent empty panel — the operator's next question is always "why not?".
-      await page.getByLabel('Model id to test').fill('openai/gpt-5-mini-nothing-armed')
+      const modelInput = page.getByLabel('Model id to test')
+      await modelInput.waitFor({ timeout: SLOW })
+      await modelInput.fill('openai/gpt-5-mini-nothing-armed')
       await page.getByRole('button', { name: 'Show body' }).click()
       await page.getByText('Nothing resolved for this id under this scope').waitFor({ timeout: SLOW })
     },

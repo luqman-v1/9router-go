@@ -1867,6 +1867,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
         <span class="text-xs text-text-muted">Prompt</span>
         <textarea
           bind:value={presetForm.prompt}
+          aria-label="Preset prompt"
           rows="6"
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500 resize-y"
         ></textarea>
