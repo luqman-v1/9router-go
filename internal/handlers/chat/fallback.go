@@ -569,17 +569,6 @@ func upstreamRetryAfterSec(ue *upstreamError) (int, bool) {
 	return ceilSeconds(min(wait, maxCooldownFor("opencode"))), true
 }
 
-// preservesOpenRouterAnthropicCacheControl reports whether the filter must
-// keep cache_control markers on the outbound body (upstream OmniRoute #19755).
-// OpenRouter forwards the whole OpenAI body to the model provider named in the
-// model id; a model under the "anthropic/" prefix is served by Anthropic's
-// own API, which honours the breakpoints a Claude Code caller sent. Stripping
-// them there cost every Anthropic-backed OpenRouter model its prompt cache.
-// Providers registered with preserveCacheControl keep their existing behaviour.
-func preservesOpenRouterAnthropicCacheControl(provider, wireModel string) bool {
-	return provider == "openrouter" && strings.HasPrefix(strings.ToLower(wireModel), "anthropic/")
-}
-
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
 // isAnthropicUpstream reports whether the request is headed to Anthropic's
 // native Messages API (as opposed to an anthropic-compatible custom node).
@@ -808,7 +797,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// such an upstream loses them — buildResponsesBody keeps only blocks carrying
 	// a "text" key — so the model never saw the output of its own tool call and
 	// re-issued the same command forever.
-	pipedBody = claudeBodyForNonClaudeUpstream(pipedBody, claudeNative)
+	pipedBody = claudeBodyForNonClaudeUpstream(pipedBody, claudeNative, provider, model)
 	var claudeToolMap map[string]string
 	if upstreamClaude {
 		if !claudeNative || bodySpeaksOpenAIChat(pipedBody) {
@@ -1005,7 +994,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
 		if target == "openai" && !providerCfg.IsGeminiNative() {
 			filtered, filterErr := translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
-				PreserveCacheControl:    providers.PreservesCacheControl(provider) || preservesOpenRouterAnthropicCacheControl(provider, wireModel),
+				PreserveCacheControl:    providers.PreservesCacheControl(provider) || translator.PreservesOpenRouterAnthropicCacheControl(provider, wireModel),
 				StrictReasoningRemoving: providers.StrictReasoningRemoving(provider),
 				FlattenContent:          provider == "cloudflare-ai",
 			})
@@ -2368,7 +2357,7 @@ func bodySpeaksOpenAIChat(body []byte) bool {
 // tryForwardWithConnection): a provider that serves the Messages endpoint —
 // minimax-code, opencode-zen's Claude lane — must keep receiving Messages, so
 // only the providers that do not are converted here.
-func claudeBodyForNonClaudeUpstream(body []byte, upstreamSpeaksClaude bool) []byte {
+func claudeBodyForNonClaudeUpstream(body []byte, upstreamSpeaksClaude bool, provider, model string) []byte {
 	// A body that already speaks Chat is never converted, whatever blocks its
 	// user content happens to carry: converting it again would rebuild the
 	// conversation from fields Chat does not use and drop the system turn it
@@ -2380,7 +2369,7 @@ func claudeBodyForNonClaudeUpstream(body []byte, upstreamSpeaksClaude bool) []by
 	if err := json.Unmarshal(body, &src); err != nil {
 		return body
 	}
-	converted, err := translator.TranslateClaudeToOpenAI(body)
+	converted, err := translator.TranslateClaudeToOpenAI(body, provider, model)
 	if err != nil || len(converted) == 0 {
 		return body
 	}

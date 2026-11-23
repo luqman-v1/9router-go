@@ -59,7 +59,7 @@ func TestTranslatorBoundariesAreDeterministic(t *testing.T) {
 					"messages": [{"role": "user", "content": "hi"}],
 					"tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
 					"tool_choice": {"type": "tool", "name": "get_weather"}
-				}`))
+				}`), "", "")
 				if err != nil {
 					t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 				}

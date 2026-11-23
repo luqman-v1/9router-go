@@ -36,7 +36,7 @@ func TestTranslateClaudeToOpenAI_ReplaysToolAddition(t *testing.T) {
 		{"role":"user","content":"two"}
 	],"tools":[{"name":"Bash","description":"stub","input_schema":{"type":"object","properties":{}}}]}`)
 
-	out, err := TranslateClaudeToOpenAI(body)
+	out, err := TranslateClaudeToOpenAI(body, "", "")
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestTranslateClaudeToOpenAI_AppliesToolRemoval(t *testing.T) {
 		{"role":"user","content":"two"}
 	],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{}}},{"name":"Read","input_schema":{"type":"object","properties":{}}}]}`)
 
-	out, err := TranslateClaudeToOpenAI(body)
+	out, err := TranslateClaudeToOpenAI(body, "", "")
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}

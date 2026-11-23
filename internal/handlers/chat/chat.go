@@ -428,7 +428,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		openaiBody, err := translator.TranslateClaudeToOpenAI(body)
+		openaiBody, err := translator.TranslateClaudeToOpenAI(body, modelInfo.Provider, modelInfo.Model)
 		if err != nil {
 			log.Error("chat", "translate failed", "error", err)
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))

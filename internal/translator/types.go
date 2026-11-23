@@ -231,6 +231,11 @@ type ClaudeContentBlock struct {
 	Input     jsontext.Value     `json:"input,omitempty"`
 	ToolUseID string             `json:"tool_use_id,omitempty"`
 	Content   jsontext.Value     `json:"content,omitempty"`
+	// CacheControl is Anthropic's per-block prompt-cache breakpoint. The
+	// Claude→OpenAI converter carries it through only for the OpenRouter
+	// Anthropic lane, where the marker must reach the filter so the breakpoints
+	// survive to the Anthropic-backed model (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // ClaudeImageSource holds base64 image data.
@@ -257,6 +262,10 @@ type ClaudeTool struct {
 	// from an explicit false, which is a real client instruction. A non-boolean
 	// value is dropped rather than fatal — see UnmarshalStrict.
 	Strict *bool `json:"strict,omitempty"`
+	// CacheControl is Anthropic's per-tool prompt-cache breakpoint, preserved
+	// for the OpenRouter Anthropic lane alongside the content-block markers
+	// (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // UnmarshalStrict decodes a tool strict flag, reporting whether one was
@@ -274,10 +283,11 @@ func UnmarshalStrict(data []byte) (*bool, error) {
 // claudeToolJSON mirrors ClaudeTool with the strict field left raw, so a
 // non-boolean value can be dropped instead of aborting the decode.
 type claudeToolJSON struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema jsontext.Value `json:"input_schema,omitempty"`
-	Strict      jsontext.Value `json:"strict,omitempty"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  jsontext.Value `json:"input_schema,omitempty"`
+	Strict       jsontext.Value `json:"strict,omitempty"`
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // UnmarshalJSON decodes a Claude tool, dropping a non-boolean strict.
@@ -287,6 +297,7 @@ func (t *ClaudeTool) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	t.Name, t.Description, t.InputSchema = raw.Name, raw.Description, raw.InputSchema
+	t.CacheControl = raw.CacheControl
 	if len(raw.Strict) > 0 {
 		strict, err := UnmarshalStrict(raw.Strict)
 		if err != nil {
@@ -363,6 +374,11 @@ type OpenAIContentBlock struct {
 	Text     string          `json:"text,omitempty"`
 	ImageUrl *OpenAIImageUrl `json:"image_url,omitempty"`
 	File     *OpenAIFile     `json:"file,omitempty"`
+	// CacheControl is Anthropic's per-block prompt-cache breakpoint. The
+	// Claude→OpenAI converter carries it through only for the OpenRouter
+	// Anthropic lane so the marker survives the filter; every other lane
+	// strips it (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // OpenAIFile holds inline file/document data (e.g. data:application/pdf;base64,...).
@@ -392,6 +408,9 @@ type OpenAIFunctionCall struct {
 type OpenAITool struct {
 	Type     string         `json:"type"`
 	Function OpenAIFunction `json:"function"`
+	// CacheControl is Anthropic's per-tool prompt-cache breakpoint, preserved
+	// for the OpenRouter Anthropic lane (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // OpenAIFunction holds the function definition for an OpenAI tool.

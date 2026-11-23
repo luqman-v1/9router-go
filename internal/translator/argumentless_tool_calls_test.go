@@ -91,7 +91,7 @@ func TestTranslateClaudeToOpenAI_DropsArgumentlessCall(t *testing.T) {
 		{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"missing required parameter"}]}
 	]`)
 
-	out, err := TranslateClaudeToOpenAI(body)
+	out, err := TranslateClaudeToOpenAI(body, "", "")
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}

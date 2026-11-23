@@ -23,7 +23,7 @@ func TestTranslateClaudeToOpenAIToolStrict(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := TranslateClaudeToOpenAI([]byte(`{"model":"gpt-5.5","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"tools":[` + tt.tool + `]}`))
+			out, err := TranslateClaudeToOpenAI([]byte(`{"model":"gpt-5.5","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"tools":[`+tt.tool+`]}`), "", "")
 			if err != nil {
 				t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 			}

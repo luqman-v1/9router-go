@@ -94,7 +94,7 @@ func TestTranslateClaudeToOpenAI_ParallelToolPolicy(t *testing.T) {
 				"tools": [{"name": "probe", "input_schema": {"type": "object"}}],
 				"tool_choice": ` + tt.toolChoice + `
 			}`)
-			out, err := TranslateClaudeToOpenAI(body)
+			out, err := TranslateClaudeToOpenAI(body, "", "")
 			if err != nil {
 				t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 			}
@@ -134,7 +134,7 @@ func TestTranslateClaudeToOpenAI_NoToolChoiceAddsNoPolicy(t *testing.T) {
 		"messages": [{"role": "user", "content": "hi"}],
 		"tools": [{"name": "probe", "input_schema": {"type": "object"}}]
 	}`)
-	out, err := TranslateClaudeToOpenAI(body)
+	out, err := TranslateClaudeToOpenAI(body, "", "")
 	if err != nil {
 		t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 	}

@@ -263,7 +263,7 @@ func TestConvertClaudeMessage_ToolResultArrayContent(t *testing.T) {
 		Role:    "user",
 		Content: jsontext.Value(`[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"result text"}]}]`),
 	}
-	results, err := convertClaudeMessage(msg)
+	results, err := convertClaudeMessage(msg, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestConvertClaudeMessage_ToolResultRawContent(t *testing.T) {
 		Role:    "user",
 		Content: jsontext.Value(`[{"type":"tool_result","tool_use_id":"call_1","content":{"raw":true}}]`),
 	}
-	results, err := convertClaudeMessage(msg)
+	results, err := convertClaudeMessage(msg, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestConvertClaudeMessage_ToolResultImageHoisting(t *testing.T) {
 		]`),
 	}
 
-	results, err := convertClaudeMessage(msg)
+	results, err := convertClaudeMessage(msg, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestConvertClaudeMessage_EmptyBlocks(t *testing.T) {
 		Role:    "user",
 		Content: jsontext.Value(`[]`),
 	}
-	results, err := convertClaudeMessage(msg)
+	results, err := convertClaudeMessage(msg, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
 				{"type":"tool_use","id":"call_1","name":"Bash","input":{"cmd":"ls"}}
 			]`),
 		}
-		results, err := convertClaudeMessage(msg)
+		results, err := convertClaudeMessage(msg, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -412,7 +412,7 @@ func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
 				{"type":"text","text":"Hello"}
 			]`),
 		}
-		results, err := convertClaudeMessage(msg)
+		results, err := convertClaudeMessage(msg, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -434,7 +434,7 @@ func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
 				{"type":"thinking","thinking":"Just thinking..."}
 			]`),
 		}
-		results, err := convertClaudeMessage(msg)
+		results, err := convertClaudeMessage(msg, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -453,7 +453,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 			"messages": [{"role":"user","content":"hello"}],
 			"thinking": {"type": "enabled", "budget_tokens": 20000}
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -472,7 +472,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 			"messages": [{"role":"user","content":"hello"}],
 			"thinking": {"type": "enabled", "budget_tokens": 5000}
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -491,7 +491,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 			"messages": [{"role":"user","content":"hello"}],
 			"thinking": {"type": "enabled", "budget_tokens": 100}
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -510,7 +510,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 			"model": "claude-3-5-sonnet",
 			"messages": [{"role":"user","content":"hello"}]
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -529,7 +529,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 			"messages": [{"role":"user","content":"hello"}],
 			"thinking": {"type": "disabled"}
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -612,7 +612,7 @@ func TestTranslateClaudeToOpenAI_AdaptiveEffortNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := TranslateClaudeToOpenAI([]byte(tt.input))
+			out, err := TranslateClaudeToOpenAI([]byte(tt.input), "", "")
 			if err != nil {
 				t.Fatalf("TranslateClaudeToOpenAI failed: %v", err)
 			}
@@ -639,7 +639,7 @@ func TestTranslateClaudeToOpenAI_DocumentBlock(t *testing.T) {
 		}]
 	}`)
 
-	openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+	openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 	if err != nil {
 		t.Fatalf("TranslateClaudeToOpenAI failed: %v", err)
 	}

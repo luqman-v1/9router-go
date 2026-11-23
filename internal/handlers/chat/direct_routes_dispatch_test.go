@@ -111,7 +111,7 @@ const claudeFixture = `{
 // It is red the day the pivot starts preserving is_error, which is the signal
 // that the direct routes have lost their reason to exist for that property.
 func TestDirectRoutes_PivotLosesToolErrorState(t *testing.T) {
-	openaiJSON, err := translator.TranslateClaudeToOpenAI([]byte(claudeFixture))
+	openaiJSON, err := translator.TranslateClaudeToOpenAI([]byte(claudeFixture), "", "")
 	if err != nil {
 		t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestDirectRoutes_ComboLeavesShareAnImmutableBody(t *testing.T) {
 
 	// The leaves a combo would walk, in the order they would be tried.
 	for _, target := range []string{"chat-pivot", "chat-pivot"} {
-		if _, err := translator.TranslateClaudeToOpenAI(rawBody); err != nil {
+		if _, err := translator.TranslateClaudeToOpenAI(rawBody, "", ""); err != nil {
 			t.Fatalf("%s: TranslateClaudeToOpenAI: %v", target, err)
 		}
 		if !bytes.Equal(rawBody, pristine) {

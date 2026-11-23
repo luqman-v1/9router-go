@@ -26,7 +26,7 @@ const openAIChatBody = `{"model":"gpt-6.2-astra","messages":[
 // blocks are dropped by the Responses converter, so the model never sees its
 // own tool output and re-issues the call forever.
 func TestClaudeBodyForNonClaudeUpstreamConvertsToolRoundTrip(t *testing.T) {
-	out := claudeBodyForNonClaudeUpstream([]byte(claudeToolBody), false)
+	out := claudeBodyForNonClaudeUpstream([]byte(claudeToolBody), false, "openrouter", "anthropic/claude-3.5-sonnet")
 
 	var body struct {
 		Messages []struct {
@@ -80,7 +80,7 @@ func TestClaudeBodyForNonClaudeUpstreamLeavesOtherShapesAlone(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in := []byte(tc.body)
-			if out := claudeBodyForNonClaudeUpstream(in, tc.upstreamSpeaksClaude); !bytes.Equal(out, in) {
+			if out := claudeBodyForNonClaudeUpstream(in, tc.upstreamSpeaksClaude, "openrouter", "anthropic/claude-3.5-sonnet"); !bytes.Equal(out, in) {
 				t.Errorf("body was rewritten:\n in: %s\nout: %s", in, out)
 			}
 		})
@@ -91,7 +91,7 @@ func TestClaudeBodyForNonClaudeUpstreamLeavesOtherShapesAlone(t *testing.T) {
 // non-Claude combo seat must stay streamed.
 func TestClaudeBodyForNonClaudeUpstreamKeepsStreamFlag(t *testing.T) {
 	body := []byte(strings.Replace(claudeToolBody, `"model":"claude-opus-5-5"`, `"model":"claude-opus-5-5","stream":true`, 1))
-	out := claudeBodyForNonClaudeUpstream(body, false)
+	out := claudeBodyForNonClaudeUpstream(body, false, "openrouter", "anthropic/claude-3.5-sonnet")
 	var parsed struct {
 		Stream *bool `json:"stream"`
 	}
@@ -109,7 +109,7 @@ func TestClaudeBodyForNonClaudeUpstreamKeepsStreamFlag(t *testing.T) {
 // hop: a converted body must still carry that text in a system role.
 func TestClaudeBodyForNonClaudeUpstreamKeepsOperatorSystemPrompt(t *testing.T) {
 	body := []byte(strings.Replace(claudeToolBody, `"system":"be brief"`, `"system":"OPERATOR-RULES-CANARY"`, 1))
-	out := claudeBodyForNonClaudeUpstream(body, false)
+	out := claudeBodyForNonClaudeUpstream(body, false, "openrouter", "anthropic/claude-3.5-sonnet")
 	var parsed struct {
 		System   any `json:"system"`
 		Messages []struct {

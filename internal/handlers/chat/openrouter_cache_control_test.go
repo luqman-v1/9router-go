@@ -30,8 +30,8 @@ func TestPreservesOpenRouterAnthropicCacheControl(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := preservesOpenRouterAnthropicCacheControl(tt.provider, tt.wire); got != tt.want {
-				t.Errorf("preservesOpenRouterAnthropicCacheControl(%q, %q) = %v, want %v", tt.provider, tt.wire, got, tt.want)
+			if got := translator.PreservesOpenRouterAnthropicCacheControl(tt.provider, tt.wire); got != tt.want {
+				t.Errorf("translator.PreservesOpenRouterAnthropicCacheControl(%q, %q) = %v, want %v", tt.provider, tt.wire, got, tt.want)
 			}
 		})
 	}
@@ -44,7 +44,7 @@ func filterPreserveCacheControlFor(t *testing.T, provider, model string) bool {
 	t.Helper()
 	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}`)
 	out, err := translator.FilterToOpenAIFormatJSON(body, translator.FilterOptions{
-		PreserveCacheControl: providers.PreservesCacheControl(provider) || preservesOpenRouterAnthropicCacheControl(provider, model),
+		PreserveCacheControl: providers.PreservesCacheControl(provider) || translator.PreservesOpenRouterAnthropicCacheControl(provider, model),
 	})
 	if err != nil {
 		t.Fatalf("FilterToOpenAIFormatJSON: %v", err)

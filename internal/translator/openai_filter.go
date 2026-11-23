@@ -72,7 +72,7 @@ func filterToOpenAIFormat(body map[string]any, opts FilterOptions) bool {
 			changed = true
 		}
 	}
-	if normalizeTools(body) {
+	if normalizeTools(body, opts) {
 		changed = true
 	}
 	if normalizeToolChoice(body) {
