@@ -4963,7 +4963,6 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Jev 1.13 Free",
       "kind": "systemone"
     },
-  ,
     {
       "id": "longcat-2.5-free",
       "name": "longcat-2.5-free",
