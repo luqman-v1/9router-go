@@ -132,7 +132,7 @@ func TestHandleAntigravity_CatalogPreserve(t *testing.T) {
 	}
 	var parsed map[string]any
 	_ = json.Unmarshal(capturedBody, &parsed)
-	// For catalog, should NOT override to 2.23.0
+	// For catalog, should NOT override to 2.33.0
 	if meta, ok := parsed["metadata"].(map[string]any); ok {
 		if meta["ideVersion"] == "2.33.0" {
 			t.Error("catalog request should preserve 2.11.0, not override to 2.33.0")

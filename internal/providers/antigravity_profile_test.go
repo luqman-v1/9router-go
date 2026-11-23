@@ -45,8 +45,8 @@ func TestIsAntigravityClientProfile(t *testing.T) {
 
 func TestAntigravityUserAgentFor(t *testing.T) {
 	ide := AntigravityUserAgentFor(AntigravityProfileIDE)
-	if ide != "antigravity/"+AntigravityIDEVersion {
-		t.Errorf("IDE user agent = %q, want %q", ide, "antigravity/"+AntigravityIDEVersion)
+	if ide != "antigravity/2.33.0" {
+		t.Errorf("IDE user agent = %q, want %q", ide, "antigravity/2.33.0")
 	}
 	cli := AntigravityUserAgentFor(AntigravityProfileCLI)
 	if cli != AntigravityCLIUserAgent {
