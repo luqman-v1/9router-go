@@ -11,15 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/kiroidentity"
 	"9router/proxy/internal/providers"
 )
 
 func init() {
 	Register("kiro", refreshKiro)
 }
-
-// Hourly rotating Kiro SDK identity (upstream kiroModels.js parity).
-var kiroSocialUA = "kiro-cli/1.0.0"
 
 // kiroRegionPattern guards the region interpolated into the IDC token URL.
 var kiroRegionPattern = regexp.MustCompile(`^[a-z]{2}-[a-z]+-[0-9]+$`)
@@ -126,7 +124,12 @@ func refreshKiroSocial(ctx context.Context, client *http.Client, refreshToken st
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", kiroSocialUA)
+	// Upstream buildKiroIdentityHeaders({ refreshToken }): the social refresh
+	// endpoint expects the runtime (codewhispererruntime) identity, seeded by
+	// the refresh token, on BOTH the User-Agent and X-Amz-User-Agent headers.
+	ua, amzUA := kiroidentity.Headers(kiroidentity.ClientKindRuntime, kiroidentity.Identity{RefreshToken: refreshToken})
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("X-Amz-User-Agent", amzUA)
 
 	resp, err := client.Do(req)
 	if err != nil {
