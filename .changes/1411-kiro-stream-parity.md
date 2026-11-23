@@ -22,7 +22,15 @@ and a 429 carrying `USER_REQUEST_RATE_EXCEEDED` had no in-request recovery.
   generic 429 triggers the fallback. `external_idp` refresh and refresh-token
   seeding on inference remain separate follow-ups.
 
-Verified: `go vet ./...`, `go test ./... -count=1`, and the binary build all pass;
+- **Dependency security.** Bumped `github.com/gorilla/websocket` from `v1.5.3`
+  to the fixed pseudo-version `v1.5.4-0.20240701034025-d67f41855da4` so the
+  reachable `GO-2026-6278` finding no longer fails the CI `govulncheck` gate.
+  The same finding was reproducible on clean `origin/main`; no file in this PR
+  introduced it.
+
+Verified: `go vet ./...`, `go test ./... -count=1`, the binary build,
+`golangci-lint --new-from-rev=origin/main` (0 issues) and `govulncheck`
+(No vulnerabilities found) all pass;
 Kiro tests cover exact UA strings, both refresh paths, the three fallback modes,
 body translation, region validation, backoff and stream folding. No `web/`
 changes.
