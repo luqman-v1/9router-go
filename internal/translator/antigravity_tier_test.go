@@ -53,7 +53,7 @@ func TestAntigravityTieredModel(t *testing.T) {
 		{"argon follows effort", "gemini-4-argon", `{"reasoning_effort":"low"}`, "gemini-4-argon-low"},
 		{"carbon follows effort high", "gemini-4-carbon", `{"reasoning_effort":"high"}`, "gemini-4-carbon-high"},
 		{"carbon follows effort low", "gemini-4-carbon", `{"reasoning_effort":"low"}`, "gemini-4-carbon-low"},
-		{"carbon default medium", "gemini-4-carbon", `{}`, "gemini-4-carbon-medium"},
+		{"carbon default high", "gemini-4-carbon", `{}`, "gemini-4-carbon-high"},
 		{"claude family follows effort", "claude-sonnet-5-5", `{"reasoning_effort":"low"}`, "claude-sonnet-5-5-low"},
 		{"unknown tier falls back to the base row", "gemini-3.8-flash", `{"reasoning_effort":"turbo"}`, "gemini-3.8-flash-medium"},
 		{"pro high resolves through its tiered row", "gemini-3.1-pro", `{"reasoning_effort":"high"}`, "gemini-pro-agent"},

@@ -273,11 +273,20 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if model == "gemini-4-carbon" {
 		checkModels = append(checkModels, "gemini-4-carbon-high", "gemini-4-carbon-medium")
 	}
+	if model == "gemini-4-neon" {
+		checkModels = append(checkModels, "gemini-4-neon-high", "gemini-4-neon-medium")
+	}
+	if model == "claude-sonnet-5-5-max" {
+		checkModels = append(checkModels, "claude-sonnet-5-5-max")
+	}
+	if model == "claude-opus-5-5-max" {
+		checkModels = append(checkModels, "claude-opus-5-5-max")
+	}
 	if model == "claude-sonnet-5-5" {
-		checkModels = append(checkModels, "claude-sonnet-5-5-high")
+		checkModels = append(checkModels, "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high")
 	}
 	if model == "claude-opus-5-5" {
-		checkModels = append(checkModels, "claude-opus-5-5-high")
+		checkModels = append(checkModels, "claude-opus-5-5-medium", "claude-opus-5-5-high")
 	}
 
 	now := time.Now().UTC()
