@@ -179,3 +179,21 @@ operator reads as "this file has no content". It now sends the resolved ref, and
 retries unqualified when a proxy refuses it, which is how several proxies serve
 the same file. Live against a local mirror: `written=0` before the fix,
 `written=1` after, with the preset's origin recording `owner/repo@main`.
+### fix(persona): the auto-sync card lists its sources on boot
+
+`loadSyncSources` was reachable only from `runSyncNow`, so the card rendered
+"No sources yet" on every page open and filled in only after an operator clicked
+"Sync now" once. On a gateway with the default source enabled and 54 presets
+already written, the page claimed the feature had nothing to follow. `load()`
+now reads the sources itself, alongside the presets it already fetches.
+
+The read also swallowed its own error, which made an unreachable sources
+endpoint indistinguishable from an empty list — both rendered "No sources yet".
+It now surfaces the message on the card in the error colour, next to the list it
+failed to fill.
+
+Verified on a live gateway (real dashboard, logged in, Persona page): the card
+lists the seeded `togg53192-cmd/jailbreaks` with `cloud_done` and
+"up to date · synced 10m ago" before any click, and a click then reports
+"Sync complete: nothing changed" with "synced just now". `bun run build` and the
+Svelte ratchet pass unchanged.
