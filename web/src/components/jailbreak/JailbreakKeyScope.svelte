@@ -136,6 +136,10 @@
 </script>
 
 <div class="space-y-3 {classes}">
+  <div class="space-y-1">
+    <h2 class="text-sm font-bold text-text-main">Per-key bindings</h2>
+    <p class="text-[11px] text-text-subtle">Overrides the global binding for this key only.</p>
+  </div>
   <p class="text-xs text-text-subtle">
     A row here overrides the <span class="text-text-main">global</span> binding for the same model,
     for this key only — the resolver reads the key's binding first, so a resold client gets its own

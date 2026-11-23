@@ -1350,7 +1350,21 @@
 
 <!-- MODAL: Create API Key -->
 {#if isCreateKeyOpen}
-  <div class="fixed inset-0 z-\[100\] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+  <div
+    class="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+    onclick={(e) => {
+      // Clicking the backdrop closes, matching every other overlay on this
+      // dashboard (Tunnel Settings below). The handler sits on the backdrop
+      // and compares the event target against itself, so a click that starts
+      // inside the panel does not close the modal on its way out.
+      if (e.target === e.currentTarget) {
+        isCreateKeyOpen = false
+        newKeyName = ''
+        createKeyTab = 'single'
+        resetBulkKeyForm()
+      }
+    }}
+  >
     <div class="w-full {createKeyTab === 'bulk' ? 'max-w-lg' : 'max-w-md'} p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
       <div class="flex items-center justify-between pb-3 border-b border-border">
         <h3 class="text-base font-bold text-text-main">Create API Key</h3>
@@ -1571,7 +1585,16 @@
 {/if}
 <!-- MODAL: Bulk Keys Created -->
 {#if bulkKeyResults.length > 0}
-  <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+  <div
+    class="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) {
+        bulkKeyResults = []
+        isCreateKeyOpen = false
+        createKeyTab = 'single'
+      }
+    }}
+  >
     <div class="w-full max-w-lg p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
       <div class="flex items-center justify-between pb-3 border-b border-border">
         <h3 class="text-base font-bold text-text-main">
@@ -1641,7 +1664,12 @@
 {/if}
 
 {#if newlyCreatedKey}
-  <div class="fixed inset-0 z-\[100\] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+  <div
+    class="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) newlyCreatedKey = null
+    }}
+  >
     <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
       <div class="flex items-center justify-between pb-3 border-b border-border">
         <h3 class="text-base font-bold text-text-main">API Key Created</h3>

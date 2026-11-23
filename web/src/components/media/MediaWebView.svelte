@@ -223,7 +223,12 @@
 </div>
 
 {#if creatingKind}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) creatingKind = null
+    }}
+  >
     <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-6 shadow-xl space-y-4">
       <div class="flex items-center justify-between">
         <h3 class="text-base font-semibold text-text-main">Create {creatingKind === 'webSearch' ? 'Web Search' : 'Web Fetch'} Combo</h3>
@@ -242,7 +247,12 @@
 {/if}
 
 {#if managingCombo}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) managingCombo = null
+    }}
+  >
     <div class="w-full max-w-lg rounded-2xl border border-border bg-surface p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto">
       <div class="flex items-center justify-between">
         <h3 class="text-base font-semibold text-text-main">Manage Combo</h3>

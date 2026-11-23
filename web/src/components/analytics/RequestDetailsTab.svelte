@@ -325,7 +325,12 @@
 <!-- Detail Modal (OmniRoute style) -->
 {#if selectedDetail && isPanelVisible('details.payload')}
   {@const acc = resolveAccount(selectedDetail)}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) closeDetail()
+    }}
+  >
     <div class="w-full max-w-4xl lg:max-w-5xl max-h-[90vh] rounded-2xl bg-surface border border-border shadow-2xl flex flex-col overflow-hidden">
       <!-- Modal Header -->
       <div class="px-6 py-4 border-b border-border flex items-center justify-between bg-surface-2">
