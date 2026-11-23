@@ -299,3 +299,29 @@ func TestAccumulateClaudeStreamUsage_CacheCreationSplit(t *testing.T) {
 		t.Errorf("message_delta dropped the split: got %#v", u)
 	}
 }
+
+// --- Prompt estimate cached per stream session (issue #1399) ---
+
+func TestPromptEstimateCachedAcrossChunks(t *testing.T) {
+	const key = "prompt-estimate-cached"
+	defer ClearStreamState(key)
+
+	SeedStreamPromptEstimate(key, 1234)
+
+	if got := promptEstimateFor(key); got != 1234 {
+		t.Fatalf("first read: got %d, want 1234", got)
+	}
+	// Subsequent chunks in the same stream session must reuse the cached value.
+	if got := promptEstimateFor(key); got != 1234 {
+		t.Fatalf("second read: got %d, want 1234 (estimate must be retained)", got)
+	}
+	if got := promptEstimateFor(key); got != 1234 {
+		t.Fatalf("third read: got %d, want 1234", got)
+	}
+
+	// Terminating the session releases the cached estimate.
+	ClearStreamState(key)
+	if got := promptEstimateFor(key); got != 0 {
+		t.Fatalf("after clear: got %d, want 0", got)
+	}
+}

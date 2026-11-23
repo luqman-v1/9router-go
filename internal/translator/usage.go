@@ -56,7 +56,8 @@ func promptEstimateFor(sessionKey string) int {
 	if !ok {
 		return 0
 	}
-	delete(promptEstimates, sessionKey)
+	// Retain the cached estimate so subsequent chunks / deferred terminals in
+	// the same stream session reuse it instead of re-estimating (issue #1399).
 	return est.tokens
 }
 
