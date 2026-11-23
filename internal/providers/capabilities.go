@@ -1021,11 +1021,10 @@ func init() {
 		"pixtral-12b-2409": {Vision: true, Tools: true, ContextWindow: 128000, MaxOutput: 128000},
 	}
 
-	// Cloudflare llama-3.1 fast/awq variants share the 32000 window the
-	// fp8 sibling files (models.dev cloudflare-workers-ai).
-	providerCapabilities["cloudflare-ai"]["@cf/meta/llama-3.1-8b-instruct-fp8-fast"] = Capabilities{ContextWindow: 32000, MaxOutput: 32000}
+	// Cloudflare llama-3.1 awq shares the 32000 window the fp8 sibling files
+	// (models.dev cloudflare-workers-ai). The retired fp8-fast variants are no
+	// longer seeded by the registry (upstream decolua/9router#ecb4d49eb).
 	providerCapabilities["cloudflare-ai"]["@cf/meta/llama-3.1-8b-instruct-awq"] = Capabilities{ContextWindow: 32000, MaxOutput: 32000}
-	providerCapabilities["cloudflare-ai"]["@cf/meta/llama-3.1-70b-instruct-fp8-fast"] = Capabilities{ContextWindow: 32000, MaxOutput: 32000}
 
 	// Cursor serves the real Anthropic models under its own ids: claude-4.5-*
 	// are the 4.5 family (200000/64000 vendor window), claude-4.6-* the 4.6

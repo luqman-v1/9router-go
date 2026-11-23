@@ -56,9 +56,9 @@ func TestCatalogSweepNoFloorWhereSourceExists(t *testing.T) {
 		{"hcnsec", "sensenova-6.8-flash-lite", 1000000},
 		// pixtral-12b dated id: 128000/128000 (models.dev mistral).
 		{"mistral", "pixtral-12b-2409", 128000},
-		// Cloudflare llama-3.1 fast/awq: 32000 (models.dev).
-		{"cloudflare-ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast", 32000},
-		{"cloudflare-ai", "@cf/meta/llama-3.1-70b-instruct-fp8-fast", 32000},
+		// Cloudflare llama-3.1 awq is still seeded and files 32000 (models.dev);
+		// the fp8-fast siblings were pruned in decolua/9router#ecb4d49eb.
+		{"cloudflare-ai", "@cf/meta/llama-3.1-8b-instruct-awq", 32000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {
