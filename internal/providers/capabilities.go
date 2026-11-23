@@ -522,7 +522,7 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"nvidia/nemotron-3.5-bolt-e4b":                  {Tools: true, ContextWindow: 128000, MaxOutput: 8192},
 		"nvidia/nemotron-3.5-lightning-30b-a3b":         {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 8192},
 		"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 8192},
-		"nvidia/nemotron-3-ultra-550b-a55b":             {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 8192},
+		"nvidia/nemotron-3-ultra-550b-a55b":             {Tools: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 8192},
 		"poolside/laguna-xs-2.1":                        {Tools: true, ContextWindow: 200000, MaxOutput: 32000},
 		"meta/llama-guard-4-12b":                        {ContextWindow: 128000, MaxOutput: 4096},
 		"nvidia/riva-translate-4b-instruct-v2":          {ContextWindow: 128000, MaxOutput: 4096},
