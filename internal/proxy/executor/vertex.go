@@ -48,8 +48,8 @@ const (
 
 	// vertexDefaultAPIVersion is the Vertex Gemini path version every existing
 	// connection expects. A connection may opt into v1beta1 through its data
-	// (`apiVersion`) for surfaces Vertex only serves there — Imagen, newer
-	// Gemini features. Upstream: DefaultAPIVersion in
+	// (`vertexApiVersion`) for surfaces Vertex only serves there — Imagen,
+	// newer Gemini features. Upstream: DefaultAPIVersion in
 	// relay/channel/vertex/url_builder.go.
 	vertexDefaultAPIVersion = "v1"
 
@@ -236,10 +236,11 @@ func vertexJWTAssertion(sa *vertexServiceAccount) (string, error) {
 // project-less form is the API-key-without-project case, where Vertex serves
 // the model at the bare publisher root.
 //
-// apiVersion is the path segment: `v1` for every existing connection, and
+// The version is the path segment: `v1` for every existing connection, and
 // `v1beta1` for the surfaces Vertex only serves there (Imagen, newer Gemini
-// features). It is a connection-level setting, not a request field, because
-// which versions a project can serve is a property of the credential.
+// features). It comes from the connection's `vertexApiVersion` setting, not a
+// request field, because which versions a project can serve is a property of
+// the credential. It is not the `apiVersion` key, which belongs to Azure.
 func vertexModelURL(apiVersion, projectID, location, model, action, streamSuffix string) string {
 	if projectID == "" {
 		return fmt.Sprintf("https://aiplatform.googleapis.com/%s/publishers/google/models/%s:%s%s",
