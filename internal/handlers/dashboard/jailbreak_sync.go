@@ -6,6 +6,7 @@ import (
 	"9router/proxy/internal/log"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
