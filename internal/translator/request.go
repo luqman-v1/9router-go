@@ -68,6 +68,82 @@ func parseSystemPrompt(systemRaw jsontext.Value) string {
 	return ""
 }
 
+func convertClaudeSystemPrompt(systemRaw jsontext.Value, preserveCacheControl bool) any {
+	if len(systemRaw) == 0 {
+		return ""
+	}
+
+	var sysStr string
+	if err := json.Unmarshal(systemRaw, &sysStr); err == nil {
+		text := stripAnthropicBillingHeader(sysStr)
+		return text
+	}
+
+	var sysBlocks []ClaudeSystemBlock
+	if err := json.Unmarshal(systemRaw, &sysBlocks); err != nil {
+		log.Warn("translator", "parse system prompt failed")
+		return ""
+	}
+
+	hasCache := false
+	if preserveCacheControl {
+		for _, block := range sysBlocks {
+			if len(block.CacheControl) > 0 {
+				hasCache = true
+				break
+			}
+		}
+	}
+
+	if !hasCache {
+		var parts []string
+		for _, block := range sysBlocks {
+			text := stripAnthropicBillingHeader(block.Text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	blocks := make([]OpenAIContentBlock, 0, len(sysBlocks))
+	for _, block := range sysBlocks {
+		text := stripAnthropicBillingHeader(block.Text)
+		if text == "" && len(block.CacheControl) == 0 {
+			continue
+		}
+		tb := OpenAIContentBlock{
+			Type: "text",
+			Text: text,
+		}
+		if preserveCacheControl && len(block.CacheControl) > 0 {
+			tb.CacheControl = block.CacheControl
+		}
+		blocks = append(blocks, tb)
+	}
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks
+}
+
+func isEmptySystemContent(v any) bool {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val) == ""
+	case []OpenAIContentBlock:
+		if len(val) == 0 {
+			return true
+		}
+		for _, b := range val {
+			if strings.TrimSpace(b.Text) != "" || len(b.CacheControl) > 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
 func systemReminderText(content string) string {
 	text := strings.TrimSpace(content)
 	if text == "" {
@@ -441,8 +517,8 @@ func TranslateClaudeToOpenAI(claudeBody []byte, targetProvider, targetModel stri
 	oreq.Stream = creq.Stream
 	preserveCacheControl := PreservesOpenRouterAnthropicCacheControl(targetProvider, targetModel)
 
-	sysContent := parseSystemPrompt(creq.System)
-	if sysContent != "" {
+	sysContent := convertClaudeSystemPrompt(creq.System, preserveCacheControl)
+	if !isEmptySystemContent(sysContent) {
 		oreq.Messages = append(oreq.Messages, OpenAIMessage{
 			Role:    "system",
 			Content: sysContent,

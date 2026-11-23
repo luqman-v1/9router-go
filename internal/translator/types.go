@@ -216,8 +216,9 @@ type OpenAIFunctionStream struct {
 
 // Claude System Prompt block
 type ClaudeSystemBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type         string         `json:"type"`
+	Text         string         `json:"text"`
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // ClaudeContentBlock represents one content block in a Claude message.
