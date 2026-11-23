@@ -112,6 +112,31 @@ var antigravityFingerprintRewrites = []antigravityFingerprintRewrite{
 	),
 }
 
+// antigravityHermesWholeLineRewrites strips whole Hermes runtime prompt lines
+// that individually trigger a false 429 RESOURCE_EXHAUSTED on the Antigravity
+// backend (upstream decolua/9router@bb399170a). They run before the generic
+// token-level fingerprint rows so a whole line is excised cleanly instead of
+// leaving trailing fingerprint text behind.
+var antigravityHermesWholeLineRewrites = []struct {
+	from *regexp.Regexp
+	to   string
+}{
+	{from: regexp.MustCompile(`(?m)^[ \t]*You are Hermes Agent, built by Nous Research\. Be direct:[^\n]*`), to: "You are an AI assistant."},
+	{from: regexp.MustCompile(`(?m)^[ \t]*<!-- End Hermes runtime environment -->[^\n]*(?:\r?\n)?`), to: ""},
+	{from: regexp.MustCompile(`(?m)^[ \t]*# Google model operational directives[^\n]*(?:\r?\n)?`), to: ""},
+	{from: regexp.MustCompile(`(?m)^[ \t]*If a tool, install, or network call fails and blocks the real path[^\n]*(?:\r?\n)?`), to: ""},
+	{from: regexp.MustCompile(`(?m)^[ \t]*When the user asks you to build, run, or verify something, the deliverable is a working artifact[^\n]*(?:\r?\n)?`), to: ""},
+	{from: regexp.MustCompile(`(?m)^[ \t]*For help with Hermes Agent itself[^\n]*(?:\r?\n)?`), to: ""},
+	{from: regexp.MustCompile(`(?m)^[ \t]*Mid-turn, the user can steer you: Hermes delivers their message[^\n]*(?:\r?\n)?`), to: ""},
+}
+
+func rewriteAntigravityHermesWholeLines(text string) string {
+	for _, rewrite := range antigravityHermesWholeLineRewrites {
+		text = rewrite.from.ReplaceAllString(text, rewrite.to)
+	}
+	return text
+}
+
 // rewriteAntigravityFingerprints replaces every known harness fingerprint with
 // neutral wording. It is applied to system instructions and tool descriptions,
 // the two prompt slots the backend scans for competing-client branding;
@@ -120,6 +145,10 @@ func rewriteAntigravityFingerprints(text string) string {
 	if text == "" {
 		return text
 	}
+	// Whole-line Hermes markers run first so the lines are excised cleanly
+	// without leaving leftover tags (upstream decolua/9router@bb399170a).
+	text = rewriteAntigravityHermesWholeLines(text)
+	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	for _, rewrite := range antigravityFingerprintRewrites {
 		text = rewrite.from.ReplaceAllString(text, rewrite.to)
 	}

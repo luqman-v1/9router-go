@@ -28,7 +28,7 @@ func TestRewriteAntigravityFingerprints(t *testing.T) {
 		{
 			name:  "working artifact sentence",
 			input: "When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real tool output",
-			want:  "If the user asks you to build, run or check something, deliver a working result based on actual tool output",
+			want:  "",
 		},
 		{
 			name:  "blocker sentence",
@@ -48,7 +48,7 @@ func TestRewriteAntigravityFingerprints(t *testing.T) {
 		{
 			name:  "google operational header",
 			input: "# Google model operational directives\nBody",
-			want:  "# Model operational directives\nBody",
+			want:  "Body",
 		},
 		{
 			name:  "docs url",
@@ -63,7 +63,7 @@ func TestRewriteAntigravityFingerprints(t *testing.T) {
 		{
 			name:  "help sentence",
 			input: "For help with Hermes Agent itself, run x.",
-			want:  "For help with the assistant itself, run x.",
+			want:  "",
 		},
 		{
 			name:  "delivers sentence",
@@ -138,7 +138,7 @@ func TestRewriteAntigravityFingerprints(t *testing.T) {
 		{
 			name:  "runtime end marker",
 			input: "<!-- End Hermes runtime environment -->",
-			want:  "<!-- End runtime environment -->",
+			want:  "",
 		},
 		{
 			name:  "kanban env var",
@@ -438,5 +438,74 @@ func TestStripCompetitivePrompts_SanitizesOMPToolDescriptions(t *testing.T) {
 	}
 	if req.Tools[0].FunctionDeclarations[0].Description != original {
 		t.Error("StripCompetitivePrompts mutated the caller's tool description")
+	}
+}
+
+// TestStripCompetitivePrompts_StripsHermesWholeLines verifies the seven
+// Hermes whole-line markers added in upstream decolua/9router@bb399170a are
+// excised completely, leaving surrounding instructions intact.
+func TestStripCompetitivePrompts_StripsHermesWholeLines(t *testing.T) {
+	triggers := []string{
+		"<!-- End Hermes runtime environment -->",
+		"# Google model operational directives",
+		"If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative (different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually produce. Reporting a blocker honestly is always better than inventing a result.",
+		"When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real tool output — not a description of one. Do not stop after writing a stub, a plan, or a single command. Keep working until you have actually exercised the code or produced the requested result, then report what real execution returned.",
+		"For help with Hermes Agent itself — configuring, setting up, using, extending, or troubleshooting it — or to understand your own features, tools, or capabilities, the documentation at https://hermes-agent.nousresearch.com/docs is your authoritative reference and always holds the latest, most up-to-date information.",
+		"Mid-turn, the user can steer you: Hermes delivers their message as a standalone user message right after the latest tool results, wrapped exactly as:",
+	}
+	soul := "You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask — a one-line question gets a one-line answer."
+
+	for _, eol := range []string{"\n", "\r\n"} {
+		t.Run(eol, func(t *testing.T) {
+			lines := []string{soul, "Keep this line."}
+			lines = append(lines, triggers...)
+			lines = append(lines, "And this one.")
+			text := strings.Join(lines, eol)
+
+			req := &GeminiRequest{
+				SystemInstruction: &GeminiContent{
+					Role:  "user",
+					Parts: []GeminiPart{{Text: text}},
+				},
+			}
+			stripped := StripCompetitivePrompts(req)
+			if stripped == nil || stripped.SystemInstruction == nil || len(stripped.SystemInstruction.Parts) == 0 {
+				t.Fatal("system instruction lost")
+			}
+			got := stripped.SystemInstruction.Parts[0].Text
+			for _, tr := range triggers {
+				if strings.Contains(got, tr) {
+					t.Errorf("trigger line still present: %q", tr)
+				}
+			}
+			if strings.Contains(got, "Be direct:") {
+				t.Errorf("SOUL identity not rewritten: %q", got)
+			}
+			if strings.Contains(got, "Nous Research") {
+				t.Errorf("Nous Research not stripped: %q", got)
+			}
+			if !strings.Contains(got, "You are an AI assistant.") {
+				t.Errorf("expected neutral identity, got %q", got)
+			}
+			if !strings.Contains(got, "Keep this line.") {
+				t.Errorf("kept line lost: %q", got)
+			}
+			if !strings.Contains(got, "And this one.") {
+				t.Errorf("kept line lost: %q", got)
+			}
+
+			// Begin marker (non-trigger) survives.
+			beginReq := &GeminiRequest{
+				SystemInstruction: &GeminiContent{
+					Role:  "user",
+					Parts: []GeminiPart{{Text: "<!-- Begin Hermes runtime environment -->" + eol + "CWD: /home"}},
+				},
+			}
+			beginStripped := StripCompetitivePrompts(beginReq)
+			beginText := beginStripped.SystemInstruction.Parts[0].Text
+			if !strings.Contains(beginText, "Begin") || !strings.Contains(beginText, "runtime environment") {
+				t.Errorf("begin marker wrongly stripped: %q", beginText)
+			}
+		})
 	}
 }
