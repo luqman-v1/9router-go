@@ -71,7 +71,7 @@ func defaultJailbreakSyncSources() []JailbreakSyncSource {
 
 // JailbreakSyncSource is one repository the preset library follows.
 type JailbreakSyncSource struct {
-	ID      string `json:"id"`
+	ID string `json:"id"`
 	// Target is anything parseJailbreakImportTarget accepts: an
 	// "owner/repo" shorthand, a GitHub URL, or a raw file URL.
 	Target string `json:"target"`
@@ -113,6 +113,7 @@ type JailbreakSyncFile struct {
 	Action string `json:"action"` // "written", "updated", "unchanged", "orphaned", "failed"
 	Reason string `json:"reason,omitempty"`
 }
+
 // jailbreakSyncStore is the persistence seam. Everything the worker needs from
 // the database is behind it, so a test drives the same code path with an
 // in-memory store and never opens SQLite.
@@ -457,7 +458,7 @@ func (s *jailbreakSync) Start(ctx context.Context) {
 		case <-time.After(45 * time.Second):
 		}
 
-		if _, err := s.Run(ctx); err != nil && err != ErrJailbreakSyncBusy {
+		if _, err := s.Run(ctx); err != nil && !errors.Is(err, ErrJailbreakSyncBusy) {
 			log.Warn("jailbreak_sync", "initial preset sync failed", "error", err)
 		}
 
@@ -476,7 +477,7 @@ func (s *jailbreakSync) Start(ctx context.Context) {
 					// re-read the same bytes.
 					continue
 				}
-				if _, err := s.Run(ctx); err != nil && err != ErrJailbreakSyncBusy {
+				if _, err := s.Run(ctx); err != nil && !errors.Is(err, ErrJailbreakSyncBusy) {
 					log.Warn("jailbreak_sync", "periodic preset sync failed", "error", err)
 				}
 			}
@@ -714,8 +715,8 @@ func (h *DashboardHandler) HandleGetJailbreakGithub(w http.ResponseWriter, r *ht
 		"tokenSet": stored != "" || envToken,
 		// What the conditional-request cache is holding, so the panel can show
 		// that a second pass with no upstream change is costing nothing.
-		"cached":    cached,
-		"cacheMax":  cacheMax,
+		"cached":   cached,
+		"cacheMax": cacheMax,
 		"source": func() string {
 			if stored != "" {
 				return "dashboard"
