@@ -2232,7 +2232,12 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
 
 <!-- MODAL: Confirmation for Extras -->
 {#if extrasConfirm}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) extrasConfirm = null
+    }}
+  >
     <div class="w-full max-w-sm p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
       <div class="space-y-1">
         <h3 class="text-base font-bold text-text-main">{extrasConfirm.title}</h3>

@@ -368,7 +368,12 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+<div
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+  onclick={(e) => {
+    if (e.target === e.currentTarget) onClose()
+  }}
+>
   <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-surface-2 border border-border shadow-2xl">
     <div class="sticky top-0 bg-surface-2 border-b border-border px-6 py-4 flex items-center justify-between z-10">
       <div class="min-w-0">

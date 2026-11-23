@@ -127,6 +127,10 @@
 </script>
 
 <div class="space-y-3 {classes}">
+  <div class="space-y-1">
+    <h2 class="text-sm font-bold text-text-main">Resolver check</h2>
+    <p class="text-[11px] text-text-subtle">Runs the gateway's resolver for one model id, per scope.</p>
+  </div>
   <p class="text-xs text-text-subtle">
     A key-scoped binding is invisible on the request path unless it resolves. This panel runs the
     gateway's own resolver twice for one model id — once as <span class="text-text-main">global</span>,
