@@ -9,6 +9,7 @@ const UNITS: Record<string, number> = {
   k: 1_000,
   m: 1_000_000,
   b: 1_000_000_000,
+  t: 1_000_000_000_000,
 }
 
 // parseTokenAmount reads a token amount written as a number or a shorthand
@@ -54,8 +55,43 @@ export function parseTokenAmount(input: string): number | null {
 // is harder to read than "500".
 export function formatTokenAmount(tokens: number): string {
   if (!Number.isFinite(tokens) || tokens <= 0) return ''
+  if (tokens >= 1_000_000_000_000) return `${tokens / 1_000_000_000_000}T`
   if (tokens >= 1_000_000_000) return `${tokens / 1_000_000_000}B`
   if (tokens >= 1_000_000) return `${tokens / 1_000_000}M`
   if (tokens >= 1_000) return `${tokens / 1_000}K`
   return String(Math.round(tokens))
+}
+
+// fmtCompactTokens is the display-side compactor used by usage charts: it
+// always keeps one decimal place and promotes boundary values (999.95K ->
+// 1.0M) so labels never overflow the YAxis.
+const COMPACT_TOKEN_UNITS = [
+  { value: 1_000_000_000_000, suffix: 'T' },
+  { value: 1_000_000_000, suffix: 'B' },
+  { value: 1_000_000, suffix: 'M' },
+  { value: 1_000, suffix: 'K' },
+]
+
+export function fmtCompactTokens(n: number): string {
+  const num = Number(n)
+  if (!Number.isFinite(num) || num === 0) return '0'
+  const abs = Math.abs(num)
+  const sign = num < 0 ? '-' : ''
+
+  for (let i = 0; i < COMPACT_TOKEN_UNITS.length; i++) {
+    const { value, suffix } = COMPACT_TOKEN_UNITS[i]
+    if (abs >= value) {
+      const scaled = abs / value
+      if (Number(scaled.toFixed(1)) >= 1000 && i > 0) {
+        const upper = COMPACT_TOKEN_UNITS[i - 1]
+        return `${sign}${(abs / upper.value).toFixed(1)}${upper.suffix}`
+      }
+      return `${sign}${scaled.toFixed(1)}${suffix}`
+    }
+  }
+
+  if (Math.round(abs) >= 1000) {
+    return `${sign}1.0K`
+  }
+  return String(num)
 }
