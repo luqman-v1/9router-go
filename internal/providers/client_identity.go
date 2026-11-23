@@ -45,7 +45,7 @@ const (
 	// fresh live capture. os_type/arch stay pinned to windows/amd64 on purpose so
 	// every pooled account presents one identical fingerprint.
 	AntigravityCLIVersion   = "1.5.9"
-	AntigravityIDEVersion   = "2.24.0"
+	AntigravityIDEVersion   = "2.33.0"
 	AntigravityCLIUserAgent = "antigravity/cli/" + AntigravityCLIVersion + " (aidev_client; os_type=windows; arch=amd64; cl=1021519450; auth_method=consumer)"
 	AntigravityIDEUserAgent = AntigravityCLIUserAgent
 )
