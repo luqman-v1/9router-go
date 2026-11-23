@@ -1,4 +1,0 @@
-### fix(media): rotate systemone and mimo speech requests across connections
-
-- **SystemOne & MiMo TTS connection failover** (`internal/handlers/media/media.go`): extended multi-connection rotation on retryable upstream errors (`providers.ClassifyErrorForProvider`), pinned-connection handling (`preferredMediaConnID`), `GetClientForConnection` routing, `LastUsed` updates, and probe-safe `(conn.ID, modelInfo.Model)` cooldown lock/unlock to `forwardSystemoneRequest` (`/v1/systemone`) and `forwardMiMoSpeech` (`/v1/audio/speech` for `xiaomi-mimo`).
-- **Tests** (`internal/handlers/media/media_forward_rotation_test.go`): added `TestForwardSystemoneRequest_ConnectionRotation` and `TestForwardMiMoSpeech_ConnectionRotation` covering `429`/`401` failover, cooldown lock persistence, non-retryable `400` pass-through, pinned connection behavior, and probe-context read-only isolation.

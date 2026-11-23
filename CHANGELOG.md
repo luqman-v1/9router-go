@@ -1,5 +1,127 @@
 # Changelog
 
+## [v1.9.17-exp.14] - 2026-11-23
+
+### Fixed
+- **Strip whole-line Hermes runtime markers on Antigravity** — Removes newly bisected Hermes runtime and environment marker lines to prevent false 429 RESOURCE_EXHAUSTED errors on Google Cloud Code (upstream decolua/9router@bb399170a parity).
+
+### Fixed
+- **Bump Antigravity Hub IDE version to 2.33.0** — Updates AntigravityIDEVersion to 2.33.0 matching the live Google Hub client manifest to maintain stealth against backend WAF heuristics (upstream decolua/9router@05fa58b8c, @6b8b7ceb9 parity).
+
+### Added
+- **Antigravity Gemini 4 Neon & Claude 5.5 Max tiers** — Registers Gemini 4 Neon (xhigh/high/medium/low), Claude 5.5 Max tiers, and aligns default Gemini 4 tiers (Carbon, Argon, Hydrogen) to high and Claude 5.5 (Sonnet/Opus) to medium, matching upstream decolua/9router@767d7aeb0.
+
+### Changed
+- **Default tier mappings** — `gemini-4-carbon`/`gemini-4-argon`/`gemini-4-hydrogen` now resolve to their high tier; `claude-sonnet-5-5`/`claude-opus-5-5` resolve to medium.
+- **Quota lookups** — `claude-*-5-5` quota checks now consult the medium tier (falling back to high).
+
+### fix(search): honor pinned connection headers and context cancellation in antigravity and xquik search
+
+- **Pinned connection header & empty-key failover in search lanes** (`internal/handlers/media/antigravity_search.go`, `internal/handlers/media/xquik_search.go`): resolved `X-Connection-ID` / `X-Provider-Connection-ID` via `imagePinnedConnectionID(r)` when `modelInfo.ConnectionID == ""` so direct `/v1/search` requests honor the pinned connection without rotating away on failure, marked missing-API-key (`401`) errors on unpinned connections as `Retryable: true`, and guarded direct-client transport retries and loop rotation against canceled request contexts (`r.Context().Err() == nil`).
+- **Tests** (`internal/handlers/media/antigravity_search_failover_test.go`): added `TestHandleSearch_AntigravityHonorsPinnedConnectionHeader`, `TestHandleSearch_XquikHonorsPinnedConnectionHeader`, and `TestHandleSearch_RotatesPastEmptyAPIKeyConnection`.
+
+### fix(updater): retain digest-less manifest info as fallback when GitHub Releases fails
+
+- **Manifest fallback on GitHub Releases failure** (`internal/updater/updater.go`): when `version.json` reports an available update without a `sha256` digest and the GitHub Releases API fallback fails (e.g., 5xx outage or rate limit), `CheckUpdate` now caches and returns the manifest's `UpdateInfo` instead of failing with a synthetic `manifestErr`. Also switched `PerformSelfUpdate` to `http.NewRequestWithContext` and `RestartSelf` to `selfExecutable()`.
+- **Tests** (`internal/updater/updater_test.go`): added `TestCheckUpdate_ManifestWithoutDigestServesAsFallbackWhenGitHubFails` covering fallback to digest-less manifest metadata when the GitHub Releases API returns `503`.
+
+### Fixed
+
+- Strip client `x-anthropic-billing-header:` lines from every system text block before the OpenAI-to-Claude request conversion joins them into the prompt. The header changes per Claude Code turn (cron/subagent flags, client version), so leaving it in the joined text split the cached system prefix; Anthropic only ignores it as the separate `system[0]` block that OAuth cloaking already provides. Port of upstream decolua/9router@971ae638 (upstream #5739).
+- Verified with `go vet ./...`, `go test ./...` (0 FAIL) and a successful `go build ./cmd/9router-go/`; the new table-driven test covers plain text, CRLF/mixed case, array blocks, billing-only blocks, header mentions inside instructions, and untouched user text.
+
+### fix(media): rotate systemone and mimo speech requests across connections
+
+- **SystemOne & MiMo TTS connection failover** (`internal/handlers/media/media.go`): extended multi-connection rotation on retryable upstream errors (`providers.ClassifyErrorForProvider`), pinned-connection handling (`preferredMediaConnID`), `GetClientForConnection` routing, `LastUsed` updates, and probe-safe `(conn.ID, modelInfo.Model)` cooldown lock/unlock to `forwardSystemoneRequest` (`/v1/systemone`) and `forwardMiMoSpeech` (`/v1/audio/speech` for `xiaomi-mimo`).
+- **Tests** (`internal/handlers/media/media_forward_rotation_test.go`): added `TestForwardSystemoneRequest_ConnectionRotation` and `TestForwardMiMoSpeech_ConnectionRotation` covering `429`/`401` failover, cooldown lock persistence, non-retryable `400` pass-through, pinned connection behavior, and probe-context read-only isolation.
+
+### fix(tray): start daemon from tray menu option and strip .exe in gatewayBinaryName
+
+- **CLI tray menu startup** (`cmd/9router-go/menu.go`): updated `startTray` (menu option `6) Run in background with tray icon`) to start the background gateway daemon when `daemon.RunningPID() == 0` (tolerating `daemon.ErrAlreadyRunning`) before spawning the tray companion, matching `openDashboard`.
+- **Windows tray sibling gateway name resolution** (`cmd/9router-tray/actions.go`): stripped a trailing `.exe` suffix (case-insensitive) in `gatewayBinaryName` / `gatewayBinaryNameFromArg0` before stripping `-tray`, so renamed Windows tray binaries such as `opencode-go-tray.exe` resolve `opencode-go.exe` instead of falling back to `9router-go.exe`.
+- **Tests** (`cmd/9router-go/menu_test.go`, `cmd/9router-tray/actions_test.go`): added unit tests covering `startTray` daemon startup order, skip-when-running, `ErrAlreadyRunning`/error propagation, and `gatewayBinaryNameFromArg0` `.exe` handling.
+
+### fix(oauth): enforce request context and timeouts on token HTTP calls
+
+- **Bounded OAuth token refresh** (`internal/providers/oauth.go`): replaced package-level `http.PostForm` (`http.DefaultClient`, no timeout, unbounded body read) with `RefreshTokenWithContext(ctx, cfg, refreshToken)` using `http.NewRequestWithContext`, a `15s` timeout client (`oauthRefreshClient`), and a `1 MiB` `io.LimitReader` cap; `RefreshToken` delegates to it.
+- **Context-bound Kiro social exchange** (`internal/handlers/oauth/oauth.go`): replaced `http.Post` in `HandleOAuthKiroSocialExchange` with `http.NewRequestWithContext(r.Context(), ...)` executed via a `15s` timeout client (`kiroSocialHTTPClient`).
+- **Tests** (`internal/providers/oauth_status_test.go`, `internal/handlers/oauth/oauth_test.go`): added regression tests covering client timeout enforcement, request context cancellation, and response body capping.
+
+### fix(oauth): relay loopback callbacks via gateway state handoff for cross-origin dashboards
+
+- **Server-side callback relay** (`internal/handlers/oauth/callback.go`, `internal/handlers/oauth/oauth.go`, `internal/handlers/router.go`): added a bounded mutex-guarded `callbackRelay` (5m TTL, max 64 entries, 4 KiB value limit, one-shot `take`) shared across `OAuthHandler` instances so `GET /callback` records payloads keyed by `state` without HTML reflection and `GET /api/oauth/callback-result?state=...` serves cross-origin dashboard tabs (`127.0.0.1` vs `localhost`).
+- **Loopback peer `postMessage` & polling fallback** (`web/src/lib/oauth-handoff.ts`, `web/src/api/client.ts`, `web/src/components/connections/OAuthCallbackView.svelte`, `web/src/components/connections/ProviderDetailView.svelte`): added `loopbackPeerOrigin`, `api.getOAuthCallbackResult`, loopback peer targets in `window.opener.postMessage`, and a guarded server-relay poll fallback in `ProviderDetailView.svelte`.
+- **Tests** (`internal/handlers/oauth/callback_test.go`, `web/src/lib/oauth-handoff.test.ts`, `web/src/api/client.test.ts`): covered one-shot consumption, error/multi-param query preservation, missing-state 400s, TTL expiry, bounded eviction/size rejection, `loopbackPeerOrigin`, and `getOAuthCallbackResult`.
+
+### fix(service): run windows-task via serve and place global flags before subcommands
+
+- **Foreground `serve` subcommand & `windows-task` target** (`cmd/9router-go/main.go`, `internal/service/windows.go`): added `9router-go serve` (`Action: runServer`) and updated `installWindowsTask` to invoke `serve` after forwarded global flags, so `/it` interactive-logon Scheduled Tasks boot the gateway instead of blocking in the interactive CLI menu.
+- **Global flag placement across `windows-run` & `cron`** (`internal/service/service.go`, `internal/service/windows_run.go`, `internal/service/cron.go`): extracted `appendSubcommand(args, sub)` so forwarded global flags precede `start` (matching `urfave/cli` parsing rules).
+- **Tests** (`cmd/9router-go/cli_usage_guidance_test.go`, `internal/service/service_*test.go`): added `TestServeSubcommand` and verified global-flag-before-subcommand ordering across `windows-task`, `windows-run`, `cron`, and `.desktop` entries.
+
+### fix(dashboard): treat unlocked and expired cooldowns as active in status filter
+
+- **Cooldown timestamp parsing** (`internal/providers/connection_status.go`): updated `HasActiveCooldown` to parse RFC3339 timestamps for `modelLock_*` and `rateLimitedUntil` keys instead of matching on key prefix alone, so `null` (post-unlock) and lapsed locks no longer permanently fail status checks while live `rateLimitedUntil` windows are honored.
+- **Quota Tracker & connection status consistency** (`internal/handlers/dashboard/connections.go`): aligned `HandleGetProvidersClient` `?accountStatus=active|inactive` filtering with `providers.ConnectionStatus` (considering `testStatus` and `lastError`) and safely extracted `testStatus` in `sanitizeProviderConnection` so unset values no longer emit `"<nil>"`.
+- **Regression tests** (`internal/providers/connection_status_test.go`, `internal/handlers/dashboard/providers_client_test.go`): covered live, expired, `null`-unlocked, `rateLimitedUntil`, malformed payloads, and credit-exhausted connections across status filters.
+
+### Android gateway binary is published as a release asset
+
+The Android app can replace its gateway without installing a new APK: it
+downloads `9router-go-android-arm64`, verifies it against `SHA256SUMS.txt`,
+writes it to `<DATA_DIR>/bin/lib9router.so`, and the next gateway start runs
+it. That path has existed in the app since the APK shipped, and it has never
+worked — not because the app is wrong, but because **no release has ever
+carried the asset**. Every release published the six desktop binaries and
+nothing for Android, so the app's own check could only ever report "the
+<channel> channel has no gateway binary for this device".
+
+The pipeline built such a binary already, for the APK to bundle as
+`lib9router.so`. It was just never named as a release artifact:
+
+- `Makefile`: `android-arm64` joins `CROSS_TARGETS`, with a
+  `cross-android-arm64` target naming its output `9router-go-android-arm64`.
+  The name is load-bearing — the app matches the release asset by that exact
+  string. No NDK is involved: the only published ABI is arm64, which builds
+  with `CGO_ENABLED=0` and needs no external linker.
+- `.github/workflows/release.yml`: `9router-go-android-arm64` is added to the
+  `files:` list, in the same PR as the target that produces it. A `files:`
+  entry with no build behind it fails the release, so the two must not be
+  separated.
+- `.github/workflows/ci.yml`: the `cross` job now asserts the artifact's
+  architecture (`aarch64`) and that `SHA256SUMS.txt` covers it. A file named
+  `android-arm64` holding anything else installs on a phone and then fails to
+  exec, which is precisely the failure those two assertions exist to catch
+  before a release.
+
+Verified locally: `make cross-android-arm64` produces an ELF 64-bit ARM aarch64
+PIE executable in 3.4 s, and `sha256sum -c SHA256SUMS.txt` passes with the new
+entry. On a Redmi 4 (Android 10, arm64-v8a) the published `linux-arm64` asset
+was tried first as a substitute and rejected: it boots and serves `/health`,
+but it has no `/etc/resolv.conf` to read and so fails every outbound request
+against `[::1]:53`. That is the difference this asset carries rather than a
+naming detail — the Android build is the one a phone can actually run.
+
+An Android gateway still cannot resolve DNS on its own; the app supplies
+`DNS_SERVERS` from the active network's link properties when it spawns it.
+
+### fix(agy-acp): honour cancellation emitted while the prompt result is delivered
+
+- `streamPromptOnce` could return success when the caller cancelled from inside an event callback during the same select iteration that delivered `session/prompt` (CI run 45047563683: `TestPoolCancelledTurnKeepsWorker` saw `nil` instead of `context.Canceled`). A disconnected client could therefore have a cancelled turn billed as a completed one.
+- Every event emission now rechecks the caller context and sends `session/cancel` before returning the cancellation error; the existing pre-select check alone could not catch a cancellation raised inside notification draining or final-result delivery.
+- Added `TestStreamPromptCancelledWhileEmittingResult`, which fails on the base code and passes with the fix. Verified with `go vet ./...`, `go test ./...`, and `go test -count=20 ./internal/acp/agy/` locally.
+
+### fix(tray): invoke gateway start without misplaced --background flag
+
+- **Tray start command** (`cmd/9router-tray/actions.go`): updated `startGateway()` to call `execGatewayCLI("start")` instead of `runGatewayCLI("start", "--background")`, because `start` already launches the background daemon via `startDetached` while `--background` is a root-only flag that failed CLI usage parsing after a subcommand.
+- **Regression test** (`cmd/9router-tray/actions_test.go`): added `TestStartGatewayDelegatesToGatewayCLI` verifying the `{"start"}` arguments and error propagation.
+
+### Fixed
+- **Auto-sync changed ChatGPT subscription plan from live Codex usage** — Automatically updates stored connection plan type when live usage reports an upgraded tier, unlocking paid models without manual reconnection (upstream OmniRoute #20178 parity).
+
+### Fixed
+- **Stop sending unsupported reasoning effort on Codex image tools** — Removes reasoning.effort from Codex image tool payloads to prevent 400 complexity rejection, and surfaces actual stream error messages instead of generic entitlement failures (upstream decolua/9router@a6d3cdbf7 parity).
+
 ## [v1.9.17-exp.13] - 2026-11-23
 
 ### fix(media): rotate forwardMediaRequest across connections on retryable errors

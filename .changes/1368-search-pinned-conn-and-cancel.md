@@ -1,4 +1,0 @@
-### fix(search): honor pinned connection headers and context cancellation in antigravity and xquik search
-
-- **Pinned connection header & empty-key failover in search lanes** (`internal/handlers/media/antigravity_search.go`, `internal/handlers/media/xquik_search.go`): resolved `X-Connection-ID` / `X-Provider-Connection-ID` via `imagePinnedConnectionID(r)` when `modelInfo.ConnectionID == ""` so direct `/v1/search` requests honor the pinned connection without rotating away on failure, marked missing-API-key (`401`) errors on unpinned connections as `Retryable: true`, and guarded direct-client transport retries and loop rotation against canceled request contexts (`r.Context().Err() == nil`).
-- **Tests** (`internal/handlers/media/antigravity_search_failover_test.go`): added `TestHandleSearch_AntigravityHonorsPinnedConnectionHeader`, `TestHandleSearch_XquikHonorsPinnedConnectionHeader`, and `TestHandleSearch_RotatesPastEmptyAPIKeyConnection`.
