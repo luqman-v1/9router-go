@@ -826,3 +826,55 @@ func TestCheckUpdate_UpToDateManifestNeedsNoDigest(t *testing.T) {
 		t.Errorf("Source = %q, want manifest", info.Source)
 	}
 }
+
+func TestCheckUpdate_ManifestWithoutDigestServesAsFallbackWhenGitHubFails(t *testing.T) {
+	previousVersion := CurrentVersion
+	previousAPI := githubReleasesAPI
+	t.Cleanup(func() {
+		CurrentVersion = previousVersion
+		githubReleasesAPI = previousAPI
+	})
+	CurrentVersion = "1.9.6"
+
+	var releaseRequests int
+	server := releaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version.json" {
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, map[string]any{
+				"downloadUrl":   "https://example.invalid/releases/latest",
+				"latestVersion": "1.9.7",
+				"releaseNotes":  "notes from manifest",
+			})
+			return
+		}
+		releaseRequests++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	githubReleasesAPI = server.URL + "/repos/%s/releases/latest"
+	t.Setenv("UPDATE_URL", server.URL+"/version.json")
+	t.Setenv("UPDATE_REPO", "owner/repo")
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("expected manifest lead to serve as fallback on GitHub outage, got error: %v", err)
+	}
+	if releaseRequests != 1 {
+		t.Fatalf("expected 1 GitHub Releases attempt before falling back, got %d", releaseRequests)
+	}
+	if !info.HasUpdate || info.LatestVersion != "1.9.7" {
+		t.Fatalf("expected 1.9.7 update info from manifest fallback, got %+v", info)
+	}
+	if info.ReleaseNotes != "notes from manifest" {
+		t.Errorf("ReleaseNotes = %q, want %q", info.ReleaseNotes, "notes from manifest")
+	}
+	if info.Source != "manifest" {
+		t.Errorf("Source = %q, want manifest", info.Source)
+	}
+	if info.SHA256 != "" {
+		t.Errorf("SHA256 = %q, want empty", info.SHA256)
+	}
+	if cached := GetCachedInfo(); cached == nil || cached.LatestVersion != "1.9.7" {
+		t.Errorf("cached info = %+v, want LatestVersion 1.9.7", cached)
+	}
+}
