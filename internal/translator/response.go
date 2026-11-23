@@ -14,14 +14,17 @@ import (
 // shapes vendors use: reasoning_content, reason_result, and reasoning_details,
 // plus thinking parts embedded in array-shaped delta.content (Mistral).
 func extractReasoningText(delta OpenAIDelta) string {
-	var b strings.Builder
 	if delta.ReasoningContent != "" {
-		b.WriteString(delta.ReasoningContent)
-	} else if delta.ReasonResult != "" {
-		b.WriteString(delta.ReasonResult)
-	} else if delta.Reasoning != "" {
-		b.WriteString(delta.Reasoning)
-	} else {
+		return delta.ReasoningContent
+	}
+	if delta.ReasonResult != "" {
+		return delta.ReasonResult
+	}
+	if delta.Reasoning != "" {
+		return delta.Reasoning
+	}
+	if len(delta.ReasoningDetails) > 0 {
+		var b strings.Builder
 		for _, detail := range delta.ReasoningDetails {
 			switch {
 			case detail.Text != "":
@@ -30,13 +33,17 @@ func extractReasoningText(delta OpenAIDelta) string {
 				b.WriteString(detail.Content)
 			}
 		}
+		if s := b.String(); s != "" {
+			return s
+		}
 	}
-	// Mistral streams thinking parts inside delta.content arrays.
-	_, think := extractContentParts(delta.Content)
-	if think != "" {
-		b.WriteString(think)
+	// Only when no legacy reasoning field is present: Mistral streams
+	// thinking parts inside delta.content arrays.
+	if arr, ok := delta.Content.([]any); ok {
+		_, think := extractContentParts(arr)
+		return think
 	}
-	return b.String()
+	return ""
 }
 
 func formatSSE(event map[string]any) string {
@@ -1157,22 +1164,17 @@ func extractContentParts(content any) (string, string) {
 		return v, ""
 	case []any:
 		for _, item := range v {
-			switch it := item.(type) {
-			case string:
-				textParts = append(textParts, it)
-			case map[string]any:
-				typ, _ := it["type"].(string)
-				switch {
-				case typ == "thinking" || it["thinking"] != nil:
-					thinkParts = append(thinkParts, extractThinkingText(it))
-				case typ == "text" || typ == "":
-					if t, ok := it["text"].(string); ok {
-						textParts = append(textParts, t)
-					}
-				default:
-					if t, ok := it["text"].(string); ok {
-						textParts = append(textParts, t)
-					}
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(string)
+			switch typ {
+			case "thinking":
+				thinkParts = append(thinkParts, extractThinkingText(m))
+			case "text":
+				if t, ok := m["text"].(string); ok {
+					textParts = append(textParts, t)
 				}
 			}
 		}
