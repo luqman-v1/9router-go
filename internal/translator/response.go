@@ -11,26 +11,30 @@ import (
 )
 
 // extractReasoningText pulls reasoning out of a Chat delta across the three
-// shapes vendors use: reasoning_content, reason_result, and reasoning_details.
+// shapes vendors use: reasoning_content, reason_result, and reasoning_details,
+// plus thinking parts embedded in array-shaped delta.content (Mistral).
 func extractReasoningText(delta OpenAIDelta) string {
-	if delta.ReasoningContent != "" {
-		return delta.ReasoningContent
-	}
-	if delta.ReasonResult != "" {
-		return delta.ReasonResult
-	}
-	if delta.Reasoning != "" {
-		return delta.Reasoning
-	}
-
 	var b strings.Builder
-	for _, detail := range delta.ReasoningDetails {
-		switch {
-		case detail.Text != "":
-			b.WriteString(detail.Text)
-		case detail.Content != "":
-			b.WriteString(detail.Content)
+	if delta.ReasoningContent != "" {
+		b.WriteString(delta.ReasoningContent)
+	} else if delta.ReasonResult != "" {
+		b.WriteString(delta.ReasonResult)
+	} else if delta.Reasoning != "" {
+		b.WriteString(delta.Reasoning)
+	} else {
+		for _, detail := range delta.ReasoningDetails {
+			switch {
+			case detail.Text != "":
+				b.WriteString(detail.Text)
+			case detail.Content != "":
+				b.WriteString(detail.Content)
+			}
 		}
+	}
+	// Mistral streams thinking parts inside delta.content arrays.
+	_, think := extractContentParts(delta.Content)
+	if think != "" {
+		b.WriteString(think)
 	}
 	return b.String()
 }
@@ -929,12 +933,13 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	// open tag is confirmed, the remainder is buffered and cleaned at finish.
 	// Text already streamed is never re-emitted, so there is no duplicated
 	// prose.
-	if delta.Content != "" {
+	contentText := deltaContentString(delta.Content)
+	if contentText != "" {
 		if state.DSMLBuffered {
 			// Already in DSML mode: hold everything for finish-time cleanup.
-			state.DSMLBuffer += delta.Content
+			state.DSMLBuffer += contentText
 		} else {
-			combined := state.DSMLBuffer + delta.Content
+			combined := state.DSMLBuffer + contentText
 			if loc := dsmlAnyOpen.FindStringIndex(combined); loc != nil {
 				// A DSML open tag starts at loc[0]. Stream the prose before it,
 				// then hold the tag and everything after for finish-time cleanup.
@@ -1138,4 +1143,120 @@ func UnwrapClineEnvelope(body []byte) []byte {
 		return []byte(env.Data)
 	}
 	return body
+}
+
+// extractContentParts splits a content value (string or array of parts) into
+// visible text and reasoning/thinking text. Mistral streams delta.content as an
+// array mixing thinking and text parts.
+func extractContentParts(content any) (string, string) {
+	var textParts, thinkParts []string
+	switch v := content.(type) {
+	case nil:
+		return "", ""
+	case string:
+		return v, ""
+	case []any:
+		for _, item := range v {
+			switch it := item.(type) {
+			case string:
+				textParts = append(textParts, it)
+			case map[string]any:
+				typ, _ := it["type"].(string)
+				switch {
+				case typ == "thinking" || it["thinking"] != nil:
+					thinkParts = append(thinkParts, extractThinkingText(it))
+				case typ == "text" || typ == "":
+					if t, ok := it["text"].(string); ok {
+						textParts = append(textParts, t)
+					}
+				default:
+					if t, ok := it["text"].(string); ok {
+						textParts = append(textParts, t)
+					}
+				}
+			}
+		}
+	}
+	return strings.Join(textParts, ""), strings.Join(thinkParts, "")
+}
+
+func extractThinkingText(part map[string]any) string {
+	if s, ok := part["thinking"].(string); ok {
+		return s
+	}
+	if arr, ok := part["thinking"].([]any); ok {
+		var b strings.Builder
+		for _, it := range arr {
+			switch v := it.(type) {
+			case string:
+				b.WriteString(v)
+			case map[string]any:
+				if t, ok := v["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String()
+	}
+	if t, ok := part["text"].(string); ok {
+		return t
+	}
+	return ""
+}
+
+// deltaContentString returns the visible text of a delta content value, which may
+// be a string or an array of content parts (Mistral).
+func deltaContentString(content any) string {
+	text, _ := extractContentParts(content)
+	return text
+}
+
+// extractContentAndReasoning pulls visible text and reasoning out of a delta,
+// handling both string and array-shaped content (Mistral) plus the standard
+// reasoning fields.
+func extractContentAndReasoning(rawDelta any) (string, string) {
+	var content any
+	reasoning := ""
+	switch v := rawDelta.(type) {
+	case OpenAIDelta:
+		content = v.Content
+		reasoning = extractReasoningText(v)
+	case *OpenAIDelta:
+		if v != nil {
+			content = v.Content
+			reasoning = extractReasoningText(*v)
+		}
+	case map[string]any:
+		if d, ok := v["delta"].(map[string]any); ok {
+			v = d
+		}
+		content = v["content"]
+		if r, ok := v["reasoning_content"].(string); ok && r != "" {
+			reasoning = r
+		} else if r, ok := v["reasoning"].(string); ok && r != "" {
+			reasoning = r
+		} else if r, ok := v["reason_result"].(string); ok && r != "" {
+			reasoning = r
+		}
+	case []byte:
+		var m map[string]any
+		if err := json.Unmarshal(v, &m); err == nil {
+			if d, ok := m["delta"].(map[string]any); ok {
+				m = d
+			}
+			return extractContentAndReasoning(m)
+		}
+		return "", ""
+	default:
+		content = rawDelta
+	}
+	text, contentReasoning := extractContentParts(content)
+	if contentReasoning != "" {
+		if reasoning != "" {
+			reasoning += contentReasoning
+		} else {
+			reasoning = contentReasoning
+		}
+	}
+	return text, reasoning
 }
