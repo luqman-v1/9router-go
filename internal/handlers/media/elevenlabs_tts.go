@@ -148,7 +148,7 @@ func (h *MediaHandler) tryElevenLabsTTSConn(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		return http.StatusBadGateway, "elevenlabs tts request failed: " + err.Error(), true
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if resp.StatusCode != http.StatusOK {
@@ -186,7 +186,7 @@ func (h *MediaHandler) tryElevenLabsTTSConn(w http.ResponseWriter, r *http.Reque
 	}
 
 	if h.Repo != nil {
-		h.Repo.UpdateConnectionLastUsed(conn.ID)
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
 			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
 		}
