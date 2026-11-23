@@ -674,9 +674,15 @@ func (h *MediaHandler) trySystemoneConn(
 	}
 
 	copyUpstreamHeaders(w.Header(), resp.Header)
-	respBody, _ := io.ReadAll(resp.Body)
+	const maxSystemoneBody = 16 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxSystemoneBody))
+	if err != nil {
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: err.Error(), retryable: r.Context().Err() == nil}
+	}
 	outBody := respBody
-	if resp.StatusCode == http.StatusOK {
+	// Only attempt Cloudflare envelope unwrap when the body fit within the cap;
+	// an oversized/truncated body falls back to passthrough without unwrapping.
+	if len(respBody) < maxSystemoneBody && resp.StatusCode == http.StatusOK {
 		var env struct {
 			Result  jsonv1.RawMessage `json:"result"`
 			Answers jsonv1.RawMessage `json:"answers"`
