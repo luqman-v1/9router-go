@@ -360,6 +360,7 @@ func (imp *jailbreakImporter) CacheStats() (entries int, max int) {
 	defer imp.etagMu.RUnlock()
 	return len(imp.etagCache), githubETagCacheMax
 }
+
 // githubJailbreakSource is a parsed import target. An empty Path means the
 // whole repository; a non-empty one means a single file.
 type githubJailbreakSource struct {

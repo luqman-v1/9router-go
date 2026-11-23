@@ -1,15 +1,15 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/db"
+	"context"
 	"database/sql"
 	"encoding/json"
-	"path/filepath"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"9router/proxy/internal/db"
-	"context"
-	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -233,7 +233,7 @@ func TestJailbreakSyncReportsOrphanInsteadOfDeleting(t *testing.T) {
 
 func TestJailbreakSyncFetchFailureIsReportedNotWritten(t *testing.T) {
 	store := &fakeSyncStore{
-		sources: []JailbreakSyncSource{source()},
+		sources:  []JailbreakSyncSource{source()},
 		fetchErr: errors.New("network unreachable"),
 	}
 	s := newSync(store)
@@ -278,7 +278,7 @@ func TestJailbreakSyncBusyIsReported(t *testing.T) {
 	s.mu.Lock()
 	s.running = true
 	s.mu.Unlock()
-	if _, err := s.Run(context.Background()); err != ErrJailbreakSyncBusy {
+	if _, err := s.Run(context.Background()); !errors.Is(err, ErrJailbreakSyncBusy) {
 		t.Fatalf("err = %v, want ErrJailbreakSyncBusy", err)
 	}
 }
@@ -319,9 +319,9 @@ func TestJailbreakSyncOriginPinsTheRef(t *testing.T) {
 
 func TestJailbreakSyncRepoSlug(t *testing.T) {
 	cases := map[string]string{
-		"togg53192-cmd/jailbreaks":         "togg53192-cmd_jailbreaks",
-		"https://github.com/me/repo":       "me_repo",
-		"https://github.com/me/repo.git":   "me_repo",
+		"togg53192-cmd/jailbreaks":          "togg53192-cmd_jailbreaks",
+		"https://github.com/me/repo":        "me_repo",
+		"https://github.com/me/repo.git":    "me_repo",
 		"https://raw.githubusercontent.com": "raw-githubusercontent-com",
 	}
 	for in, want := range cases {
@@ -545,20 +545,20 @@ func TestJailbreakImportCandidateExtensions(t *testing.T) {
 	// L1B3RT4S ships its whole library as `.mkd`. A filter that only knew .md and
 	// .txt imported 1 file out of that repository's 44.
 	cases := map[string]bool{
-		"beam.md":          true,
-		"beam.markdown":    true,
-		"beam.mdown":       true,
-		"beam.mkd":         true,
-		"beam.txt":         true,
-		"BEAM.MKD":         true,
-		"jailbreaks/x.md":  true,
-		"beam.yaml":        false,
-		"beam.json":        false,
-		"beam":             false,
-		"README.md":        false,
-		"readme.txt":       false,
-		".github/x.md":     false,
-		"assets/logo.png":  false,
+		"beam.md":         true,
+		"beam.markdown":   true,
+		"beam.mdown":      true,
+		"beam.mkd":        true,
+		"beam.txt":        true,
+		"BEAM.MKD":        true,
+		"jailbreaks/x.md": true,
+		"beam.yaml":       false,
+		"beam.json":       false,
+		"beam":            false,
+		"README.md":       false,
+		"readme.txt":      false,
+		".github/x.md":    false,
+		"assets/logo.png": false,
 	}
 	for p, want := range cases {
 		if got := jailbreakImportCandidate(p); got != want {
