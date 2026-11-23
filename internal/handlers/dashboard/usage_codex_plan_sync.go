@@ -25,11 +25,25 @@ import (
 
 const codexPlanTypeKey = "chatgptPlanType"
 
+// validCodexPlans is the set of tiers a live Codex usage read may write onto a
+// connection row. A value outside it ("unknown", "", a provider-specific alias)
+// must never clobber a stored tier, since an upgraded account whose read glitched
+// would otherwise be downgraded to a placeholder.
+var validCodexPlans = map[string]bool{
+	"free":       true,
+	"plus":       true,
+	"pro":        true,
+	"team":       true,
+	"enterprise": true,
+	"edu":        true,
+}
+
 // syncCodexPlanFromUsage writes the live plan Codex usage reported onto the
 // connection row when it differs from what is stored. It is a no-op when the
-// read returned no plan (a quota failure must not blank a good value) or when
-// the row already carries the reported tier — the common case, since most
-// refreshes see no change.
+// connection is not a Codex connection, when the read returned no plan or a plan
+// outside validCodexPlans (a quota failure or an unrecognized tier must not blank
+// or corrupt a good value), or when the row already carries the reported tier —
+// the common case, since most refreshes see no change.
 //
 // The payload is re-marshaled from the map the caller already read the
 // connection from, so a concurrent writer's change is lost only in the narrow
@@ -39,8 +53,13 @@ func (h *DashboardHandler) syncCodexPlanFromUsage(conn *models.ProviderConnectio
 	if h == nil || h.Repo == nil || conn == nil || data == nil {
 		return
 	}
-	plan = strings.TrimSpace(plan)
-	if plan == "" {
+	// Codex-only: another provider's row may carry the same field but is never
+	// written by this sync.
+	if conn.Provider != "codex" {
+		return
+	}
+	plan = strings.ToLower(strings.TrimSpace(plan))
+	if !validCodexPlans[plan] {
 		return
 	}
 

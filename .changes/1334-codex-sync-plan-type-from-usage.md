@@ -1,2 +1,0 @@
-### Fixed
-- **Auto-sync changed ChatGPT subscription plan from live Codex usage** — Automatically updates stored connection plan type when live usage reports an upgraded tier, unlocking paid models without manual reconnection (upstream OmniRoute #20178 parity).
