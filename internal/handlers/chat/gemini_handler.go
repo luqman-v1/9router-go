@@ -616,10 +616,15 @@ func (h *ChatHandler) forceRefreshLocked(connectionID string) (oauthTokenResult,
 }
 
 // isLongDecodeModel reports whether a model supports long-decode
-// continuation hops. Currently only Gemini 4 Hydrogen models have the
-// continuationToken mechanism.
+// continuation hops. The entire Gemini 4 family (Carbon, Argon, Neon,
+// Hydrogen) has the continuationToken mechanism.
 func isLongDecodeModel(modelName string) bool {
-	return strings.Contains(strings.ToLower(modelName), "hydrogen")
+	lower := strings.ToLower(modelName)
+	return strings.Contains(lower, "gemini-4") ||
+		strings.Contains(lower, "hydrogen") ||
+		strings.Contains(lower, "carbon") ||
+		strings.Contains(lower, "argon") ||
+		strings.Contains(lower, "neon")
 }
 
 // followLongDecodeContinuation follows finishReason=CONTINUATION responses by
