@@ -10,17 +10,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/providers"
 )
 
 func init() {
 	Register("kiro", refreshKiro)
 }
-
-// Hourly rotating Kiro SDK identity (upstream kiroModels.js parity).
-var kiroSocialUA = "kiro-cli/1.0.0"
-
 // kiroRegionPattern guards the region interpolated into the IDC token URL.
 var kiroRegionPattern = regexp.MustCompile(`^[a-z]{2}-[a-z]+-[0-9]+$`)
 
@@ -126,7 +122,9 @@ func refreshKiroSocial(ctx context.Context, client *http.Client, refreshToken st
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", kiroSocialUA)
+	ua, amzUA := proxy.KiroServiceUserAgent(nil, refreshToken)
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("x-amz-user-agent", amzUA)
 
 	resp, err := client.Do(req)
 	if err != nil {

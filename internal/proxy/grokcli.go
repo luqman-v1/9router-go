@@ -162,7 +162,7 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 		if strings.Contains(endpoint, "://codewhisperer.") {
 			headers["X-Amz-Target"] = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
 		}
-		ua, amzUA := kiroServiceUserAgent(psd, apiKey)
+		ua, amzUA := KiroServiceUserAgent(psd, apiKey)
 		headers["User-Agent"] = ua
 		headers["X-Amz-User-Agent"] = amzUA
 		if apiKey != "" {
@@ -201,7 +201,7 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 
 const (
 	KiroRuntimeSDKVersion = "1.0.0"
-	KiroIDEVersion        = "1.4.121"
+	KiroIDEVersion        = "1.4.154"
 	KiroAgentOS           = "windows"
 	KiroAgentOSVersion    = "10.0.26200"
 	KiroNodeVersion       = "22.21.1"
@@ -226,7 +226,7 @@ func resolveKiroMachineID(psd map[string]any, accessToken string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func kiroServiceUserAgent(psd map[string]any, accessToken string) (string, string) {
+func KiroServiceUserAgent(psd map[string]any, accessToken string) (string, string) {
 	machineID := resolveKiroMachineID(psd, accessToken)
 	ua := fmt.Sprintf(
 		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererstreaming#%s m/E KiroIDE-%s-%s",
