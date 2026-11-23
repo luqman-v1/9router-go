@@ -283,6 +283,7 @@ var ProviderModels = map[string][]string{
 	"od":                   {"claude-haiku-5.5", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-eco", "glm-5.3-flash", "glm-5.3-flashx", "gpt-6-luna", "kimi-k2.7-code", "mimo-v2.6-flash", "mimo-v2.6-pro"},
 	"deeprelay":            {"deeprelay/deepseek-v4-pro", "deeprelay/deepseek-v4.1-flash", "deeprelay/glm-5.3", "deeprelay/kimi-k3", "deeprelay/qwen3.6-plus", "deeprelay/qwen3-embedding-8b", "deeprelay/seedream-4.0", "deeprelay/wan2.7-t2v"},
 }
+
 // ProviderModelKinds maps provider alias/ID → model id → service kind for the
 // models that are not plain chat (image, tts, stt, embedding, video, systemone).
 // Upstream carries the same `kind` field on those registry entries and /v1/models
