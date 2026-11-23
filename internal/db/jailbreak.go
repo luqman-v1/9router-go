@@ -164,9 +164,10 @@ func (r *Repo) SaveJailbreakPreset(d *JailbreakDoc) error {
 // SyncPath) are carried through untouched: they are what a later pass reads to
 // tell its own work from the operator's.
 func (r *Repo) SaveJailbreakPresetContext(ctx context.Context, d *JailbreakDoc) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// ctx is accepted for signature parity with the read paths and for a future
+	// cancellable write; this store writes synchronously, so honouring a caller
+	// that passes nil ends here rather than reassigning a value nothing reads.
+	_ = ctx
 	if d == nil {
 		return fmt.Errorf("nil jailbreak doc")
 	}

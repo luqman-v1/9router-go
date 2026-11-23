@@ -1008,7 +1008,7 @@ func TestJailbreakImportSubfolder(t *testing.T) {
 	fg := newFakeGithub(t, map[string]string{
 		"README.md":              "# index only",
 		"jailbreaks/beam.md":     "BEAM RULE",
-		"jailbreaks/deepseek.md":  "DEEPSEEK RULE",
+		"jailbreaks/deepseek.md": "DEEPSEEK RULE",
 		"jailbreaks/nested/x.md": "NESTED RULE",
 	})
 	repo, cleanup := setupTestDB(t)
@@ -1067,7 +1067,7 @@ func TestJailbreakImportSubfolderThroughEndpoint(t *testing.T) {
 // turn every pointed path into a directory walk.
 func TestJailbreakImportSubfolderKeepsSingleFile(t *testing.T) {
 	fg := newFakeGithub(t, map[string]string{
-		"jailbreaks/beam.md": "BEAM RULE",
+		"jailbreaks/beam.md":  "BEAM RULE",
 		"jailbreaks/other.md": "OTHER RULE",
 	})
 	repo, cleanup := setupTestDB(t)

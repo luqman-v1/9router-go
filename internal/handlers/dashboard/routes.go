@@ -71,7 +71,7 @@ func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *Dashboa
 	if len(ts) > 0 && ts[0] != nil {
 		h.TokenSaver = ts[0]
 	}
-// The preset auto-sync worker is resolved per request rather than stored
+	// The preset auto-sync worker is resolved per request rather than stored
 	// (see syncStore): the loop is started once for the process by
 	// StartJailbreakSync, and a handler built outside a boot still answers the
 	// source endpoints by opening a store over the same repository.
