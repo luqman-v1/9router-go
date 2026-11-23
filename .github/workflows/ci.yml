@@ -551,7 +551,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # web/dist is embedded into every one of the five binaries.
+      # web/dist is embedded into every one of the release binaries.
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -563,10 +563,10 @@ jobs:
           go-version: "1.27.4"
           cache: true
 
-      # `make cross` starts five go builds, and Go fills the module cache as it
-      # goes — so a single transient read error from the module proxy aborts
-      # whichever target hit it and reddens the job. That is not hypothetical:
-      # the first run of this job on main failed with
+      # `make cross` starts one go build per target, and Go fills the module
+      # cache as it goes — so a single transient read error from the module
+      # proxy aborts whichever target hit it and reddens the job. That is not
+      # hypothetical: the first run of this job on main failed with
       #   modernc.org/sqlite@v1.54.0: read
       #   "https://proxy.golang.org/.../v1.54.0.zip":
       #   stream error: stream ID 1; INTERNAL_ERROR; received from peer
@@ -574,7 +574,7 @@ jobs:
       #
       # A network hiccup must not read as "a release target is broken", which
       # is exactly what this job exists to report. `go mod download` pulls the
-      # whole graph into the cache in one step first, so the five builds that
+      # whole graph into the cache in one step first, so the builds that
       # follow do not touch the network; it is retried three times because it
       # is the only step that does.
       #
@@ -642,6 +642,9 @@ jobs:
           check 9router-go-darwin-arm64       darwin/arm64  "Mach-O 64-bit arm64"
           check 9router-go-windows-amd64.exe  windows/amd64 "PE32+"
           check 9router-go-tray-windows-amd64.exe windows/amd64 "PE32+"
+          # arm64-labelled file holding something else would install on a phone
+          # and then fail to exec, which is the failure this check exists for.
+          check 9router-go-android-arm64       android/arm64 "aarch64"
           exit "$fail"
 
       # The updater verifies a download against SHA256SUMS.txt before it renames
@@ -654,7 +657,8 @@ jobs:
           for f in 9router-go-linux-amd64 9router-go-linux-amd64-noavx \
                    9router-go-linux-arm64 \
                    9router-go-darwin-amd64 9router-go-darwin-arm64 \
-                   9router-go-windows-amd64.exe 9router-go-tray-windows-amd64.exe; do
+                   9router-go-windows-amd64.exe 9router-go-tray-windows-amd64.exe \
+                   9router-go-android-arm64; do
             grep -q "  $f\$" SHA256SUMS.txt || {
               echo "::error::SHA256SUMS.txt has no entry for $f"
               exit 1
