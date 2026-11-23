@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -12,6 +10,7 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/kiroidentity"
 )
 
 func setAuth(headers map[string]string, cfg *providers.ProviderConfig, apiKey string) {
@@ -199,41 +198,30 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 	return nil, lastErr
 }
 
+// Kiro SDK identity constants alias the shared kiroidentity package so every
+// Kiro HTTP call presents the same client-version floor. KiroIDEVersion stays
+// exported for existing callers and tests.
 const (
-	KiroRuntimeSDKVersion = "1.0.0"
-	KiroIDEVersion        = "1.4.121"
-	KiroAgentOS           = "windows"
-	KiroAgentOSVersion    = "10.0.26200"
-	KiroNodeVersion       = "22.21.1"
+	KiroRuntimeSDKVersion = kiroidentity.SDKVersion
+	KiroIDEVersion        = kiroidentity.IDEVersion
+	KiroAgentOS           = kiroidentity.AgentOS
+	KiroAgentOSVersion    = kiroidentity.AgentOSVersion
+	KiroNodeVersion       = kiroidentity.NodeVersion
 )
 
 func resolveKiroMachineID(psd map[string]any, accessToken string) string {
-	seed := ""
-	if psd != nil {
-		if s, _ := psd["clientId"].(string); strings.TrimSpace(s) != "" {
-			seed = strings.TrimSpace(s)
-		} else if s, _ := psd["profileArn"].(string); strings.TrimSpace(s) != "" {
-			seed = strings.TrimSpace(s)
-		}
-	}
-	if seed == "" && strings.TrimSpace(accessToken) != "" {
-		seed = strings.TrimSpace(accessToken)
-	}
-	if seed == "" {
-		seed = "kiro-anonymous"
-	}
-	sum := sha256.Sum256([]byte(seed))
-	return hex.EncodeToString(sum[:])
+	return resolveKiroMachineIDWithRefresh(psd, "", accessToken)
+}
+
+// resolveKiroMachineIDWithRefresh extends the legacy helper with the refresh
+// token seed (upstream precedence: clientId > refreshToken > profileArn >
+// apiKey > accessToken). Existing callers keep the original signature.
+func resolveKiroMachineIDWithRefresh(psd map[string]any, refreshToken, accessToken string) string {
+	return kiroidentity.MachineID(kiroidentity.Seed(psd, refreshToken, accessToken))
 }
 
 func kiroServiceUserAgent(psd map[string]any, accessToken string) (string, string) {
-	machineID := resolveKiroMachineID(psd, accessToken)
-	ua := fmt.Sprintf(
-		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererstreaming#%s m/E KiroIDE-%s-%s",
-		KiroRuntimeSDKVersion, KiroAgentOS, KiroAgentOSVersion, KiroNodeVersion, KiroRuntimeSDKVersion, KiroIDEVersion, machineID,
-	)
-	amzUA := fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s", KiroRuntimeSDKVersion, KiroIDEVersion, machineID)
-	return ua, amzUA
+	return kiroidentity.Headers(kiroidentity.Seed(psd, "", accessToken), "streaming")
 }
 
 // kiroTokenType mirrors upstream buildHeaders: API-key connections announce
