@@ -89,11 +89,15 @@ func (h *MediaHandler) handleXquikSearch(w http.ResponseWriter, r *http.Request,
 	// Upstream parity (search.js credential loop): rotate through every active
 	// account, locking the failed one per ClassifyError and trying the next.
 	// A pinned x-connection-id is honored exactly once (no rotation).
+	pinned := modelInfo.ConnectionID
+	if pinned == "" {
+		pinned = imagePinnedConnectionID(r)
+	}
 	excludeIDs := []string{}
-	usePinned := modelInfo.ConnectionID != ""
+	usePinned := pinned != ""
 	var lastErr *searchUpstreamError
 	for {
-		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, pinned, excludeIDs, modelInfo.Model)
 		if err != nil || conn == nil {
 			if lastErr != nil {
 				return lastErr
@@ -105,7 +109,7 @@ func (h *MediaHandler) handleXquikSearch(w http.ResponseWriter, r *http.Request,
 			return nil
 		}
 		lastErr = attemptErr
-		if usePinned || !attemptErr.Retryable {
+		if usePinned || !attemptErr.Retryable || r.Context().Err() != nil {
 			return lastErr
 		}
 		excludeIDs = append(excludeIDs, conn.ID)
@@ -115,7 +119,11 @@ func (h *MediaHandler) handleXquikSearch(w http.ResponseWriter, r *http.Request,
 func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request, query string, limit int, queryType, cursor, language, model string, conn *models.ProviderConnection, connData *chat.ConnectionData) *searchUpstreamError {
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
-		return searchError(http.StatusUnauthorized, "no API key found for Xquik connection")
+		return &searchUpstreamError{
+			Status:    http.StatusUnauthorized,
+			Message:   "no API key found for Xquik connection",
+			Retryable: true,
+		}
 	}
 
 	baseURL := "https://xquik.com/api/v1/x/tweets/search"
@@ -156,18 +164,21 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 
 	upstreamStart := time.Now()
 	resp, err := client.Do(req)
-	if err != nil {
+	if err != nil && r.Context().Err() == nil {
 		directReq, err2 := http.NewRequestWithContext(r.Context(), http.MethodGet, baseURL+"?"+qp.Encode(), nil)
 		if err2 == nil {
 			directReq.Header = req.Header.Clone()
 			if resp2, err3 := directHTTPClient.Do(directReq); err3 == nil {
+				if resp != nil {
+					_ = resp.Body.Close()
+				}
 				resp = resp2
 				err = nil
 			}
 		}
 	}
 	if err != nil {
-		return &searchUpstreamError{Status: http.StatusBadGateway, Message: fmt.Sprintf("Xquik upstream request failed: %v", err), Retryable: true}
+		return &searchUpstreamError{Status: http.StatusBadGateway, Message: fmt.Sprintf("Xquik upstream request failed: %v", err), Retryable: r.Context().Err() == nil}
 	}
 	defer resp.Body.Close()
 

@@ -153,11 +153,15 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 		limit = maxSearchMaxResults
 	}
 
+	pinned := modelInfo.ConnectionID
+	if pinned == "" {
+		pinned = imagePinnedConnectionID(r)
+	}
 	excludeIDs := []string{}
-	usePinned := modelInfo.ConnectionID != ""
+	usePinned := pinned != ""
 	var lastErr *searchUpstreamError
 	for {
-		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "antigravity", modelInfo.ConnectionID, excludeIDs, model)
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "antigravity", pinned, excludeIDs, model)
 		if err != nil || conn == nil {
 			if lastErr != nil {
 				return searchError(lastErr.Status, fmt.Sprintf("all antigravity accounts failed, last error: %s", lastErr.Message))
@@ -170,7 +174,7 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 			return nil
 		}
 		lastErr = attemptErr
-		if usePinned || !attemptErr.Retryable {
+		if usePinned || !attemptErr.Retryable || r.Context().Err() != nil {
 			return lastErr
 		}
 		excludeIDs = append(excludeIDs, conn.ID)
@@ -182,7 +186,11 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
-		return searchError(http.StatusUnauthorized, fmt.Sprintf("no API key found for antigravity connection %s", conn.ID))
+		return &searchUpstreamError{
+			Status:    http.StatusUnauthorized,
+			Message:   fmt.Sprintf("no API key found for antigravity connection %s", conn.ID),
+			Retryable: true,
+		}
 	}
 
 	projectID := ""
@@ -266,7 +274,7 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 	}
 	upstreamStart := time.Now()
 	resp, err := client.Do(httpReq)
-	if err != nil {
+	if err != nil && r.Context().Err() == nil {
 		// Transport-level failure (proxy block, DNS, reset): retry once direct
 		// before giving up on this account. Never retry on a real upstream
 		// status — the direct client hits the same mock/sandbox and would
@@ -276,7 +284,7 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 			directReq.Header = httpReq.Header.Clone()
 			if resp2, err3 := directHTTPClient.Do(directReq); err3 == nil {
 				if resp != nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 				resp = resp2
 				err = nil
@@ -285,7 +293,7 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 	}
 	upstreamLatencyMs := time.Since(upstreamStart).Milliseconds()
 	if err != nil {
-		return &searchUpstreamError{Status: http.StatusBadGateway, Message: fmt.Sprintf("antigravity search upstream request: %v", err), Retryable: true}
+		return &searchUpstreamError{Status: http.StatusBadGateway, Message: fmt.Sprintf("antigravity search upstream request: %v", err), Retryable: r.Context().Err() == nil}
 	}
 	defer resp.Body.Close()
 
