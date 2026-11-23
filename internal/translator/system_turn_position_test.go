@@ -109,6 +109,30 @@ func TestSanitizeClaudePassthrough_LiftsSystemBlocks(t *testing.T) {
 	}
 }
 
+// A user turn whose content is a bare block object keeps that text; only the
+// reminder is appended. Losing it would silently drop user content.
+func TestSanitizeClaudePassthrough_KeepsBareObjectContentWhenLifting(t *testing.T) {
+	body := []byte(`{"model":"m","max_tokens":16,"messages":[
+		{"role":"user","content":{"type":"text","text":"ORIGINAL"}},
+		{"role":"system","content":"REMINDER"}
+	]}`)
+	req := decodeBody(t, SanitizeClaudePassthrough(body, false))
+	msgs, _ := req["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("roles = %v", rolesOf(req))
+	}
+	blocks, _ := msgs[0].(map[string]any)["content"].([]any)
+	if len(blocks) != 2 {
+		t.Fatalf("want original + reminder, got %#v", blocks)
+	}
+	if blocks[0].(map[string]any)["text"] != "ORIGINAL" {
+		t.Errorf("user text lost: %#v", blocks)
+	}
+	if !strings.Contains(blocks[1].(map[string]any)["text"].(string), "REMINDER") {
+		t.Errorf("reminder missing: %#v", blocks[1])
+	}
+}
+
 // Clean history stays byte-identical; the pass only fires when it has work.
 func TestSanitizeClaudePassthrough_SystemAtHeadUntouched(t *testing.T) {
 	body := []byte(`{"model":"m","max_tokens":16,"messages":[{"role":"system","content":"rules"},{"role":"user","content":"hi"}]}`)

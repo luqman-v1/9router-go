@@ -1332,7 +1332,7 @@ func DropArgumentlessToolCalls(body []byte) []byte {
 		messagesRaw = filtered
 		req["messages"] = messagesRaw
 	}
-	out, err := json.Marshal(req, json.Deterministic(true))
+	out, err := json.Marshal(req)
 	if err != nil {
 		return body
 	}
@@ -1422,6 +1422,10 @@ func appendClaudeUserText(msg map[string]any, texts []string) {
 		}
 	case []any:
 		blocks = c
+	case map[string]any:
+		// A bare block object: normalizeMessageContent wraps it into an array
+		// further down, so wrap it here too rather than dropping its text.
+		blocks = []any{c}
 	}
 	for _, t := range texts {
 		blocks = append(blocks, map[string]any{"type": "text", "text": "<system-reminder>\n" + t + "\n</system-reminder>"})
@@ -1585,7 +1589,7 @@ func applyInlineToolEdits(body []byte) []byte {
 	} else {
 		delete(req, "tools")
 	}
-	updated, err := json.Marshal(req, json.Deterministic(true))
+	updated, err := json.Marshal(req)
 	if err != nil {
 		return body
 	}
