@@ -1332,7 +1332,7 @@ func DropArgumentlessToolCalls(body []byte) []byte {
 		messagesRaw = filtered
 		req["messages"] = messagesRaw
 	}
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
@@ -1352,9 +1352,15 @@ func DropArgumentlessToolCalls(body []byte) []byte {
 //
 // The directive form is left untouched — the API already places it. A turn with
 // nothing to say is dropped rather than moved.
+//
+// The text is folded into the adjacent user turn (the previous one, else the
+// next) rather than the system field: Anthropic caches tools → system →
+// messages, so growing the system field with every reminder re-bills the whole
+// history each turn. An adjacent user turn keeps the earlier prefix byte-stable.
+// Only a turn with no neighbouring user turn falls back to the system field.
 func liftMidArraySystemTurns(req map[string]any, messages []any) ([]any, bool) {
 	var kept []any
-	var moved []string
+	var moved, pending []string
 	changed := false
 	for i, mRaw := range messages {
 		msg, ok := mRaw.(map[string]any)
@@ -1362,7 +1368,16 @@ func liftMidArraySystemTurns(req map[string]any, messages []any) ([]any, bool) {
 			kept = append(kept, mRaw)
 			continue
 		}
-		if role, _ := msg["role"].(string); role != "system" || i == 0 {
+		role, _ := msg["role"].(string)
+		if role != "system" || i == 0 {
+			if len(pending) > 0 {
+				if role == "user" {
+					appendClaudeUserText(msg, pending)
+				} else {
+					moved = append(moved, pending...)
+				}
+				pending = nil
+			}
 			kept = append(kept, mRaw)
 			continue
 		}
@@ -1371,10 +1386,21 @@ func liftMidArraySystemTurns(req map[string]any, messages []any) ([]any, bool) {
 			continue
 		}
 		changed = true
-		if text := claudePlainText(msg["content"]); strings.TrimSpace(text) != "" {
-			moved = append(moved, text)
+		text := claudePlainText(msg["content"])
+		if strings.TrimSpace(text) == "" {
+			continue
 		}
+		if len(kept) > 0 {
+			if prev, ok := kept[len(kept)-1].(map[string]any); ok && prev["role"] == "user" {
+				appendClaudeUserText(prev, []string{text})
+				continue
+			}
+		}
+		pending = append(pending, text)
 	}
+	// Rare: no user turn after the reminder yet. Attaching it to an earlier
+	// user turn would rewrite cached history, so fall back to the system field.
+	moved = append(moved, pending...)
 	if !changed || len(kept) == 0 {
 		return messages, false
 	}
@@ -1382,6 +1408,25 @@ func liftMidArraySystemTurns(req map[string]any, messages []any) ([]any, bool) {
 		appendClaudeSystemText(req, strings.Join(moved, "\n\n"))
 	}
 	return kept, true
+}
+
+// appendClaudeUserText appends system-reminder text blocks to a user turn. They
+// go after existing blocks so any tool_result blocks stay first, as the API
+// requires.
+func appendClaudeUserText(msg map[string]any, texts []string) {
+	var blocks []any
+	switch c := msg["content"].(type) {
+	case string:
+		if c != "" {
+			blocks = append(blocks, map[string]any{"type": "text", "text": c})
+		}
+	case []any:
+		blocks = c
+	}
+	for _, t := range texts {
+		blocks = append(blocks, map[string]any{"type": "text", "text": "<system-reminder>\n" + t + "\n</system-reminder>"})
+	}
+	msg["content"] = blocks
 }
 
 // claudePlainText joins the text carried by a message's content, which is a
@@ -1540,7 +1585,7 @@ func applyInlineToolEdits(body []byte) []byte {
 	} else {
 		delete(req, "tools")
 	}
-	updated, err := json.Marshal(req)
+	updated, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body
 	}

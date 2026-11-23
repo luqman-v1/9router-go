@@ -46,8 +46,8 @@ func TestClaudeCLICorpus(t *testing.T) {
 				{"role":"assistant","content":"two"},
 				{"role":"system","content":"reminder"},
 				{"role":"user","content":"three"}]}`),
-			wantSubstrings: []string{`"system":"reminder"`},
-			wantAbsent:     []string{`"role":"system"`},
+			wantSubstrings: []string{`<system-reminder>\nreminder\n</system-reminder>`},
+			wantAbsent:     []string{`"role":"system"`, `"system":`},
 		},
 		{
 			name: "foreign key is stripped",

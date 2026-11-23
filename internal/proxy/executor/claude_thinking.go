@@ -91,7 +91,7 @@ func SanitizeClaudeThinkingBody(body []byte) []byte {
 	if !SanitizeClaudeThinking(reqMap) {
 		return body
 	}
-	out, err := json.Marshal(reqMap)
+	out, err := json.Marshal(reqMap, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
