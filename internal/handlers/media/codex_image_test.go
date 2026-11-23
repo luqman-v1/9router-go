@@ -358,7 +358,7 @@ func assertOptionalToken(t *testing.T, name string, got, want *int) {
 func TestParseCodexImageStream(t *testing.T) {
 	t.Run("usage nested under response", func(t *testing.T) {
 		stream := codexImageStream("aW1hZ2U=", `{"input_tokens":8,"output_tokens":2}`)
-		image, usage := parseCodexImageStream(strings.NewReader(stream))
+		image, usage, _ := parseCodexImageStream(strings.NewReader(stream))
 		if image != "aW1hZ2U=" {
 			t.Errorf("image = %q, want aW1hZ2U=", image)
 		}
@@ -372,7 +372,7 @@ func TestParseCodexImageStream(t *testing.T) {
 			`data: {"item":{"type":"image_generation_call","result":"aW1n"}}` + "\n\n" +
 			"event: response.done\n" +
 			`data: {"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}` + "\n\n"
-		image, usage := parseCodexImageStream(strings.NewReader(stream))
+		image, usage, _ := parseCodexImageStream(strings.NewReader(stream))
 		if image != "aW1n" {
 			t.Errorf("image = %q, want aW1n", image)
 		}
@@ -384,7 +384,7 @@ func TestParseCodexImageStream(t *testing.T) {
 	t.Run("no usage reported", func(t *testing.T) {
 		stream := "event: response.output_item.done\n" +
 			`data: {"item":{"type":"image_generation_call","result":"aW1n"}}` + "\n\n"
-		_, usage := parseCodexImageStream(strings.NewReader(stream))
+		_, usage, _ := parseCodexImageStream(strings.NewReader(stream))
 		if usage != nil {
 			t.Errorf("usage = %+v, want none", usage)
 		}
@@ -393,7 +393,7 @@ func TestParseCodexImageStream(t *testing.T) {
 	t.Run("no image reported", func(t *testing.T) {
 		stream := "event: response.completed\n" +
 			`data: {"response":{"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
-		image, _ := parseCodexImageStream(strings.NewReader(stream))
+		image, _, _ := parseCodexImageStream(strings.NewReader(stream))
 		if image != "" {
 			t.Errorf("image = %q, want none so the caller errors", image)
 		}
@@ -404,11 +404,73 @@ func TestParseCodexImageStream(t *testing.T) {
 			`data: {"item":{"type":"image_generation_call","result":"first"}}` + "\n\n" +
 			"event: response.output_item.done\n" +
 			`data: {"item":{"type":"image_generation_call","result":"second"}}` + "\n\n"
-		image, _ := parseCodexImageStream(strings.NewReader(stream))
+		image, _, _ := parseCodexImageStream(strings.NewReader(stream))
 		if image != "second" {
 			t.Errorf("image = %q, want the final one", image)
 		}
 	})
+}
+
+// A failed Responses turn carries the real upstream error in the SSE stream.
+// The parser must surface it so the caller reports it instead of the generic
+// "may not be entitled" message, no matter which envelope the error sits in.
+// Shapes mirror extractStreamError in decolua/9router@a6d3cdbf7.
+func TestParseCodexImageStream_SurfacesError(t *testing.T) {
+	tests := []struct {
+		name    string
+		stream  string
+		wantMsg string
+	}{
+		{
+			name: "response.failed with response.error.message",
+			stream: "event: response.failed\n" +
+				`data: {"type":"response.failed","response":{"error":{"message":"Complexity 'medium' is not supported for this image model"}}}` + "\n\n",
+			wantMsg: "Complexity 'medium' is not supported for this image model",
+		},
+		{
+			name: "error event with top-level error object",
+			stream: "event: error\n" +
+				`data: {"error":{"message":"account is not entitled"}}` + "\n\n",
+			wantMsg: "account is not entitled",
+		},
+		{
+			name: "response.failed with item.error.message",
+			stream: "event: response.failed\n" +
+				`data: {"item":{"error":{"message":"quota exceeded"}}}` + "\n\n",
+			wantMsg: "quota exceeded",
+		},
+		{
+			name: "response.failed with response.status_details.error.message",
+			stream: "event: response.failed\n" +
+				`data: {"type":"response.failed","response":{"status_details":{"error":{"message":"rate limit hit for image generation"}}}}` + "\n\n",
+			wantMsg: "rate limit hit for image generation",
+		},
+		{
+			name: "error event with top-level message field",
+			stream: "event: error\n" +
+				`data: {"message":"the upstream rejected this request"}` + "\n\n",
+			wantMsg: "the upstream rejected this request",
+		},
+		{
+			name: "error event with bare string payload",
+			stream: "event: error\n" +
+				`data: "upstream exploded"` + "\n\n",
+			wantMsg: "upstream exploded",
+		},
+		{
+			name:    "response.failed without a message falls back",
+			stream:  "event: response.failed\ndata: {\"type\":\"response.failed\"}\n\n",
+			wantMsg: "image generation failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, streamErr := parseCodexImageStream(strings.NewReader(tt.stream))
+			if streamErr != tt.wantMsg {
+				t.Errorf("streamErr = %q, want %q", streamErr, tt.wantMsg)
+			}
+		})
+	}
 }
 
 // The tool id has to ride the tool definition, and the caller has to be pinned
@@ -441,6 +503,12 @@ func TestCodexImageBody_ToolModelPinsTheImageTool(t *testing.T) {
 	}
 	if payload["stream"] != true || payload["store"] != false {
 		t.Errorf("a Responses image call must stream and not store: %v", payload)
+	}
+	// Upstream Codex rejects reasoning.effort for image models with HTTP 400
+	// "Complexity 'medium' is not supported for this image model", so the tool
+	// path must never attach a reasoning object.
+	if _, present := payload["reasoning"]; present {
+		t.Errorf("the image tool path must not send a reasoning object: %v", payload["reasoning"])
 	}
 }
 
