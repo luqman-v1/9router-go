@@ -111,6 +111,23 @@ describe('dashboard API authentication and errors', () => {
     })
   })
 
+  it('polls server callback relay by state', async () => {
+    const originalFetch = globalThis.fetch
+    let seenUrl = ''
+    globalThis.fetch = async (input) => {
+      seenUrl = String(input)
+      return Response.json({ found: true, state: 'state-123', raw: 'code-123' })
+    }
+    try {
+      const res = await api.getOAuthCallbackResult('state-123')
+      expect(res.found).toBe(true)
+      expect(res.raw).toBe('code-123')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    expect(seenUrl).toBe('/api/oauth/callback-result?state=state-123')
+  })
+
   it('triggers onUnauthorized and clears storage on 401 responses', async () => {
     const originalFetch = globalThis.fetch
     localStorage.setItem('9router_auth', 'true')

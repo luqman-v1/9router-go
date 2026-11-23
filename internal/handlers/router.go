@@ -576,6 +576,7 @@ func mountOAuthRoutes(r interface {
 	r.Get("/api/oauth/codex/start-proxy", oauthH.HandleCodexStartProxy)
 	r.Get("/api/oauth/codex/poll-status", oauthH.HandleCodexPollStatus)
 	r.Get("/api/oauth/codex/stop-proxy", oauthH.HandleCodexStopProxy)
+	r.Get("/api/oauth/callback-result", oauthH.HandleCallbackResult)
 	r.Get("/api/oauth/authcode/authorize", oauthH.HandleAuthCodeAuthorize)
 	r.Post("/api/oauth/authcode/exchange", oauthH.HandleAuthCodeExchange)
 	r.Get("/api/oauth/trae/authorize", oauthH.HandleTraeAuthorize)

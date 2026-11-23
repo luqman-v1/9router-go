@@ -2269,6 +2269,10 @@ export const api = {
     request<{ status: string; connectionId?: string; email?: string; error?: string }>(
       `/api/oauth/codex/poll-status?state=${encodeURIComponent(state)}`
     ),
+  getOAuthCallbackResult: (state: string) =>
+    request<{ found: boolean; state?: string; raw?: string; error?: string; errorDesc?: string }>(
+      `/api/oauth/callback-result?state=${encodeURIComponent(state)}`
+    ),
   codexStopProxy: () => request<{ success: boolean }>('/api/oauth/codex/stop-proxy'),
   authcodeAuthorize: (provider: string, redirectUri?: string) => {
     const q = new URLSearchParams({ provider })

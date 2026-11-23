@@ -679,7 +679,44 @@
   $effect(() => {
     if (!showOAuthModal || typeof window === 'undefined') return
     autoSubmitted = false
+    let cancelled = false
+    let serverPollInFlight = false
     consumeOAuthCallback()
+
+    async function pollServerCallback() {
+      if (cancelled || serverPollInFlight || autoSubmitted || isConnecting || !showOAuthModal || providerId === 'codex') {
+        return
+      }
+      let pending
+      try {
+        pending = matchPending(loadPendings(window.localStorage), providerId, '')
+      } catch {
+        return
+      }
+      if (!pending?.state) return
+      serverPollInFlight = true
+      try {
+        const res = await api.getOAuthCallbackResult(pending.state)
+        if (!cancelled && res.found && (res.raw || res.error)) {
+          try {
+            writeCallback(window.localStorage, {
+              state: res.state || pending.state,
+              raw: res.raw || '',
+              error: res.error || '',
+              errorDesc: res.errorDesc || '',
+            })
+          } catch {
+            /* storage blocked */
+          }
+          consumeOAuthCallback()
+        }
+      } catch {
+        /* retry on next poll */
+      } finally {
+        serverPollInFlight = false
+      }
+    }
+
     const onStorage = (e: StorageEvent) => {
       if (e.key === OAUTH_CALLBACK_KEY || e.key === null) consumeOAuthCallback()
     }
@@ -691,6 +728,7 @@
         const data = e.data.data as {
           code?: string
           token?: string
+          raw?: string
           state?: string
           error?: string
           errorDescription?: string
@@ -699,7 +737,7 @@
           oauthError = `Login failed: ${data.error}${data.errorDescription ? ` — ${data.errorDescription}` : ''}`
           return
         }
-        const raw = data.code || data.token || ''
+        const raw = data.code || data.token || data.raw || ''
         if (raw) {
           try {
             writeCallback(window.localStorage, { state: data.state || '', raw, error: '', errorDesc: '' })
@@ -736,8 +774,11 @@
     } catch {
       /* BroadcastChannel unavailable — poll covers it */
     }
-    const timer = setInterval(consumeOAuthCallback, 1500)
+    const timer = setInterval(() => {
+      if (!consumeOAuthCallback()) void pollServerCallback()
+    }, 1500)
     return () => {
+      cancelled = true
       window.removeEventListener('storage', onStorage)
       window.removeEventListener('message', onWindowMessage)
       try {

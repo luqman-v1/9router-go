@@ -20,12 +20,23 @@ import (
 
 // OAuthHandler handles OAuth token import and social auth exchange endpoints.
 type OAuthHandler struct {
-	Repo *db.Repo
+	Repo      *db.Repo
+	callbacks *callbackRelay
 }
 
 // NewOAuthHandler initializes an OAuthHandler.
 func NewOAuthHandler(repo *db.Repo) *OAuthHandler {
-	return &OAuthHandler{Repo: repo}
+	return &OAuthHandler{
+		Repo:      repo,
+		callbacks: defaultCallbackRelay,
+	}
+}
+
+func (h *OAuthHandler) callbackStore() *callbackRelay {
+	if h != nil && h.callbacks != nil {
+		return h.callbacks
+	}
+	return defaultCallbackRelay
 }
 
 // HandleOAuthImport saves credentials from CLI token import (Codex, Cursor, GitLab, etc.).
