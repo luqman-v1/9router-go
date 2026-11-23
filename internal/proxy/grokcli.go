@@ -218,7 +218,7 @@ func ForwardKiroCreateResponse(ctx context.Context, client *http.Client, cfg *pr
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		time.Sleep(1500 * time.Millisecond)
 		resp, err = DoRequest(ctx, client, "POST", url, headers, body)
 		if err != nil {

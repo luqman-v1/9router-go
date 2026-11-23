@@ -273,14 +273,14 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 	// even with full quota. Replay the same turn against runtime.<region>.kiro.dev/v1/responses.
 	if resp.StatusCode == http.StatusTooManyRequests {
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if strings.Contains(string(b), "USER_REQUEST_RATE_EXCEEDED") {
 			// build CreateResponse body from conversationState
 			crBody := proxy.KiroCreateResponseBody(kiroJSONUnmarshalMap(body), req.ConnData, req.ModelName)
 			crBytes, _ := json.Marshal(crBody)
 			crResp, crErr := proxy.ForwardKiroCreateResponse(ctx, req.Client, req.Config, req.APIKey, crBytes, req.IsStream, req.ConnData)
 			if crErr == nil {
-				defer crResp.Body.Close()
+				defer func() { _ = crResp.Body.Close() }()
 				// transform SSE stream
 				if req.IsStream {
 					tr := proxy.TransformCreateResponseStreamToSSE(crResp.Body, req.ModelName)

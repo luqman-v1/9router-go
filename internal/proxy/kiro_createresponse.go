@@ -441,7 +441,7 @@ func TransformCreateResponseStreamToSSE(upstream io.Reader, model ...string) io.
 	}
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		id := fmt.Sprintf("chatcmpl-cr-%d", time.Now().UnixNano())
 		created := time.Now().Unix()
 		sseChunk := func(delta map[string]any, finish string, usage map[string]any) []byte {
@@ -487,7 +487,7 @@ func TransformCreateResponseStreamToSSE(upstream io.Reader, model ...string) io.
 			}
 			handleEvent(ev, sseChunk, &toolIdx, &curCallId, openCalls, arguedCalls, &hasToolCalls, &emittedRole, pw)
 		}
-		pw.Write([]byte("data: [DONE]\n\n"))
+		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
 	}()
 	return pr
 }
@@ -509,24 +509,24 @@ func handleEvent(ev map[string]any, sseChunk func(map[string]any, string, map[st
 			d = map[string]any{"role": "assistant", "content": delta}
 		}
 		*emittedRole = true
-		w.Write(sseChunk(d, "", nil))
+		_, _ = w.Write(sseChunk(d, "", nil))
 	case (etype == "response.reasoning_text.delta" || etype == "response.reasoning.delta") && delta != "":
 		d := map[string]any{"reasoning_content": delta}
 		if !*emittedRole {
 			d = map[string]any{"role": "assistant", "reasoning_content": delta}
 		}
 		*emittedRole = true
-		w.Write(sseChunk(d, "", nil))
+		_, _ = w.Write(sseChunk(d, "", nil))
 	case etype == "response.refusal.delta" && delta != "":
 		d := map[string]any{"content": delta}
 		if !*emittedRole {
 			d = map[string]any{"role": "assistant", "content": delta}
 		}
 		*emittedRole = true
-		w.Write(sseChunk(d, "", nil))
+		_, _ = w.Write(sseChunk(d, "", nil))
 	case etype == "response.refusal.done":
 		if r, ok := ev["refusal"].(string); ok && r != "" {
-			w.Write(sseChunk(map[string]any{"content": r}, "", nil))
+			_, _ = w.Write(sseChunk(map[string]any{"content": r}, "", nil))
 		}
 	case etype == "response.output_item.added":
 		item, _ := ev["item"].(map[string]any)
@@ -551,7 +551,7 @@ func handleEvent(ev map[string]any, sseChunk func(map[string]any, string, map[st
 				"type":     "function",
 				"function": map[string]any{"name": name, "arguments": ""},
 			}}
-			w.Write(sseChunk(map[string]any{"tool_calls": tc}, "", nil))
+			_, _ = w.Write(sseChunk(map[string]any{"tool_calls": tc}, "", nil))
 			*emittedRole = true
 		}
 	case etype == "response.function_call_arguments.delta" && delta != "":
@@ -559,7 +559,7 @@ func handleEvent(ev map[string]any, sseChunk func(map[string]any, string, map[st
 			arguedCalls[*curCallId] = true
 		}
 		tc := []map[string]any{{"index": *toolIdx, "function": map[string]any{"arguments": delta}}}
-		w.Write(sseChunk(map[string]any{"tool_calls": tc}, "", nil))
+		_, _ = w.Write(sseChunk(map[string]any{"tool_calls": tc}, "", nil))
 	case etype == "response.output_item.done":
 		item, _ := ev["item"].(map[string]any)
 		if item != nil && item["type"] == "function_call" {
@@ -574,7 +574,7 @@ func handleEvent(ev map[string]any, sseChunk func(map[string]any, string, map[st
 				if !arguedCalls[cid] {
 					if args, ok := item["arguments"].(string); ok && args != "" {
 						tc := []map[string]any{{"index": *toolIdx, "function": map[string]any{"arguments": args}}}
-						w.Write(sseChunk(map[string]any{"tool_calls": tc}, "", nil))
+						_, _ = w.Write(sseChunk(map[string]any{"tool_calls": tc}, "", nil))
 					}
 				}
 				delete(arguedCalls, cid)
@@ -624,7 +624,7 @@ func handleEvent(ev map[string]any, sseChunk func(map[string]any, string, map[st
 				}
 			}
 		}
-		w.Write(sseChunk(map[string]any{}, finish, usage))
+		_, _ = w.Write(sseChunk(map[string]any{}, finish, usage))
 	}
 }
 

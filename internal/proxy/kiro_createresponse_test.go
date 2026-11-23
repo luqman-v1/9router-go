@@ -182,7 +182,10 @@ func TestTransformCreateResponseStreamToSSE(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, _ := http.Get(srv.URL)
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("http.Get: %v", err)
+	}
 	defer resp.Body.Close()
 	tr := TransformCreateResponseStreamToSSE(resp.Body, "claude-opus-5.5")
 	b, _ := json.MarshalIndent(nil, "", "")
@@ -217,7 +220,10 @@ func TestTransformCreateResponseStreamToolCalls(t *testing.T) {
 		w.Write([]byte(sse))
 	}))
 	defer srv.Close()
-	resp, _ := http.Get(srv.URL)
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("http.Get: %v", err)
+	}
 	defer resp.Body.Close()
 	tr := TransformCreateResponseStreamToSSE(resp.Body, "claude-opus-5.5")
 	data, _ := readAllReader(tr)
