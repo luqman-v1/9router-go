@@ -164,9 +164,7 @@ func KiroCreateResponseBody(args ...any) map[string]any {
 		}
 	}
 	turns := []any{}
-	for _, h := range history {
-		turns = append(turns, h)
-	}
+	turns = append(turns, history...)
 	if current != nil {
 		turns = append(turns, current)
 	}

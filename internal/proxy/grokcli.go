@@ -230,10 +230,8 @@ func ForwardKiroCreateResponse(ctx context.Context, client *http.Client, cfg *pr
 
 func psdToCreds(psd map[string]any, apiKey string) map[string]any {
 	out := map[string]any{"apiKey": apiKey}
-	if psd != nil {
-		for k, v := range psd {
-			out[k] = v
-		}
+	for k, v := range psd {
+		out[k] = v
 	}
 	if psd != nil {
 		if v, ok := psd["accessToken"].(string); ok {
@@ -241,14 +239,6 @@ func psdToCreds(psd map[string]any, apiKey string) map[string]any {
 		}
 	}
 	return out
-}
-
-func jsonUnmarshalMap(body []byte) map[string]any {
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return map[string]any{}
-	}
-	return m
 }
 
 func bodyMap(body []byte) map[string]any {

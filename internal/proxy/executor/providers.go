@@ -293,8 +293,6 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		}
 		// restore original response body for normal handling
 		resp.Body = io.NopCloser(bytes.NewReader(b))
-	} else {
-		// ensure body closed later
 	}
 
 	defer resp.Body.Close()
