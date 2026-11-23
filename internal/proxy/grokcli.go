@@ -199,6 +199,66 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 	return nil, lastErr
 }
 
+// ForwardKiroCreateResponse forwards to Kiro's CreateResponse (/v1/responses) endpoint.
+// Used as a fallback when the legacy generateAssistantResponse returns 429
+// USER_REQUEST_RATE_EXCEEDED for accounts in the create_response_api experiment.
+func ForwardKiroCreateResponse(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool, psd map[string]any) (*http.Response, error) {
+	region, _ := psd["region"].(string)
+	if strings.TrimSpace(region) == "" {
+		region = "us-east-1"
+	}
+	url := KiroCreateResponseURL(region)
+	headers := KiroCreateResponseHeaders(psdToCreds(psd, apiKey), bodyMap(body))
+	setAuth(headers, cfg, apiKey)
+	// headers already carry Authorization; override not needed but safe.
+	streamHeaders(headers, isStream)
+	// retry once on 429
+	resp, err := DoRequest(ctx, client, "POST", url, headers, body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+		time.Sleep(1500 * time.Millisecond)
+		resp, err = DoRequest(ctx, client, "POST", url, headers, body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return resp, nil
+}
+
+func psdToCreds(psd map[string]any, apiKey string) map[string]any {
+	out := map[string]any{"apiKey": apiKey}
+	if psd != nil {
+		for k, v := range psd {
+			out[k] = v
+		}
+	}
+	if psd != nil {
+		if v, ok := psd["accessToken"].(string); ok {
+			out["accessToken"] = v
+		}
+	}
+	return out
+}
+
+func jsonUnmarshalMap(body []byte) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func bodyMap(body []byte) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
 const (
 	KiroRuntimeSDKVersion = "1.0.0"
 	KiroIDEVersion        = "1.4.121"

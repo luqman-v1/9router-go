@@ -267,6 +267,36 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("ForwardKiro: %w", err)
 	}
+
+	// CreateResponse fallback: accounts enrolled in the create_response_api
+	// experiment receive 429 USER_REQUEST_RATE_EXCEEDED on legacy generateAssistantResponse
+	// even with full quota. Replay the same turn against runtime.<region>.kiro.dev/v1/responses.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if strings.Contains(string(b), "USER_REQUEST_RATE_EXCEEDED") {
+			// build CreateResponse body from conversationState
+			crBody := proxy.KiroCreateResponseBody(kiroJSONUnmarshalMap(body), req.ConnData, req.ModelName)
+			crBytes, _ := json.Marshal(crBody)
+			crResp, crErr := proxy.ForwardKiroCreateResponse(ctx, req.Client, req.Config, req.APIKey, crBytes, req.IsStream, req.ConnData)
+			if crErr == nil {
+				defer crResp.Body.Close()
+				// transform SSE stream
+				if req.IsStream {
+					tr := proxy.TransformCreateResponseStreamToSSE(crResp.Body, req.ModelName)
+					return handleKiroStream(w, req, tr)
+				}
+				// non-stream: fold
+				tr := proxy.TransformCreateResponseStreamToSSE(crResp.Body, req.ModelName)
+				return handleKiroNonStream(w, req, tr)
+			}
+		}
+		// restore original response body for normal handling
+		resp.Body = io.NopCloser(bytes.NewReader(b))
+	} else {
+		// ensure body closed later
+	}
+
 	defer resp.Body.Close()
 	if req.IsStream {
 		return handleKiroStream(w, req, resp.Body)
@@ -2125,4 +2155,12 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		return execSSEStream(w, resp.Body, req)
 	}
 	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
+}
+
+func kiroJSONUnmarshalMap(body []byte) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
 }
