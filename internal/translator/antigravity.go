@@ -422,12 +422,11 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	text = strings.ReplaceAll(text, claudeCodeIdentitySentence, antigravityIdentitySentence)
 	text = strings.ReplaceAll(text, claudeCodeIdentityPhrase, "You are Antigravity")
 	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
-	text = rewriteAntigravityHermesWholeLines(text)
-	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	if isSystemInstruction {
 		// Hermes/OpenClaw sentences, headers, and identifiers are the
 		// fingerprints the backend answers with a false 429; tool
 		// descriptions carry the same text and are sanitized separately.
+		// Whole-line Hermes markers + identity run inside rewriteAntigravityFingerprints.
 		text = rewriteAntigravityFingerprints(text)
 		text = normalizeHarnessMarkers(text)
 		// Upstream applies this row to the system instruction only: the
@@ -438,6 +437,9 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 		// OpenClaw rewrite row: competing-client
 		// branding in the system instruction.
 		text = rewriteOpenClawBrand(text)
+	} else {
+		text = rewriteAntigravityHermesWholeLines(text)
+		text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	}
 	return strings.TrimSpace(text)
 }

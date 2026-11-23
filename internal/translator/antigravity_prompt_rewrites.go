@@ -148,6 +148,7 @@ func rewriteAntigravityFingerprints(text string) string {
 	// Whole-line Hermes markers run first so the lines are excised cleanly
 	// without leaving leftover tags (upstream decolua/9router@bb399170a).
 	text = rewriteAntigravityHermesWholeLines(text)
+	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	for _, rewrite := range antigravityFingerprintRewrites {
 		text = rewrite.from.ReplaceAllString(text, rewrite.to)
 	}

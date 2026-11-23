@@ -455,53 +455,57 @@ func TestStripCompetitivePrompts_StripsHermesWholeLines(t *testing.T) {
 	}
 	soul := "You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask — a one-line question gets a one-line answer."
 
-	lines := []string{soul, "Keep this line."}
-	lines = append(lines, triggers...)
-	lines = append(lines, "And this one.")
-	text := strings.Join(lines, "\n")
+	for _, eol := range []string{"\n", "\r\n"} {
+		t.Run(eol, func(t *testing.T) {
+			lines := []string{soul, "Keep this line."}
+			lines = append(lines, triggers...)
+			lines = append(lines, "And this one.")
+			text := strings.Join(lines, eol)
 
-	req := &GeminiRequest{
-		SystemInstruction: &GeminiContent{
-			Role:  "user",
-			Parts: []GeminiPart{{Text: text}},
-		},
-	}
-	stripped := StripCompetitivePrompts(req)
-	if stripped == nil || stripped.SystemInstruction == nil || len(stripped.SystemInstruction.Parts) == 0 {
-		t.Fatal("system instruction lost")
-	}
-	got := stripped.SystemInstruction.Parts[0].Text
-	for _, tr := range triggers {
-		if strings.Contains(got, tr) {
-			t.Errorf("trigger line still present: %q", tr)
-		}
-	}
-	if strings.Contains(got, "Be direct:") {
-		t.Errorf("SOUL identity not rewritten: %q", got)
-	}
-	if strings.Contains(got, "Nous Research") {
-		t.Errorf("Nous Research not stripped: %q", got)
-	}
-	if !strings.Contains(got, "You are an AI assistant.") {
-		t.Errorf("expected neutral identity, got %q", got)
-	}
-	if !strings.Contains(got, "Keep this line.") {
-		t.Errorf("kept line lost: %q", got)
-	}
-	if !strings.Contains(got, "And this one.") {
-		t.Errorf("kept line lost: %q", got)
-	}
+			req := &GeminiRequest{
+				SystemInstruction: &GeminiContent{
+					Role:  "user",
+					Parts: []GeminiPart{{Text: text}},
+				},
+			}
+			stripped := StripCompetitivePrompts(req)
+			if stripped == nil || stripped.SystemInstruction == nil || len(stripped.SystemInstruction.Parts) == 0 {
+				t.Fatal("system instruction lost")
+			}
+			got := stripped.SystemInstruction.Parts[0].Text
+			for _, tr := range triggers {
+				if strings.Contains(got, tr) {
+					t.Errorf("trigger line still present: %q", tr)
+				}
+			}
+			if strings.Contains(got, "Be direct:") {
+				t.Errorf("SOUL identity not rewritten: %q", got)
+			}
+			if strings.Contains(got, "Nous Research") {
+				t.Errorf("Nous Research not stripped: %q", got)
+			}
+			if !strings.Contains(got, "You are an AI assistant.") {
+				t.Errorf("expected neutral identity, got %q", got)
+			}
+			if !strings.Contains(got, "Keep this line.") {
+				t.Errorf("kept line lost: %q", got)
+			}
+			if !strings.Contains(got, "And this one.") {
+				t.Errorf("kept line lost: %q", got)
+			}
 
-	// Begin marker (non-trigger) survives.
-	beginReq := &GeminiRequest{
-		SystemInstruction: &GeminiContent{
-			Role:  "user",
-			Parts: []GeminiPart{{Text: "<!-- Begin Hermes runtime environment -->\nCWD: /home"}},
-		},
-	}
-	beginStripped := StripCompetitivePrompts(beginReq)
-	beginText := beginStripped.SystemInstruction.Parts[0].Text
-	if !strings.Contains(beginText, "Begin") || !strings.Contains(beginText, "runtime environment") {
-		t.Errorf("begin marker wrongly stripped: %q", beginText)
+			// Begin marker (non-trigger) survives.
+			beginReq := &GeminiRequest{
+				SystemInstruction: &GeminiContent{
+					Role:  "user",
+					Parts: []GeminiPart{{Text: "<!-- Begin Hermes runtime environment -->" + eol + "CWD: /home"}},
+				},
+			}
+			beginStripped := StripCompetitivePrompts(beginReq)
+			beginText := beginStripped.SystemInstruction.Parts[0].Text
+			if !strings.Contains(beginText, "Begin") || !strings.Contains(beginText, "runtime environment") {
+				t.Errorf("begin marker wrongly stripped: %q", beginText)
+			}
+		})
 	}
 }
