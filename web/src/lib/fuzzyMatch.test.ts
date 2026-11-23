@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest'
-<<<<<<< HEAD
 import { buildFuzzyIndex, filterFuzzy, filterFuzzyIndexed, fuzzyMatch, matchRank } from './fuzzyMatch'
-=======
-import { buildFuzzyIndex, filterFuzzy, filterFuzzyIndexed, fuzzyMatch, matchRank } from './fuzzyMatch'
->>>>>>> b0bb27d (perf(web): index the bulk-arm catalog so a keystroke stops rebuilding it)
 
 describe('fuzzyMatch', () => {
   it('matches an exact substring', () => {
@@ -82,7 +78,6 @@ describe('filterFuzzy', () => {
     expect(filterFuzzy('', ids, 2)).toEqual(['zhipu/glm-5.3', 'zhipu/glm-4.6'])
   })
 })
-<<<<<<< HEAD
 
 describe('filterFuzzyIndexed', () => {
   const ids = [
@@ -160,5 +155,3 @@ describe('filterFuzzyIndexed', () => {
     }
   })
 })
-=======
->>>>>>> b0bb27d (perf(web): index the bulk-arm catalog so a keystroke stops rebuilding it)
