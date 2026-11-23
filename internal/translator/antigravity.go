@@ -422,6 +422,7 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	text = strings.ReplaceAll(text, claudeCodeIdentitySentence, antigravityIdentitySentence)
 	text = strings.ReplaceAll(text, claudeCodeIdentityPhrase, "You are Antigravity")
 	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
+	text = rewriteAntigravityHermesWholeLines(text)
 	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	if isSystemInstruction {
 		// Hermes/OpenClaw sentences, headers, and identifiers are the
