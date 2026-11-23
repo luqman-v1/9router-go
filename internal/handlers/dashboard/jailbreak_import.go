@@ -71,13 +71,57 @@ type jailbreakImporter struct {
 	// network — an internal paste service, a LAN host. Off by default; the
 	// production importer reads JAILBREAK_IMPORT_ALLOW_PRIVATE.
 	allowPrivate bool
+	// token is a GitHub personal access token sent as Authorization: Bearer on
+	// every api.github.com call. It exists because that API allows 60 anonymous
+	// requests an hour and 5,000 with a token, so a library that follows seven
+	// collections exhausts the anonymous quota on the third pass and every
+	// source after that reports 403. Off by default — an operator who wants it
+	// sets GITHUB_TOKEN, or types it in the dashboard, where it is stored in the
+	// settings row the rest of the dashboard credentials already use.
+	token string
+	// tokenMu guards token: the settings row is written by a request handler
+	// while a background pass is reading it, and the value is one string.
+	tokenMu sync.RWMutex
+	// etagCache and etagMu hold fetched bodies keyed by URL, so the next fetch
+	// can be conditional and a 304 answers from memory instead of re-downloading.
+	etagCache map[string]githubETagEntry
+	etagMu    sync.RWMutex
 }
 
 var defaultJailbreakImporter = newJailbreakImporter()
 
+// SetGithubToken installs or clears the token used for api.github.com calls.
+// It is called by the settings save and by the boot path that reads the stored
+// value, and it takes effect on the next request rather than requiring a
+// restart, so an operator pasting a token into the persona page sees the quota
+// change without a reboot.
+func (imp *jailbreakImporter) SetGithubToken(token string) {
+	if imp == nil {
+		return
+	}
+	imp.tokenMu.Lock()
+	imp.token = strings.TrimSpace(token)
+	imp.tokenMu.Unlock()
+}
+
+// GithubToken reports the token in force, or "" when none is configured.
+func (imp *jailbreakImporter) GithubToken() string {
+	if imp == nil {
+		return ""
+	}
+	imp.tokenMu.RLock()
+	defer imp.tokenMu.RUnlock()
+	return imp.token
+}
+
 // newJailbreakImporter builds the production importer. One client serves the
 // whole import, with a redirect policy and a dial guard that keep every hop
 // where the operator is allowed to reach.
+//
+// The GitHub endpoint and the token are both configurable: the endpoint because
+// an operator can put a mirror in front of api.github.com when the gateway's
+// network cannot reach it directly, and the token because the anonymous quota is
+// small enough that following several collections exhausts it within an hour.
 func newJailbreakImporter() *jailbreakImporter {
 	imp := &jailbreakImporter{
 		apiBase: "https://api.github.com",
@@ -85,6 +129,17 @@ func newJailbreakImporter() *jailbreakImporter {
 		// An operator importing from their own network has to say so; the
 		// default is public addresses only.
 		allowPrivate: os.Getenv("JAILBREAK_IMPORT_ALLOW_PRIVATE") == "1",
+		token:        strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+	}
+	// A mirror sits in front of both hosts. An operator whose network blocks
+	// api.github.com — or who wants the quota of a self-hosted gh-proxy — points
+	// both at it, and every existing parse rule keeps working because the paths
+	// are unchanged.
+	if mirror := strings.TrimSpace(os.Getenv("GITHUB_API_MIRROR")); mirror != "" {
+		imp.apiBase = strings.TrimSuffix(mirror, "/")
+	}
+	if mirror := strings.TrimSpace(os.Getenv("GITHUB_RAW_MIRROR")); mirror != "" {
+		imp.rawBase = strings.TrimSuffix(mirror, "/")
 	}
 	imp.client = &http.Client{
 		Timeout: jailbreakImportTimeout,
@@ -201,6 +256,111 @@ func isGithubHost(host string) bool {
 	return false
 }
 
+// sameHost reports whether a request URL points at the configured base. The
+// token must go to the API base and nowhere else, so the comparison is against
+// that base rather than against a list of GitHub hosts: an operator pointing
+// apiBase at a mirror still has the token honoured, and a mirrored request is
+// the only other place it can appear.
+func sameHost(base string, u *url.URL) bool {
+	b, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	// Host and port, not host alone: two stand-in servers on one loopback address
+	// share a hostname and differ only by port, so a hostname-only comparison
+	// would send the token to the file server too. In production the two hosts
+	// are api.github.com and raw.githubusercontent.com, which differ by hostname
+	// already, but the port belongs in the comparison for the same reason it
+	// belongs in a firewall rule.
+	if !strings.EqualFold(b.Hostname(), u.Hostname()) {
+		return false
+	}
+	return normalizedPort(b) == normalizedPort(u)
+}
+
+// normalizedPort resolves an empty port to the scheme's default, so
+// "https://api.github.com" and "https://api.github.com:443" are the same base
+// and a mirror typed either way does not silently stop receiving the token.
+func normalizedPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return "80"
+}
+
+// githubETagCache holds one fetched body per URL so the next fetch can be
+// conditional.
+//
+// The GitHub API tags the tree listing and each raw file with an ETag, and a
+// 304 costs nothing against the hourly quota. The cache is what turns that into
+// a quota saving: without a stored body to fall back on, a 304 is an empty
+// response and the caller would store an empty prompt.
+//
+// It is bounded — githubETagCacheMax entries, oldest written dropped first — and
+// it lives in memory only. It is a cache, not a store: the authoritative copy of
+// every preset is in the database, so a restart re-fetches and the worst case is
+// one pass that spends quota the cache would have saved. An unbounded map keyed
+// by a URL the operator controls is a memory leak with a schedule, which is why
+// the bound and the eviction exist.
+const githubETagCacheMax = 4096
+
+type githubETagEntry struct {
+	etag     string
+	body     string
+	seenUnix int64
+}
+
+// cacheGet reports the stored entry for a URL, or ok=false when none is held.
+// One lookup returns both halves, because a caller that needed two would either
+// race (an entry evicted between the two reads) or take the lock twice for one
+// answer.
+func (imp *jailbreakImporter) cacheGet(u string) (body string, etag string, ok bool) {
+	if imp.etagCache == nil {
+		return "", "", false
+	}
+	imp.etagMu.RLock()
+	defer imp.etagMu.RUnlock()
+	e, found := imp.etagCache[u]
+	if !found {
+		return "", "", false
+	}
+	return e.body, e.etag, true
+}
+
+// cachePut stores a body under its URL and evicts the oldest entry when the
+// cache is full. Eviction is by write order, not by use: a collection is fetched
+// in the same order every pass, so recency of use adds nothing and a clock read
+// per entry costs more than it saves.
+func (imp *jailbreakImporter) cachePut(u, etag, body string) {
+	imp.etagMu.Lock()
+	defer imp.etagMu.Unlock()
+	if imp.etagCache == nil {
+		imp.etagCache = make(map[string]githubETagEntry, 64)
+	}
+	if _, exists := imp.etagCache[u]; !exists && len(imp.etagCache) >= githubETagCacheMax {
+		oldestKey, oldestSeen := "", int64(0)
+		for k, e := range imp.etagCache {
+			if oldestKey == "" || e.seenUnix < oldestSeen {
+				oldestKey, oldestSeen = k, e.seenUnix
+			}
+		}
+		if oldestKey != "" {
+			delete(imp.etagCache, oldestKey)
+		}
+	}
+	imp.etagCache[u] = githubETagEntry{etag: etag, body: body, seenUnix: time.Now().Unix()}
+}
+
+// CacheStats reports the ETag cache's size, for the persona panel and for tests.
+func (imp *jailbreakImporter) CacheStats() (entries int, max int) {
+	imp.etagMu.RLock()
+	defer imp.etagMu.RUnlock()
+	return len(imp.etagCache), githubETagCacheMax
+}
+
 // githubJailbreakSource is a parsed import target. An empty Path means the
 // whole repository; a non-empty one means a single file.
 type githubJailbreakSource struct {
@@ -213,12 +373,16 @@ type githubJailbreakSource struct {
 // githubFile is one prompt file to fetch.
 type githubFile struct {
 	Path string
+	Type string
 	Size int
 }
 
-// githubTreeEntry is one blob in a repository tree.
+// githubTreeEntry is one entry in a repository tree. Type is "blob" for a file
+// and "tree" for a directory; the caller needs the directories to tell a pointed
+// path that names a subfolder from one that names a single file.
 type githubTreeEntry struct {
 	Path string
+	Type string
 	Size int
 }
 
@@ -533,16 +697,23 @@ func (imp *jailbreakImporter) collectFiles(ctx context.Context, src githubJailbr
 		}
 		ref = def
 	}
-	if src.Path != "" {
-		return []githubFile{{Path: src.Path}}, nil, ref, nil
-	}
-
 	entries, truncated, err := imp.tree(ctx, src, ref)
 	if err != nil {
 		return nil, nil, "", err
 	}
 	if truncated {
 		return nil, nil, "", fmt.Errorf("repository %s/%s tree is too large to list", src.Owner, src.Repo)
+	}
+	// A path may name one file or a directory. A directory is the common shape
+	// for a collection that keeps its prompts in a subfolder — `owner/repo/tree/
+	// main/jailbreaks`, `owner/repo/blob/main/prompts/jailbreaks` — and treating
+	// it as a single file fetched the directory itself, which is a 404 the
+	// operator reads as "this repository has no prompts in it".
+	if src.Path != "" && !treeHasSubtree(entries, src.Path) {
+		return []githubFile{{Path: src.Path}}, nil, ref, nil
+	}
+	if src.Path != "" {
+		entries = restrictToSubtree(entries, src.Path)
 	}
 
 	files := make([]githubFile, 0, len(entries))
@@ -570,9 +741,44 @@ func (imp *jailbreakImporter) collectFiles(ctx context.Context, src githubJailbr
 	return files, skipped, ref, nil
 }
 
+// treeHasSubtree reports whether a tree entry at p is a directory in the
+// listing. A blob at p means the path named one file; a directory means it named
+// a subtree, and the caller collects everything under it instead of fetching the
+// directory (which no raw endpoint serves).
+func treeHasSubtree(entries []githubTreeEntry, p string) bool {
+	for _, e := range entries {
+		if e.Path == p && e.Type == "tree" {
+			return true
+		}
+	}
+	return false
+}
+
+// restrictToSubtree keeps only the entries inside the directory p, so a pointed
+// subfolder imports its own files and not the repository's README along with
+// them. A blob named exactly p is kept too, because a path may name either.
+func restrictToSubtree(entries []githubTreeEntry, p string) []githubTreeEntry {
+	prefix := strings.TrimSuffix(p, "/") + "/"
+	out := make([]githubTreeEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Path == p || strings.HasPrefix(e.Path, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // jailbreakImportCandidate keeps prompt files and drops repository furniture:
 // dot-directories such as .github, and the README that describes a collection
 // rather than being one of its prompts.
+// jailbreakImportExtensions are the file extensions a prompt collection may
+// use. `.md` and `.txt` cover almost everything, but L1B3RT4S ships its whole
+// library as `.mkd` — a Markdown shorthand several collections use — and a
+// candidate filter that did not know it imported 1 file out of that
+// repository's 44.
+var jailbreakImportExtensions = []string{".md", ".markdown", ".mdown", ".mkd", ".txt"}
+
+// jailbreakImportCandidate keeps prompt files and drops repository furniture.
 func jailbreakImportCandidate(p string) bool {
 	for _, seg := range strings.Split(p, "/") {
 		if strings.HasPrefix(seg, ".") {
@@ -580,10 +786,17 @@ func jailbreakImportCandidate(p string) bool {
 		}
 	}
 	base := strings.ToLower(path.Base(p))
-	if base == "readme.md" || base == "readme.markdown" || base == "readme.txt" {
-		return false
+	for _, readme := range []string{"readme.md", "readme.markdown", "readme.txt"} {
+		if base == readme {
+			return false
+		}
 	}
-	return strings.HasSuffix(base, ".md") || strings.HasSuffix(base, ".txt")
+	for _, ext := range jailbreakImportExtensions {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // importOne downloads one file from GitHub and writes it as a preset.
@@ -776,8 +989,10 @@ func (imp *jailbreakImporter) tree(ctx context.Context, src githubJailbreakSourc
 	}
 	entries := make([]githubTreeEntry, 0, len(out.Tree))
 	for _, e := range out.Tree {
-		if e.Type == "blob" {
-			entries = append(entries, githubTreeEntry{Path: e.Path, Size: e.Size})
+		// Both kinds are kept: a blob is a candidate file, and a tree is what
+		// tells the caller a pointed path named a subfolder rather than a file.
+		if e.Type == "blob" || e.Type == "tree" {
+			entries = append(entries, githubTreeEntry{Path: e.Path, Type: e.Type, Size: e.Size})
 		}
 	}
 	return entries, out.Truncated, nil
@@ -794,20 +1009,46 @@ func (imp *jailbreakImporter) getJSON(ctx context.Context, u string, out any) er
 	return nil
 }
 
-// fetchText GETs u and returns at most limit bytes. A body past the limit is
-// an error rather than a truncation: half a prompt would inject half a rule.
+// fetchText GETs u and returns at most limit bytes. A body past the limit is an
+// error rather than a truncation: half a prompt would inject half a rule.
+//
+// A body the server tagged with an ETag is cached, and the next fetch of the
+// same URL sends If-None-Match. A 304 answers from the cache and costs nothing
+// against the quota; a 200 replaces it. Without this, every pass of every
+// collection re-downloads every file, and the quota a token buys is spent on
+// bytes that have not changed.
 func (imp *jailbreakImporter) fetchText(ctx context.Context, u string, limit int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "9router-go")
+	// The token rides every request that goes to the configured API base —
+	// api.github.com, or the mirror an operator pointed apiBase at, because a
+	// mirror serves the same API and needs the same credential. It is never sent
+	// to any other host: a token is not a credential for an arbitrary paste
+	// service the operator imported from.
+	if token := imp.GithubToken(); token != "" && sameHost(imp.apiBase, req.URL) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	// The conditional request: the cache from the previous pass is sent as
+	// If-None-Match, and a 304 costs nothing against the quota while still
+	// proving the body is current.
+	cached, etag, ok := imp.cacheGet(u)
+	if ok && etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 	resp, err := imp.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	switch {
+	case resp.StatusCode == http.StatusNotModified && ok:
+		// A 304 only reaches here when this request carried an If-None-Match,
+		// so the cached body is the answer and no byte crosses the wire.
+		return cached, nil
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return "", fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -817,7 +1058,11 @@ func (imp *jailbreakImporter) fetchText(ctx context.Context, u string, limit int
 	if int64(len(body)) > limit {
 		return "", fmt.Errorf("GET %s: body exceeds %d bytes", u, limit)
 	}
-	return string(body), nil
+	text := string(body)
+	if tag := resp.Header.Get("ETag"); tag != "" {
+		imp.cachePut(u, tag, text)
+	}
+	return text, nil
 }
 
 // fetchBytes is fetchText with the content type kept, so the caller can tell a

@@ -119,6 +119,11 @@ func ProvideServer(p ServerParams) *http.Server {
 
 			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
+			// The preset library's auto-sync: one pass shortly after boot, then
+			// hourly, over the GitHub collections the operator follows. It is
+			// one worker per process, shared by the endpoints and this loop, so
+			// a "Sync now" press and the periodic pass cannot overlap.
+			dashboard.StartJailbreakSync(p.Repo, shutdown.Context())
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
 			// Claim Qoder daily credits on boot and every 30 minutes.
 			startQoderCheckin(shutdown.Context(), p.Repo, config.ResolveDataDir())

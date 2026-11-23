@@ -57,6 +57,14 @@ type JailbreakDoc struct {
 	// means "unsorted" and falls back to id order, so a preset written by an
 	// older build (or by import) keeps its place without a migration.
 	Order int `json:"order,omitempty"`
+	// SyncOrigin records the repository a synced preset came from, in the
+	// "owner/repo@ref" shape, together with the file it was read from. A
+	// preset carrying both was written by the sync worker and is rewritten by
+	// it on every pass; a preset with neither was typed, uploaded or imported
+	// by hand, and sync never touches it — that distinction is what keeps an
+	// operator's own edit from being reverted by the next pass.
+	SyncOrigin string `json:"syncOrigin,omitempty"`
+	SyncPath   string `json:"syncPath,omitempty"`
 	// CreatedAt / UpdatedAt are RFC3339 UTC stamps the store fills on write.
 	// They let the dashboard sort by newest or recently-touched, which is how
 	// an operator finds the preset they just edited in a long library.
@@ -148,6 +156,18 @@ func (r *Repo) getJailbreakDocByKey(key string) (*JailbreakDoc, error) {
 
 // SaveJailbreakPreset saves or updates a preset.
 func (r *Repo) SaveJailbreakPreset(d *JailbreakDoc) error {
+	return r.SaveJailbreakPresetContext(context.Background(), d)
+}
+
+// SaveJailbreakPresetContext is the same write with the caller's context, for
+// the background sync worker. The sync-specific fields on the doc (SyncOrigin,
+// SyncPath) are carried through untouched: they are what a later pass reads to
+// tell its own work from the operator's.
+func (r *Repo) SaveJailbreakPresetContext(ctx context.Context, d *JailbreakDoc) error {
+	// ctx is accepted for signature parity with the read paths and for a future
+	// cancellable write; this store writes synchronously, so honouring a caller
+	// that passes nil ends here rather than reassigning a value nothing reads.
+	_ = ctx
 	if d == nil {
 		return fmt.Errorf("nil jailbreak doc")
 	}
@@ -253,8 +273,17 @@ func (r *Repo) DeleteJailbreakPreset(id string) error {
 
 // ListJailbreakPresets returns all available presets.
 func (r *Repo) ListJailbreakPresets() ([]*JailbreakDoc, error) {
+	return r.ListJailbreakPresetsContext(context.Background())
+}
+
+// ListJailbreakPresetsContext is the same read with the caller's context, for
+// the background sync worker whose pass must stop when the gateway shuts down.
+func (r *Repo) ListJailbreakPresetsContext(ctx context.Context) ([]*JailbreakDoc, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rows, err := r.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT key, value FROM kv WHERE scope = ? AND (key LIKE ? OR key = ?) ORDER BY key ASC`,
 		jailbreakScope, jailbreakDocPrefix+"%", jailbreakDocKey,
 	)

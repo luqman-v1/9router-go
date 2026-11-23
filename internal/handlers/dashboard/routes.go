@@ -40,6 +40,13 @@ type DashboardHandler struct {
 	// library. Nil means the production importer; a test points it at an
 	// httptest server.
 	jailbreakImport *jailbreakImporter
+	// jailbreakSync is the preset auto-sync worker: the standing subscription
+	// version of the GitHub import. Optional for the same reason Limiter and
+	// ModelHealth are — a handler built outside a boot has none, and the sync
+	// endpoints answer "not configured" rather than panicking. It is read per
+	// request because the router is built before the app's OnStart hook starts
+	// the worker.
+	jailbreakSync *jailbreakSync
 	// ModelHealth is the automatic model-health loop. It is optional for the
 	// same reason Limiter is: a handler built outside a boot has none, and the
 	// operator-action recording the disabled-models write performs is skipped
@@ -64,7 +71,22 @@ func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *Dashboa
 	if len(ts) > 0 && ts[0] != nil {
 		h.TokenSaver = ts[0]
 	}
+	// The preset auto-sync worker is resolved per request rather than stored
+	// (see syncStore): the loop is started once for the process by
+	// StartJailbreakSync, and a handler built outside a boot still answers the
+	// source endpoints by opening a store over the same repository.
 	return h
+}
+
+// SetJailbreakSync installs the running worker behind the sync endpoints. The
+// app calls it from OnStart, after the database is up and before the server
+// accepts traffic, so a "Sync now" press on a freshly booted gateway reaches a
+// live worker rather than a handler with no loop behind it.
+func (h *DashboardHandler) SetJailbreakSync(s *jailbreakSync) {
+	if h == nil || s == nil {
+		return
+	}
+	h.jailbreakSync = s
 }
 
 // importer returns the configured GitHub importer, or the production one.
@@ -201,6 +223,11 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/jailbreak/preview", h.HandlePreviewJailbreak)
 		r.Put("/jailbreak/presets/order", h.HandleReorderJailbreakPresets)
 		r.Post("/jailbreak/presets/upload", h.HandleUploadJailbreakPreset)
+		r.Get("/jailbreak/sync/sources", h.HandleListJailbreakSyncSources)
+		r.Put("/jailbreak/sync/sources", h.HandleSaveJailbreakSyncSources)
+		r.Post("/jailbreak/sync/run", h.HandleRunJailbreakSync)
+		r.Get("/jailbreak/github", h.HandleGetJailbreakGithub)
+		r.Put("/jailbreak/github/token", h.HandleSaveJailbreakGithubToken)
 
 		// Models
 		r.Get("/models/custom", h.HandleGetCustomModels)

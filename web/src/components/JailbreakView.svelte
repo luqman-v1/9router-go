@@ -1,10 +1,11 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
+  import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig, type JailbreakSyncSource } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
   import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
   import { marked } from 'marked'
+  import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib/presetSync'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
   import Button from '../lib/ui/Button.svelte'
@@ -12,7 +13,84 @@
   import Modal from '../lib/ui/Modal.svelte'
   import Toggle from '../lib/ui/Toggle.svelte'
   import JailbreakPlayground from './jailbreak/JailbreakPlayground.svelte'
-  import JailbreakKeyScope from './jailbreak/JailbreakKeyScope.svelte'
+import JailbreakKeyScope from './jailbreak/JailbreakKeyScope.svelte'
+import JailbreakTester from './jailbreak/JailbreakTester.svelte'
+  // Auto-sync state: the sources the library follows, plus the status line the
+  // "Sync now" button reports after one pass.
+  let syncSources = $state<JailbreakSyncSource[]>([])
+  let syncSaving = $state(false)
+  let syncRunning = $state(false)
+  let syncStatus = $state('')
+  let syncStatusIsError = $state(false)
+  let newSyncTarget = $state('')
+  let newSyncRef = $state('')
+
+  async function loadSyncSources() {
+    try {
+      const { sources } = await api.listJailbreakSyncSources()
+      syncSources = Array.isArray(sources) ? sources : []
+    } catch (e) {
+      // Surfaced on the card rather than swallowed: a failed read otherwise
+      // renders as "no sources", which is indistinguishable from enabled-but-empty.
+      syncSources = []
+      syncStatus = e instanceof Error ? e.message : String(e)
+      syncStatusIsError = true
+    }
+  }
+
+  function saveSyncSources(next: JailbreakSyncSource[]) {
+    const previous = syncSources
+    syncSources = next
+    syncSaving = true
+    api
+      .saveJailbreakSyncSources(next)
+      .then(({ sources }) => {
+        syncSources = Array.isArray(sources) ? sources : next
+      })
+      .catch((e) => {
+        syncSources = previous
+        syncStatus = e instanceof Error ? e.message : String(e)
+        syncStatusIsError = true
+      })
+      .finally(() => {
+        syncSaving = false
+      })
+  }
+
+  function toggleSyncSource(src: JailbreakSyncSource) {
+    saveSyncSources(syncSources.map((s) => (s.id === src.id ? { ...s, enabled: !s.enabled } : s)))
+  }
+
+  function removeSyncSource(id: string) {
+    saveSyncSources(syncSources.filter((s) => s.id !== id))
+  }
+
+  function addSyncSource() {
+    const target = newSyncTarget.trim()
+    if (!target) return
+    const id = `sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    saveSyncSources([...syncSources, { id, target, ref: newSyncRef.trim() || undefined, enabled: true }])
+    newSyncTarget = ''
+    newSyncRef = ''
+  }
+
+  async function runSyncNow() {
+    syncRunning = true
+    syncStatus = ''
+    syncStatusIsError = false
+    try {
+      const { outcomes } = await api.runJailbreakSync()
+      const summary = syncPassSummary(outcomes.map((o) => o.result))
+      syncStatus = summary ? `Sync complete: ${summary}` : 'Sync complete: nothing changed'
+      await loadSyncSources()
+    } catch (e) {
+      syncStatus = e instanceof Error ? e.message : String(e)
+      syncStatusIsError = true
+    } finally {
+      syncRunning = false
+    }
+  }
+
   // Preset library.
   let presets = $state<JailbreakDoc[]>([])
   let loading = $state(false)
@@ -209,6 +287,10 @@
         const usageRes = await api.getJailbreakUsage()
         presetUsage = usageRes?.usage || {}
       } catch {}
+      // The auto-sync sources read on their own, not only after a pass: an empty
+      // card that filled in on the first "Sync now" read as a feature that had
+      // no sources, and the source that ships enabled by default stayed hidden.
+      await loadSyncSources()
     } catch (e) {
       importStatus = 'Load failed: ' + errorMessage(e)
     } finally {
@@ -1483,6 +1565,112 @@
   <Card padding="md">
     <JailbreakPlayground presets={presets} />
   </Card>
+
+  <!-- The injection tester. The playground above proves what the resolver
+       decided; this one shows what the decision does — the outbound body
+       diffed word by word at zero cost, and optionally the model's raw reply
+       under one or both scopes. -->
+  <Card padding="md">
+    <JailbreakTester />
+  </Card>
+
+  <!-- Auto-sync. The import card above answers "give me these prompts now";
+       this one follows a collection the way a subscription follows a feed,
+       re-reading it on boot and every hour after. Sources are the worker's own
+       state, so a paused source stays listed and is simply never fetched. -->
+  <Card padding="md">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-bold text-text-main">Auto-sync</h2>
+        <p class="text-xs text-text-subtle pt-1">
+          Repositories the preset library follows, re-read on boot and every hour.
+        </p>
+      </div>
+      <Button variant="outline" size="sm" icon="sync" disabled={syncSaving} onclick={runSyncNow}>
+        {syncRunning ? 'Syncing…' : 'Sync now'}
+      </Button>
+    </div>
+
+    <div class="space-y-2 pt-3">
+      {#each syncSources as src (src.id)}
+        <div class="flex flex-wrap items-center gap-3 rounded-[10px] border border-border-subtle bg-surface p-2.5">
+          <span
+            class="material-symbols-outlined text-[18px] {src.lastError
+              ? 'text-error'
+              : src.enabled
+                ? 'text-success'
+                : 'text-text-subtle'}"
+            >{src.lastError ? 'error' : src.enabled ? 'cloud_done' : 'pause_circle'}</span
+          >
+          <div class="min-w-0 flex-1 space-y-0.5">
+            <div class="text-xs font-semibold text-text-main truncate">{syncLabel(src)}</div>
+            <div class="text-[10px] text-text-subtle font-code truncate">
+              {src.target}{src.ref ? `@${src.ref}` : ''}
+            </div>
+            <div class="text-[10px] text-text-subtle">
+              {syncSummaryText(src)} <span class="text-text-subtle">· synced {syncRelTime(src.lastSyncAt)}</span>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={src.enabled ? 'pause' : 'play_arrow'}
+            disabled={syncSaving}
+            onclick={() => toggleSyncSource(src)}
+          >
+            {src.enabled ? 'Pause' : 'Resume'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="delete"
+            disabled={syncSaving}
+            onclick={() => removeSyncSource(src.id)}
+          >
+            Remove
+          </Button>
+        </div>
+      {:else}
+        <p class="text-xs text-text-subtle">
+          No sources yet. Follow a repository and it syncs on boot and every hour after.
+        </p>
+      {/each}
+    </div>
+
+    {#if syncStatus}
+      <p class="pt-2 text-xs {syncStatusIsError ? 'text-error' : 'text-success'}">{syncStatus}</p>
+    {/if}
+
+    <form
+      class="flex flex-wrap items-end gap-2 pt-3 border-t border-border-subtle"
+      onsubmit={(e) => {
+        e.preventDefault()
+        addSyncSource()
+      }}
+    >
+      <label class="flex-1 min-w-[200px] space-y-1">
+        <span class="text-xs text-text-muted">Repository or URL</span>
+        <input
+          type="text"
+          bind:value={newSyncTarget}
+          placeholder="decolua/9router or https://github.com/…/tree/main/prompts"
+          class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500"
+        />
+      </label>
+      <label class="w-32 space-y-1">
+        <span class="text-xs text-text-muted">Ref (optional)</span>
+        <input
+          type="text"
+          bind:value={newSyncRef}
+          placeholder="main"
+          class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500"
+        />
+      </label>
+      <Button type="submit" size="sm" icon="add" disabled={syncSaving || !newSyncTarget.trim()}>
+        Follow
+      </Button>
+    </form>
+  </Card>
 </div>
 
 {#if testMatchOpen}
@@ -1679,6 +1867,7 @@
         <span class="text-xs text-text-muted">Prompt</span>
         <textarea
           bind:value={presetForm.prompt}
+          aria-label="Preset prompt"
           rows="6"
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500 resize-y"
         ></textarea>

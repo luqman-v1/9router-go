@@ -534,6 +534,20 @@ func (r *Repo) GetKVContext(ctx context.Context, scope, key string) (string, err
 }
 
 // SetKV inserts or updates a key-value pair for a given scope.
+func (r *Repo) SetKVContext(ctx context.Context, scope, key, value string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO kv (scope, key, value) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
+		scope, key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("set kv [%s] %s: %w", scope, key, err)
+	}
+	return nil
+}
+
 func (r *Repo) SetKV(scope, key, value string) error {
 	_, err := r.db.Exec(
 		`INSERT INTO kv (scope, key, value) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,

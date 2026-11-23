@@ -152,7 +152,10 @@ describe('persona page, per-key scope', () => {
       await page.getByRole('button', { name: 'New preset' }).click()
       await page.locator('input[placeholder="Expert Coder"]').fill(PRESET_NAME)
       await page.locator('input[placeholder="expert-coder"]').fill('e2e-scoped-persona')
-      await page.locator('textarea').first().fill('E2E scoped persona prompt.')
+      // The preset modal's own textarea, addressed by label: the tester on the same
+      // page carries a second prompt field, and a positional locator would fill
+      // whichever comes first in the DOM.
+      await page.getByLabel('Preset prompt').fill('E2E scoped persona prompt.')
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       // The modal closes on save, which is the signal the write landed.
       await page.getByRole('button', { name: 'Save', exact: true }).waitFor({ state: 'detached' })
@@ -197,7 +200,7 @@ describe('persona page, per-key scope', () => {
         .getByText('empty scope')
         .locator('xpath=ancestor::div[contains(@class,"rounded-[10px]")][1]')
       await globalColumn.waitFor({ timeout: SLOW })
-      expect(await globalColumn.getByText('not injected').count()).toBeGreaterThan(0)
+      expect(await globalColumn.getByText('NOT INJECTED').count()).toBeGreaterThan(0)
     },
     SLOW,
   )

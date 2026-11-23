@@ -257,6 +257,12 @@ type fakeGithub struct {
 	api  *httptest.Server
 	raw  *httptest.Server
 	tree map[string]string // path -> body
+	// authHeaders records every Authorization header the API server received,
+	// and rawAuth every one the raw server received. A test asserts on both,
+	// which is how "the token went to the API and not to the file host" is
+	// proved rather than restated.
+	authHeaders []string
+	rawAuth     []string
 }
 
 func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
@@ -264,19 +270,40 @@ func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
 	fg := &fakeGithub{tree: files}
 
 	fg.api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every request the importer makes is recorded with the header it
+		// carried, so a test can prove the token went to the API base and
+		// nowhere else rather than asserting on the code that sends it.
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.authHeaders = append(fg.authHeaders, a)
+		}
 		switch r.URL.Path {
 		case "/repos/owner/repo":
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case "/repos/owner/repo/git/trees/main":
+			// Directories are emitted alongside the blobs, because that is what
+			// GitHub returns and what tells a pointed path named a subfolder from
+			// one that named a single file.
 			var b strings.Builder
 			b.WriteString(`{"truncated":false,"tree":[`)
 			first := true
-			for p := range files {
+			emit := func(path, typ string, size int) {
 				if !first {
 					b.WriteByte(',')
 				}
 				first = false
-				fmt.Fprintf(&b, `{"path":%q,"type":"blob","size":%d}`, p, len(files[p]))
+				fmt.Fprintf(&b, `{"path":%q,"type":%q,"size":%d}`, path, typ, size)
+			}
+			dirs := map[string]bool{}
+			for p := range files {
+				if i := strings.LastIndex(p, "/"); i > 0 {
+					dirs[p[:i]] = true
+				}
+			}
+			for d := range dirs {
+				emit(d, "tree", 0)
+			}
+			for p, body := range files {
+				emit(p, "blob", len(body))
 			}
 			b.WriteString(`]}`)
 			fmt.Fprint(w, b.String())
@@ -287,6 +314,9 @@ func newFakeGithub(t *testing.T, files map[string]string) *fakeGithub {
 	t.Cleanup(fg.api.Close)
 
 	fg.raw = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.rawAuth = append(fg.rawAuth, a)
+		}
 		// A tree entry with no served body is a dead link: 404, so the import
 		// reports it instead of storing an empty prompt.
 		body, ok := files[strings.TrimPrefix(r.URL.Path, "/owner/repo/main/")]
@@ -966,5 +996,228 @@ func TestJailbreakURLName(t *testing.T) {
 				t.Fatalf("jailbreakURLName(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+// A path that names a subfolder imports everything inside it. A collection that
+// keeps its prompts under `jailbreaks/` is the shape five of the seven
+// repositories an operator pointed the page at use, and treating the folder as
+// one file fetched the directory itself — a 404 the operator reads as "this
+// repository has no prompts in it".
+func TestJailbreakImportSubfolder(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{
+		"README.md":              "# index only",
+		"jailbreaks/beam.md":     "BEAM RULE",
+		"jailbreaks/deepseek.md": "DEEPSEEK RULE",
+		"jailbreaks/nested/x.md": "NESTED RULE",
+	})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	res, err := fg.importer().importSource(t.Context(), repo, githubJailbreakSource{
+		Owner: "owner", Repo: "repo", Ref: "main", Path: "jailbreaks",
+	})
+	if err != nil {
+		t.Fatalf("importSource: %v", err)
+	}
+	paths := make([]string, 0, len(res.Imported))
+	for _, e := range res.Imported {
+		paths = append(paths, e.Path)
+	}
+	// The repository's own README is outside the folder, so it is not part of
+	// this import: the operator pointed at a subfolder, not the repository.
+	if len(paths) != 3 {
+		t.Fatalf("imported %v, want the three files under jailbreaks/", paths)
+	}
+	want := map[string]bool{"jailbreaks/beam.md": true, "jailbreaks/deepseek.md": true, "jailbreaks/nested/x.md": true}
+	for _, p := range paths {
+		if !want[p] {
+			t.Errorf("imported %q, which is not under jailbreaks/", p)
+		}
+	}
+}
+
+// The same path form on the import endpoint, which is what the browser sends.
+func TestJailbreakImportSubfolderThroughEndpoint(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{
+		"jailbreaks/beam.md": "BEAM RULE",
+		"other.md":           "OUTSIDE",
+	})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	h := NewDashboardHandler(repo)
+	h.jailbreakImport = fg.importer()
+
+	body := `{"target":"https://github.com/owner/repo/tree/main/jailbreaks"}`
+	rr := httptest.NewRecorder()
+	h.HandleImportJailbreak(rr, httptest.NewRequest(http.MethodPost, "/api/jailbreak/import", strings.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	presets, err := repo.ListJailbreakPresets()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Prompt != "BEAM RULE" {
+		t.Fatalf("presets = %+v, want only the file under jailbreaks/", presets)
+	}
+}
+
+// A path that names a single file still imports that one file: the fix must not
+// turn every pointed path into a directory walk.
+func TestJailbreakImportSubfolderKeepsSingleFile(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{
+		"jailbreaks/beam.md":  "BEAM RULE",
+		"jailbreaks/other.md": "OTHER RULE",
+	})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	res, err := fg.importer().importSource(t.Context(), repo, githubJailbreakSource{
+		Owner: "owner", Repo: "repo", Ref: "main", Path: "jailbreaks/beam.md",
+	})
+	if err != nil {
+		t.Fatalf("importSource: %v", err)
+	}
+	if len(res.Imported) != 1 || res.Imported[0].Path != "jailbreaks/beam.md" {
+		t.Fatalf("imported %+v, want only beam.md", res.Imported)
+	}
+}
+
+// treeHasSubtree and restrictToSubtree are the two decisions the folder walk
+// rests on, so a listing with no directories at all still works.
+func TestTreeSubtreeHelpers(t *testing.T) {
+	entries := []githubTreeEntry{
+		{Path: "jailbreaks", Type: "tree"},
+		{Path: "jailbreaks/beam.md", Type: "blob", Size: 10},
+		{Path: "README.md", Type: "blob", Size: 4},
+	}
+	if !treeHasSubtree(entries, "jailbreaks") {
+		t.Error("a directory in the listing is not recognised as one")
+	}
+	if treeHasSubtree(entries, "jailbreaks/beam.md") {
+		t.Error("a blob is not a subtree")
+	}
+	if treeHasSubtree(entries, "missing") {
+		t.Error("an absent path is not a subtree")
+	}
+	got := restrictToSubtree(entries, "jailbreaks")
+	if len(got) != 2 {
+		t.Fatalf("restricted to %d entries, want the directory and its file", len(got))
+	}
+	for _, e := range got {
+		if e.Path == "README.md" {
+			t.Error("the repository's own README leaked into the subfolder")
+		}
+	}
+}
+
+// The token rides the request to the API base, and only there. Proved by what
+// the two fake servers actually received rather than by what the code means to
+// send: the API server must see it, and the file server must not — a credential
+// leaked to a paste service the operator imported from is the failure mode.
+func TestJailbreakImportSendsTokenToApiBaseOnly(t *testing.T) {
+	fg := newFakeGithub(t, map[string]string{"deepseek v4.md": "RULE"})
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// The fake is on loopback, which means it is not api.github.com. Pointing
+	// apiBase at it is exactly the mirror shape, and the token must still ride.
+	imp := fg.importer()
+	t.Setenv("GITHUB_TOKEN", "")
+	imp.SetGithubToken("ghp_secret")
+
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("importPresets: %v", err)
+	}
+	if len(fg.authHeaders) == 0 {
+		t.Fatal("the API server received no Authorization header at all")
+	}
+	for _, h := range fg.authHeaders {
+		if h != "Bearer ghp_secret" {
+			t.Errorf("api header = %q, want Bearer ghp_secret", h)
+		}
+	}
+	if len(fg.rawAuth) != 0 {
+		t.Errorf("the file server received a token: %v — a credential must not go where the content is fetched from", fg.rawAuth)
+	}
+
+	// With no token there is no header, so a gateway that has none is not sending
+	// an empty bearer.
+	imp.SetGithubToken("")
+	fg.authHeaders, fg.rawAuth = nil, nil
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("importPresets: %v", err)
+	}
+	if len(fg.authHeaders) != 0 {
+		t.Errorf("an importer with no token sent one anyway: %v", fg.authHeaders)
+	}
+}
+
+// A second pass with nothing changed upstream must not re-download the files.
+// The first pass fills the ETag cache; the second sends If-None-Match and the
+// fake answers 304, which is the shape GitHub uses to say "unchanged, and this
+// costs you nothing against the hourly quota".
+func TestJailbreakImportServesSecondPassFromCache(t *testing.T) {
+	fg := &fakeGithub{}
+	fg.tree = map[string]string{"deepseek v4.md": "RULE"}
+	// Count fetches of the file URL, which is the only thing the cache can save.
+	fg.raw = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.rawAuth = append(fg.rawAuth, a)
+		}
+		body, ok := fg.tree[strings.TrimPrefix(r.URL.Path, "/owner/repo/main/")]
+		if !ok || body == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// A conditional request the fake has already answered is a 304, so the
+		// second pass costs no body bytes.
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(fg.raw.Close)
+
+	fg.api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			fg.authHeaders = append(fg.authHeaders, a)
+		}
+		switch r.URL.Path {
+		case "/repos/owner/repo":
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		case "/repos/owner/repo/git/trees/main":
+			w.Header().Set("ETag", `"tree"`)
+			fmt.Fprint(w, `{"truncated":false,"tree":[{"path":"deepseek v4.md","type":"blob","size":5}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(fg.api.Close)
+
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	imp := fg.importer()
+	t.Setenv("GITHUB_TOKEN", "")
+
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if entries, _ := imp.CacheStats(); entries == 0 {
+		t.Fatal("nothing was cached after the first pass, so the second cannot be conditional")
+	}
+	if _, err := imp.importPresets(t.Context(), repo, "owner/repo", ""); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	// Both passes wrote the same preset from the same body, and the second
+	// reached no bytes for it.
+	presets, err := repo.ListJailbreakPresets()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Prompt != "RULE" {
+		t.Fatalf("presets = %+v, want one preset with the cached prompt", presets)
 	}
 }
