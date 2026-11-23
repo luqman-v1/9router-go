@@ -472,7 +472,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-carbon",
       "name": "Gemini 4 Carbon",
-      "upstreamModelId": "gemini-4-carbon-medium(medium)"
+      "upstreamModelId": "gemini-4-carbon-high(high)"
     },
     {
       "id": "gemini-4-argon-high",
@@ -492,7 +492,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon",
-      "upstreamModelId": "gemini-4-argon-medium(medium)"
+      "upstreamModelId": "gemini-4-argon-high(high)"
     },
     {
       "id": "gemini-4-hydrogen-xhigh",
@@ -517,7 +517,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-4-hydrogen",
       "name": "Gemini 4 Hydrogen",
-      "upstreamModelId": "gemini-4-hydrogen-medium(medium)"
+      "upstreamModelId": "gemini-4-hydrogen-high(high)"
     },
     {
       "id": "gemini-4-neon-xhigh",
@@ -624,7 +624,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "claude-sonnet-5-5",
       "name": "Claude Sonnet 5.5 (Thinking)",
-      "upstreamModelId": "claude-sonnet-5-5-high(high)"
+      "upstreamModelId": "claude-sonnet-5-5-medium(medium)"
     },
     {
       "id": "claude-opus-5-5-high",
@@ -644,7 +644,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "claude-opus-5-5",
       "name": "Claude Opus 5.5 (Thinking)",
-      "upstreamModelId": "claude-opus-5-5-high(high)"
+      "upstreamModelId": "claude-opus-5-5-medium(medium)"
     },
     {
       "id": "claude-sonnet-5-5-max",

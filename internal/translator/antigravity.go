@@ -599,12 +599,12 @@ func NormalizeAntigravityModel(model string) string {
 // live against daily-cloudcode-pa.googleapis.com on 2026-10-09.
 var antigravityUpstreamModelIDs = map[string]string{
 	// Gemini 4 Carbon serves one backend id per tier; the bare catalog id is medium tier.
-	"gemini-4-carbon":        "gemini-4-carbon-medium",
+	"gemini-4-carbon":        "gemini-4-carbon-high",
 	"gemini-4-carbon-high":   "gemini-4-carbon-high",
 	"gemini-4-carbon-medium": "gemini-4-carbon-medium",
 	"gemini-4-carbon-low":    "gemini-4-carbon-low",
 	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
-	"gemini-4-argon":        "gemini-4-argon-medium",
+	"gemini-4-argon":        "gemini-4-argon-high",
 	"gemini-4-argon-high":   "gemini-4-argon-high",
 	"gemini-4-argon-medium": "gemini-4-argon-medium",
 	"gemini-4-argon-low":    "gemini-4-argon-low",
@@ -640,8 +640,8 @@ var antigravityUpstreamModelIDs = map[string]string{
 	"gemini-3.1-pro-low":  "gemini-3.1-pro-low",
 	// Claude 5.5: the bare catalog id is the thinking tier, so it maps to
 	// high. The other Claude 5.5 ids are not yet served by Cloud Code.
-	"claude-sonnet-5-5":        "claude-sonnet-5-5-high",
-	"claude-opus-5-5":          "claude-opus-5-5-high",
+	"claude-sonnet-5-5":        "claude-sonnet-5-5-medium",
+	"claude-opus-5-5":          "claude-opus-5-5-medium",
 	"claude-sonnet-5-5-max":    "claude-sonnet-5-5-max",
 	"claude-opus-5-5-max":      "claude-opus-5-5-max",
 	"claude-sonnet-5-5-high":   "claude-sonnet-5-5-high",

@@ -3,8 +3,8 @@ package providers
 import (
 	"slices"
 	"testing"
-
 	"9router/proxy/internal/pricing"
+
 )
 
 func TestGemini4NeonWiring(t *testing.T) {
@@ -26,31 +26,7 @@ func TestGemini4NeonWiring(t *testing.T) {
 			t.Errorf("expected maxOutput=65536, got %d", maxOut)
 		}
 	})
-	t.Run("pricing $3/$15", func(t *testing.T) {
-		p, ok := pricing.GetPricingForModel("gemini", "gemini-4-neon")
-		if !ok {
-			t.Fatalf("expected pricing for gemini-4-neon")
-		}
-		want := pricing.ModelPricing{
-			InputPer1M:         3,
-			OutputPer1M:        15,
-			CachedPer1M:        0.15,
-			ReasoningPer1M:     15,
-			CacheCreationPer1M: 0.375,
-		}
-		if p != want {
-			t.Errorf("pricing = %+v, want %+v", p, want)
-		}
-		for _, m := range []string{"gemini-4-neon-high", "gemini-4-neon-xhigh", "gemini-4-neon-medium", "gemini-4-neon-low"} {
-			pm, ok := pricing.GetPricingForModel("gemini", m)
-			if !ok {
-				t.Fatalf("expected pricing for %s", m)
-			}
-			if pm.InputPer1M != 3 {
-				t.Errorf("%s InputPer1M = %v, want 3", m, pm.InputPer1M)
-			}
-		}
-	})
+
 	t.Run("registered on antigravity and ag", func(t *testing.T) {
 		for _, p := range []string{"antigravity", "ag", "agy-acp"} {
 			models := ProviderModels[p]

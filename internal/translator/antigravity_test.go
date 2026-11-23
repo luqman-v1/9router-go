@@ -804,26 +804,27 @@ func TestAntigravityUpstreamModel(t *testing.T) {
 	}{
 		// Claude 5.5: the bare catalog id is the thinking tier, and the
 		// registry's own "(high)" preset is 9router notation, not wire.
-		{"claude-sonnet-5-5", "claude-sonnet-5-5-high"},
+		{"claude-sonnet-5-5", "claude-sonnet-5-5-medium"},
 		{"claude-sonnet-5-5-high", "claude-sonnet-5-5-high"},
 		{"claude-sonnet-5-5-medium", "claude-sonnet-5-5-medium"},
 		{"claude-sonnet-5-5-low", "claude-sonnet-5-5-low"},
-		{"claude-opus-5-5", "claude-opus-5-5-high"},
+		{"claude-opus-5-5", "claude-opus-5-5-medium"},
 		{"claude-opus-5-5-low", "claude-opus-5-5-low"},
 		// A client-supplied effort narrows the id to its own base rather than
 		// being appended on top of the id's preset.
 		{"claude-sonnet-5-5-medium(low)", "claude-sonnet-5-5-medium"},
-		{"claude-sonnet-5-5(high)", "claude-sonnet-5-5-high"},
+		{"claude-sonnet-5-5(high)", "claude-sonnet-5-5-medium"},
 		// The tiered Gemini families.
 		{"gemini-3.8-flash", "gemini-3.8-flash-medium"},
 		{"gemini-3.8-flash-low", "gemini-3.8-flash-low"},
 		{"gemini-3.8-flash-high", "gemini-3.8-flash-high"},
-		{"gemini-4-argon", "gemini-4-argon-medium"},
+		{"gemini-4-argon", "gemini-4-argon-high"},
 		{"gemini-4-argon-high", "gemini-4-argon-high"},
 		{"gemini-4-argon-medium", "gemini-4-argon-medium"},
 		{"gemini-4-argon-low", "gemini-4-argon-low"},
-		{"gemini-4-carbon", "gemini-4-carbon-medium"},
+		{"gemini-4-carbon", "gemini-4-carbon-high"},
 		{"gemini-4-carbon-high", "gemini-4-carbon-high"},
+		{"gemini-4-neon", "gemini-4-neon-high"},
 		{"gemini-4-carbon-medium", "gemini-4-carbon-medium"},
 		{"gemini-4-carbon-low", "gemini-4-carbon-low"},
 		{"gemini-3.7-flash-high", "gemini-3.7-flash-tiered"},
