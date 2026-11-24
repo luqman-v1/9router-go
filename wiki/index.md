@@ -105,7 +105,7 @@ takes an experimental flag as the shipped contract.
 | Token savers | RTK compression plus Caveman, Ponytail, and ADHD output styles |
 | Governance | Per-key rate limits, USD/token budgets, plans, model allowlists |
 | Security | AES-GCM credential vault, Argon2id key hashing, PII and injection guardrails, SSRF protection |
-| Providers | 40+ providers, OAuth for most, custom OpenAI/Anthropic-compatible nodes |
+| Providers | 150+ providers, OAuth for most, custom OpenAI/Anthropic-compatible nodes |
 | Operations | Docker, tunnels, self-update, background loops, Prometheus metrics |
 
 ## Search

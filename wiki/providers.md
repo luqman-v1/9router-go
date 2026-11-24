@@ -87,10 +87,19 @@ connection points at its node through `provider = node.id`.
 
 | Field | Purpose |
 |---|---|
-| Name | Display name |
-| Prefix | Wire syntax prefix (`provider/model`) |
+| Name | Display name — typing it suggests a prefix and a URL suffix, which follow the name until you edit them yourself |
+| Prefix | Wire syntax prefix (`provider/model`). Optional for OpenAI/Anthropic-compatible nodes: left blank, it is filled once server-side from the URL suffix when that is safe, else a random 8-char token. `custom-embedding` still requires an explicit prefix |
 | Base URL | Upstream endpoint |
 | Headers | Your own request headers |
+
+The Add dialog checks a candidate prefix live — `POST
+/api/provider-nodes/availability` answers `available`, `taken` (with the owner
+named), `invalid`, `automatic`, or `random` under the field. Advisory only:
+create re-validates. A registry id or alias is never suggested as a prefix,
+because it would shadow that provider's routing.
+
+The Edit dialog does not autofill: a suffix change renames the node id and
+rewrites saved combos.
 
 Validate an endpoint before saving with `POST /api/providers/validate`.
 
@@ -132,7 +141,14 @@ with `GET /api/providers/{id}/export-keys`, and remove many at once with
 
 **Custom models** are stored in the `customModels` key-value scope, not as columns
 on `providerNodes`. Add one at a time or paste many (separated by spaces, commas
-or newlines) — one request, atomic, per-row results.
+or newlines) — one request, atomic, per-row results. Rows can be edited (the
+Add modal reopens prefilled, model type locked) and deleted outright — a delete
+removes the row instead of parking its id in Disabled models.
+
+An OpenRouter custom model can carry a per-model JSON `extraBody` (the Add
+modal's "Custom request body" field) that the gateway shallow-merges into the
+outbound request body — pin `temperature` or `reasoning.effort` without the
+client sending them.
 
 **Aliases** (`/api/models/alias`) let a client write a short name for a long
 model id. **Deprecations** (`/api/models/deprecations`) surface models upstream

@@ -1,4 +1,4 @@
-# SQLite Database and Operator Contract
+# SQLite / PostgreSQL Database and Operator Contract
 
 This document describes the storage contract implemented by `9router-go` v1.9.1. It deliberately separates:
 
@@ -8,6 +8,21 @@ This document describes the storage contract implemented by `9router-go` v1.9.1.
 - the limited, dashboard-triggered backup feature.
 
 The current Go source is the behavioral authority. The local upstream checkout (`decolua/9router` v0.5.85) is a compatibility reference, not a claim that the two products are identical.
+
+## Storage location and engines
+
+`DATABASE_URL` selects the engine: a DSN starting with `postgres://` or
+`postgresql://` is PostgreSQL (driver `pgx`), anything else — including unset —
+is SQLite through `modernc.org/sqlite`. `DATABASE_URL` takes precedence over
+`DB_PATH`, which in turn takes precedence over the default. The engine is the
+only routing decision made on the DSN; provider/model routing never inspects
+it (`internal/db/client.go`, `detectEngine`).
+
+SQLite is opened with WAL, `synchronous=NORMAL`, foreign keys, a 5-second busy
+timeout, and a maximum of four open connections. PostgreSQL is configured
+purely through its pool: `DB_MAX_CONNS` (default 50, ceiling 200) and
+`DB_MAX_IDLE_CONNS` (default 10, clamped to `DB_MAX_CONNS`), with a 30-minute
+connection lifetime and a 5-minute idle time.
 
 ## Storage location
 
