@@ -270,7 +270,7 @@ func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.R
 // HandleProxyTest handles POST /api/settings/proxy-test: HEAD a test URL
 // through the candidate proxy and report reachability + latency.
 func (h *DashboardHandler) HandleProxyTest(w http.ResponseWriter, r *http.Request) {
-	reqBytes, err := io.ReadAll(r.Body)
+	reqBytes, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writePlainError(w, http.StatusBadRequest, "failed to read body")
 		return
@@ -300,6 +300,11 @@ func (h *DashboardHandler) HandleProxyTest(w http.ResponseWriter, r *http.Reques
 	if testURL == "" {
 		testURL = proxyDefaultURL
 	}
+	parsedTest, err := url.Parse(testURL)
+	if err != nil || (parsedTest.Scheme != "http" && parsedTest.Scheme != "https") || parsedTest.Host == "" {
+		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Invalid test URL: " + testURL})
+		return
+	}
 	timeout := proxyTimeout
 	if body.TimeoutMS > 0 {
 		timeout = time.Duration(body.TimeoutMS) * time.Millisecond
@@ -314,7 +319,7 @@ func (h *DashboardHandler) HandleProxyTest(w http.ResponseWriter, r *http.Reques
 		Timeout:   timeout,
 	}
 	started := time.Now()
-	req, err := http.NewRequest(http.MethodHead, testURL, nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodHead, testURL, nil)
 	if err != nil {
 		handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -326,8 +331,8 @@ func (h *DashboardHandler) HandleProxyTest(w http.ResponseWriter, r *http.Reques
 		handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 
 	elapsedMs := time.Since(started).Milliseconds()
 	ok := resp.StatusCode >= 200 && resp.StatusCode < 300
