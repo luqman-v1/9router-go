@@ -20,6 +20,12 @@ type ClaudeToOpenAIStreamState struct {
 	NextToolCallIndex int
 	ToolCalls         map[int]*ClaudeStreamToolCall // key: block_index
 	Usage             *OpenAIUsage
+
+	// structuredTextBlocks marks block indices whose tool_use is the
+	// gateway's forced structured-output tool (StructuredOutputTool),
+	// rewritten to text so the JSON lands in message.content (key:
+	// block_index).
+	structuredTextBlocks map[int]bool
 }
 
 // modelUnknown is what a Messages stream that omits `model` falls back to
@@ -132,28 +138,39 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 		if block != nil {
 			bType, _ := block["type"].(string)
 			if bType == "tool_use" {
-				callIdx := state.NextToolCallIndex
-				state.NextToolCallIndex++
-				toolID, _ := block["id"].(string)
-				toolName, _ := block["name"].(string)
-				state.ToolCalls[blockIdx] = &ClaudeStreamToolCall{
-					Index: callIdx,
-					ID:    toolID,
-					Name:  toolName,
-				}
-				writeChunk(map[string]any{
-					"tool_calls": []map[string]any{
-						{
-							"index": callIdx,
-							"id":    toolID,
-							"type":  "function",
-							"function": map[string]any{
-								"name":      toolName,
-								"arguments": "",
+				if name, _ := block["name"].(string); name == StructuredOutputTool {
+					// The gateway's forced structured-output tool, not a client
+					// tool: rewrite the block to text so the JSON lands in
+					// message.content.
+					if state.structuredTextBlocks == nil {
+						state.structuredTextBlocks = make(map[int]bool)
+					}
+					state.structuredTextBlocks[blockIdx] = true
+					writeChunk(map[string]any{"content": ""}, nil, nil)
+				} else {
+					callIdx := state.NextToolCallIndex
+					state.NextToolCallIndex++
+					toolID, _ := block["id"].(string)
+					toolName, _ := block["name"].(string)
+					state.ToolCalls[blockIdx] = &ClaudeStreamToolCall{
+						Index: callIdx,
+						ID:    toolID,
+						Name:  toolName,
+					}
+					writeChunk(map[string]any{
+						"tool_calls": []map[string]any{
+							{
+								"index": callIdx,
+								"id":    toolID,
+								"type":  "function",
+								"function": map[string]any{
+									"name":      toolName,
+									"arguments": "",
+								},
 							},
 						},
-					},
-				}, nil, nil)
+					}, nil, nil)
+				}
 			}
 		}
 
@@ -186,6 +203,10 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 								},
 							},
 						}, nil, nil)
+					} else if state.structuredTextBlocks != nil && state.structuredTextBlocks[blockIdx] {
+						// Unwrapped structured-output block: the JSON lands in
+						// message.content, not in a tool call.
+						writeChunk(map[string]any{"content": partial}, nil, nil)
 					}
 				}
 			}
@@ -205,6 +226,12 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 				switch stopReason {
 				case "tool_use":
 					finishReason = "tool_calls"
+					if len(state.structuredTextBlocks) > 0 {
+						// The only tool was the gateway's forced
+						// structured-output tool, unwrapped to text: the turn
+						// is a normal answer, not a tool call.
+						finishReason = "stop"
+					}
 				case "max_tokens":
 					finishReason = "length"
 				case "end_turn", "stop_sequence":
@@ -310,6 +337,10 @@ func TranslateClaudeResponseToOpenAI(claudeBody []byte) ([]byte, error) {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	var toolCalls []map[string]any
+	// structuredUnwrapped is set when a content block is the gateway's forced
+	// structured-output tool (CarryClaudeStructuredOutput): its JSON input is
+	// rewritten into message.content instead of a tool call.
+	structuredUnwrapped := false
 
 	for _, block := range raw.Content {
 		switch block.Type {
@@ -318,6 +349,15 @@ func TranslateClaudeResponseToOpenAI(claudeBody []byte) ([]byte, error) {
 		case "thinking":
 			reasoningBuilder.WriteString(block.Thinking)
 		case "tool_use":
+			if block.Name == StructuredOutputTool {
+				argsStr := string(block.Input)
+				if argsStr == "" {
+					argsStr = "{}"
+				}
+				contentBuilder.WriteString(argsStr)
+				structuredUnwrapped = true
+				continue
+			}
 			argsStr := string(block.Input)
 			if argsStr == "" {
 				argsStr = "{}"
@@ -337,6 +377,11 @@ func TranslateClaudeResponseToOpenAI(claudeBody []byte) ([]byte, error) {
 	switch raw.StopReason {
 	case "tool_use":
 		finishReason = "tool_calls"
+		if structuredUnwrapped {
+			// The only tool was the gateway's forced structured-output tool,
+			// unwrapped to text: the turn is a normal answer, not a tool call.
+			finishReason = "stop"
+		}
 	case "max_tokens":
 		finishReason = "length"
 	case "end_turn", "stop_sequence":
