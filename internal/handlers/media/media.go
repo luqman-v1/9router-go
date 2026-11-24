@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -220,6 +221,21 @@ func (h *MediaHandler) tryJSONMediaLaneConn(
 	}
 
 	targetURL := buildURL(providerCfg.BaseURL)
+	// Cloudflare System One embeds the account and the (full) model id in the
+	// path, and forwards a short selector in the body (see finalBody above).
+	if strings.Contains(targetURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID"))
+		}
+		targetURL = strings.Replace(targetURL, "{accountId}", accountID, 1)
+	}
+	targetURL = strings.ReplaceAll(targetURL, "{model}", modelInfo.Model)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
 	if err != nil {
 		return &jsonMediaAttemptErr{status: http.StatusInternalServerError, jsonMsg: fmt.Sprintf("create request: %v", err), retryable: false}
@@ -450,14 +466,50 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	var reqBody struct {
-		Model string `json:"model"`
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
+		return
 	}
-	if err := json.Unmarshal(body, &reqBody); err != nil || reqBody.Model == "" {
+	model, _ := raw["model"].(string)
+	if model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
-	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+	qRaw, hasQ := raw["questions"]
+	fRaw, hasF := raw["fields"]
+	qIsMap := false
+	if hasQ {
+		if _, ok := qRaw.(map[string]any); ok {
+			qIsMap = true
+		}
+	}
+	fIsMap := false
+	if hasF {
+		if _, ok := fRaw.(map[string]any); ok {
+			fIsMap = true
+		}
+	}
+	if hasQ && !qIsMap {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
+		return
+	}
+	if hasF && !fIsMap {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: fields")
+		return
+	}
+	if !hasQ && !hasF {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
+		return
+	}
+	// fields-only payloads (extraction models) do not require questions.
+	if hasF && !hasQ {
+		// ok
+	}
+	if !hasQ && !hasF {
+		// unreachable
+	}
+	if !h.ChatH.EnforceModelAccess(w, r, model) {
 		return
 	}
 	// SystemOne forwards on its own path rather than through
@@ -468,7 +520,7 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 	if _, refused := guardMediaInput(w, r.Header.Get("Content-Type"), body); refused {
 		return
 	}
-	h.forwardSystemoneRequest(w, r, body, reqBody.Model)
+	h.forwardSystemoneRequest(w, r, body, model)
 }
 
 // forwardSystemoneRequest resolves model, rotates across candidate connections on
@@ -482,7 +534,18 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 
 	preferredConnID := preferredMediaConnID(r, modelInfo)
 	usePinned := preferredConnID != ""
-	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
+	finalModel := modelInfo.Model
+	switch finalModel {
+	case "@cf/cloudflare/clef":
+		finalModel = "clef"
+	case "@cf/cloudflare/clef-omni":
+		finalModel = "clef-omni"
+	case "@cf/cloudflare/clairic":
+		finalModel = "clairic"
+	case "@cf/cloudflare/clef-flash":
+		finalModel = "clef-flash"
+	}
+	finalBody := handlerutil.UpdateModelInBody(body, finalModel)
 
 	excludeIDs := []string{}
 	tried := make(map[string]struct{})
@@ -591,6 +654,21 @@ func (h *MediaHandler) trySystemoneConn(
 			targetURL = baseURL + "/systemone"
 		}
 	}
+	// Cloudflare System One embeds the account and the (full) model id in the
+	// path, and forwards a short selector in the body (see finalBody above).
+	if strings.Contains(targetURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID"))
+		}
+		targetURL = strings.Replace(targetURL, "{accountId}", accountID, 1)
+	}
+	targetURL = strings.ReplaceAll(targetURL, "{model}", modelInfo.Model)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
 	if err != nil {
 		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: "failed to create request", retryable: false}
