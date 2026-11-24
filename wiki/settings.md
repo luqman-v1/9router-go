@@ -283,3 +283,8 @@ remembers.
 The last card. Shows what the automatic model-health loop found, and lets you
 re-enable a model it disabled. See [Usage & Analytics](usage-analytics.html) for
 how the loop decides.
+
+That loop is scheduled. For a model that is failing *right now*, see the
+[Model Breakers](advanced-features.html#model-breakers) page — it watches live
+traffic and holds one provider/model pair out of rotation without touching its
+siblings.
