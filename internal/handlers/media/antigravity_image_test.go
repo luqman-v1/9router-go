@@ -1,10 +1,12 @@
 package media
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -121,4 +123,123 @@ func TestHandleImage_Antigravity(t *testing.T) {
 	if !strings.HasPrefix(resp.Data[0].B64JSON, "iVBORw0KGgo") {
 		t.Errorf("expected base64 PNG data, got %s", resp.Data[0].B64JSON)
 	}
+}
+
+func TestHandleImage_AntigravityStopsOnNonRetryable400AndContextCancel(t *testing.T) {
+	const okPNG = `{"response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}]}}]}}`
+	const imgBody = `{"model":"antigravity/gemini-3.1-flash-image","prompt":"cat","n":1,"size":"auto"}`
+
+	seedTwo := func(t *testing.T, baseURL string) *MediaHandler {
+		t.Helper()
+		ag := providers.KnownProviders["antigravity"]
+		origBase := ag.BaseURL
+		ag.BaseURL = baseURL
+		providers.KnownProviders["antigravity"] = ag
+		t.Cleanup(func() {
+			ag.BaseURL = origBase
+			providers.KnownProviders["antigravity"] = ag
+		})
+
+		database, cleanup := setupMultimodalTestDB(t)
+		t.Cleanup(cleanup)
+		for i, id := range []string{"conn-ag-img-1", "conn-ag-img-2"} {
+			connData, _ := json.Marshal(map[string]any{"apiKey": "ag-tok-" + id, "projectId": "test-image-proj"})
+			if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+				(?, 'antigravity', 'oauth', 'AG', ?, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, id, i+1, string(connData)); err != nil {
+				t.Fatalf("seed connection: %v", err)
+			}
+		}
+		return newTestMediaHandler(db.NewRepo(database))
+	}
+
+	t.Run("stops_on_non_retryable_400", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer ag-tok-conn-ag-img-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":400,"message":"invalid prompt"}}`))
+			case "Bearer ag-tok-conn-ag-img-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okPNG))
+			}
+		}))
+		defer upstream.Close()
+
+		handler := seedTwo(t, upstream.URL)
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(imgBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.HandleImages(rec, req)
+
+		if rec.Code == http.StatusOK {
+			t.Fatalf("expected non-200 on 400 client error, got 200")
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 0 {
+			t.Fatalf("hits = (%d, %d), want (1, 0)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+
+	t.Run("rotates_on_retryable_429", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer ag-tok-conn-ag-img-1":
+				conn1Hits.Add(1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"code":429,"message":"quota exceeded"}}`))
+			case "Bearer ag-tok-conn-ag-img-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okPNG))
+			}
+		}))
+		defer upstream.Close()
+
+		handler := seedTwo(t, upstream.URL)
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(imgBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.HandleImages(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 after 429 failover, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 1 {
+			t.Fatalf("hits = (%d, %d), want (1, 1)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
+
+	t.Run("stops_on_canceled_context", func(t *testing.T) {
+		var conn1Hits, conn2Hits atomic.Int32
+		ctx, cancel := context.WithCancel(context.Background())
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Header.Get("Authorization") {
+			case "Bearer ag-tok-conn-ag-img-1":
+				conn1Hits.Add(1)
+				cancel()
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"code":429,"message":"quota exceeded"}}`))
+			case "Bearer ag-tok-conn-ag-img-2":
+				conn2Hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(okPNG))
+			}
+		}))
+		defer upstream.Close()
+
+		handler := seedTwo(t, upstream.URL)
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(imgBody)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.HandleImages(rec, req)
+
+		if conn1Hits.Load() != 1 || conn2Hits.Load() != 0 {
+			t.Fatalf("canceled hits = (%d, %d), want (1, 0)", conn1Hits.Load(), conn2Hits.Load())
+		}
+	})
 }
