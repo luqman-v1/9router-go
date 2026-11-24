@@ -11,7 +11,8 @@ import (
 )
 
 // extractReasoningText pulls reasoning out of a Chat delta across the three
-// shapes vendors use: reasoning_content, reason_result, and reasoning_details.
+// shapes vendors use: reasoning_content, reason_result, and reasoning_details,
+// plus thinking parts embedded in array-shaped delta.content (Mistral).
 func extractReasoningText(delta OpenAIDelta) string {
 	if delta.ReasoningContent != "" {
 		return delta.ReasoningContent
@@ -22,17 +23,27 @@ func extractReasoningText(delta OpenAIDelta) string {
 	if delta.Reasoning != "" {
 		return delta.Reasoning
 	}
-
-	var b strings.Builder
-	for _, detail := range delta.ReasoningDetails {
-		switch {
-		case detail.Text != "":
-			b.WriteString(detail.Text)
-		case detail.Content != "":
-			b.WriteString(detail.Content)
+	if len(delta.ReasoningDetails) > 0 {
+		var b strings.Builder
+		for _, detail := range delta.ReasoningDetails {
+			switch {
+			case detail.Text != "":
+				b.WriteString(detail.Text)
+			case detail.Content != "":
+				b.WriteString(detail.Content)
+			}
+		}
+		if s := b.String(); s != "" {
+			return s
 		}
 	}
-	return b.String()
+	// Only when no legacy reasoning field is present: Mistral streams
+	// thinking parts inside delta.content arrays.
+	if arr, ok := delta.Content.([]any); ok {
+		_, think := extractContentParts(arr)
+		return think
+	}
+	return ""
 }
 
 func formatSSE(event map[string]any) string {
@@ -929,12 +940,13 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	// open tag is confirmed, the remainder is buffered and cleaned at finish.
 	// Text already streamed is never re-emitted, so there is no duplicated
 	// prose.
-	if delta.Content != "" {
+	contentText := deltaContentString(delta.Content)
+	if contentText != "" {
 		if state.DSMLBuffered {
 			// Already in DSML mode: hold everything for finish-time cleanup.
-			state.DSMLBuffer += delta.Content
+			state.DSMLBuffer += contentText
 		} else {
-			combined := state.DSMLBuffer + delta.Content
+			combined := state.DSMLBuffer + contentText
 			if loc := dsmlAnyOpen.FindStringIndex(combined); loc != nil {
 				// A DSML open tag starts at loc[0]. Stream the prose before it,
 				// then hold the tag and everything after for finish-time cleanup.
@@ -1138,4 +1150,65 @@ func UnwrapClineEnvelope(body []byte) []byte {
 		return []byte(env.Data)
 	}
 	return body
+}
+
+// extractContentParts splits a content value (string or array of parts) into
+// visible text and reasoning/thinking text. Mistral streams delta.content as an
+// array mixing thinking and text parts.
+func extractContentParts(content any) (string, string) {
+	var textParts, thinkParts []string
+	switch v := content.(type) {
+	case nil:
+		return "", ""
+	case string:
+		return v, ""
+	case []any:
+		for _, item := range v {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(string)
+			switch typ {
+			case "thinking":
+				thinkParts = append(thinkParts, extractThinkingText(m))
+			case "text":
+				if t, ok := m["text"].(string); ok {
+					textParts = append(textParts, t)
+				}
+			}
+		}
+	}
+	return strings.Join(textParts, ""), strings.Join(thinkParts, "")
+}
+
+func extractThinkingText(part map[string]any) string {
+	if s, ok := part["thinking"].(string); ok {
+		return s
+	}
+	if arr, ok := part["thinking"].([]any); ok {
+		var b strings.Builder
+		for _, it := range arr {
+			switch v := it.(type) {
+			case string:
+				b.WriteString(v)
+			case map[string]any:
+				if t, ok := v["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String()
+	}
+	if t, ok := part["text"].(string); ok {
+		return t
+	}
+	return ""
+}
+
+// deltaContentString returns the visible text of a delta content value, which may
+// be a string or an array of content parts (Mistral).
+func deltaContentString(content any) string {
+	text, _ := extractContentParts(content)
+	return text
 }

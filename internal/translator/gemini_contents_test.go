@@ -35,7 +35,7 @@ func TestNormalizeGeminiContents_TerminalTurnGuards(t *testing.T) {
 			contents: []GeminiContent{user("run"), model(call("call_1", "search"))},
 			want: []GeminiContent{
 				user("run"), model(call("call_1", "search")),
-				GeminiContent{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResp{
+				{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResp{
 					Name: "search", ID: "call_1", Response: &GeminiFuncResp{Result: "Continue."},
 				}}}},
 			},
@@ -45,7 +45,7 @@ func TestNormalizeGeminiContents_TerminalTurnGuards(t *testing.T) {
 			contents: []GeminiContent{user("run"), model(call("call_1", "fn_1"), call("call_2", "fn_2"))},
 			want: []GeminiContent{
 				user("run"), model(call("call_1", "fn_1"), call("call_2", "fn_2")),
-				GeminiContent{Role: "user", Parts: []GeminiPart{
+				{Role: "user", Parts: []GeminiPart{
 					{FunctionResponse: &GeminiFunctionResp{
 						Name: "fn_1", ID: "call_1", Response: &GeminiFuncResp{Result: "Continue."},
 					}},
@@ -60,7 +60,7 @@ func TestNormalizeGeminiContents_TerminalTurnGuards(t *testing.T) {
 			contents: []GeminiContent{user("run"), model(text("Executing..."), call("call_3", "exec"))},
 			want: []GeminiContent{
 				user("run"), model(text("Executing..."), call("call_3", "exec")),
-				GeminiContent{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResp{
+				{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResp{
 					Name: "exec", ID: "call_3", Response: &GeminiFuncResp{Result: "Continue."},
 				}}}},
 			},
@@ -82,7 +82,7 @@ func TestNormalizeGeminiContents_TerminalTurnGuards(t *testing.T) {
 			contents: []GeminiContent{user("Go"), model(GeminiPart{FunctionCall: &GeminiFunctionCall{}})},
 			want: []GeminiContent{
 				user("Go"), model(GeminiPart{FunctionCall: &GeminiFunctionCall{}}),
-				GeminiContent{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResp{
+				{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResp{
 					Name: "tool", Response: &GeminiFuncResp{Result: "Continue."},
 				}}}},
 			},

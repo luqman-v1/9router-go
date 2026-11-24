@@ -430,8 +430,8 @@ func ChatChunkToGemini(chunk []byte, model string) ([]byte, bool) {
 	if delta.ReasoningContent != "" {
 		parts = append(parts, map[string]any{"text": delta.ReasoningContent, "thought": true})
 	}
-	if delta.Content != "" {
-		parts = append(parts, map[string]any{"text": delta.Content})
+	if ct := deltaContentString(delta.Content); ct != "" {
+		parts = append(parts, map[string]any{"text": ct})
 	}
 	// A delta with neither text nor a finish signal carries nothing Gemini
 	// clients can use — the role announcement is one of these.
