@@ -151,6 +151,11 @@ func (h *DashboardHandler) HandleAuthStatus(w http.ResponseWriter, r *http.Reque
 		"samlConfigured": samlConfigured(raw),
 		"samlLoginLabel": loginLabel(raw, "samlLoginLabel", "Sign in with SAML SSO"),
 		"hasPassword":    hasStoredPassword(raw),
+		"requestIsLocal": nodeRequestIsLocal(r),
+		// INITIAL_PASSWORD is a configured password path: when it is set, the
+		// operator already chose how the first login authenticates, so the
+		// first-run setup wizard must not replace the login form.
+		"initialPasswordSet": config.LoadConfig().InitialPassword != "",
 		"displayName":    displayName,
 		"loginMethod":    loginMethod,
 		"authenticated":  claims != nil,
