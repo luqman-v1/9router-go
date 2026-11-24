@@ -351,6 +351,9 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	if isGitHubCopilotProvider(modelInfo.Provider) {
 		finalBody = wrapCopilotEmbeddingInput(finalBody)
 	}
+	if providers.ResolveAlias(modelInfo.Provider) == "nvidia" && !strings.HasSuffix(strings.ToLower(modelInfo.Model), "nvclip") {
+		finalBody = forwardNvidiaEmbeddingInputType(finalBody)
+	}
 
 	h.forwardJSONMediaLane(w, r, body, finalBody, modelInfo, "/embeddings", true, buildEmbeddingsURL)
 }
@@ -2227,6 +2230,27 @@ func wrapCopilotEmbeddingInput(body []byte) []byte {
 		return body
 	}
 	payload["input"] = []any{input}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// forwardNvidiaEmbeddingInputType injects input_type for NVIDIA's asymmetric
+// embedding models: preserve a client-supplied "query"/"passage", otherwise
+// default to "query" (upstream decolua/9router@a851a89c4).
+func forwardNvidiaEmbeddingInputType(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+	raw, _ := payload["input_type"].(string)
+	val := strings.TrimSpace(strings.ToLower(raw))
+	if val != "query" && val != "passage" {
+		val = "query"
+	}
+	payload["input_type"] = val
 	out, err := json.Marshal(payload)
 	if err != nil {
 		return body

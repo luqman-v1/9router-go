@@ -4323,8 +4323,64 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Nemotron 3 Ultra"
     },
     {
-      "id": "nvidia/nv-embedqa-e5-v5",
-      "name": "NV EmbedQA E5 v5",
+      "id": "nvidia/nemotron-3.5-embed-8b",
+      "name": "Nemotron 3.5 Embed 8B",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/nemotron-3.5-embed-1b",
+      "name": "Nemotron 3.5 Embed 1B",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/nemotron-3-embed-1b",
+      "name": "Nemotron 3 Embed 1B",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/nv-embedqa-mistral-7b-v2",
+      "name": "NV EmbedQA Mistral 7B v2",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/embed-qa-4",
+      "name": "Embed QA 4",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
+      "name": "Llama 3.2 Nemoretriever 1B VLM Embed v1",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/llama-3.2-nv-embedqa-1b-v1",
+      "name": "Llama 3.2 NV EmbedQA 1B v1",
+      "params": [
+        "input_type"
+      ],
+      "kind": "embedding"
+    },
+    {
+      "id": "nvidia/nvclip",
+      "name": "NVCLIP",
       "kind": "embedding"
     },
     {
