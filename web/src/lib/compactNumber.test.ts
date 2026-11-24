@@ -77,4 +77,13 @@ describe('fmtTokens', () => {
     expect(fmtTokens(150_000_000, 'zh')).toBe('1.5亿')
     expect(fmtTokens(25_000, 'zh')).toBe('2.5万')
   })
+
+  it('abbreviates trillions and carries boundary values up', () => {
+    setCompactUnits(true)
+    expect(fmtTokens(999_950)).toBe('1.0M')
+    expect(fmtTokens(999_950_000)).toBe('1.0B')
+    expect(fmtTokens(999_950_000_000)).toBe('1.0T')
+    expect(fmtTokens(1_250_000_000_000)).toBe('1.3T')
+    expect(fmtTokens(1_000_000_000_000)).toBe('1.0T')
+  })
 })
