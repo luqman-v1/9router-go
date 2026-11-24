@@ -449,4 +449,29 @@ func TestBuildQoderCosyHeaders_SignatureBodyKeepsBodyIntegrityHeaders(t *testing
 	if signed["Cosy-Bodylength"] != fmt.Sprintf("%d", len(body)) {
 		t.Errorf("Cosy-Bodylength = %q, want %d", signed["Cosy-Bodylength"], len(body))
 	}
+
+	// The Authorization signature must be computed over signatureBody, not
+	// over body: this is what keeps the body-integrity headers (hash/length)
+	// describing the binary body while the signature covers the ASCII length.
+	headers := make(http.Header)
+	for k, v := range signed {
+		headers.Set(k, v)
+	}
+	parts := strings.Split(headers.Get("Authorization"), ".")
+	if len(parts) != 3 {
+		t.Fatalf("malformed Authorization header: %q", headers.Get("Authorization"))
+	}
+	payloadB64 := parts[1]
+	cosyKey := headers.Get("Cosy-Key")
+	cosyDate := headers.Get("Cosy-Date")
+	cosySigPath := headers.Get("Cosy-Sigpath")
+	expectedSig := md5Hex([]byte(fmt.Sprintf("%s\n%s\n%s\n%s\n%s", payloadB64, cosyKey, cosyDate, string(sigBody), cosySigPath)))
+	sig := parts[2]
+	if sig != expectedSig {
+		t.Errorf("Authorization signature = %q, want %q (signature over signatureBody)", sig, expectedSig)
+	}
+	sigOverBody := md5Hex([]byte(fmt.Sprintf("%s\n%s\n%s\n%s\n%s", payloadB64, cosyKey, cosyDate, string(body), cosySigPath)))
+	if sig == sigOverBody {
+		t.Errorf("signature should differ from signature over body")
+	}
 }
