@@ -184,10 +184,12 @@ var codexModelThinkingLevels = map[string][]string{
 	"gpt-6-sol":   {"low", "medium", "high", "xhigh", "max"},
 	"gpt-6-luna":  {"low", "medium", "high", "xhigh", "max"},
 	"gpt-6.1-sol": {"low", "medium", "high", "xhigh", "max"},
+	"gpt-6.2-sol": {"low", "medium", "high", "xhigh", "max"},
 	// The `[1m]` ids resolve to their base model upstream (upstreamModelId),
 	// so they keep the base model's level set.
-	"gpt-6-sol[1m]":  {"low", "medium", "high", "xhigh", "max"},
-	"gpt-6-luna[1m]": {"low", "medium", "high", "xhigh", "max"},
+	"gpt-6-sol[1m]":   {"low", "medium", "high", "xhigh", "max"},
+	"gpt-6-luna[1m]":  {"low", "medium", "high", "xhigh", "max"},
+	"gpt-6.2-sol[1m]": {"low", "medium", "high", "xhigh", "max"},
 }
 
 // codexModelLevels returns the registry-declared levels for a Codex model, with
