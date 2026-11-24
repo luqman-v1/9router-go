@@ -488,6 +488,8 @@ Repository references:
 ## Credits
 
 - [9Router](https://github.com/decolua/9router) — original Next.js gateway & dashboard this Go port preserves compatibility with
+- [9Router Pro](https://github.com/giienew/9router-pro) — community edition; its per-model circuit breaker is ported here ([what was ported](wiki/advanced-features.html))
+- [arewedaks/9router-go](https://github.com/arewedaks/9router-go) · [mydisha/keirouter](https://github.com/mydisha/keirouter) — sources of the ported features listed in [Advanced Features](wiki/advanced-features.html)
 
 ## 📄 License
 
