@@ -254,6 +254,13 @@
   // The order those entries are drawn in. Empty means "the order
   // web/src/lib/nav.ts declares", which is what Reset order writes back.
   let navOrder = $state<string[]>([])
+  // Advanced mode: whether the operator surfaces (Plans and the rest of the
+  // advanced preset) are exposed at all. The sidebar preset and this key answer
+  // one question, so picking a preset moves both; the key is what the server
+  // reads to refuse the routes a typed URL could otherwise reach. Loaded as
+  // stored and only rewritten when the preset is changed here, so an existing
+  // deployment that never touches the dropdown keeps the mode it has.
+  let advancedMode = $state(true)
   // The preset the hide list currently equals, and what it leaves out — the same
   // read-back the Usage panel list does, so "Custom" means the same thing here.
   let navPreset = $derived(activeNavPreset(hiddenNav))
@@ -346,6 +353,7 @@
       // Feature Visibility
       hiddenNav = orderHiddenNav(settings.navVisibility)
       navOrder = normalizeNavOrder(settings.navVisibility)
+      if (typeof settings.advancedMode === 'boolean') advancedMode = settings.advancedMode
 
       // Whitelabel branding
       if (typeof settings.appName === 'string') appName = settings.appName
@@ -373,6 +381,7 @@
         // Feature Visibility
         hiddenNav = orderHiddenNav(s.navVisibility)
         navOrder = normalizeNavOrder(s.navVisibility)
+        if (typeof s.advancedMode === 'boolean') advancedMode = s.advancedMode
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
         if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
         enableSystemPrompt = !!s.systemPromptEnabled
@@ -571,6 +580,7 @@
         oidcScopes,
         oidcLoginLabel,
         navVisibility: { hidden: hiddenNav, order: navOrder },
+        advancedMode,
         samlEntryPoint,
         samlIssuer,
         samlCert,
@@ -1718,11 +1728,13 @@
             value={navPreset}
             title={navPresetHint}
             onchange={(event) =>
-              markLayoutEdit(() =>
-                (hiddenNav = navPresetHidden(
-                  (event.currentTarget as HTMLSelectElement).value as NavPreset
-                ))
-              )}
+              markLayoutEdit(() => {
+                const next = (event.currentTarget as HTMLSelectElement).value as NavPreset
+                hiddenNav = navPresetHidden(next)
+                // The preset and the mode are one decision: only the advanced
+                // preset leaves the operator surfaces on.
+                advancedMode = next === 'advanced'
+              })}
             class="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-main focus:border-brand-500 focus:outline-none"
           >
             <!-- Shown only while the switches match no preset: a selection of

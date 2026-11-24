@@ -2873,11 +2873,14 @@ export const api = {
     const data = await res.json()
     return { status: !!data.status, databaseType: data.databaseType || 'sqlite' }
   },
-  setup: async (password: string): Promise<{ success: boolean; error?: string }> => {
+  setup: async (
+    password: string,
+    advancedMode?: boolean
+  ): Promise<{ success: boolean; error?: string }> => {
     const res = await fetch('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, ...(advancedMode === undefined ? {} : { advancedMode }) }),
     })
     if (res.ok) {
       // The server sets the httpOnly auth_token cookie on success; the client

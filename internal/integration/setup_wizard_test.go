@@ -4,6 +4,7 @@ package integration
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/auth"
@@ -103,5 +104,115 @@ func TestSetupWizardRefusedWhenInitialPasswordSet(t *testing.T) {
 	status.Decode(t, &body)
 	if body.Status {
 		t.Fatalf("GET /api/setup (INITIAL_PASSWORD set) status = true, want false")
+	}
+}
+
+// sessionCookie turns the Set-Cookie of a completed wizard into the Cookie
+// header the dashboard guards read. The setup POST signs the operator in, so
+// the mode gate is reachable exactly the way a real operator reaches it.
+func sessionCookie(t *testing.T, res *Result) string {
+	t.Helper()
+	for _, cookie := range res.Header.Values("Set-Cookie") {
+		name, value, ok := strings.Cut(cookie, "=")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(name) == "auth_token" {
+			if v, _, ok := strings.Cut(value, ";"); ok {
+				return "auth_token=" + v
+			}
+			return "auth_token=" + value
+		}
+	}
+	t.Fatalf("no auth_token cookie in the setup response")
+	return ""
+}
+
+// The wizard's second question is a real switch, not a label: Personal turns
+// the operator surfaces off server-side, so a typed URL gets 403 where the
+// sidebar only hides the entry. Advanced leaves the deployment as it was.
+func TestSetupWizardPersonalModeGatesPlans(t *testing.T) {
+	auth.ResetLoginLimiter()
+	env := newEnv(t)
+
+	res := env.Post(t, "/api/setup", map[string]any{
+		"password":     "first-run-password",
+		"advancedMode": false,
+	}, WithoutAPIKey())
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST /api/setup (personal) = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
+	}
+	cookie := sessionCookie(t, res)
+
+	// The gate is the half a typed URL cannot walk around: personal mode
+	// answers 403 on the routes the sidebar only hides.
+	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
+	if plans.Status != http.StatusForbidden {
+		t.Fatalf("GET /api/plans (personal) = %d, want 403", plans.Status)
+	}
+	var errBody struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	plans.Decode(t, &errBody)
+	if errBody.Error.Message == "" {
+		t.Fatalf("personal-mode refusal carried no message")
+	}
+
+	// The sidebar hide list was written too, so the first screen matches.
+	status := env.Get(t, "/api/settings", WithoutAPIKey(), WithHeader("Cookie", cookie))
+	var settings struct {
+		NavVisibility map[string]any `json:"navVisibility"`
+	}
+	status.Decode(t, &settings)
+	hidden, _ := settings.NavVisibility["hidden"].([]any)
+	found := map[string]bool{}
+	for _, id := range hidden {
+		if id, ok := id.(string); ok {
+			found[id] = true
+		}
+	}
+	for _, want := range []string{"plans", "token-saver", "jailbreak"} {
+		if !found[want] {
+			t.Errorf("personal hide list missing %q (got %v)", want, hidden)
+		}
+	}
+}
+
+func TestSetupWizardAdvancedModeKeepsPlans(t *testing.T) {
+	auth.ResetLoginLimiter()
+	env := newEnv(t)
+
+	res := env.Post(t, "/api/setup", map[string]any{
+		"password":     "first-run-password",
+		"advancedMode": true,
+	}, WithoutAPIKey())
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST /api/setup (advanced) = %d, want 200", res.Status)
+	}
+	cookie := sessionCookie(t, res)
+
+	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
+	if plans.Status != http.StatusOK {
+		t.Fatalf("GET /api/plans (advanced) = %d, want 200 (body: %s)", plans.Status, truncate(plans.Body))
+	}
+}
+
+// A POST that omits the question keeps the old behaviour: advanced, so an
+// older client cannot silently turn a resold gateway into a personal one.
+func TestSetupWizardDefaultsToAdvanced(t *testing.T) {
+	auth.ResetLoginLimiter()
+	env := newEnv(t)
+
+	res := env.Post(t, "/api/setup", map[string]any{"password": "first-run-password"}, WithoutAPIKey())
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST /api/setup = %d, want 200", res.Status)
+	}
+	cookie := sessionCookie(t, res)
+
+	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
+	if plans.Status != http.StatusOK {
+		t.Fatalf("GET /api/plans (absent mode) = %d, want 200", plans.Status)
 	}
 }

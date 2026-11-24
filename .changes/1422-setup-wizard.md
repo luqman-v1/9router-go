@@ -18,6 +18,14 @@
     the local machine (`requestIsLocal`). With `INITIAL_PASSWORD` set, or from
     a remote browser, the normal login form shows and the wizard never offers
     itself.
+  - The wizard asks a second question: how will this gateway be used? Personal
+    (one spender: Plans, the token saver and Persona stay hidden and off) or
+    Advanced / sharing keys (everything on, as the deployment always was).
+    Absent means Advanced, so an older client keeps its behaviour.
+  - `advancedMode` is a settings key, editable in Settings → Sidebar: picking a
+    preset there moves both the hide list and the mode, and the server refuses
+    the gated routes with `403` in personal mode — the sidebar hides the entry
+    and a typed URL gets the same answer.
 
 **Verification:** `go test ./internal/handlers/dashboard/` (unit: fresh, remote
 refusal, cross-site refusal, short password, second-POST refusal,

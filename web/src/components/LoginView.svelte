@@ -27,6 +27,11 @@
   // default first. hasPassword === false on a loopback peer is the wizard.
   let firstRun = $state(false)
   let confirmPassword = $state('')
+  // The wizard's second step: is this gateway for one person, or for keys
+  // someone else spends? Personal hides the operator surfaces and turns them
+  // off server-side; Advanced leaves the deployment as it always was.
+  let setupStep = $state<'password' | 'mode'>('password')
+  let advancedChoice = $state(false)
   // White-label branding on the login screen. appName/appLogoUrl are the two
   // the sidebar already reads from the same settings row; loginLogo and
   // appTagline are the login-specific pair.
@@ -196,8 +201,20 @@
     isLoading = true
     errorMessage = ''
 
+    // The password is kept in memory until the mode is picked: one POST
+    // carries both, so a half-finished wizard never stores a password without
+    // the mode it was chosen for.
+    setupStep = 'mode'
+    isLoading = false
+  }
+
+  async function handleModeSubmit(e: SubmitEvent) {
+    e.preventDefault()
+    if (isLoading) return
+    isLoading = true
+    errorMessage = ''
     try {
-      const res = await api.setup(newPassword)
+      const res = await api.setup(newPassword, advancedChoice)
       if (res.success) {
         firstRun = false
         if (onSuccess) {
@@ -262,54 +279,128 @@
 
       <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
         {#if firstRun}
-          <form onsubmit={handleSetupSubmit} class="flex flex-col gap-4">
-            <p class="text-sm text-text-muted text-center">
-              Welcome to 9router-go. Set a dashboard password to finish setup.
-            </p>
-            <div class="flex flex-col gap-2">
-              <label for="setup-password" class="text-sm font-medium text-text-main">New password</label>
-              <input
-                id="setup-password"
-                type="password"
-                placeholder="At least 8 characters"
-                bind:value={newPassword}
-                required
-                minlength="8"
-                data-login-focus
-                class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
-              />
-            </div>
-            <div class="flex flex-col gap-2">
-              <label for="setup-password-confirm" class="text-sm font-medium text-text-main">Confirm password</label>
-              <input
-                id="setup-password-confirm"
-                type="password"
-                placeholder="Repeat the password"
-                bind:value={confirmPassword}
-                required
-                class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
-              />
+          {#if setupStep === 'password'}
+            <form onsubmit={handleSetupSubmit} class="flex flex-col gap-4">
+              <p class="text-sm text-text-muted text-center">
+                Welcome to 9router-go. Set a dashboard password to finish setup.
+              </p>
+              <div class="flex flex-col gap-2">
+                <label for="setup-password" class="text-sm font-medium text-text-main">New password</label>
+                <input
+                  id="setup-password"
+                  type="password"
+                  placeholder="At least 8 characters"
+                  bind:value={newPassword}
+                  required
+                  minlength="8"
+                  data-login-focus
+                  class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
+                />
+              </div>
+              <div class="flex flex-col gap-2">
+                <label for="setup-password-confirm" class="text-sm font-medium text-text-main">Confirm password</label>
+                <input
+                  id="setup-password-confirm"
+                  type="password"
+                  placeholder="Repeat the password"
+                  bind:value={confirmPassword}
+                  required
+                  class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
+                />
+                {#if errorMessage}
+                  <p class="text-xs text-red-500">{errorMessage}</p>
+                {/if}
+              </div>
+              <button
+                type="submit"
+                disabled={isLoading || !newPassword || newPassword.length < 8 || newPassword !== confirmPassword}
+                class="w-full h-9 px-4 text-sm rounded-[10px] font-medium bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <span>Continue</span>
+              </button>
+              <p class="text-xs text-center text-text-muted">
+                Step 1 of 2. This is accepted from the local machine only, while no
+                password is stored.
+              </p>
+            </form>
+          {:else}
+            <form onsubmit={handleModeSubmit} class="flex flex-col gap-4">
+              <p class="text-sm text-text-muted text-center">
+                How will this gateway be used?
+              </p>
+              <fieldset class="flex flex-col gap-2">
+                <legend class="sr-only">Usage mode</legend>
+                <label
+                  class="flex cursor-pointer gap-3 rounded-[10px] border p-3 transition-colors {advancedChoice
+                    ? 'border-border-subtle bg-surface'
+                    : 'border-brand-500 bg-brand-500/5'}"
+                >
+                  <input
+                    type="radio"
+                    name="setup-mode"
+                    class="mt-0.5"
+                    checked={!advancedChoice}
+                    onchange={() => (advancedChoice = false)}
+                  />
+                  <span class="flex flex-col gap-0.5">
+                    <span class="text-sm font-medium text-text-main">Personal</span>
+                    <span class="text-xs text-text-muted">
+                      Just me. Plans, budgets and prompt presets stay hidden and off —
+                      fewer surfaces to think about.
+                    </span>
+                  </span>
+                </label>
+                <label
+                  class="flex cursor-pointer gap-3 rounded-[10px] border p-3 transition-colors {advancedChoice
+                    ? 'border-brand-500 bg-brand-500/5'
+                    : 'border-border-subtle bg-surface'}"
+                >
+                  <input
+                    type="radio"
+                    name="setup-mode"
+                    class="mt-0.5"
+                    checked={advancedChoice}
+                    onchange={() => (advancedChoice = true)}
+                  />
+                  <span class="flex flex-col gap-0.5">
+                    <span class="text-sm font-medium text-text-main">Advanced / sharing keys</span>
+                    <span class="text-xs text-text-muted">
+                      Keys for other people. Plans, per-key budgets, usage export and
+                      prompt presets are on.
+                    </span>
+                  </span>
+                </label>
+              </fieldset>
               {#if errorMessage}
                 <p class="text-xs text-red-500">{errorMessage}</p>
               {/if}
-            </div>
-            <button
-              type="submit"
-              disabled={isLoading || !newPassword || newPassword.length < 8 || newPassword !== confirmPassword}
-              class="w-full h-9 px-4 text-sm rounded-[10px] font-medium bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            >
-              {#if isLoading}
-                <span class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white/20 border-t-white"></span>
-                <span>Setting up...</span>
-              {:else}
-                <span>Create password</span>
-              {/if}
-            </button>
-            <p class="text-xs text-center text-text-muted">
-              This is accepted from the
-              local machine only, while no password is stored.
-            </p>
-          </form>
+              <button
+                type="submit"
+                disabled={isLoading}
+                class="w-full h-9 px-4 text-sm rounded-[10px] font-medium bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {#if isLoading}
+                  <span class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white/20 border-t-white"></span>
+                  <span>Setting up...</span>
+                {:else}
+                  <span>Create password</span>
+                {/if}
+              </button>
+              <button
+                type="button"
+                onclick={() => {
+                  errorMessage = ''
+                  setupStep = 'password'
+                }}
+                class="text-xs text-text-muted hover:text-text-main transition-colors cursor-pointer"
+              >
+                Back
+              </button>
+              <p class="text-xs text-center text-text-muted">
+                Step 2 of 2. You can change this later in Settings &rarr; Sidebar.
+              </p>
+            </form>
+          {/if}
         {:else if mustChange}
           <form onsubmit={handleSetNewPassword} class="flex flex-col gap-4">
             <p class="text-sm text-amber-600 dark:text-amber-400 text-center">

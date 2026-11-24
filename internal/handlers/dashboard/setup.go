@@ -105,7 +105,25 @@ func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	if err := h.Repo.UpdateSettingsRaw(map[string]any{"password": string(hashed)}); err != nil {
+	// The wizard's second question: is this gateway for one person, or for
+	// keys someone else spends? Personal hides the operator surfaces and turns
+	// them off server-side; Advanced leaves the deployment as it always was.
+	// Absent means Advanced, so an older client keeps its behaviour.
+	updates := map[string]any{"password": string(hashed)}
+	advanced := true
+	if v, ok := body["advancedMode"].(bool); ok {
+		advanced = v
+	}
+	updates[advancedModeSettingKey] = advanced
+	if !advanced {
+		// Fill the sidebar hide list too, so the first screen after login
+		// already matches the mode instead of showing entries that 403.
+		if nav := normalizeNavVisibility(map[string]any{"hidden": personalModeHiddenNav}); nav != nil {
+			updates[navVisibilitySettingKey] = nav
+		}
+	}
+
+	if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
 		noStore(w)
 		handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 			"success": false,

@@ -182,13 +182,18 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/keys/{id}/budget", h.HandleGetApiKeyBudget)
 		r.Put("/keys/{id}", h.HandleUpdateApiKey)
 
-		// F-3 Plans: reusable policy templates the keys inherit from.
-		r.Get("/plans", h.HandleListPlans)
-		r.Post("/plans", h.HandleCreatePlan)
-		r.Get("/plans/{id}", h.HandleGetPlan)
-		r.Put("/plans/{id}", h.HandleUpdatePlan)
-		r.Delete("/plans/{id}", h.HandleDeletePlan)
-		r.Get("/plans/{id}/keys", h.HandlePlanKeys)
+		// F-3 Plans: reusable policy templates the keys inherit from. Gated on
+		// advanced mode: a personal gateway has one spender, so the route
+		// answers 403 rather than letting a typed URL reach a hidden surface.
+		r.Group(func(r chi.Router) {
+			r.Use(AdvancedModeGate(h.Repo))
+			r.Get("/plans", h.HandleListPlans)
+			r.Post("/plans", h.HandleCreatePlan)
+			r.Get("/plans/{id}", h.HandleGetPlan)
+			r.Put("/plans/{id}", h.HandleUpdatePlan)
+			r.Delete("/plans/{id}", h.HandleDeletePlan)
+			r.Get("/plans/{id}/keys", h.HandlePlanKeys)
+		})
 
 		// F-5 Credential vault: status and master-key rotation.
 		r.Get("/vault/status", h.HandleGetVaultStatus)
