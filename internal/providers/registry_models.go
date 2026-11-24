@@ -51,13 +51,13 @@ var ProviderModels = map[string][]string{
 	"cbcn":              {"glm-5.2", "glm-5.1", "glm-5v-turbo", "minimax-m3", "kimi-k2.7", "kimi-k2.6", "hy3", "hy4-preview", "glm-5.3", "glm-5.3-flash", "kimi-k3-1", "deepseek-v4-pro", "deepseek-v4.1-flash"},
 	"cc":                {"claude-fable-5-2", "claude-opus-5-5", "claude-opus-5", "claude-fable-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5-20251001"},
 	"cerebras":          {"gpt-oss-120b", "zai-glm-4.7", "llama-3.3-70b", "llama-4-scout-17b-16e-instruct", "qwen-3-235b-a22b-instruct-2507", "qwen-3-32b"},
-	"cf":                {"@cf/cloudflare/clef-flash", "@cf/meta/llama-3.1-8b-instruct-awq", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/moonshotai/kimi-k2.5", "@cf/zai-org/glm-4.7-flash", "@cf/qwen/qwen2.5-coder-32b-instruct", "@cf/black-forest-labs/flux-2-klein-9b", "@cf/black-forest-labs/flux-2-klein-4b", "@cf/black-forest-labs/flux-2-dev", "@cf/leonardo/lucid-origin", "@cf/leonardo/phoenix-1.0", "@cf/black-forest-labs/flux-1-schnell", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-5.3", "@cf/openai/gpt-oss-120b", "@cf/openai/gpt-oss-20b", "@cf/qwen/qwen3.8-27b"},
+	"cf":                {"@cf/cloudflare/clef", "@cf/cloudflare/clef-omni", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clairic", "@cf/meta/llama-3.1-8b-instruct-awq", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/moonshotai/kimi-k2.5", "@cf/zai-org/glm-4.7-flash", "@cf/qwen/qwen2.5-coder-32b-instruct", "@cf/black-forest-labs/flux-2-klein-9b", "@cf/black-forest-labs/flux-2-klein-4b", "@cf/black-forest-labs/flux-2-dev", "@cf/leonardo/lucid-origin", "@cf/leonardo/phoenix-1.0", "@cf/black-forest-labs/flux-1-schnell", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-5.3", "@cf/openai/gpt-oss-120b", "@cf/openai/gpt-oss-20b", "@cf/qwen/qwen3.8-27b"},
 
 	"cl":            {"anthropic/claude-opus-4.7", "anthropic/claude-sonnet-4.6", "anthropic/claude-opus-4.6", "openai/gpt-5.3-codex", "openai/gpt-5.4", "google/gemini-3.1-pro-preview", "google/gemini-3.1-flash-lite-preview", "kwaipilot/kat-coder-pro"},
 	"claude":        {"claude-fable-5-2", "claude-opus-5-5", "claude-opus-5", "claude-fable-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5-20251001"},
 	"cline":         {"anthropic/claude-opus-4.7", "anthropic/claude-sonnet-4.6", "anthropic/claude-opus-4.6", "openai/gpt-5.3-codex", "openai/gpt-5.4", "google/gemini-3.1-pro-preview", "google/gemini-3.1-flash-lite-preview", "kwaipilot/kat-coder-pro"},
 	"clinepass":     {"cline-pass/glm-5.2", "cline-pass/kimi-k2.7-code", "cline-pass/kimi-k2.6", "cline-pass/deepseek-v4-pro", "cline-pass/deepseek-v4-flash", "cline-pass/mimo-v2.5", "cline-pass/mimo-v2.5-pro", "cline-pass/minimax-m3", "cline-pass/qwen3.7-max", "cline-pass/qwen3.7-plus"},
-	"cloudflare-ai": {"@cf/cloudflare/clef-flash", "@cf/meta/llama-3.1-8b-instruct-awq", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/moonshotai/kimi-k2.5", "@cf/zai-org/glm-4.7-flash", "@cf/qwen/qwen2.5-coder-32b-instruct", "@cf/black-forest-labs/flux-2-klein-9b", "@cf/black-forest-labs/flux-2-klein-4b", "@cf/black-forest-labs/flux-2-dev", "@cf/leonardo/lucid-origin", "@cf/leonardo/phoenix-1.0", "@cf/black-forest-labs/flux-1-schnell", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-5.3", "@cf/openai/gpt-oss-120b", "@cf/openai/gpt-oss-20b", "@cf/qwen/qwen3.8-27b"},
+	"cloudflare-ai": {"@cf/cloudflare/clef", "@cf/cloudflare/clef-omni", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clairic", "@cf/meta/llama-3.1-8b-instruct-awq", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/moonshotai/kimi-k2.5", "@cf/zai-org/glm-4.7-flash", "@cf/qwen/qwen2.5-coder-32b-instruct", "@cf/black-forest-labs/flux-2-klein-9b", "@cf/black-forest-labs/flux-2-klein-4b", "@cf/black-forest-labs/flux-2-dev", "@cf/leonardo/lucid-origin", "@cf/leonardo/phoenix-1.0", "@cf/black-forest-labs/flux-1-schnell", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-5.3", "@cf/openai/gpt-oss-120b", "@cf/openai/gpt-oss-20b", "@cf/qwen/qwen3.8-27b"},
 
 	"cmc": {"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "moonshotai/Kimi-K3.1-Pro", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.7-Code-Highspeed", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5", "zai-org/GLM-5.2", "zai-org/GLM-5.2-Fast", "zai-org/GLM-5.1", "zai-org/GLM-5", "MiniMaxAI/MiniMax-M3", "MiniMaxAI/MiniMax-M2.7", "MiniMaxAI/MiniMax-M2.5", "xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5", "Qwen/Qwen3.6-Max-Preview", "Qwen/Qwen3.6-Plus", "Qwen/Qwen3.7-Max", "Qwen/Qwen3.7-Plus", "stepfun/Step-3.7-Flash", "stepfun/Step-3.5-Flash", "nvidia/nemotron-3-ultra-550b-a55b"},
 	// glm-5v-turbo / kimi-k2.7 / kimi-k2.6 are absent from the 2026-09-30
@@ -337,7 +337,10 @@ var ProviderModelKinds = map[string]map[string]string{
 		"@cf/black-forest-labs/flux-2-dev":      "image",
 		"@cf/black-forest-labs/flux-2-klein-4b": "image",
 		"@cf/black-forest-labs/flux-2-klein-9b": "image",
+		"@cf/cloudflare/clef":                   "systemone",
+		"@cf/cloudflare/clef-omni":              "systemone",
 		"@cf/cloudflare/clef-flash":             "systemone",
+		"@cf/cloudflare/clairic":                "systemone",
 		"@cf/leonardo/lucid-origin":             "image",
 		"@cf/leonardo/phoenix-1.0":              "image",
 	},
@@ -346,7 +349,10 @@ var ProviderModelKinds = map[string]map[string]string{
 		"@cf/black-forest-labs/flux-2-dev":      "image",
 		"@cf/black-forest-labs/flux-2-klein-4b": "image",
 		"@cf/black-forest-labs/flux-2-klein-9b": "image",
+		"@cf/cloudflare/clef":                   "systemone",
+		"@cf/cloudflare/clef-omni":              "systemone",
 		"@cf/cloudflare/clef-flash":             "systemone",
+		"@cf/cloudflare/clairic":                "systemone",
 		"@cf/leonardo/lucid-origin":             "image",
 		"@cf/leonardo/phoenix-1.0":              "image",
 	},
@@ -895,4 +901,59 @@ func GetProviderModels(aliasOrID string) []string {
 		}
 	}
 	return nil
+}
+
+// ProviderModelPayloadShapes maps a provider/model to the payload shape it
+// expects on the System One lane: "fields" for extraction models, "questions"
+// for decision models. A missing entry defaults to "questions".
+var ProviderModelPayloadShapes = map[string]map[string]string{
+	"cloudflare-ai": {
+		"@cf/cloudflare/clairic": "fields",
+	},
+	"cf": {
+		"@cf/cloudflare/clairic": "fields",
+	},
+}
+
+// ProviderModelUpstreamIDs maps a provider/model to the short selector the
+// upstream System One endpoint expects. A missing entry forwards the model id.
+var ProviderModelUpstreamIDs = map[string]map[string]string{
+	"cloudflare-ai": {
+		"@cf/cloudflare/clef":       "clef",
+		"@cf/cloudflare/clef-omni":  "clef-omni",
+		"@cf/cloudflare/clef-flash": "clef-flash",
+		"@cf/cloudflare/clairic":    "clairic",
+	},
+	"cf": {
+		"@cf/cloudflare/clef":       "clef",
+		"@cf/cloudflare/clef-omni":  "clef-omni",
+		"@cf/cloudflare/clef-flash": "clef-flash",
+		"@cf/cloudflare/clairic":    "clairic",
+	},
+}
+
+// GetProviderModelPayloadShape returns the payload shape for provider/model.
+func GetProviderModelPayloadShape(provider, model string) string {
+	canon := ResolveAlias(provider)
+	for _, p := range []string{provider, canon} {
+		if m, ok := ProviderModelPayloadShapes[p]; ok {
+			if s, ok := m[model]; ok {
+				return s
+			}
+		}
+	}
+	return "questions"
+}
+
+// GetProviderModelUpstreamID returns the upstream selector for provider/model.
+func GetProviderModelUpstreamID(provider, model string) string {
+	canon := ResolveAlias(provider)
+	for _, p := range []string{provider, canon} {
+		if m, ok := ProviderModelUpstreamIDs[p]; ok {
+			if id, ok := m[model]; ok {
+				return id
+			}
+		}
+	}
+	return model
 }

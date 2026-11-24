@@ -1019,9 +1019,25 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "cloudflare-ai":   [
     {
+      "id": "@cf/cloudflare/clef",
+      "name": "Clef",
+      "kind": "systemone"
+    },
+    {
+      "id": "@cf/cloudflare/clef-omni",
+      "name": "Clef Omni",
+      "kind": "systemone"
+    },
+    {
       "id": "@cf/cloudflare/clef-flash",
       "name": "Clef Flash",
       "kind": "systemone"
+    },
+    {
+      "id": "@cf/cloudflare/clairic",
+      "name": "Clairic",
+      "kind": "systemone",
+      "payloadShape": "fields"
     },
     {
       "id": "@cf/meta/llama-3.1-8b-instruct-awq",

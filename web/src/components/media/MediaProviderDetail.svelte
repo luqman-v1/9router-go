@@ -245,6 +245,7 @@
     return [...builtin, ...customKindModels.filter((m) => m.id && !seen.has(m.id))]
   })
   let selectedModelId = $state('')
+  let selectedModelObj = $derived(mediaModels.find((m: any) => m.id === selectedModelId) ?? null)
 
   // Custom media models — upstream SttExampleCard parity: (d.models || [])
   // filtered by kind + providerAlias (alias or id), reload on focus/changed.
@@ -463,6 +464,9 @@
       return `curl -X POST ${origin}/v1/audio/transcriptions \\\n  -H "Authorization: Bearer ${key}" \\\n  -F "file=@${exampleInput || 'audio.mp3'}" \\\n  -F "model=${qualifiedModel}" \\\n  -F "response_format=${sttResponseFormat}"`
     }
     if (kind === 'systemone') {
+      if ((selectedModelObj as any)?.payloadShape === 'fields') {
+        return `curl -X POST ${origin}/v1/systemone \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","state":"${exampleInput}","fields":{"probe":{"type":"text","instructions":"${exampleQuestion}"}}}'`
+      }
       return `curl -X POST ${origin}/v1/systemone \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","state":"${exampleInput}","questions":{"is_urgent":{"type":"noul","instructions":"${exampleQuestion}"}}}'`
     }
     if (kind === 'webSearch') {
@@ -570,10 +574,13 @@
         })
       } else if (kind === 'systemone') {
         headers['Content-Type'] = 'application/json'
+        const systemoneBody = (selectedModelObj as any)?.payloadShape === 'fields'
+          ? { model: qualifiedModel, state: exampleInput, fields: { probe: { type: 'text', instructions: exampleQuestion } } }
+          : { model: qualifiedModel, state: exampleInput, questions: { is_urgent: { type: 'noul', instructions: exampleQuestion } } }
         res = await fetch('/v1/systemone', {
           method: 'POST',
           headers,
-          body: JSON.stringify({ model: qualifiedModel, state: exampleInput, questions: { is_urgent: { type: 'noul', instructions: exampleQuestion } } })
+          body: JSON.stringify(systemoneBody)
         })
       } else if (kind === 'webSearch') {
         headers['Content-Type'] = 'application/json'

@@ -708,6 +708,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader:     "Authorization",
 		AuthScheme:     "bearer",
 		ThinkingFormat: "openai",
+		SystemoneURL:   "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}",
 	},
 	"mimo-free": {
 		BaseURL:       "https://api.xiaomimimimo.com/api/free-ai/openai/chat",
