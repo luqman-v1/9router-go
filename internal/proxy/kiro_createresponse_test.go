@@ -255,3 +255,33 @@ func readAllReader(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
 	}
 	return buf, nil
 }
+
+func TestKiroCreateResponseHeaders_FlatAndNestedCredentials(t *testing.T) {
+	arn := "arn:aws:codewhisperer:us-east-1:12345:profile/TEST"
+	// flat keys
+	flat := map[string]any{
+		"authMethod": "api_key",
+		"profileArn": arn,
+	}
+	h := KiroCreateResponseHeaders(flat, map[string]any{})
+	if h["TokenType"] != "API_KEY" {
+		t.Errorf("flat TokenType: %s", h["TokenType"])
+	}
+	if h["x-amzn-kiro-profile"] != arn {
+		t.Errorf("flat profile: %s", h["x-amzn-kiro-profile"])
+	}
+	// nested providerSpecificData
+	nested := map[string]any{
+		"providerSpecificData": map[string]any{
+			"authMethod": "api_key",
+			"profileArn": arn,
+		},
+	}
+	h2 := KiroCreateResponseHeaders(nested, map[string]any{})
+	if h2["TokenType"] != "API_KEY" {
+		t.Errorf("nested TokenType: %s", h2["TokenType"])
+	}
+	if h2["x-amzn-kiro-profile"] != arn {
+		t.Errorf("nested profile: %s", h2["x-amzn-kiro-profile"])
+	}
+}

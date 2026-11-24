@@ -72,23 +72,20 @@ func KiroCreateResponseHeaders(args ...any) map[string]string {
 	} else if v, ok := credentials["apiKey"].(string); ok {
 		token = v
 	}
-	psd, _ := credentials["providerSpecificData"].(map[string]any)
-	authMethod := ""
-	if psd != nil {
-		if v, ok := psd["authMethod"].(string); ok {
-			authMethod = v
+	authMethod, _ := credentials["authMethod"].(string)
+	if authMethod == "" {
+		if psd, ok := credentials["providerSpecificData"].(map[string]any); ok {
+			authMethod, _ = psd["authMethod"].(string)
 		}
 	}
-	profileArn := ""
-	if psd != nil {
-		if v, ok := psd["profileArn"].(string); ok {
-			profileArn = v
+	profileArn, _ := credentials["profileArn"].(string)
+	if profileArn == "" {
+		if psd, ok := credentials["providerSpecificData"].(map[string]any); ok {
+			profileArn, _ = psd["profileArn"].(string)
 		}
 	}
 	if profileArn == "" && body != nil {
-		if v, ok := body["profileArn"].(string); ok {
-			profileArn = v
-		}
+		profileArn, _ = body["profileArn"].(string)
 	}
 	headers := map[string]string{
 		"Content-Type":                "application/json",
@@ -101,7 +98,7 @@ func KiroCreateResponseHeaders(args ...any) map[string]string {
 	if profileArn != "" {
 		headers["x-amzn-kiro-profile"] = profileArn
 	}
-	if authMethod == "api_key" && (credentials["apiKey"] != nil || credentials["accessToken"] != nil) {
+	if authMethod == "api_key" {
 		headers["TokenType"] = "API_KEY"
 	} else if authMethod == "external_idp" {
 		headers["TokenType"] = "EXTERNAL_IDP"
