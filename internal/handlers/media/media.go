@@ -466,42 +466,29 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
-		return
+	var reqBody struct {
+		Model     string         `json:"model"`
+		State     any            `json:"state"`
+		Questions map[string]any `json:"questions"`
+		Fields    map[string]any `json:"fields"`
 	}
-	model, _ := raw["model"].(string)
-	if model == "" {
+	if err := json.Unmarshal(body, &reqBody); err != nil || reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
-	qRaw, hasQ := raw["questions"]
-	fRaw, hasF := raw["fields"]
-	qIsMap := false
-	if hasQ {
-		if _, ok := qRaw.(map[string]any); ok {
-			qIsMap = true
+	isClairic := strings.HasSuffix(reqBody.Model, "clairic")
+	if isClairic {
+		if reqBody.Fields == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: fields")
+			return
+		}
+	} else {
+		if reqBody.Questions == nil && reqBody.Fields == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
+			return
 		}
 	}
-	fIsMap := false
-	if hasF {
-		if _, ok := fRaw.(map[string]any); ok {
-			fIsMap = true
-		}
-	}
-	if hasQ && !qIsMap {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
-		return
-	}
-	if hasF && !fIsMap {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: fields")
-		return
-	}
-	if !hasQ && !hasF {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
-		return
-	}
+	model := reqBody.Model
 	// fields-only payloads (extraction models) do not require questions.
 	if !h.ChatH.EnforceModelAccess(w, r, model) {
 		return

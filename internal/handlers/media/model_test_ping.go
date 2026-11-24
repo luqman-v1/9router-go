@@ -207,6 +207,18 @@ func probeFor(kind, model string) probePayload {
 		_ = mw.Close()
 		return probePayload{body: buf, contentType: mw.FormDataContentType()}
 	case "systemone":
+		if strings.HasSuffix(model, "clairic") {
+			return jsonProbe(map[string]any{
+				"model": model,
+				"state": "Customer: I was charged twice for my order this morning.",
+				"fields": map[string]any{
+					"probe": map[string]any{
+						"type":         "text",
+						"instructions": "Extract the billing issue reported by the customer.",
+					},
+				},
+			})
+		}
 		return jsonProbe(map[string]any{
 			"model": model,
 			"state": "Customer: I was charged twice for my order this morning.",
@@ -528,15 +540,26 @@ func (b probeBody) hasText() bool {
 }
 
 func (b probeBody) hasAnswers() bool {
-	raw, ok := b.field("answers")
-	if !ok || raw[0] != '{' {
-		return false
+	for _, key := range []string{"answers", "fields", "values", "result"} {
+		raw, ok := b.field(key)
+		if !ok {
+			continue
+		}
+		if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(raw, []byte("null")) {
+			continue
+		}
+		if raw[0] == '{' {
+			var obj map[string]jsontext.Value
+			if json.Unmarshal(raw, &obj) == nil {
+				if len(obj) > 0 {
+					return true
+				}
+				continue
+			}
+		}
+		return true
 	}
-	var answers map[string]jsontext.Value
-	if json.Unmarshal(raw, &answers) != nil {
-		return false
-	}
-	return len(answers) > 0
+	return false
 }
 
 // errorMessage reports an `error` field carried under HTTP 200. The field is
