@@ -31,7 +31,7 @@ score.
     <img src="https://avatars.githubusercontent.com/u/64591494?v=4&s=200" alt="M Riyadh Azhar" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/mriazh">M Riyadh Azhar</a></p>
     <p class="contrib-login">@mriazh</p>
-    <p class="contrib-count">205 commits</p>
+    <p class="contrib-count">212 commits</p>
   </div>
 
   <div class="contrib-card">
@@ -45,7 +45,7 @@ score.
     <img src="https://avatars.githubusercontent.com/u/20932301?v=4&s=200" alt="Helmi Amirudin" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/helmiau">Helmi Amirudin</a></p>
     <p class="contrib-login">@helmiau</p>
-    <p class="contrib-count">89 commits</p>
+    <p class="contrib-count">92 commits</p>
   </div>
 
   <div class="contrib-card">
@@ -66,7 +66,7 @@ score.
     <img src="https://avatars.githubusercontent.com/u/146520753?v=4&s=200" alt="Tahsin Arafat" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/TahsinArafat">Tahsin Arafat</a></p>
     <p class="contrib-login">@TahsinArafat</p>
-    <p class="contrib-count">9 commits</p>
+    <p class="contrib-count">10 commits</p>
   </div>
 
   <div class="contrib-card">
@@ -133,6 +133,13 @@ score.
   </div>
 
   <div class="contrib-card">
+    <img src="https://avatars.githubusercontent.com/u/39433121?v=4&s=200" alt="Ven" loading="lazy" decoding="async" width="64" height="64" />
+    <p class="contrib-name"><a href="https://github.com/VenRoot">Ven</a></p>
+    <p class="contrib-login">@VenRoot</p>
+    <p class="contrib-count">2 commits</p>
+  </div>
+
+  <div class="contrib-card">
     <img src="https://avatars.githubusercontent.com/u/98071117?v=4&s=200" alt="Alfiansa" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/fiandev">Alfiansa</a></p>
     <p class="contrib-login">@fiandev</p>
@@ -178,13 +185,6 @@ score.
     <img src="https://avatars.githubusercontent.com/u/216460312?v=4&s=200" alt="Guardian" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/FmcStore">Guardian</a></p>
     <p class="contrib-login">@FmcStore</p>
-    <p class="contrib-count">1 commit</p>
-  </div>
-
-  <div class="contrib-card">
-    <img src="https://avatars.githubusercontent.com/u/39433121?v=4&s=200" alt="Ven" loading="lazy" decoding="async" width="64" height="64" />
-    <p class="contrib-name"><a href="https://github.com/VenRoot">Ven</a></p>
-    <p class="contrib-login">@VenRoot</p>
     <p class="contrib-count">1 commit</p>
   </div>
 
