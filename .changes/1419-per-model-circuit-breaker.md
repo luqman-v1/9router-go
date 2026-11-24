@@ -45,3 +45,14 @@ Verified: `go build ./...` clean, `go vet` clean, `go test` green on
 splitting), `internal/errclass` and `internal/handlers/chat` (refusal before
 dispatch, probe bypass, disabled-survives-refusal, only-model-scope charging),
 plus `gofmt`.
+
+One consequence of the registry being package-level: the integration suite runs
+every test in one process against isolated databases, so an isolated `Env` does
+not isolate a package-level map. A test that failed `deepseek/deepseek-chat`
+often enough to open a cooldown then left that pair cooling, and a later test
+dialling the same pair was refused before a byte reached its fake upstream. The
+harness now clears the registry before each test and in cleanup, the same
+treatment the provider breaker's registry already has, so a pair a test parks is
+still refused while a pair a neighbour warmed is not. Production behaviour is
+unchanged — the gate keeps its own unit coverage that charges a real pair and
+asserts the refusal.
