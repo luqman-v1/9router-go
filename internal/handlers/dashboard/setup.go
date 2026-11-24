@@ -15,8 +15,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// First-run setup, inspired by QuantumNous/new-api's GET/POST /api/setup
-// (controller/setup.go): a fresh install sets the dashboard password from the
+// First-run setup wizard
+// A fresh install sets the dashboard password from the
 // browser before the first login, instead of making the operator type the
 // well-known default first.
 //
@@ -27,7 +27,7 @@ import (
 // gateway.
 
 // HandleGetSetup handles GET /api/setup: whether the first-run wizard applies,
-// and which database engine backs this instance (mirrors new-api's Setup
+// and which database engine backs this instance (the wizard's state
 // shape: status plus database_type).
 func (h *DashboardHandler) HandleGetSetup(w http.ResponseWriter, r *http.Request) {
 	raw := settingsOrEmpty(h)

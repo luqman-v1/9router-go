@@ -23,7 +23,6 @@
   let samlConfigured = $state(false)
   let samlLoginLabel = $state('Sign in with SAML SSO')
   let mustChange = $state(false)
-  // First-run setup (inspired by new-api's /api/setup): a fresh install sets
   // the dashboard password from the browser instead of typing the well-known
   // default first. hasPassword === false on a loopback peer is the wizard.
   let firstRun = $state(false)
@@ -184,7 +183,6 @@
     }
   }
 
-  // First-run setup (inspired by new-api's /api/setup): set the dashboard
   // password before the first login. The server signs the session in, so a
   // successful setup lands in the dashboard without a second form.
   async function handleSetupSubmit(e: SubmitEvent) {
@@ -308,7 +306,7 @@
               {/if}
             </button>
             <p class="text-xs text-center text-text-muted">
-              Inspired by new-api's first-run setup. This is accepted from the
+              This is accepted from the
               local machine only, while no password is stored.
             </p>
           </form>

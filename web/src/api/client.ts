@@ -2865,7 +2865,6 @@ export const api = {
     } catch {}
     return { requireLogin: false }
   },
-  // First-run setup (inspired by new-api's /api/setup): a fresh install sets
   // the dashboard password from the browser before the first login. The
   // server only accepts this from a loopback peer while no password is stored.
   getSetup: async (): Promise<{ status: boolean; databaseType: string }> => {

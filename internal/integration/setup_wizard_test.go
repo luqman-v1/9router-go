@@ -9,7 +9,6 @@ import (
 	"9router/proxy/internal/auth"
 )
 
-// The first-run setup endpoints (inspired by new-api's /api/setup) are
 // anonymous by necessity. These tests pin the full HTTP path through the real
 // router: a fresh install sets a password and lands with a session, a
 // configured install refuses the POST, and GET reports the wizard's state.
