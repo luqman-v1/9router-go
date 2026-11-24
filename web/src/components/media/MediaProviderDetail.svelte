@@ -464,7 +464,7 @@
       return `curl -X POST ${origin}/v1/audio/transcriptions \\\n  -H "Authorization: Bearer ${key}" \\\n  -F "file=@${exampleInput || 'audio.mp3'}" \\\n  -F "model=${qualifiedModel}" \\\n  -F "response_format=${sttResponseFormat}"`
     }
     if (kind === 'systemone') {
-      if (selectedModelObj?.payloadShape === 'fields') {
+      if ((selectedModelObj as any)?.payloadShape === 'fields') {
         return `curl -X POST ${origin}/v1/systemone \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","state":"${exampleInput}","fields":{"probe":{"type":"text","instructions":"${exampleQuestion}"}}}'`
       }
       return `curl -X POST ${origin}/v1/systemone \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","state":"${exampleInput}","questions":{"is_urgent":{"type":"noul","instructions":"${exampleQuestion}"}}}'`
@@ -574,7 +574,7 @@
         })
       } else if (kind === 'systemone') {
         headers['Content-Type'] = 'application/json'
-        const systemoneBody = selectedModelObj?.payloadShape === 'fields'
+        const systemoneBody = (selectedModelObj as any)?.payloadShape === 'fields'
           ? { model: qualifiedModel, state: exampleInput, fields: { probe: { type: 'text', instructions: exampleQuestion } } }
           : { model: qualifiedModel, state: exampleInput, questions: { is_urgent: { type: 'noul', instructions: exampleQuestion } } }
         res = await fetch('/v1/systemone', {
