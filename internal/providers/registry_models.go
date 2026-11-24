@@ -145,8 +145,8 @@ var ProviderModels = map[string][]string{
 	"freepi":  {"deepseek/deepseek-v4-flash"},
 	// ElevenLabs declares one catalogue for both service kinds, so the STT ids
 	// sit beside the TTS ones (open-sse/providers/registry/elevenlabs.js models[]).
-	"elevenlabs": {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
-	"el":         {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
+	"elevenlabs": {"eleven_v4", "eleven_v4_turbo", "eleven_flash_v2_5", "eleven_flash_v2", "eleven_multilingual_v2", "eleven_v3", "scribe_v1", "scribe_v2", "scribe_v3"},
+	"el":         {"eleven_v4", "eleven_v4_turbo", "eleven_flash_v2_5", "eleven_flash_v2", "eleven_multilingual_v2", "eleven_v3", "scribe_v1", "scribe_v2", "scribe_v3"},
 	"gc":         {"gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low", "gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
 	"gcli":       {"grok-build", "grok-4.5", "grok-4.5-high", "grok-4.5-medium", "grok-4.5-low"},
 	"gemini":     {"gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-4-31b-it", "gemini-embedding-2-preview", "gemini-embedding-001", "text-embedding-005", "text-embedding-004", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash-native-audio-preview-09-17", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "embedding-001"},
@@ -461,12 +461,26 @@ var ProviderModelKinds = map[string]map[string]string{
 	// Only the STT ids appear here: this map covers the non-chat kinds, and the
 	// TTS ids are resolved through their own catalogue key upstream.
 	"elevenlabs": {
-		"scribe_v1": "stt",
-		"scribe_v2": "stt",
+		"eleven_v4":              "tts",
+		"eleven_v4_turbo":        "tts",
+		"eleven_flash_v2_5":      "tts",
+		"eleven_flash_v2":        "tts",
+		"eleven_multilingual_v2": "tts",
+		"eleven_v3":              "tts",
+		"scribe_v1":              "stt",
+		"scribe_v2":              "stt",
+		"scribe_v3":              "stt",
 	},
 	"el": {
-		"scribe_v1": "stt",
-		"scribe_v2": "stt",
+		"eleven_v4":              "tts",
+		"eleven_v4_turbo":        "tts",
+		"eleven_flash_v2_5":      "tts",
+		"eleven_flash_v2":        "tts",
+		"eleven_multilingual_v2": "tts",
+		"eleven_v3":              "tts",
+		"scribe_v1":              "stt",
+		"scribe_v2":              "stt",
+		"scribe_v3":              "stt",
 	},
 	"fal": {
 		"fal-ai/flux-pro/v1.1":              "image",

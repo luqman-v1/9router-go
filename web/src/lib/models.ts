@@ -7639,13 +7639,33 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "elevenlabs": [
     {
+      "id": "eleven_v4",
+      "name": "Eleven v4",
+      "kind": "tts"
+    },
+    {
+      "id": "eleven_v4_turbo",
+      "name": "Eleven v4 Turbo",
+      "kind": "tts"
+    },
+    {
+      "id": "eleven_flash_v2_5",
+      "name": "Eleven Flash v2.5",
+      "kind": "tts"
+    },
+    {
+      "id": "eleven_flash_v2",
+      "name": "Eleven Flash v2",
+      "kind": "tts"
+    },
+    {
       "id": "eleven_multilingual_v2",
       "name": "Eleven Multilingual v2",
       "kind": "tts"
     },
     {
-      "id": "eleven_turbo_v2_5",
-      "name": "Eleven Turbo v2.5",
+      "id": "eleven_v3",
+      "name": "Eleven v3",
       "kind": "tts"
     },
     {
@@ -7673,27 +7693,50 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
         "num_speakers"
       ],
       "kind": "stt"
+    },
+    {
+      "id": "scribe_v3",
+      "name": "Scribe v3",
+      "params": [
+        "language",
+        "response_format",
+        "timestamps_granularity",
+        "tag_audio_events",
+        "diarize",
+        "num_speakers"
+      ],
+      "kind": "stt"
     }
   ],
   "elevenlabs-tts-models": [
     {
-      "id": "eleven_flash_v2_5",
-      "name": "Flash v2.5 (Fastest)",
+      "id": "eleven_v4",
+      "name": "Eleven v4 (Best quality)",
       "type": "tts"
     },
     {
-      "id": "eleven_turbo_v2_5",
-      "name": "Turbo v2.5 (Fast)",
+      "id": "eleven_v4_turbo",
+      "name": "Eleven v4 Turbo (Realtime)",
+      "type": "tts"
+    },
+    {
+      "id": "eleven_flash_v2_5",
+      "name": "Flash v2.5 (Fastest, cheap)",
+      "type": "tts"
+    },
+    {
+      "id": "eleven_flash_v2",
+      "name": "Flash v2 (English)",
       "type": "tts"
     },
     {
       "id": "eleven_multilingual_v2",
-      "name": "Multilingual v2 (Quality)",
+      "name": "Multilingual v2 (Stable)",
       "type": "tts"
     },
     {
-      "id": "eleven_monolingual_v1",
-      "name": "Monolingual v1 (English)",
+      "id": "eleven_v3",
+      "name": "Eleven v3 (Previous gen)",
       "type": "tts"
     }
   ],
