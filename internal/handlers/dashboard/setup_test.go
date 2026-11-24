@@ -194,3 +194,61 @@ func TestHandlePostSetup_RefusesWhenInitialPasswordSet(t *testing.T) {
 		t.Fatalf("setup with INITIAL_PASSWORD set stored a password hash")
 	}
 }
+
+// The wizard gate rides on /api/auth/status. A remote peer on a fresh install
+// must see requestIsLocal=false so the login form shows instead of a wizard
+// the server would refuse; the no-INITIAL_PASSWORD remote case is the default
+// deployment and locks the operator out if the gate is wrong.
+func TestHandleAuthStatus_ReportsRequestIsLocal(t *testing.T) {
+	authTestEnv(t)
+	t.Setenv("INITIAL_PASSWORD", "")
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := NewDashboardHandler(repo)
+
+	local := httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)
+	local.RemoteAddr = "127.0.0.1:51000"
+	rec := httptest.NewRecorder()
+	h.HandleAuthStatus(rec, local)
+	var status map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &status)
+	if status["requestIsLocal"] != true {
+		t.Errorf("loopback peer: requestIsLocal = %v, want true", status["requestIsLocal"])
+	}
+
+	remote := httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)
+	remote.RemoteAddr = "192.0.2.10:51000"
+	rec2 := httptest.NewRecorder()
+	h.HandleAuthStatus(rec2, remote)
+	_ = json.Unmarshal(rec2.Body.Bytes(), &status)
+	if status["requestIsLocal"] != false {
+		t.Errorf("remote peer: requestIsLocal = %v, want false", status["requestIsLocal"])
+	}
+}
+
+// A cross-site form POST (CSRF) must be refused even from a loopback peer.
+func TestHandlePostSetup_RefusesCrossSiteOrigin(t *testing.T) {
+	authTestEnv(t)
+	t.Setenv("INITIAL_PASSWORD", "")
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := NewDashboardHandler(repo)
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(`{"password":"first-run-password"}`))
+	req.RemoteAddr = "127.0.0.1:51000"
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	h.HandlePostSetup(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site POST /api/setup = %d, want 403", rec.Code)
+	}
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		t.Fatalf("GetSettingsRaw: %v", err)
+	}
+	if hash, _ := raw["password"].(string); hash != "" {
+		t.Fatalf("cross-site setup stored a password hash")
+	}
+}

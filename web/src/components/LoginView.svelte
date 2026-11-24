@@ -72,12 +72,13 @@
           return
         }
         hasPassword = !!data.hasPassword
-        // Fresh install with no configured password path: offer the setup
-        // wizard instead of the default-password login. INITIAL_PASSWORD set
-        // means the operator already chose the first login's password, so the
-        // normal form shows. A remote peer keeps the normal login too (its
-        // setup POST is refused server-side anyway).
-        firstRun = !data.hasPassword && data.initialPasswordSet !== true
+        // The wizard applies only on a fresh install opened from the machine
+        // itself: no stored hash, no INITIAL_PASSWORD, loopback peer. A remote
+        // browser on a fresh install sees the normal login (the server refuses
+        // its setup POST anyway), so hiding the form would lock the operator
+        // out entirely.
+        firstRun =
+          !data.hasPassword && data.initialPasswordSet !== true && data.requestIsLocal === true
         authMode = data.authMode || 'password'
         ssoType = data.ssoType || 'oidc'
         oidcConfigured = data.oidcConfigured === true

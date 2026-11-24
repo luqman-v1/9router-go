@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	json "encoding/json/v2"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -62,8 +64,19 @@ func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	// Cross-site form POSTs (CSRF): the loopback peer is not necessarily the
+	// operator — a same-host browser can be driven by any page it has open.
+	// The sibling POST /api/auth/reset-password applies this same gate.
+	if !isSameOriginOrLocal(r) {
+		noStore(w)
+		handlerutil.WriteJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"error":   "Cross-site setup is prohibited",
+		})
+		return
+	}
 
-	body, err := readJSONBody(r)
+	body, err := readSetupBody(r)
 	if err != nil {
 		noStore(w)
 		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{
@@ -114,4 +127,20 @@ func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Reques
 	h.RecordLogin(r, http.StatusOK, token)
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// readSetupBody reads the setup POST body with a hard bound. The sibling
+// reset-password handler bounds its body the same way: a fresh install has no
+// reason to accept an unbounded read from an anonymous route, and
+// readJSONBody's io.ReadAll would.
+func readSetupBody(r *http.Request) (map[string]any, error) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
