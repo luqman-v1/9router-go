@@ -351,7 +351,10 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	if isGitHubCopilotProvider(modelInfo.Provider) {
 		finalBody = wrapCopilotEmbeddingInput(finalBody)
 	}
-	if providers.ResolveAlias(modelInfo.Provider) == "nvidia" && !strings.HasSuffix(strings.ToLower(modelInfo.Model), "nvclip") {
+	// NVIDIA asymmetric embedding models require an input_type hint; symmetric
+	// ones (nvclip) and non-embedding models (parakeet-ctc-1.1b-asr) must not
+	// receive it. Gate on the exact registry set, not a suffix.
+	if providers.ResolveAlias(modelInfo.Provider) == "nvidia" && nvidiaAsymmetricEmbeddingModels[modelInfo.Model] {
 		finalBody = forwardNvidiaEmbeddingInputType(finalBody)
 	}
 
@@ -2235,6 +2238,26 @@ func wrapCopilotEmbeddingInput(body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// nvidiaAsymmetricEmbeddingModels lists NVIDIA embedding models that require an
+// input_type hint (asymmetric query/passage). Symmetric models (nvclip) and
+// non-embedding models (parakeet-ctc-1.1b-asr) are intentionally excluded.
+var nvidiaAsymmetricEmbeddingModels = map[string]bool{
+	"nvidia/nemotron-3.5-embed-8b":                   true,
+	"nemotron-3.5-embed-8b":                          true,
+	"nvidia/nemotron-3.5-embed-1b":                   true,
+	"nemotron-3.5-embed-1b":                          true,
+	"nvidia/nemotron-3-embed-1b":                     true,
+	"nemotron-3-embed-1b":                            true,
+	"nvidia/nv-embedqa-mistral-7b-v2":                true,
+	"nv-embedqa-mistral-7b-v2":                       true,
+	"nvidia/embed-qa-4":                              true,
+	"embed-qa-4":                                     true,
+	"nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1": true,
+	"llama-3.2-nemoretriever-1b-vlm-embed-v1":        true,
+	"nvidia/llama-3.2-nv-embedqa-1b-v1":              true,
+	"llama-3.2-nv-embedqa-1b-v1":                     true,
 }
 
 // forwardNvidiaEmbeddingInputType injects input_type for NVIDIA's asymmetric
