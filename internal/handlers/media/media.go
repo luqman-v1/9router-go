@@ -503,12 +503,6 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// fields-only payloads (extraction models) do not require questions.
-	if hasF && !hasQ {
-		// ok
-	}
-	if !hasQ && !hasF {
-		// unreachable
-	}
 	if !h.ChatH.EnforceModelAccess(w, r, model) {
 		return
 	}
