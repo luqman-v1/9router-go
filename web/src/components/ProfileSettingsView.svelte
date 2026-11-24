@@ -254,13 +254,6 @@
   // The order those entries are drawn in. Empty means "the order
   // web/src/lib/nav.ts declares", which is what Reset order writes back.
   let navOrder = $state<string[]>([])
-  // Advanced mode: whether the operator surfaces (Plans and the rest of the
-  // advanced preset) are exposed at all. The sidebar preset and this key answer
-  // one question, so picking a preset moves both; the key is what the server
-  // reads to refuse the routes a typed URL could otherwise reach. Loaded as
-  // stored and only rewritten when the preset is changed here, so an existing
-  // deployment that never touches the dropdown keeps the mode it has.
-  let advancedMode = $state(true)
   // The preset the hide list currently equals, and what it leaves out — the same
   // read-back the Usage panel list does, so "Custom" means the same thing here.
   let navPreset = $derived(activeNavPreset(hiddenNav))
@@ -288,9 +281,6 @@
   let passwordSuccessMessage = $state<string | null>(null)
   let passwordErrorMessage = $state<string | null>(null)
   let showPasswordFields = $state(false)
-  let showCurrPwd = $state(false)
-  let showNewPwd = $state(false)
-  let showConfirmPwd = $state(false)
 
   // SSO State
   let authMode = $state<'password' | 'oidc' | 'saml'>('password')
@@ -356,7 +346,6 @@
       // Feature Visibility
       hiddenNav = orderHiddenNav(settings.navVisibility)
       navOrder = normalizeNavOrder(settings.navVisibility)
-      if (typeof settings.advancedMode === 'boolean') advancedMode = settings.advancedMode
 
       // Whitelabel branding
       if (typeof settings.appName === 'string') appName = settings.appName
@@ -384,7 +373,6 @@
         // Feature Visibility
         hiddenNav = orderHiddenNav(s.navVisibility)
         navOrder = normalizeNavOrder(s.navVisibility)
-        if (typeof s.advancedMode === 'boolean') advancedMode = s.advancedMode
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
         if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
         enableSystemPrompt = !!s.systemPromptEnabled
@@ -583,7 +571,6 @@
         oidcScopes,
         oidcLoginLabel,
         navVisibility: { hidden: hiddenNav, order: navOrder },
-        advancedMode,
         samlEntryPoint,
         samlIssuer,
         samlCert,
@@ -928,25 +915,20 @@
           <Shield class="w-4 h-4 text-brand-500" />
           <h2 class="text-sm font-bold text-text-main">Security & Password</h2>
         </div>
+        <Toggle
+          checked={requireLogin}
+          size="sm"
+          label="Require login"
+          onChange={(val) => (requireLogin = val)}
+        />
       </div>
 
       <div class="space-y-3 text-xs">
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0">
-            <p class="font-semibold text-text-main">Require a password</p>
-            <p class="text-[11px] text-text-subtle">
-              Off means the dashboard opens without a login for anyone who can reach
-              this port — a deliberate choice for a box behind a firewall, never for an
-              exposed one. Unset password falls back to
-              <code class="font-mono text-brand-500">123456</code>.
-            </p>
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="font-semibold text-text-main">Require Password on Localhost</p>
+            <p class="text-[11px] text-text-subtle">Default password is <code class="font-mono text-brand-500">123456</code></p>
           </div>
-          <Toggle
-            checked={requireLogin}
-            size="sm"
-            label="Require a password for the dashboard"
-            onChange={(val) => (requireLogin = val)}
-          />
         </div>
 
         <div class="space-y-1 pt-1">
@@ -989,77 +971,38 @@
 
               <div class="space-y-1">
                 <label for="curr-pwd" class="block text-[11px] font-semibold text-text-muted">Current Password</label>
-                <div class="relative">
                 <input
                   id="curr-pwd"
-                  type={showCurrPwd ? "text" : "password"}
-
+                  type="password"
                   bind:value={currentPassword}
                   placeholder="123456"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />
-                <button
-                  type="button"
-                  onclick={() => (showCurrPwd = !showCurrPwd)}
-                  class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
-                  aria-label={showCurrPwd ? "Hide password" : "Show password"}
-                >
-                  <span class="material-symbols-outlined text-[18px]">
-                    {showCurrPwd ? "visibility_off" : "visibility"}
-                  </span>
-                </button>
-              </div>
               </div>
 
               <div class="space-y-1">
                 <label for="new-pwd" class="block text-[11px] font-semibold text-text-muted">New Password</label>
-                <div class="relative">
                 <input
                   id="new-pwd"
-                  type={showNewPwd ? "text" : "password"}
-
+                  type="password"
                   bind:value={newPassword}
                   placeholder="At least 6 characters"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />
-                <button
-                  type="button"
-                  onclick={() => (showNewPwd = !showNewPwd)}
-                  class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
-                  aria-label={showNewPwd ? "Hide password" : "Show password"}
-                >
-                  <span class="material-symbols-outlined text-[18px]">
-                    {showNewPwd ? "visibility_off" : "visibility"}
-                  </span>
-                </button>
-              </div>
               </div>
 
               <div class="space-y-1">
                 <label for="confirm-pwd" class="block text-[11px] font-semibold text-text-muted">Confirm New Password</label>
-                <div class="relative">
                 <input
                   id="confirm-pwd"
-                  type={showConfirmPwd ? "text" : "password"}
-
+                  type="password"
                   bind:value={confirmNewPassword}
                   placeholder="Re-enter new password"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />
-                <button
-                  type="button"
-                  onclick={() => (showConfirmPwd = !showConfirmPwd)}
-                  class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
-                  aria-label={showConfirmPwd ? "Hide password" : "Show password"}
-                >
-                  <span class="material-symbols-outlined text-[18px]">
-                    {showConfirmPwd ? "visibility_off" : "visibility"}
-                  </span>
-                </button>
-              </div>
               </div>
 
               <button
@@ -1775,13 +1718,11 @@
             value={navPreset}
             title={navPresetHint}
             onchange={(event) =>
-              markLayoutEdit(() => {
-                const next = (event.currentTarget as HTMLSelectElement).value as NavPreset
-                hiddenNav = navPresetHidden(next)
-                // The preset and the mode are one decision: only the advanced
-                // preset leaves the operator surfaces on.
-                advancedMode = next === 'advanced'
-              })}
+              markLayoutEdit(() =>
+                (hiddenNav = navPresetHidden(
+                  (event.currentTarget as HTMLSelectElement).value as NavPreset
+                ))
+              )}
             class="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-main focus:border-brand-500 focus:outline-none"
           >
             <!-- Shown only while the switches match no preset: a selection of
@@ -1857,18 +1798,7 @@
                 size="sm"
                 label="{entry.label} in the sidebar"
                 onChange={(val: boolean) => {
-                  markLayoutEdit(() => {
-                    hiddenNav = setNavVisible(hiddenNav, entry.id, val)
-                    // The gated entries and the mode are one decision: a typed
-                    // URL gets 403 while the toggle says "visible" is a state
-                    // the sidebar cannot keep. Turning any gated entry back on
-                    // turns the mode on; hiding all three turns it off.
-                    const gated = ['plans', 'token-saver', 'jailbreak']
-                    if (gated.includes(entry.id)) {
-                      const nextHidden = setNavVisible(hiddenNav, entry.id, val)
-                      advancedMode = gated.some((id) => !nextHidden.includes(id))
-                    }
-                  })
+                  markLayoutEdit(() => (hiddenNav = setNavVisible(hiddenNav, entry.id, val)))
                 }}
               />
             </div>

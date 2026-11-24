@@ -730,12 +730,6 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
-	// First-run setup (inspired by new-api's /api/setup): an anonymous GET/POST
-	// pair that lets a fresh install set the dashboard password from the
-	// browser. The handler itself refuses a stored hash and a non-loopback
-	// peer, so the anonymity is only usable before the gateway is configured.
-	r.Get("/api/setup", dashH.HandleGetSetup)
-	r.Post("/api/setup", dashH.HandlePostSetup)
 	// Deliberately outside the admin group: this is the recovery path for an
 	// operator who cannot log in, so it cannot require the session it is meant
 	// to restore. The handler refuses anything but a loopback peer on the TCP
