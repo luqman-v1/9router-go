@@ -299,6 +299,14 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		// Cache Analytics & Management
 		r.Get("/resilience", h.HandleGetResilience)
 		r.Post("/resilience/reset", h.HandleResetResilience)
+
+		// Per-model circuit breaker (one provider/model pair, distinct from the
+		// provider breaker above). Static before the parameterised reset so a
+		// request to reset everything is not read as a reset of the model named
+		// "reset".
+		r.Get("/model-breakers", h.HandleGetModelBreakers)
+		r.Post("/model-breakers/reset", h.HandleResetAllModelBreakers)
+		r.Post("/model-breakers/{provider}/{model}/reset", h.HandleResetModelBreaker)
 		r.Get("/cache", h.HandleGetCache)
 		r.Delete("/cache", h.HandleDeleteCache)
 		r.Get("/cache/entries", h.HandleGetCacheEntries)

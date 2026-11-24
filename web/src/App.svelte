@@ -20,6 +20,7 @@
   import OAuthCallbackView from './components/connections/OAuthCallbackView.svelte'
   import EndpointView from './components/EndpointView.svelte'
   import LoginView from './components/LoginView.svelte'
+  import ModelBreakerView from './components/ModelBreakerView.svelte'
   import MediaKindView from './components/media/MediaKindView.svelte'
   import MediaProviderDetail from './components/media/MediaProviderDetail.svelte'
   import ProxyPoolsView from './components/ProxyPoolsView.svelte'
@@ -376,6 +377,7 @@
     'media-systemone': { title: 'System One', description: 'Structured state evaluation models' },
     'media-web': { title: 'Web Fetch & Search', description: 'Configure web search and scrape tools' },
     'proxy-pools': { title: 'Proxy Pools', description: 'Manage your proxy pool configurations' },
+    'model-breakers': { title: 'Model Breakers', description: 'Per-model circuit breakers — see which model is being held back and lift it' },
     skills: { title: 'Agent Skills', description: 'Copy a link and paste to your AI to use 9router-go — no install needed' },
     'console-log': { title: 'Console Log', description: 'Live server console output' },
     terminal: { title: 'Console Log', description: 'Live server console output' },
@@ -747,6 +749,8 @@
               {/if}
             {:else if activeTab === 'proxy-pools'}
               <ProxyPoolsView />
+            {:else if activeTab === 'model-breakers'}
+              <ModelBreakerView />
             {:else if activeTab === 'skills'}
               <SkillsView />
             {:else if activeTab === 'console-log' || activeTab === 'terminal'}

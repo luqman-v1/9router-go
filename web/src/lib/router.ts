@@ -20,6 +20,7 @@ export type ActiveTab =
   | 'media-systemone'
   | 'media-web'
   | 'proxy-pools'
+  | 'model-breakers'
   | 'skills'
   | 'console-log'
   | 'terminal'
@@ -48,6 +49,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   'media-systemone': '/dashboard/media-providers/systemone',
   'media-web': '/dashboard/media-providers/web',
   'proxy-pools': '/dashboard/proxy-pools',
+  'model-breakers': '/dashboard/model-breakers',
   skills: '/dashboard/skills',
   'console-log': '/dashboard/console-log',
   terminal: '/dashboard/console-log',
@@ -147,6 +149,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // proxy pools
   '/dashboard/proxy-pools': 'proxy-pools',
   '/proxy-pools': 'proxy-pools',
+
+  // per-model circuit breakers (distinct from the provider breaker)
+  '/dashboard/model-breakers': 'model-breakers',
+  '/model-breakers': 'model-breakers',
 
   // skills
   '/dashboard/skills': 'skills',
