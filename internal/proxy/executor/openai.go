@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -320,7 +321,35 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 		// declared maxOutput from the capability registry, capped at Ark's 4096.
 		req.Body = clampVolcengineArkGLM5OutputTokens(req.Provider, req.Body)
 	}
-	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
+	body := req.Body
+	if isMistralVibeRequest(req) {
+		// ForwardMistral normally does this before calling us; the guard keeps
+		// direct callers (tests and internal relays) on the same wire contract.
+		body = normalizeMistralVibeRequest(body)
+		if req.OnUpstreamError == nil {
+			req.OnUpstreamError = func(status int, detail []byte) ([]byte, bool) {
+				if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+					return nil, false
+				}
+				return snapMistralVibeReasoningEffort(body, detail)
+			}
+		}
+	}
+	// The response body is transferred to bodyCloser below, not leaked here.
+	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream) //nolint:bodyclose
+	if err != nil && req.OnUpstreamError != nil {
+		// Non-2xx answers arrive as a typed UpstreamError with the body already
+		// captured. A provider-scoped hook may repair a fixable param; replay
+		// at most once, then fall through to the original error.
+		var upstreamErr *proxy.UpstreamError
+		if errors.As(err, &upstreamErr) {
+			if rewritten, ok := req.OnUpstreamError(upstreamErr.StatusCode, upstreamErr.Body); ok {
+				req.OnUpstreamError = nil
+				body = rewritten
+				resp, err = proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream) //nolint:bodyclose
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("ForwardOpenAI upstream: %w", err)
 	}
@@ -363,6 +392,11 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 				if rerr != nil {
 					return fmt.Errorf("read upstream body: %w", rerr)
 				}
+				if isMistralVibeRequest(req) {
+					full := append(head, rest...)
+					full = normalizeMistralVibeCompletion(full)
+					return jsonResponse(req.Ctx, w, bytes.NewReader(full), req.TranslateResp, req.ResponseBuf)
+				}
 				return jsonResponse(req.Ctx, w, bytes.NewReader(append(head, rest...)), req.TranslateResp, req.ResponseBuf)
 			}
 		}
@@ -388,6 +422,14 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 		decloaked := DecloakClaudeResponseBody(raw, req.ToolNameMap)
 		return jsonResponse(req.Ctx, w, bytes.NewReader(decloaked), req.TranslateResp, req.ResponseBuf)
 	}
+	if isMistralVibeRequest(req) {
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		if rerr != nil {
+			return fmt.Errorf("read upstream body: %w", rerr)
+		}
+		raw = normalizeMistralVibeCompletion(raw)
+		return jsonResponse(req.Ctx, w, bytes.NewReader(raw), req.TranslateResp, req.ResponseBuf)
+	}
 	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
@@ -400,6 +442,7 @@ func execSSEStream(w http.ResponseWriter, upstream io.Reader, req *Request) erro
 		W: w, Upstream: upstream, Translate: req.TranslateResp, StartTime: startTime,
 		TTFT: req.TTFT, Buf: req.ResponseBuf, Ctx: req.Ctx, ToolNameMap: req.ToolNameMap,
 		LiftReasoningAliases: req.LiftReasoningAliases,
+		MistralVibe:          isMistralVibeRequest(req),
 	})
 }
 
@@ -425,6 +468,9 @@ type sseStreamOpts struct {
 	// LiftReasoningAliases patches passthrough deltas to expose alias-shaped
 	// thinking as reasoning_content (opencode quirk).
 	LiftReasoningAliases bool
+	// MistralVibe enables GLM content-part normalization and tool-call finish
+	// repair on the /v1/chat/completions wire.
+	MistralVibe bool
 }
 
 // sseStream pipes SSE chunks to client with optional format translation.
@@ -441,6 +487,11 @@ func sseStream(o sseStreamOpts) error {
 	// because translateResponse describes a Claude client, which a Responses
 	// client never sets.
 	if translator.NeedsResponsesBridge(ctx) {
+		if o.MistralVibe {
+			o.Upstream = &mistralVibeSSEPatchReader{
+				src: o.Upstream, patcher: &mistralVibeStreamPatcher{},
+			}
+		}
 		return streamChatToResponses(o)
 	}
 
@@ -530,6 +581,9 @@ func sseStream(o sseStreamOpts) error {
 		// the  closing tag can be split across chunk boundaries.
 		composerDecoder := &composerThinkingDecoder{}
 		patchers = append(patchers, composerDecoder.Process)
+		if o.MistralVibe {
+			patchers = append(patchers, (&mistralVibeStreamPatcher{}).Process)
+		}
 		var streamUsage *translator.OpenAIUsage
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)

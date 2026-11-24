@@ -608,6 +608,15 @@ func (h *ChatHandler) appendConnectionModels(
 ) []ModelInfoObject {
 	connData := parseConnectionModelData(conn)
 
+	// A Mistral connection can opt into the reference gateway's Vibe wire
+	// contract with providerSpecificData.usageLane = "vibe". Keep the parse
+	// local to this connection: the ordinary Mistral API lane is untouched.
+	var sharedData shared.ConnectionData
+	if conn != nil && conn.Data != "" {
+		_ = json.Unmarshal([]byte(conn.Data), &sharedData)
+	}
+	vibeMistral := providerID == "mistral" && providers.IsMistralVibeConnection(sharedData.ProviderSpecificData)
+
 	staticAlias := providers.GetProviderAlias(providerID)
 	if staticAlias == "" {
 		staticAlias = providerID
@@ -654,10 +663,6 @@ func (h *ChatHandler) appendConnectionModels(
 	// no data to parse and no credentials, so it goes straight to static.
 	liveByID := make(map[string]LiveModel)
 	if len(ids) == 0 && conn != nil {
-		var sharedData shared.ConnectionData
-		if conn.Data != "" {
-			_ = json.Unmarshal([]byte(conn.Data), &sharedData)
-		}
 		for _, live := range h.resolveLiveCatalog(ctx, conn, &sharedData, providerID) {
 			liveByID[live.ID] = live
 			ids = append(ids, live.ID)
@@ -667,6 +672,48 @@ func (h *ChatHandler) appendConnectionModels(
 		ids = providers.GetProviderModels(staticAlias)
 		if len(ids) == 0 {
 			ids = providers.GetProviderModels(outputAlias)
+		}
+	}
+
+	if vibeMistral && !hasExplicitEnabledModels {
+		// The reference gateway publishes chat models only, plus a clone of
+		// each target under its gateway-only alias. Upstream aliases that
+		// carry the same name are dropped before the clones are added.
+		chatIDs := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if providers.IsMistralVibeAlias(id) {
+				continue
+			}
+			if live, ok := liveByID[id]; ok && live.CompletionChat != nil && !*live.CompletionChat {
+				delete(liveByID, id)
+				continue
+			}
+			chatIDs = append(chatIDs, id)
+		}
+		ids = chatIDs
+		if len(ids) == 0 {
+			// No live feed (or no chat models in it): use the tested model
+			// set from the reference gateway's README.
+			ids = append(ids, providers.MistralVibeCanonicalModels...)
+		}
+		for _, alias := range providers.MistralVibeAliases {
+			targetPresent := false
+			for _, id := range ids {
+				if id == alias.Target {
+					targetPresent = true
+					break
+				}
+			}
+			if !targetPresent {
+				continue
+			}
+			ids = append(ids, alias.Alias)
+			if live, ok := liveByID[alias.Target]; ok {
+				clone := live
+				clone.ID = alias.Alias
+				clone.Name = alias.Alias
+				liveByID[alias.Alias] = clone
+			}
 		}
 	}
 

@@ -132,6 +132,13 @@ func parseModelsFeedLiveModels(body []byte) []LiveModel {
 		}
 		seen[id] = true
 
+		var completionChat *bool
+		if caps, ok := entry["capabilities"].(map[string]any); ok {
+			if chatCapable, ok := caps["completion_chat"].(bool); ok {
+				completionChat = &chatCapable
+			}
+		}
+
 		ctxLen := firstPositiveInt(entry, "context_length", "contextLength", "context_window", "contextWindow")
 		maxOut := firstPositiveInt(entry, "max_completion_tokens", "max_output_tokens", "maxOutputTokens", "maxOutput")
 		if top, ok := entry["top_provider"].(map[string]any); ok {
@@ -158,6 +165,7 @@ func parseModelsFeedLiveModels(body []byte) []LiveModel {
 			Name:                firstNonEmptyString(entry, "name"),
 			ContextLength:       ctxLen,
 			MaxOutput:           maxOut,
+			CompletionChat:      completionChat,
 			LimitsAuthoritative: ctxLen > 0 || maxOut > 0,
 		})
 	}
