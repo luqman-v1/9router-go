@@ -1,11 +1,15 @@
 package media
 
 import (
+	"context"
 	json "encoding/json/v2"
+	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,4 +188,125 @@ func ioReadAll(r io.Reader) ([]byte, error) {
 
 func timeNow() time.Time {
 	return time.Now()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestDoDirectOrClient_RewindsPostBodyAndHonorsCancel(t *testing.T) {
+	t.Run("rewinds POST body on direct retry", func(t *testing.T) {
+		var gotBody string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		}))
+		defer server.Close()
+
+		origDirect := directHTTPClient
+		directHTTPClient = server.Client()
+		t.Cleanup(func() { directHTTPClient = origDirect })
+
+		failingClient := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Body != nil {
+					_, _ = io.ReadAll(r.Body)
+				}
+				return nil, errors.New("proxy reset")
+			}),
+		}
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader("hello-post-body"))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := doDirectOrClient(context.Background(), failingClient, req)
+		if err != nil {
+			t.Fatalf("doDirectOrClient unexpected error: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if gotBody != "hello-post-body" {
+			t.Fatalf("direct retry body = %q, want %q", gotBody, "hello-post-body")
+		}
+	})
+
+	t.Run("does not retry when context is canceled", func(t *testing.T) {
+		var serverHits atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			serverHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		origDirect := directHTTPClient
+		directHTTPClient = server.Client()
+		t.Cleanup(func() { directHTTPClient = origDirect })
+
+		ctx, cancel := context.WithCancel(context.Background())
+		failingClient := &http.Client{
+			Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				cancel()
+				return nil, context.Canceled
+			}),
+		}
+
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader("payload"))
+		resp, err := doDirectOrClient(ctx, failingClient, req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			t.Fatal("expected error on canceled context")
+		}
+		if serverHits.Load() != 0 {
+			t.Fatalf("direct retry ran after cancel: hits=%d", serverHits.Load())
+		}
+	})
+
+	t.Run("does not double-dial when client is nil", func(t *testing.T) {
+		var hits atomic.Int32
+		origDirect := directHTTPClient
+		directHTTPClient = &http.Client{
+			Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				hits.Add(1)
+				return nil, errors.New("dial failed")
+			}),
+		}
+		t.Cleanup(func() { directHTTPClient = origDirect })
+
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.invalid", nil)
+		resp, err := doDirectOrClient(context.Background(), nil, req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			t.Fatal("expected dial error")
+		}
+		if hits.Load() != 1 {
+			t.Fatalf("dial attempts = %d, want 1", hits.Load())
+		}
+	})
+}
+
+func TestBuildEdgeTTSSSML_EscapesXMLCharacters(t *testing.T) {
+	ssml := buildEdgeTTSSSML("en-US", "Female", "en-US-AriaNeural", "AT&T <5> 'ok'")
+	if !strings.Contains(ssml, "AT&amp;T &lt;5&gt;") {
+		t.Fatalf("expected XML-escaped text in SSML, got %s", ssml)
+	}
+	dec := xml.NewDecoder(strings.NewReader(ssml))
+	for {
+		if _, err := dec.Token(); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("SSML is not well-formed XML: %v\nSSML=%s", err, ssml)
+		}
+	}
 }
