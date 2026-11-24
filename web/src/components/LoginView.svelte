@@ -28,8 +28,8 @@
   let firstRun = $state(false)
   let confirmPassword = $state('')
   // The wizard's second step: is this gateway for one person, or for keys
-  // someone else spends? Personal hides the operator surfaces and turns them
-  // off server-side; Advanced leaves the deployment as it always was.
+  // someone else spends? Personal writes the sidebar hide list; Advanced leaves
+  // the sidebar as it always was. Neither touches the routes.
   let setupStep = $state<'password' | 'mode'>('password')
   let advancedChoice = $state(true)
   // Show/hide toggles for the two wizard password fields, mirroring the login
@@ -414,8 +414,8 @@
                   <span class="flex flex-col gap-0.5">
                     <span class="text-sm font-medium text-text-main">Personal</span>
                     <span class="text-xs text-text-muted">
-                      Just me. Plans, budgets and prompt presets stay hidden and off —
-                      fewer surfaces to think about.
+                      Just me. Plans, budgets and prompt presets are hidden from the
+                      sidebar — fewer surfaces to think about. Nothing is removed.
                     </span>
                   </span>
                 </label>
