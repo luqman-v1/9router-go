@@ -3,9 +3,11 @@ package modelbreaker
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"9router/proxy/internal/errclass"
 )
@@ -113,6 +115,91 @@ func codeFromRaw(raw json.RawMessage, out *int) bool {
 		}
 	}
 	return false
+}
+
+// Bound on the registry. AGENTS.md §4.G requires bounding everything that
+// grows, and this map is keyed on a model id that originates in the request
+// body, so an unauthenticated client can create a permanent entry per distinct
+// model string. Two independent bounds, because either alone has a hole:
+//
+//   - maxEntries caps the count, so a flood of distinct ids cannot grow the map
+//     without limit;
+//   - evictIdleFor removes entries that have not failed for a whole retention
+//     window, so an entry whose owner stopped calling the model leaves on its
+//     own and the cap only ever bites during an actual flood.
+//
+// Eviction is lossy on purpose: a breaker holds no durable state, and the next
+// BreakerFor recreates the pair from its first cooldown cycle. The worst case
+// is one model waiting 60 seconds longer than it otherwise would — never a
+// wrong admission decision, because Allow() reads the entry that exists now.
+//
+// The cap check lives in BreakerFor rather than in a background sweeper: a
+// package-level goroutine would need a lifecycle the request path does not have,
+// and this map only grows on the request path, so bounding it there means the
+// size is checked exactly when it could have grown.
+const (
+	maxEntries   = 4096
+	evictIdleFor = 30 * time.Minute
+)
+
+// evictLocked brings the registry back within bounds. The caller must hold
+// registryMu.
+//
+// Order matters and both rules run on every call: idle entries go first, then
+// the oldest of what is left until the cap is met. Dropping only the oldest
+// would leave an idle entry parked until a flood finally reached it, and
+// dropping only the idle ones would let a flood of *recently-failing* distinct
+// ids grow the map past the cap forever. A cap that cannot shed an entry that
+func evictLocked() {
+	// The idle pass runs on every call, independent of the cap: a pair nobody
+	// has failed for a whole retention window must leave even when the registry
+	// is nowhere near full, otherwise the cap becomes the only thing that ever
+	// removes anything and a mostly-idle registry holds its entries forever.
+	// O(n) over a map that is normally a handful of entries, and this runs only
+	// on the create path, past the "does this pair exist" lookup that already
+	// cost a map read.
+	idleCutoff := time.Now().Add(-evictIdleFor)
+	for k, b := range registry {
+		if last := b.lastFailureTime(); last.Before(idleCutoff) {
+			delete(registry, k)
+		}
+	}
+
+	// Then the hard cap, which has to shed even recently-failing entries or a
+	// flood of distinct ids grows the map past it. Strictly less than the cap,
+	// because BreakerFor adds one entry immediately after this returns: an
+	// equality check would leave the map one entry over, permanently.
+	if len(registry) < maxEntries {
+		return
+	}
+	type entry struct {
+		key  string
+		last time.Time
+	}
+	entries := make([]entry, 0, len(registry))
+	for k, b := range registry {
+		last := b.lastFailureTime()
+		if last.IsZero() {
+			// Never failed: only its creation makes it exist. A zero stamp is
+			// trivially the oldest, and evicting it removes no state at all.
+			last = idleCutoff
+		}
+		entries = append(entries, entry{key: k, last: last})
+	}
+	// Oldest first: the head of this order is what gets dropped. Dropping a
+	// recently-failing pair to satisfy a cap is the one case where this layer
+	// takes a live model out of rotation for a boundary condition instead of
+	// for its own behaviour — which is why the cap is a high-water mark and not
+	// the routine removal path.
+	slices.SortFunc(entries, func(a, b entry) int {
+		return a.last.Compare(b.last)
+	})
+	for _, e := range entries {
+		if len(registry) < maxEntries {
+			return
+		}
+		delete(registry, e.key)
+	}
 }
 
 // AllStatuses returns a snapshot of every tracked model, for the dashboard.

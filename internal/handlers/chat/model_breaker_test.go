@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -202,4 +203,43 @@ func TestModelBreakerFailureChargesOnlyModelScope(t *testing.T) {
 // upstream produced.
 func modelBreakerRefusal(ue *upstreamError) bool {
 	return ue != nil && strings.Contains(string(ue.Body), "model_cooling_down")
+}
+
+// The refusal must be parseable JSON, not merely contain the code.
+//
+// The bug this pins: the body was two concatenated raw strings split between
+// `"message":…,` and `"type":…`, which emits `""type"`. That reads as a
+// deliberate marker to a substring check — the old assertion used
+// strings.Contains("model_cooling_down") and stayed green — while every client
+// that decodes the 503 envelope gets "invalid character 't' after object key".
+// Only unmarshalling the whole envelope catches it.
+func TestModelBreakerUnavailableBodyIsParseableJSON(t *testing.T) {
+	ue := modelBreakerUnavailable(45 * time.Second)
+
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(ue.Body, &envelope); err != nil {
+		t.Fatalf("refusal body is not parseable JSON: %v\nbody: %s", err, ue.Body)
+	}
+	if envelope.Error.Code != "model_cooling_down" {
+		t.Errorf("code = %q, want model_cooling_down", envelope.Error.Code)
+	}
+	if envelope.Error.Type == "" {
+		t.Error("type is empty — the key was dropped or mangled, so a client cannot classify the failure")
+	}
+	if envelope.Error.Message == "" {
+		t.Error("message is empty — the operator-facing reason is gone")
+	}
+	// Retry-After rides the header in seconds, and a disabled pair carries none.
+	if got := ue.Header.Get("Retry-After"); got != "45" {
+		t.Errorf("Retry-After = %q, want 45", got)
+	}
+	if got := modelBreakerUnavailable(0).Header.Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After on a timerless refusal = %q, want empty", got)
+	}
 }

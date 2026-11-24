@@ -1,10 +1,24 @@
 package modelbreaker
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+// clearRegistry empties the map itself, not just each breaker's state.
+//
+// ResetAll keeps every entry and only closes it, which is right for production
+// (the pairs are still tracked and still show in the dashboard) but wrong for
+// the registry tests: TestRegistryBoundsItsSize fills the map to its cap, and a
+// later test asserting on which entries survive eviction must not read that
+// flood.
+func clearRegistry() {
+	registryMu.Lock()
+	clear(registry)
+	registryMu.Unlock()
+}
 
 // testOptions are the defaults, with the base cooldown kept short enough that a
 // test can advance a fake clock by hand instead of sleeping.
@@ -218,5 +232,102 @@ func TestBreakerKeySplitsBackIntoProviderAndModel(t *testing.T) {
 					strings.ToLower(tt.provider), strings.ToLower(tt.model))
 			}
 		})
+	}
+}
+
+// The registry is keyed on a model id that arrives in the request body, so an
+// unauthenticated client could otherwise create one permanent entry per distinct
+// string. AGENTS.md §4.G requires the bound; this pins that it actually holds and
+// that evicting an entry cannot corrupt the survivors' state.
+func TestRegistryBoundsItsSize(t *testing.T) {
+	clearRegistry()
+	t.Cleanup(clearRegistry)
+
+	// One more than the cap, each with a distinct model id and a distinct
+	// failure stamp, so the eviction has a deterministic oldest to drop.
+	// Stamps are relative to now: eviction compares against time.Now, so an
+	// absolute past date would read as idle and exercise the idle rule rather
+	// than the cap this test is about.
+	total := maxEntries + 8
+	base := time.Now()
+	for i := range total {
+		b := BreakerFor("flood-provider", "flood-model-"+strconv.Itoa(i), testOptions())
+		b.mu.Lock()
+		b.lastFailure = base.Add(time.Duration(i) * time.Second)
+		b.mu.Unlock()
+	}
+	// Every entry has a failure stamp newer than the idle window, so the cap is
+	// the only thing that can bite here — the idle rule is asserted separately.
+	registryMu.Lock()
+	size := len(registry)
+	registryMu.Unlock()
+	if size > maxEntries {
+		t.Fatalf("registry holds %d entries, want at most %d — the cap is not enforced", size, maxEntries)
+	}
+
+	// Two properties, and they are different questions. The cap held (asserted
+	// above). The ordering is what makes eviction safe rather than merely
+	// bounded: the oldest entry must be the one that went, because dropping a
+	// recently-failing pair would take a live model out of rotation for a
+	// boundary condition instead of for its own behaviour.
+	//
+	// The checkpoint is taken *before* any BreakerFor for that pair, because
+	// BreakerFor recreates what it evicts — asking for the pair again is itself
+	// what put it back. Reading the map directly is the only way to distinguish
+	// "evicted" from "evicted and then recreated".
+	registryMu.Lock()
+	_, oldestPresent := registry[Key("flood-provider", "flood-model-0")]
+	_, newestPresent := registry[Key("flood-provider", "flood-model-"+strconv.Itoa(total-1))]
+	registryMu.Unlock()
+	if oldestPresent {
+		t.Error("the oldest entry survived eviction, want it dropped first")
+	}
+	if !newestPresent {
+		t.Error("the newest entry was evicted, want the oldest dropped first")
+	}
+
+	// A survivor still serves, which is the part that would break if eviction
+	// cleared a breaker's state instead of dropping the entry.
+	survivor := BreakerFor("flood-provider", "flood-model-"+strconv.Itoa(total-1), testOptions())
+	if !survivor.Allow() {
+		t.Error("a surviving pair is refused, want it still serving after eviction")
+	}
+}
+
+// An entry nobody has failed for the retention window leaves on its own, which
+// is what keeps the cap from being the only defence: a model that stops being
+// called must not occupy a slot forever.
+func TestRegistryEvictsIdleEntries(t *testing.T) {
+	clearRegistry()
+	t.Cleanup(clearRegistry)
+
+	// Stamps relative to the clock eviction uses (time.Now), not a fixed date:
+	// a live entry stamped in the past is idle by definition, which is the
+	// opposite of what this test asserts.
+	now := time.Now()
+	idle := BreakerFor("idle-provider", "idle-model", testOptions())
+	idle.mu.Lock()
+	idle.lastFailure = now.Add(-2 * evictIdleFor)
+	idle.mu.Unlock()
+
+	live := BreakerFor("live-provider", "live-model", testOptions())
+	live.mu.Lock()
+	live.lastFailure = now
+	live.mu.Unlock()
+
+	// A fresh pair, which is what triggers the eviction pass.
+	BreakerFor("trigger-provider", "trigger-model", testOptions())
+
+	// Read the map directly rather than through BreakerFor: asking for the idle
+	// pair would recreate it, which is the opposite of what is being asserted.
+	registryMu.Lock()
+	_, idlePresent := registry[Key("idle-provider", "idle-model")]
+	_, livePresent := registry[Key("live-provider", "live-model")]
+	registryMu.Unlock()
+	if idlePresent {
+		t.Error("an entry idle for twice the retention window survived, want it evicted")
+	}
+	if !livePresent {
+		t.Error("a recently-failing entry was evicted as idle, want it kept")
 	}
 }

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	json "encoding/json/v2"
 	"net/http"
 	"strconv"
 	"time"
@@ -97,6 +98,33 @@ func modelBreakerFailure(provider, model string, status int, body []byte) {
 //
 // Local marks it: the credential was never dialled, so the account-rotation
 // layer must not cool a healthy connection down over a verdict about a model.
+// breakerBody is marshalled once at init from a typed struct, so the envelope
+// on the wire is guaranteed parseable — the previous hand-concatenated literal
+// emitted `""type"`.
+var breakerBody = func() []byte {
+	b, err := json.Marshal(struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}{
+		Error: struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		}{Message: "model is cooling down after repeated failures", Type: "server_error", Code: "model_cooling_down"},
+	})
+	if err != nil {
+		// A struct of three strings cannot fail to marshal; a panic here would
+		// be a programming error, and the request path must not crash on it.
+		return []byte(`{"error":{"message":"model is cooling down after repeated failures","type":"server_error","code":"model_cooling_down"}}`)
+	}
+	return b
+}()
+
+// modelBreakerUnavailable builds the refusal. Kept as a function because
+// retryAfter varies per call.
 func modelBreakerUnavailable(retryAfter time.Duration) *upstreamError {
 	ra := ""
 	if retryAfter > 0 {
@@ -104,8 +132,12 @@ func modelBreakerUnavailable(retryAfter time.Duration) *upstreamError {
 	}
 	return &upstreamError{
 		StatusCode: http.StatusServiceUnavailable,
-		Body: []byte(`{"error":{"message":"model is cooling down after repeated failures","` +
-			`"type":"server_error","code":"model_cooling_down"}}`),
+		// One literal, not two concatenated halves: a split after `"message":…,`
+		// and before `"type":…` produced `""type"` — valid-looking bytes that
+		// json.Unmarshal rejects, so a client parsing the 503 envelope saw a
+		// decode error instead of the reason. `json.Marshal` of a struct is
+		// what keeps that class of bug out of the wire format.
+		Body:   breakerBody,
 		Header: http.Header{"Retry-After": []string{ra}},
 		Local:  true,
 	}

@@ -147,6 +147,10 @@ func BreakerFor(provider, model string, opts Options) *Breaker {
 	if b, ok := registry[key]; ok {
 		return b
 	}
+	// Bound before creating, so the map never exceeds the cap by more than the
+	// one entry being added — a bound checked only after insertion would let
+	// the map sit one entry over indefinitely.
+	evictLocked()
 	b := &Breaker{
 		name:  key,
 		opts:  opts.withDefaults(),
@@ -336,6 +340,19 @@ func (b *Breaker) Status() Status {
 		Cooldowns:  cooldowns,
 		RetryAfter: retry,
 	}
+}
+
+// lastFailureTime reads the last failure stamp under the breaker's own lock.
+//
+// It exists for the registry's eviction, which runs under registryMu and must
+// not take a breaker's lock to decide which entry is oldest. Dropping an entry
+// loses nothing a breaker can recreate: the next BreakerFor starts from the
+// first cooldown cycle, so the cost of evicting a live pair is one warm cooldown
+// rather than a permanently cold one.
+func (b *Breaker) lastFailureTime() time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastFailure
 }
 
 // splitName recovers the provider and model halves of a registry key. The key
