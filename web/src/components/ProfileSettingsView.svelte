@@ -1810,7 +1810,18 @@
                 size="sm"
                 label="{entry.label} in the sidebar"
                 onChange={(val: boolean) => {
-                  markLayoutEdit(() => (hiddenNav = setNavVisible(hiddenNav, entry.id, val)))
+                  markLayoutEdit(() => {
+                    hiddenNav = setNavVisible(hiddenNav, entry.id, val)
+                    // The gated entries and the mode are one decision: a typed
+                    // URL gets 403 while the toggle says "visible" is a state
+                    // the sidebar cannot keep. Turning any gated entry back on
+                    // turns the mode on; hiding all three turns it off.
+                    const gated = ['plans', 'token-saver', 'jailbreak']
+                    if (gated.includes(entry.id)) {
+                      const nextHidden = setNavVisible(hiddenNav, entry.id, val)
+                      advancedMode = gated.some((id) => !nextHidden.includes(id))
+                    }
+                  })
                 }}
               />
             </div>

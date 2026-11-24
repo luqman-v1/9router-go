@@ -31,7 +31,7 @@
   // someone else spends? Personal hides the operator surfaces and turns them
   // off server-side; Advanced leaves the deployment as it always was.
   let setupStep = $state<'password' | 'mode'>('password')
-  let advancedChoice = $state(false)
+  let advancedChoice = $state(true)
   // White-label branding on the login screen. appName/appLogoUrl are the two
   // the sidebar already reads from the same settings row; loginLogo and
   // appTagline are the login-specific pair.
