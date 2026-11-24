@@ -545,16 +545,20 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		// capabilities.js), which differ from both the OpenAI API's and the
 		// sibling GPT-5.6 models' — Sol is wider than Terra/Luna, and the [1m]
 		// variants are wider again.
-		"gpt-6-astra": codexGpt56Caps(272000),
-		"gpt-6-sol":   codexGpt56Caps(272000),
-		"gpt-6-luna":  codexGpt56Caps(272000),
-		"gpt-6.1-sol": codexGpt56Caps(272000),
+		"gpt-6-astra":   codexGpt56Caps(272000),
+		"gpt-6-sol":     codexGpt56Caps(272000),
+		"gpt-6-luna":    codexGpt56Caps(272000),
+		"gpt-6.1-sol":   codexGpt56Caps(272000),
+		"gpt-6.2-astra": codexGpt56Caps(272000),
+		"gpt-6.2-sol":   codexGpt56Caps(272000),
 		// codex-rs/models-manager/models.json: gpt-6.1-terra carries a 500k
 		// window on Codex (the API model is 1.05M; Codex caps the default
 		// window like its siblings).
 		"gpt-6.1-terra":          codexGpt56Caps(500000),
 		"gpt-6-astra[1m]":        codexGpt56Caps(codexExtendedContextWindow),
 		"gpt-6-sol[1m]":          codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-6.2-astra[1m]":      codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-6.2-sol[1m]":        codexGpt56Caps(codexExtendedContextWindow),
 		"gpt-6-luna[1m]":         codexGpt56Caps(codexExtendedContextWindow),
 		"gpt-5.6-sol":            codexGpt56Caps(372000),
 		"gpt-5.6-sol[1m]":        codexGpt56Caps(codexExtendedContextWindow),
