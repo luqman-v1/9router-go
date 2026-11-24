@@ -2,6 +2,8 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
@@ -28,7 +30,9 @@ func isRetryableComboError(ue *upstreamError) bool {
 	if ue == nil {
 		return false
 	}
-	if ue.StatusCode >= 400 && ue.StatusCode < 500 && ue.StatusCode != http.StatusTooManyRequests {
+	if ue.StatusCode >= 400 && ue.StatusCode < 500 &&
+		ue.StatusCode != http.StatusTooManyRequests &&
+		!providers.FreePiIsConcurrentSessionCode(ue.Body) {
 		return false
 	}
 	return true
@@ -48,6 +52,17 @@ func isRetryableComboError(ue *upstreamError) bool {
 // cannot help: the request is what was rejected.
 func isRequestScopedComboError(ue *upstreamError) bool {
 	if ue == nil || ue.StatusCode < 400 || ue.StatusCode >= 500 {
+		return false
+	}
+	// free-pi's `concurrent_session` is a 409 whose verdict is about the
+	// ACCOUNT'S capacity, not about the request: the account already holds its
+	// maximum number of live sessions, so another account can serve this exact
+	// request unchanged. Treating it as request-scoped ended the pass and
+	// returned the conflict to the client, which is why a second free-pi account
+	// never picked up a mid-conversation switch. Keyed on the envelope `code`
+	// rather than the status: 409 is a generic conflict and only this provider's
+	// session code means "try another account".
+	if ue.StatusCode == http.StatusConflict && providers.FreePiIsConcurrentSessionCode(ue.Body) {
 		return false
 	}
 	return !providers.RetryableStatusCodes[ue.StatusCode]
@@ -718,6 +733,53 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string, combo
 }
 
 func (h *ChatHandler) applyComboStrategyWithSeats(strategy string, models []string, comboName string, stickyLimit int, newTurn bool, comboOwnModels []string, explicitWeights ...map[string]int) []string {
+	return h.applyComboStrategyForConversation(strategy, models, comboName, stickyLimit, newTurn, "", comboOwnModels, explicitWeights...)
+}
+
+// conversationFingerprint identifies a conversation across its turns.
+//
+// The FIRST user message is the anchor: it is written once when the conversation
+// starts and never changes as the history grows, whereas hashing the whole
+// message list would produce a new key on every turn. Providers that bind a
+// conversation to the account that opened it refuse a later turn arriving from a
+// different account, so the rotation state has to be keyed by something stable
+// for the conversation's life.
+//
+// Returns "" when the body carries no user message, which leaves the caller on
+// the per-combo key rather than inventing an identity.
+func conversationFingerprint(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var req struct {
+		Messages []struct {
+			Role    string         `json:"role"`
+			Content jsontext.Value `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return ""
+	}
+	for _, m := range req.Messages {
+		if m.Role != "user" || len(m.Content) == 0 {
+			continue
+		}
+		sum := sha256.Sum256(m.Content)
+		return hex.EncodeToString(sum[:16])
+	}
+	return ""
+}
+
+// applyComboStrategyForConversation is applyComboStrategyWithSeats with the
+// rotation state scoped to one conversation.
+//
+// convKey "" keeps the per-combo behaviour the callers had before; a non-empty
+// key gives each conversation its own rotation cursor, so a conversation stays
+// on the seat that opened it while round-robin still spreads NEW conversations
+// across seats. Without that, sticky=1 advances on every request and turn 2 of a
+// conversation lands on a different account — which a provider that binds
+// conversations to accounts rejects outright.
+func (h *ChatHandler) applyComboStrategyForConversation(strategy string, models []string, comboName string, stickyLimit int, newTurn bool, convKey string, comboOwnModels []string, explicitWeights ...map[string]int) []string {
 	if len(models) <= 1 {
 		return models
 	}
@@ -742,10 +804,25 @@ func (h *ChatHandler) applyComboStrategyWithSeats(strategy string, models []stri
 		if key == "" {
 			key = "__default__"
 		}
+		if convKey != "" {
+			key += "\x00" + convKey
+		}
 		state, exists := h.stickyState[key]
 		if !exists {
+			h.pruneComboStickyLocked()
 			state = &comboStickyState{Index: 0, ConsecutiveUseCount: 0}
 			h.stickyState[key] = state
+		}
+		state.LastUsed = time.Now()
+
+		// A conversation-bound provider refuses a later turn arriving from a
+		// different account, so the conversation's seat is PINNED rather than
+		// counted: every request of this conversation reuses the seat that
+		// opened it, and round-robin still spreads new conversations across
+		// seats. Without this, sticky=1 advances on the next request and turn 2
+		// lands on another account — which is exactly what upstream refuses.
+		if convKey != "" && comboBindsConversations(models) {
+			newTurn = false
 		}
 
 		resolvedWeights := h.resolveComboWeights(comboName, explicitWeights...)
@@ -1052,7 +1129,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			if len(adapterModels) > 0 && len(comboModels) >= len(adapterModels) {
 				comboOwn = comboModels[len(adapterModels):]
 			}
-			models = h.applyComboStrategyWithSeats(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body), comboOwn)
+			models = h.applyComboStrategyForConversation(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body), conversationFingerprint(body), comboOwn)
 		}
 
 		// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
@@ -1617,7 +1694,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			if len(adapterModels) > 0 && len(comboModels) >= len(adapterModels) {
 				comboOwn = comboModels[len(adapterModels):]
 			}
-			models = h.applyComboStrategyWithSeats(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON), comboOwn)
+			models = h.applyComboStrategyForConversation(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON), conversationFingerprint(bodyJSON), comboOwn)
 		}
 		if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 && len(models) > 0 {
 			reordered := ReorderByCapabilities(models, required)
@@ -2302,5 +2379,76 @@ func (h *ChatHandler) ResetComboState(comboName string) {
 		delete(h.stickyState, comboName)
 	} else {
 		h.stickyState = make(map[string]*comboStickyState)
+	}
+}
+
+// comboBindsConversations reports whether any seat of a combo is served by a
+// provider that ties a conversation to the account that opened it.
+//
+// Registry-driven on purpose (AGENTS.md §3.B/§3.C): the capability is declared on
+// the provider, never matched by a string comparison against a provider id here.
+func comboBindsConversations(seats []string) bool {
+	for _, seat := range seats {
+		prefix, _, ok := strings.Cut(seat, "/")
+		if !ok {
+			continue
+		}
+		if providers.BindsConversations(providers.ResolveAlias(prefix)) {
+			return true
+		}
+	}
+	return false
+}
+
+// comboStickyMaxConversations bounds the conversation-keyed rotation state. The
+// key is derived from a client-supplied conversation, so the map would otherwise
+// grow without limit (AGENTS.md §4.G). Sits above smartMaxStickySessions because
+// every conversation of every combo lands here, not one entry per session.
+const comboStickyMaxConversations = 8192
+
+// comboStickyConversationTTL drops a conversation's cursor once it goes idle.
+// Long enough that a conversation paused over lunch keeps its account; short
+// enough that abandoned conversations do not hold the map open.
+const comboStickyConversationTTL = 6 * time.Hour
+
+// pruneComboStickyLocked evicts idle conversation state. The caller holds
+// stickyMu.
+//
+// A conversation's cursor is only needed while the conversation is live: once it
+// has gone quiet, a returning client starting a fresh turn can safely be placed
+// on any seat. Deleting the oldest quarter when still at the cap keeps the cost
+// amortised instead of pruning on every request.
+func (h *ChatHandler) pruneComboStickyLocked() {
+	if len(h.stickyState) < comboStickyMaxConversations {
+		return
+	}
+	now := time.Now()
+	for k, v := range h.stickyState {
+		if !v.LastUsed.IsZero() && now.Sub(v.LastUsed) > comboStickyConversationTTL {
+			delete(h.stickyState, k)
+		}
+	}
+	if len(h.stickyState) < comboStickyMaxConversations {
+		return
+	}
+	type aged struct {
+		key string
+		at  time.Time
+	}
+	entries := make([]aged, 0, len(h.stickyState))
+	for k, v := range h.stickyState {
+		entries = append(entries, aged{k, v.LastUsed})
+	}
+	drop := len(entries) / 4
+	for drop > 0 && len(entries) > 0 {
+		oldest := 0
+		for i := range entries {
+			if entries[i].at.Before(entries[oldest].at) {
+				oldest = i
+			}
+		}
+		delete(h.stickyState, entries[oldest].key)
+		entries = append(entries[:oldest], entries[oldest+1:]...)
+		drop--
 	}
 }

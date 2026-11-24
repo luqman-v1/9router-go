@@ -1,5 +1,7 @@
 package providers
 
+import "encoding/json"
+
 // Free-pi wire contract constants.
 //
 // Everything here is a fact about api.freepi.ai that more than one layer of this
@@ -110,3 +112,42 @@ var FreePiImpressionHosts = []string{"trygravity.ai", "trygravity.com"}
 // serve completions because no ad has been shown. We surface it verbatim rather
 // than inventing an impression to clear it.
 const FreePiAdGateMessage = "Ads aren't showing for this account"
+
+// FreePiConversationOwnershipPrefix labels the refusal free-pi can serve with
+// HTTP 200 and the notice inside the body as ordinary content: "This
+// conversation belongs to another free-pi account. Sharing or rotating accounts
+// isn't allowed; use one account per person."
+//
+// It is an account-identity rule, not a session-identity one. Rotating the
+// session id cannot change which account is asking, so the gateway surfaces it
+// as a real 403 the fallback layer can act on rather than relaying the notice
+// as though it were an answer. The verbatim upstream text follows the prefix.
+const FreePiConversationOwnershipPrefix = "free-pi refused the request: this conversation belongs to another account"
+
+// FreePiIsConcurrentSessionCode reports whether an upstream body is a
+// `concurrent_session` refusal.
+//
+// The code is the field to branch on, never the message: the wording is
+// server-owned and changes between deploys. The meaning is a COUNT problem — the
+// account already holds FreePiSessionCap live sessions — so the remedy is the
+// reset endpoint or another account, both of which can serve the same request
+// unchanged. It is deliberately NOT treated as a request-scoped failure.
+func FreePiIsConcurrentSessionCode(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var env struct {
+		Code  string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return false
+	}
+	code := env.Code
+	if code == "" {
+		code = env.Error.Code
+	}
+	return code == FreePiCodeConcurrentSession
+}

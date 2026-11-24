@@ -8,16 +8,23 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 // freePiConnectionForAd resolves a free-pi connection and its credential.
-func (h *DashboardHandler) freePiConnectionForAd(connID string) (baseURL, token string, ok bool) {
+//
+// The session id comes back too: free-pi's ad endpoints are part of the same
+// logical session as the completions, and the official CLI sends x-session-id on
+// /ads/next and /ads/impression for exactly that reason (free-pi-cli
+// src/vendor/pi-ads/api.ts). Sending an ad request without it leaves the
+// impression attributed to no session at all.
+func (h *DashboardHandler) freePiConnectionForAd(connID string) (baseURL, token, sessionID string, ok bool) {
 	if h.Repo == nil || connID == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	conn, err := h.Repo.GetProviderConnectionByID(connID)
 	if err != nil || conn == nil || conn.Provider != providers.FreePiProviderID {
-		return "", "", false
+		return "", "", "", false
 	}
 	var data map[string]any
 	if conn.Data != "" {
@@ -26,10 +33,24 @@ func (h *DashboardHandler) freePiConnectionForAd(connID string) (baseURL, token 
 	accessToken, apiKey, _ := usageCreds(data)
 	token = firstNonEmptyStr(accessToken, apiKey)
 	if token == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	base, _ := data["baseUrl"].(string)
-	return base, token, true
+	return base, token, freePiAdSessionID(token, data), true
+}
+
+// freePiAdSessionID is the session id the ad endpoints must carry.
+//
+// It is the same derivation the executor uses, via executor.FreePiSessionID, so
+// the creative is fetched under the session the completions use. An ad fetched
+// under a different id would be attributed to a session that never ran the
+// conversation.
+//
+// Derived unconditionally, never read from connection data: the executor no
+// longer honours a stored id, so preferring one here would report an impression
+// under a session the completions are not using.
+func freePiAdSessionID(token string, _ map[string]any) string {
+	return executor.FreePiSessionID(token)
 }
 
 // HandleGetFreePiAd serves the current banner creative for one connection.
@@ -44,13 +65,23 @@ func (h *DashboardHandler) HandleGetFreePiAd(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	connID := r.URL.Query().Get("connectionId")
-	baseURL, token, ok := h.freePiConnectionForAd(connID)
+	baseURL, token, sessionID, ok := h.freePiConnectionForAd(connID)
 	if !ok {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, "no free-pi connection with a credential for that id")
 		return
 	}
 
-	ad, err := freePiFetchAd(r.Context(), token, baseURL)
+	// A prefetched creative is served when one is warm and fresh: that is what
+	// makes the banner appear immediately rather than after a round trip. The
+	// fetch below stays as the fallback, so a connection the prefetch has not
+	// reached yet still gets an ad.
+	if warm, ok := freePiWarmAdFor(connID); ok {
+		freePiStorePendingAd(connID, warm)
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ad": warm})
+		return
+	}
+
+	ad, err := freePiFetchAd(r.Context(), token, baseURL, sessionID)
 	if err != nil {
 		// An ad is decoration: a failure here must not look like a broken
 		// provider, so report "no ad" and log the cause.
@@ -64,6 +95,7 @@ func (h *DashboardHandler) HandleGetFreePiAd(w http.ResponseWriter, r *http.Requ
 	}
 
 	freePiStorePendingAd(connID, *ad)
+	freePiStoreWarmAd(connID, *ad)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ad": ad})
 }
 
@@ -102,13 +134,13 @@ func (h *DashboardHandler) HandleFreePiImpression(w http.ResponseWriter, r *http
 		return
 	}
 
-	baseURL, token, ok := h.freePiConnectionForAd(body.ConnectionID)
+	baseURL, token, sessionID, ok := h.freePiConnectionForAd(body.ConnectionID)
 	if !ok {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, "no free-pi connection with a credential for that id")
 		return
 	}
 
-	if err := freePiReportImpression(r.Context(), token, baseURL, ad); err != nil {
+	if err := freePiReportImpression(r.Context(), token, baseURL, sessionID, ad); err != nil {
 		log.Warn("free-pi", "impression report failed", "conn", body.ConnectionID, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		return

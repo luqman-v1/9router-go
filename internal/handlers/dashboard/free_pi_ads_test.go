@@ -3,14 +3,17 @@ package dashboard
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 )
 
@@ -22,6 +25,7 @@ type fakeFreePiAds struct {
 
 	pixelHits      int32
 	impressionHits int32
+	nextHits       int32
 	nextStatus     int
 	nextBody       string
 	impStatus      int
@@ -53,6 +57,7 @@ func newFakeFreePiAds(t *testing.T) *fakeFreePiAds {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/ads/next":
+			atomic.AddInt32(&f.nextHits, 1)
 			w.WriteHeader(f.nextStatus)
 			if f.nextStatus == http.StatusNoContent {
 				return
@@ -69,6 +74,9 @@ func newFakeFreePiAds(t *testing.T) *fakeFreePiAds {
 	t.Cleanup(f.srv.Close)
 
 	freePiResetAdsForTest()
+	// The warm cache is process-global, so a test that populated it would leak a
+	// creative into the next test's "no ad" assertion.
+	freePiResetWarmAdsForTest()
 	return f
 }
 
@@ -320,7 +328,7 @@ func TestFreePiReportImpression_RefusesForeignPixel(t *testing.T) {
 		ClickToken: "ct_x",
 		ImpURL:     "https://evil.test/imp.gif",
 	}
-	err := freePiReportImpression(t.Context(), "free-pi-jwt", ads.srv.URL+"/v1/chat/completions", ad)
+	err := freePiReportImpression(t.Context(), "free-pi-jwt", ads.srv.URL+"/v1/chat/completions", "sess_x", ad)
 	if err == nil {
 		t.Fatal("expected a refusal for a non-allowlisted pixel host")
 	}
@@ -347,3 +355,210 @@ func TestFreePiPendingAdsAreBounded(t *testing.T) {
 }
 
 var _ = sync.Mutex{}
+
+// TestFreePiAdsSendTheSessionID pins the ad-endpoint half of the session
+// contract: free-pi's official CLI sends x-session-id on /ads/next and
+// /ads/impression (src/vendor/pi-ads/api.ts), because the ad endpoints are part
+// of the same logical session as the completions. A request without it leaves
+// the impression attributed to no session at all.
+func TestFreePiAdsSendTheSessionID(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		byPath = map[string]string{}
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		byPath[r.URL.Path] = r.Header.Get("x-session-id")
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ads/next":
+			_, _ = io.WriteString(w, `{"ad_id":"ad_s","click_token":"ct_s","imp_url":"","creative":{"title":"t"}}`)
+		case "/ads/impression":
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	const want = "sess_abc123"
+	ad, err := freePiFetchAd(t.Context(), "free-pi-jwt", srv.URL+"/v1/chat/completions", want)
+	if err != nil {
+		t.Fatalf("freePiFetchAd: %v", err)
+	}
+	if ad == nil {
+		t.Fatal("no ad returned")
+	}
+	if err := freePiReportImpression(t.Context(), "free-pi-jwt", srv.URL+"/v1/chat/completions", want, *ad); err != nil {
+		t.Fatalf("freePiReportImpression: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range []string{"/ads/next", "/ads/impression"} {
+		if got := byPath[path]; got != want {
+			t.Errorf("%s sent x-session-id %q, want %q", path, got, want)
+		}
+	}
+}
+
+// TestFreePiAdsTolerateAnEmptySessionID keeps the header optional: a connection
+// with no derivable session must still fetch its creative rather than fail the
+// request over a missing decoration header.
+func TestFreePiAdsTolerateAnEmptySessionID(t *testing.T) {
+	ads := newFakeFreePiAds(t)
+	newAdsTestEnv(t, ads, nil)
+
+	if _, err := freePiFetchAd(t.Context(), "free-pi-jwt", ads.srv.URL+"/v1/chat/completions", ""); err != nil {
+		t.Fatalf("freePiFetchAd with no session id: %v", err)
+	}
+}
+
+// --- background prefetch ---------------------------------------------------
+
+// TestFreePiPrefetchWarmsTheCacheAndReports pins the zero-click decision: the
+// pass fetches a creative, stores it warm, and fires the impression
+// server-side. The operator's explicit call: the server counts as a human, so
+// a background impression is not a misreport.
+func TestFreePiPrefetchWarmsTheCacheAndReports(t *testing.T) {
+	freePiResetAdsForTest()
+	freePiResetWarmAdsForTest()
+
+	ads := newFakeFreePiAds(t)
+	env := newAdsTestEnv(t, ads, nil)
+
+	// The pixel the fake serves is on loopback, which the real guard refuses by
+	// design. Substituting the validator here keeps the production rule intact
+	// while exercising the report path.
+	prevValidator := freePiAdURLValidator
+	freePiAdURLValidator = func(string) bool { return true }
+	t.Cleanup(func() { freePiAdURLValidator = prevValidator })
+
+	freePiPrefetchPass(t.Context(), env.handler.Repo)
+
+	if got := freePiWarmAdCount(); got != 1 {
+		t.Errorf("warm cache entries = %d, want 1", got)
+	}
+	if _, impression := ads.counts(); impression != 1 {
+		t.Errorf("impressions = %d, want 1 — the prefetch fires the impression", impression)
+	}
+
+	// The prefetched creative is still served, and the impression endpoint can
+	// still consume it exactly once.
+	warm, ok := freePiWarmAdFor(env.connID)
+	if !ok {
+		t.Fatal("no warm creative for the connection")
+	}
+	freePiStorePendingAd(env.connID, warm)
+	if _, ok := freePiTakePendingAd(env.connID, warm.AdID); !ok {
+		t.Fatal("a prefetched creative was not consumable by a render report")
+	}
+	if _, ok := freePiTakePendingAd(env.connID, warm.AdID); ok {
+		t.Error("the same creative was consumed twice")
+	}
+}
+
+// TestFreePiWarmAdExpires keeps the cache from serving a stale creative: the
+// expiry is judged against the ad's own fetch time, so a creative copied into
+// the map recently but fetched long ago is still refused.
+func TestFreePiWarmAdExpires(t *testing.T) {
+	freePiResetWarmAdsForTest()
+
+	stale := freePiAd{AdID: "ad_old", FetchedAt: time.Now().Add(-freePiAdTTL - time.Minute)}
+	freePiStoreWarmAd("conn-stale", stale)
+
+	if _, ok := freePiWarmAdFor("conn-stale"); ok {
+		t.Error("a stale creative was served from the warm cache")
+	}
+	if got := freePiWarmAdCount(); got != 0 {
+		t.Errorf("cache size = %d after the stale read, want 0", got)
+	}
+}
+
+// TestFreePiWarmCacheIsBounded pins the §4.G bound: the cache cannot grow past
+// its cap, however many connections are prefetched.
+func TestFreePiWarmCacheIsBounded(t *testing.T) {
+	freePiResetWarmAdsForTest()
+
+	for i := 0; i < freePiAdPrefetchEntries+10; i++ {
+		freePiStoreWarmAd(fmt.Sprintf("conn-%d", i), freePiAd{AdID: fmt.Sprintf("ad-%d", i), FetchedAt: time.Now()})
+	}
+	if got := freePiWarmAdCount(); got > freePiAdPrefetchEntries {
+		t.Errorf("warm cache = %d entries, want at most %d", got, freePiAdPrefetchEntries)
+	}
+}
+
+// TestHandleGetFreePiAdServesTheWarmCreative proves the endpoint actually uses
+// the prefetch: with a warm creative cached, no request reaches the ad network.
+func TestHandleGetFreePiAdServesTheWarmCreative(t *testing.T) {
+	freePiResetAdsForTest()
+	freePiResetWarmAdsForTest()
+
+	ads := newFakeFreePiAds(t)
+	env := newAdsTestEnv(t, ads, nil)
+
+	warm := freePiAd{AdID: "ad_warm", Creative: freePiCreative{Title: "Warm"}, FetchedAt: time.Now()}
+	freePiStoreWarmAd(env.connID, warm)
+
+	rec := httptest.NewRecorder()
+	env.handler.HandleGetFreePiAd(rec, httptest.NewRequest(http.MethodGet,
+		"/api/free-pi/ad?connectionId="+env.connID, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got freePiAdResponse
+	decodeJSONInto(t, rec.Body.Bytes(), &got)
+	if got.Ad == nil || got.Ad.AdID != "ad_warm" {
+		t.Fatalf("served ad = %+v, want the warm creative", got.Ad)
+	}
+
+	if nextHits := atomic.LoadInt32(&ads.nextHits); nextHits != 0 {
+		t.Errorf("ad network hits = %d, want 0 — a warm creative should be served from cache", nextHits)
+	}
+}
+
+// countingConnectionReader wraps a repo and counts the calls the prefetch makes,
+// so a regression back to one read per row fails a test instead of passing
+// silently (AGENTS.md §4.A).
+type countingConnectionReader struct {
+	providerConnectionReader
+	byIDCalls int32
+}
+
+func (c *countingConnectionReader) GetProviderConnectionByID(string) (*models.ProviderConnection, error) {
+	atomic.AddInt32(&c.byIDCalls, 1)
+	return nil, nil
+}
+
+// TestFreePiPrefetchMakesOneReadForThePage pins the §4.A bound: the pass lists
+// the connections once and reads each row from that result. Re-reading the row
+// per connection is 1+N statements, which is what this test forbids.
+func TestFreePiPrefetchMakesOneReadForThePage(t *testing.T) {
+	freePiResetAdsForTest()
+	freePiResetWarmAdsForTest()
+
+	ads := newFakeFreePiAds(t)
+	env := newAdsTestEnv(t, ads, nil)
+
+	// A second connection makes the N in 1+N real: with one row a per-row read
+	// and a page read are indistinguishable in cost.
+	second := `{"apiKey":"free-pi-jwt-2","baseUrl":"` + ads.srv.URL + `/v1/chat/completions"}`
+	priority := 2
+	if err := env.handler.Repo.CreateProviderConnectionFull("conn-ads-2", providers.FreePiProviderID,
+		"apikey", "Free Pi ads 2", &priority, second); err != nil {
+		t.Fatalf("create second connection: %v", err)
+	}
+
+	counter := &countingConnectionReader{providerConnectionReader: env.handler.Repo}
+	freePiPrefetchPass(t.Context(), counter)
+
+	if got := atomic.LoadInt32(&counter.byIDCalls); got != 0 {
+		t.Errorf("per-row reads = %d, want 0 — GetProviderConnections already returns hydrated rows", got)
+	}
+	if got := freePiWarmAdCount(); got != 2 {
+		t.Errorf("warm cache entries = %d, want 2", got)
+	}
+}

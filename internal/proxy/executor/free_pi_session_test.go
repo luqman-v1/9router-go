@@ -37,10 +37,15 @@ func TestFreePiSessionID_IsStablePerAccountNotPerConnection(t *testing.T) {
 		t.Error("different accounts collided on one session id")
 	}
 
-	// An explicitly stored id (written at login) wins, so an operator can pin it.
-	stored := freePiSessionIDFor(token, map[string]any{"freePiSessionId": "pinned-id"})
-	if stored != "pinned-id" {
-		t.Errorf("stored session id not honoured: %q", stored)
+	// A stored id must NOT win, even one left behind by an older login that
+	// persisted the derived value. Honouring it is what made rotation a no-op:
+	// every step returned the same id, so a mid-conversation account switch
+	// could never open a fresh session.
+	for _, junk := range []string{"pinned-id", "", "another-accounts-id"} {
+		got := freePiSessionIDFor(token, map[string]any{"freePiSessionId": junk})
+		if got != first {
+			t.Errorf("stored id %q overrode the derivation: got %q, want %q", junk, got, first)
+		}
 	}
 }
 
@@ -479,5 +484,345 @@ func TestFreePiForward_OpaqueTokenIsNotRefusedLocally(t *testing.T) {
 	}
 	if !called {
 		t.Error("an opaque credential was refused locally instead of being sent upstream")
+	}
+}
+
+// --- rotation: a conversation locked by another account --------------------
+
+// freePiConversationLockBody is the refusal upstream returns when a conversation
+// opened under one account is replayed on another. It is prose, not a code: the
+// server states the ownership rule rather than naming an error class.
+const freePiConversationLockBody = `{"error":{"message":"This conversation belongs to another user/session. Account rotation is not allowed."}}`
+
+// TestFreePiSessionVariant_DiffersPerRotationAndIsStable proves the two halves
+// the rotation needs at once: step N never collides with step 0 or step N+1, and
+// the same step always derives the same id so a replay after a restart still
+// lands on the conversation it opened.
+func TestFreePiSessionVariant_DiffersPerRotationAndIsStable(t *testing.T) {
+	token := freePiTestToken("user_rotate")
+
+	base := freePiAccountSessionID(token)
+	if got := freePiSessionVariant(token, 0); got != base {
+		t.Errorf("step 0 = %q, want the base session %q", got, base)
+	}
+
+	seen := map[string]uint64{base: 0}
+	for step := uint64(1); step <= 8; step++ {
+		id := freePiSessionVariant(token, step)
+		if id == "" {
+			t.Fatalf("step %d derived an empty session id", step)
+		}
+		if prev, dup := seen[id]; dup {
+			t.Errorf("step %d collided with step %d on %q", step, prev, id)
+		}
+		seen[id] = step
+		if again := freePiSessionVariant(token, step); again != id {
+			t.Errorf("step %d is not stable: %q then %q", step, id, again)
+		}
+	}
+
+	// A different account must not share any of them.
+	other := freePiTestToken("user_other")
+	for step := uint64(0); step <= 8; step++ {
+		if freePiSessionVariant(token, step) == freePiSessionVariant(other, step) {
+			t.Errorf("accounts collided on step %d", step)
+		}
+	}
+}
+
+// TestFreePiForward_RotatesSessionOnConversationLock is the regression test for
+// the reported failure: a conversation-locked refusal must open a fresh session
+// and succeed, rather than replaying the bound id and refusing the account.
+func TestFreePiForward_RotatesSessionOnConversationLock(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		sessionIDs []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sessionIDs = append(sessionIDs, r.Header.Get("x-session-id"))
+		n := len(sessionIDs)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, freePiConversationLockBody)
+			return
+		}
+		_, _ = io.WriteString(w, freePiJSONCompletion)
+	}))
+	defer srv.Close()
+
+	token := freePiTestToken("user_lockrotate")
+	req := freePiTestRequest(t, srv, token, nil, false)
+	rec := httptest.NewRecorder()
+
+	if err := ForwardFreePi(rec, req); err != nil {
+		t.Fatalf("ForwardFreePi: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the rotated retry to succeed: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sessionIDs) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2 (refusal + rotated retry)", len(sessionIDs))
+	}
+	if sessionIDs[0] == sessionIDs[1] {
+		t.Errorf("the retry reused the locked session id %q", sessionIDs[0])
+	}
+	// The rotated id must be a real rotation of THIS account rather than the
+	// base session or an arbitrary value. The step comes from a process-wide
+	// counter, so the assertion is that the id is one of the account's rotation
+	// variants — reproducible, and distinct from the base.
+	base := freePiAccountSessionID(token)
+	if sessionIDs[1] == base {
+		t.Errorf("rotated session %q is the account's base session, not a rotation", sessionIDs[1])
+	}
+	variant := false
+	for step := uint64(1); step <= 64; step++ {
+		if sessionIDs[1] == freePiSessionVariant(token, step) {
+			variant = true
+			break
+		}
+	}
+	if !variant {
+		t.Errorf("rotated session %q is not a derivation of this account", sessionIDs[1])
+	}
+}
+
+// TestFreePiForward_DoesNotRotateOnUnrelatedRefusal keeps the rotation narrow: a
+// 403 that is not about conversation ownership must reach the client unchanged,
+// with no second upstream call.
+func TestFreePiForward_DoesNotRotateOnUnrelatedRefusal(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"code":"ads_not_showing","message":"Ads aren't showing for this account."}`)
+	}))
+	defer srv.Close()
+
+	req := freePiTestRequest(t, srv, freePiTestToken("user_other403"), nil, false)
+	rec := httptest.NewRecorder()
+
+	err := ForwardFreePi(rec, req)
+	if err == nil {
+		t.Fatal("the unrelated 403 was swallowed")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("upstream calls = %d, want exactly 1 (no retry for an unrelated refusal)", calls)
+	}
+}
+
+// TestFreePiForward_RotatesEvenWithAStoredSessionID proves rotation is not
+// defeated by a value left in connection data. An older login persisted the
+// derived id there and every reader treated it as a pin, so freePiRotated…For
+// returned it at every step and a mid-conversation account switch could never
+// open a fresh session — upstream kept refusing the conversation as owned by
+// another account. The retry must now happen exactly once regardless.
+func TestFreePiForward_RotatesEvenWithAStoredSessionID(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			// First attempt refused; the replay on a fresh session succeeds.
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, freePiConversationLockBody)
+			return
+		}
+		_, _ = io.WriteString(w, freePiJSONCompletion)
+	}))
+	defer srv.Close()
+
+	connData := map[string]any{"freePiSessionId": "stale-persisted-id"}
+	req := freePiTestRequest(t, srv, freePiTestToken("user_stale"), connData, false)
+
+	if err := ForwardFreePi(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("the rotated retry did not recover: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Errorf("upstream calls = %d, want 2 (one refusal, one rotated replay)", calls)
+	}
+}
+
+// --- 200-body ownership refusal -------------------------------------------
+
+// freePiOwnershipRefusalBody is the refusal as free-pi actually serves it: an
+// ordinary chat.completion whose message content is the notice, with
+// finish_reason "stop" and zero usage. The status is 200, which is why the
+// status switch in ForwardFreePi cannot see it.
+const freePiOwnershipRefusalBody = `{
+  "id": "chatcmpl-freepi-abc123",
+  "object": "chat.completion",
+  "model": "deepseek/deepseek-v4-flash",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 41, "completion_tokens": 0, "total_tokens": 41}
+}`
+
+// TestFreePiOwnershipRefusalIsDetected pins the detector against the real body
+// shape: the notice is in message.content, the status is 200, and usage is zero.
+func TestFreePiOwnershipRefusalIsDetected(t *testing.T) {
+	refusal, ok := freePiOwnershipRefusalInBody([]byte(freePiOwnershipRefusalBody))
+	if !ok {
+		t.Fatal("the 200-body refusal was not detected; the client would receive it as an answer")
+	}
+	if refusal.status != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 so the fallback layer treats it as a refusal", refusal.status)
+	}
+	if !strings.Contains(refusal.message, "one account per person") {
+		t.Errorf("message = %q, want the verbatim upstream notice", refusal.message)
+	}
+}
+
+// TestFreePiOwnershipRefusalIsNotForwardedAsAnAnswer is the end-to-end half: the
+// executor must return an error rather than relaying the notice as a completion.
+func TestFreePiOwnershipRefusalIsNotForwardedAsAnAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, freePiOwnershipRefusalBody)
+	}))
+	defer srv.Close()
+
+	req := freePiTestRequest(t, srv, "free-pi-jwt", nil, false)
+	rec := httptest.NewRecorder()
+
+	err := ForwardFreePi(rec, req)
+	if err == nil {
+		t.Fatal("ForwardFreePi relayed the refusal as a successful turn")
+	}
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("error type = %T, want *proxy.UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", ue.StatusCode)
+	}
+	if !strings.Contains(string(ue.Body), "one account per person") {
+		t.Errorf("body = %s, want the upstream notice preserved", ue.Body)
+	}
+}
+
+// TestFreePiGenuineAnswerOnAccountSharingSurvives is the false-positive guard:
+// a real answer that DISCUSSES the refusal spent tokens producing it, so it must
+// reach the client untouched. Without this the detector would eat legitimate
+// replies about free-pi's policy.
+func TestFreePiGenuineAnswerOnAccountSharingSurvives(t *testing.T) {
+	body := `{
+  "id": "chatcmpl-freepi-real",
+  "object": "chat.completion",
+  "model": "deepseek/deepseek-v4-flash",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "free-pi says: This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person. That is why the request failed."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 120, "completion_tokens": 47, "total_tokens": 167}
+}`
+
+	if _, ok := freePiOwnershipRefusalInBody([]byte(body)); ok {
+		t.Error("a genuine answer quoting the notice was flagged as a refusal")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	req := freePiTestRequest(t, srv, "free-pi-jwt", nil, false)
+	rec := httptest.NewRecorder()
+	if err := ForwardFreePi(rec, req); err != nil {
+		t.Fatalf("ForwardFreePi rejected a genuine answer: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestFreePiOwnershipRefusalRequiresZeroUsage pins the second signal on its own:
+// marker text with token spend is a real answer, so the usage counter is not
+// optional decoration.
+func TestFreePiOwnershipRefusalRequiresZeroUsage(t *testing.T) {
+	withSpend := strings.Replace(freePiOwnershipRefusalBody,
+		`"completion_tokens": 0`, `"completion_tokens": 12`, 1)
+	if _, ok := freePiOwnershipRefusalInBody([]byte(withSpend)); ok {
+		t.Error("a body with completion_tokens > 0 was flagged as a refusal")
+	}
+
+	// And zero usage with unrelated content is not a refusal either.
+	unrelated := strings.Replace(freePiOwnershipRefusalBody,
+		"This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person.",
+		"Here is the weather in Dhaka.", 1)
+	if _, ok := freePiOwnershipRefusalInBody([]byte(unrelated)); ok {
+		t.Error("zero usage with unrelated content was flagged as a refusal")
+	}
+}
+
+// TestFreePiSessionIDsNeverCrossAccounts pins the invariant the whole design
+// rests on: a session id is a function of the account, so account A can never
+// present account B's id — which is precisely what upstream refuses with "This
+// conversation belongs to another free-pi account."
+//
+// Checked across rotation steps too, not just step 0: a rotated id is derived
+// from (account, step), and a bug that dropped the account from that tuple would
+// make two accounts collide on step 1 while still passing at step 0.
+func TestFreePiSessionIDsNeverCrossAccounts(t *testing.T) {
+	accounts := []string{
+		freePiTestToken("user_alpha"),
+		freePiTestToken("user_beta"),
+		freePiTestToken("user_gamma"),
+		"opaque-not-a-jwt-alpha",
+		"opaque-not-a-jwt-beta",
+	}
+
+	seen := map[string]string{}
+	for _, token := range accounts {
+		for step := uint64(0); step <= 8; step++ {
+			id := freePiRotatedSessionIDFor(token, nil, step)
+			if id == "" {
+				t.Fatalf("empty session id for step %d", step)
+			}
+			if owner, dup := seen[id]; dup {
+				t.Errorf("session id collision: %q used by two accounts (%s and %s)",
+					id, owner, freePiAccountKey(token))
+			}
+			seen[id] = freePiAccountKey(token)
+		}
+	}
+
+	// A stored value in connection data must not let one account borrow another's
+	// id — the stale-persistence case that defeated rotation before.
+	borrowed := freePiRotatedSessionIDFor(freePiTestToken("user_alpha"),
+		map[string]any{"freePiSessionId": freePiAccountSessionID(freePiTestToken("user_beta"))}, 1)
+	if borrowed == freePiAccountSessionID(freePiTestToken("user_beta")) {
+		t.Error("a stored id let one account present another account's session id")
 	}
 }

@@ -136,7 +136,11 @@ func freePiAdURLAllowed(raw string) bool {
 //
 // A 204 (or 200 with no ad id) means there is nothing to show, which is a normal
 // outcome and not an error: the dashboard simply renders no banner.
-func freePiFetchAd(ctx context.Context, token, baseURL string) (*freePiAd, error) {
+//
+// sessionID is sent as x-session-id, matching the official CLI: free-pi treats
+// the ad endpoints as part of the same logical session as the completions, and a
+// request without the header is attributed to no session.
+func freePiFetchAd(ctx context.Context, token, baseURL, sessionID string) (*freePiAd, error) {
 	endpoint := freePiOriginFromBase(baseURL) + "/ads/next?slot=banner"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -145,6 +149,9 @@ func freePiFetchAd(ctx context.Context, token, baseURL string) (*freePiAd, error
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	if sessionID != "" {
+		req.Header.Set("x-session-id", sessionID)
+	}
 
 	resp, err := freePiAdClient.Do(req)
 	if err != nil {
@@ -208,7 +215,7 @@ func freePiFetchAd(ctx context.Context, token, baseURL string) (*freePiAd, error
 // server-side record upstream gates on.
 //
 // Called only from the client's render event, never from a timer.
-func freePiReportImpression(ctx context.Context, token, baseURL string, ad freePiAd) error {
+func freePiReportImpression(ctx context.Context, token, baseURL, sessionID string, ad freePiAd) error {
 	if ad.AdID == "" || ad.ClickToken == "" {
 		return fmt.Errorf("free-pi ad: impression needs an ad id and click token")
 	}
@@ -245,6 +252,9 @@ func freePiReportImpression(ctx context.Context, token, baseURL string, ad freeP
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if sessionID != "" {
+		req.Header.Set("x-session-id", sessionID)
+	}
 
 	resp, err := freePiAdClient.Do(req)
 	if err != nil {

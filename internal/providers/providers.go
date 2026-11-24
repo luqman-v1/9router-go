@@ -56,6 +56,13 @@ type ProviderConfig struct {
 	// local host or loopback network (e.g. ollama-local on localhost:11434).
 	LocalByDesign bool
 
+	// BindsConversations marks a provider that ties a conversation to the
+	// ACCOUNT that opened it and refuses a later turn arriving from a different
+	// one. The gateway must then keep a conversation on one connection: a
+	// mid-conversation account switch is rejected upstream no matter which
+	// session id is presented, because the verdict is about the account.
+	BindsConversations bool
+
 	// Hidden keeps a provider out of the lists a person scans — the provider
 	// pickers, the quota page — while leaving it fully reachable: connections
 	// still resolve it and requests still route to it. The MMF entries use it
@@ -1564,6 +1571,11 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.freepi.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		// free-pi binds a conversation to the account that opened it: a later
+		// turn from another account is refused with "This conversation belongs
+		// to another free-pi account." Rotating the session id cannot help —
+		// the account itself is what is different.
+		BindsConversations: true,
 	},
 	"atmorouter": {
 		BaseURL:    "https://atmorouter.dev/v1/chat/completions",
@@ -1628,6 +1640,16 @@ func StrictReasoningRemoving(provider string) bool {
 	switch provider {
 	case "groq", "mistral", "cerebras":
 		return true
+	}
+	return false
+}
+
+// BindsConversations reports whether a provider ties a conversation to the
+// account that opened it, so routing must not move a live conversation to a
+// different connection.
+func BindsConversations(provider string) bool {
+	if cfg, ok := KnownProviders[provider]; ok {
+		return cfg.BindsConversations
 	}
 	return false
 }
