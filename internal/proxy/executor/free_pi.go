@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -131,7 +133,25 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 	}
 
 	defer func() { _ = resp.Body.Close() }()
-	return jsonResponse(ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
+
+	// The 200-body refusal check runs HERE, not in the switch above: that switch
+	// only sees a status, and this refusal carries a 200. Reading the body is the
+	// only way to tell, and it has to happen before jsonResponse relays it —
+	// after that the notice is on the client's screen as an answer.
+	//
+	// The body is already bounded by jsonResponse's own LimitReader, so this
+	// adds no unbounded read (AGENTS.md §4.G).
+	body, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+	if err != nil {
+		return fmt.Errorf("read upstream response: %w", err)
+	}
+	if refusal, ok := freePiOwnershipRefusalInBody(body); ok {
+		log.Warn("free-pi", "upstream refused inside a 200 body (conversation ownership)",
+			"status", refusal.status, "message", refusal.message)
+		return proxy.UpstreamFailure(refusal.status, refusal.message)
+	}
+
+	return jsonResponse(ctx, w, bytes.NewReader(body), req.TranslateResp, req.ResponseBuf)
 }
 
 // freePiDoChat performs one upstream attempt with the free-pi header set.

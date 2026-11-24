@@ -649,3 +649,126 @@ func TestFreePiForward_PinnedSessionIsNotRotated(t *testing.T) {
 		t.Errorf("upstream calls = %d, want 1 (a pinned id cannot rotate)", calls)
 	}
 }
+
+// --- 200-body ownership refusal -------------------------------------------
+
+// freePiOwnershipRefusalBody is the refusal as free-pi actually serves it: an
+// ordinary chat.completion whose message content is the notice, with
+// finish_reason "stop" and zero usage. The status is 200, which is why the
+// status switch in ForwardFreePi cannot see it.
+const freePiOwnershipRefusalBody = `{
+  "id": "chatcmpl-freepi-abc123",
+  "object": "chat.completion",
+  "model": "deepseek/deepseek-v4-flash",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 41, "completion_tokens": 0, "total_tokens": 41}
+}`
+
+// TestFreePiOwnershipRefusalIsDetected pins the detector against the real body
+// shape: the notice is in message.content, the status is 200, and usage is zero.
+func TestFreePiOwnershipRefusalIsDetected(t *testing.T) {
+	refusal, ok := freePiOwnershipRefusalInBody([]byte(freePiOwnershipRefusalBody))
+	if !ok {
+		t.Fatal("the 200-body refusal was not detected; the client would receive it as an answer")
+	}
+	if refusal.status != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 so the fallback layer treats it as a refusal", refusal.status)
+	}
+	if !strings.Contains(refusal.message, "one account per person") {
+		t.Errorf("message = %q, want the verbatim upstream notice", refusal.message)
+	}
+}
+
+// TestFreePiOwnershipRefusalIsNotForwardedAsAnAnswer is the end-to-end half: the
+// executor must return an error rather than relaying the notice as a completion.
+func TestFreePiOwnershipRefusalIsNotForwardedAsAnAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, freePiOwnershipRefusalBody)
+	}))
+	defer srv.Close()
+
+	req := freePiTestRequest(t, srv, "free-pi-jwt", nil, false)
+	rec := httptest.NewRecorder()
+
+	err := ForwardFreePi(rec, req)
+	if err == nil {
+		t.Fatal("ForwardFreePi relayed the refusal as a successful turn")
+	}
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("error type = %T, want *proxy.UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", ue.StatusCode)
+	}
+	if !strings.Contains(string(ue.Body), "one account per person") {
+		t.Errorf("body = %s, want the upstream notice preserved", ue.Body)
+	}
+}
+
+// TestFreePiGenuineAnswerOnAccountSharingSurvives is the false-positive guard:
+// a real answer that DISCUSSES the refusal spent tokens producing it, so it must
+// reach the client untouched. Without this the detector would eat legitimate
+// replies about free-pi's policy.
+func TestFreePiGenuineAnswerOnAccountSharingSurvives(t *testing.T) {
+	body := `{
+  "id": "chatcmpl-freepi-real",
+  "object": "chat.completion",
+  "model": "deepseek/deepseek-v4-flash",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "free-pi says: This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person. That is why the request failed."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 120, "completion_tokens": 47, "total_tokens": 167}
+}`
+
+	if _, ok := freePiOwnershipRefusalInBody([]byte(body)); ok {
+		t.Error("a genuine answer quoting the notice was flagged as a refusal")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	req := freePiTestRequest(t, srv, "free-pi-jwt", nil, false)
+	rec := httptest.NewRecorder()
+	if err := ForwardFreePi(rec, req); err != nil {
+		t.Fatalf("ForwardFreePi rejected a genuine answer: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestFreePiOwnershipRefusalRequiresZeroUsage pins the second signal on its own:
+// marker text with token spend is a real answer, so the usage counter is not
+// optional decoration.
+func TestFreePiOwnershipRefusalRequiresZeroUsage(t *testing.T) {
+	withSpend := strings.Replace(freePiOwnershipRefusalBody,
+		`"completion_tokens": 0`, `"completion_tokens": 12`, 1)
+	if _, ok := freePiOwnershipRefusalInBody([]byte(withSpend)); ok {
+		t.Error("a body with completion_tokens > 0 was flagged as a refusal")
+	}
+
+	// And zero usage with unrelated content is not a refusal either.
+	unrelated := strings.Replace(freePiOwnershipRefusalBody,
+		"This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person.",
+		"Here is the weather in Dhaka.", 1)
+	if _, ok := freePiOwnershipRefusalInBody([]byte(unrelated)); ok {
+		t.Error("zero usage with unrelated content was flagged as a refusal")
+	}
+}

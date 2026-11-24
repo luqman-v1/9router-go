@@ -110,3 +110,14 @@ var FreePiImpressionHosts = []string{"trygravity.ai", "trygravity.com"}
 // serve completions because no ad has been shown. We surface it verbatim rather
 // than inventing an impression to clear it.
 const FreePiAdGateMessage = "Ads aren't showing for this account"
+
+// FreePiConversationOwnershipPrefix labels the refusal free-pi can serve with
+// HTTP 200 and the notice inside the body as ordinary content: "This
+// conversation belongs to another free-pi account. Sharing or rotating accounts
+// isn't allowed; use one account per person."
+//
+// It is an account-identity rule, not a session-identity one. Rotating the
+// session id cannot change which account is asking, so the gateway surfaces it
+// as a real 403 the fallback layer can act on rather than relaying the notice
+// as though it were an answer. The verbatim upstream text follows the prefix.
+const FreePiConversationOwnershipPrefix = "free-pi refused the request: this conversation belongs to another account"
