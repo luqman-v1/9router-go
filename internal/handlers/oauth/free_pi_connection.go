@@ -11,15 +11,17 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
-	"9router/proxy/internal/proxy/executor"
 )
 
 // saveFreePiConnection persists the connection a successful login produced.
 //
-// The session id is derived (not minted) by the same function the executor uses,
-// so the value written here and the value sent on the wire cannot disagree. See
-// executor/free_pi_session.go for why derivation rather than randomness is what
-// keeps one account on one upstream session.
+// It deliberately does NOT store a session id. The executor derives one from the
+// account identity (see executor/free_pi_session.go), and a stored value would be
+// read back as an operator PIN — which freePiRotatedSessionIDFor returns at every
+// step, so a mid-conversation account switch could never rotate the session and
+// upstream would keep refusing the conversation as owned by another account.
+// Persisting the derived value here is what caused that: it looked like a cache,
+// but every reader treats the field as authoritative.
 func (h *OAuthHandler) saveFreePiConnection(w http.ResponseWriter, r *http.Request, token string) {
 	cv, err := freePiFetchClientVersion(r.Context())
 	if err != nil {
@@ -36,7 +38,6 @@ func (h *OAuthHandler) saveFreePiConnection(w http.ResponseWriter, r *http.Reque
 	connID := "fp-" + shortHash(token)
 	providerSpecific := map[string]any{
 		"authMethod":           "device_flow",
-		"freePiSessionId":      executor.FreePiSessionID(token),
 		"freePiClientVersion":  clientVersion,
 		"freePiConsentVersion": providers.FreePiConsentVersion,
 	}

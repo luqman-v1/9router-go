@@ -86,3 +86,41 @@ The body read reuses the same 10 MB `LimitReader` `jsonResponse` already
 applies, on the non-streaming path only. The end-to-end test is load-bearing:
 reverting the check makes `ForwardFreePi` relay the refusal as a successful
 turn.
+
+**A mid-conversation account switch was refused and never recovered.** Two
+independent defects, both rooted in persisting a value that should have been
+derived.
+
+The invariant is that a session id is a **function of the account** — account A
+must never present account B's id, which is precisely what upstream refuses with
+*"This conversation belongs to another free-pi account."* Both derivations
+already satisfy it (`freePiAccountSessionID` = `uuid.NewSHA1(ns, accountKey)`;
+the rotated variant = `uuid.NewSHA1(ns, "<accountKey>/rotation/<step>")`), so
+the arithmetic was never wrong. Persistence broke it:
+
+- **Login wrote `freePiSessionId` as a cache, and every reader treated it as an
+  operator pin** — including `freePiRotatedSessionIDFor`, which returned it at
+  every step. Rotation therefore could never change anything: every step produced
+  the id that had already been refused. Nothing in the product ever set a pin
+  (the dashboard has no field for one), so the branch was pure liability. Login
+  no longer writes it; both session helpers derive unconditionally and ignore
+  connection data; and the ads handler stops preferring a stored id, since an
+  impression reported under a different session than the completions is
+  attributed to a session that never ran the conversation. **This also covers
+  rows written before this change** — they still carry the field, and honouring
+  it would let one account present another's id.
+- **A free-pi 409 `concurrent_session` was classified as request-scoped.**
+  `isRetryableComboError` and `isRequestScopedComboError` both rejected every
+  4xx except 429, so an account that had hit its session cap ended the request
+  instead of failing over — which is why a second free-pi account never picked up
+  a mid-conversation switch. The verdict is about the account's **capacity**, not
+  the request, so another account can serve the request unchanged. Keyed on the
+  envelope `code` via `providers.FreePiIsConcurrentSessionCode`, never the
+  message text, and scoped to that one code: an unrelated 409 stays
+  request-scoped so failover cannot mask a real conflict.
+
+Pinned by `TestFreePiSessionIDsNeverCrossAccounts` (no id collision across five
+accounts × nine rotation steps) and `TestFreePiForward_RotatesEvenWithAStoredSessionID`.
+Both are load-bearing: restoring the old lookup makes the first fail with *"a
+stored id let one account present another account's session id"*. Two tests
+asserting the old pin behaviour were rewritten to assert the invariant instead.

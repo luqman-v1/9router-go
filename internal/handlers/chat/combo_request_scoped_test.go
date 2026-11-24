@@ -154,3 +154,33 @@ func TestComboAccountScoped403KeepsRotatingConnections(t *testing.T) {
 			rec.Code, rec.Body.String())
 	}
 }
+
+// TestFreePiConcurrentSessionIsNotRequestScoped is the failover decision: a
+// free-pi 409 `concurrent_session` says the ACCOUNT is at its session cap, not
+// that the request is wrong, so the next account must be tried with the request
+// unchanged. Classifying it as request-scoped ended the pass and handed the
+// conflict to the client — which is why a second free-pi account never picked up
+// a mid-conversation switch.
+func TestFreePiConcurrentSessionIsNotRequestScoped(t *testing.T) {
+	concurrent := &upstreamError{
+		StatusCode: http.StatusConflict,
+		Body:       []byte(`{"code":"concurrent_session","message":"You've already got 4 free-pi CLI sessions running."}`),
+	}
+	if isRequestScopedComboError(concurrent) {
+		t.Error("concurrent_session was treated as request-scoped; the next account is never tried")
+	}
+	if !isRetryableComboError(concurrent) {
+		t.Error("concurrent_session was treated as non-retryable; failover cannot run")
+	}
+
+	// A different 409 stays request-scoped: an ordinary conflict is about the
+	// request, and only this provider's session code means "another account can
+	// serve this unchanged".
+	other := &upstreamError{
+		StatusCode: http.StatusConflict,
+		Body:       []byte(`{"code":"some_other_conflict"}`),
+	}
+	if !isRequestScopedComboError(other) {
+		t.Error("an unrelated 409 became retryable; failover would mask a real conflict")
+	}
+}

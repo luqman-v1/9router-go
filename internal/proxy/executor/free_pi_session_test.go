@@ -37,10 +37,15 @@ func TestFreePiSessionID_IsStablePerAccountNotPerConnection(t *testing.T) {
 		t.Error("different accounts collided on one session id")
 	}
 
-	// An explicitly stored id (written at login) wins, so an operator can pin it.
-	stored := freePiSessionIDFor(token, map[string]any{"freePiSessionId": "pinned-id"})
-	if stored != "pinned-id" {
-		t.Errorf("stored session id not honoured: %q", stored)
+	// A stored id must NOT win, even one left behind by an older login that
+	// persisted the derived value. Honouring it is what made rotation a no-op:
+	// every step returned the same id, so a mid-conversation account switch
+	// could never open a fresh session.
+	for _, junk := range []string{"pinned-id", "", "another-accounts-id"} {
+		got := freePiSessionIDFor(token, map[string]any{"freePiSessionId": junk})
+		if got != first {
+			t.Errorf("stored id %q overrode the derivation: got %q, want %q", junk, got, first)
+		}
 	}
 }
 
@@ -619,34 +624,42 @@ func TestFreePiForward_DoesNotRotateOnUnrelatedRefusal(t *testing.T) {
 	}
 }
 
-// TestFreePiForward_PinnedSessionIsNotRotated proves an operator's pin wins: if
-// the id cannot change, retrying only earns the same answer, so there is exactly
-// one attempt.
-func TestFreePiForward_PinnedSessionIsNotRotated(t *testing.T) {
+// TestFreePiForward_RotatesEvenWithAStoredSessionID proves rotation is not
+// defeated by a value left in connection data. An older login persisted the
+// derived id there and every reader treated it as a pin, so freePiRotated…For
+// returned it at every step and a mid-conversation account switch could never
+// open a fresh session — upstream kept refusing the conversation as owned by
+// another account. The retry must now happen exactly once regardless.
+func TestFreePiForward_RotatesEvenWithAStoredSessionID(t *testing.T) {
 	var calls int
 	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		calls++
+		n := calls
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, freePiConversationLockBody)
+		if n == 1 {
+			// First attempt refused; the replay on a fresh session succeeds.
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, freePiConversationLockBody)
+			return
+		}
+		_, _ = io.WriteString(w, freePiJSONCompletion)
 	}))
 	defer srv.Close()
 
-	connData := map[string]any{"freePiSessionId": "pinned-session"}
-	req := freePiTestRequest(t, srv, freePiTestToken("user_pinned"), connData, false)
+	connData := map[string]any{"freePiSessionId": "stale-persisted-id"}
+	req := freePiTestRequest(t, srv, freePiTestToken("user_stale"), connData, false)
 
-	err := ForwardFreePi(httptest.NewRecorder(), req)
-	if err == nil {
-		t.Fatal("the conversation lock was swallowed")
+	if err := ForwardFreePi(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("the rotated retry did not recover: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if calls != 1 {
-		t.Errorf("upstream calls = %d, want 1 (a pinned id cannot rotate)", calls)
+	if calls != 2 {
+		t.Errorf("upstream calls = %d, want 2 (one refusal, one rotated replay)", calls)
 	}
 }
 
@@ -770,5 +783,46 @@ func TestFreePiOwnershipRefusalRequiresZeroUsage(t *testing.T) {
 		"Here is the weather in Dhaka.", 1)
 	if _, ok := freePiOwnershipRefusalInBody([]byte(unrelated)); ok {
 		t.Error("zero usage with unrelated content was flagged as a refusal")
+	}
+}
+
+// TestFreePiSessionIDsNeverCrossAccounts pins the invariant the whole design
+// rests on: a session id is a function of the account, so account A can never
+// present account B's id — which is precisely what upstream refuses with "This
+// conversation belongs to another free-pi account."
+//
+// Checked across rotation steps too, not just step 0: a rotated id is derived
+// from (account, step), and a bug that dropped the account from that tuple would
+// make two accounts collide on step 1 while still passing at step 0.
+func TestFreePiSessionIDsNeverCrossAccounts(t *testing.T) {
+	accounts := []string{
+		freePiTestToken("user_alpha"),
+		freePiTestToken("user_beta"),
+		freePiTestToken("user_gamma"),
+		"opaque-not-a-jwt-alpha",
+		"opaque-not-a-jwt-beta",
+	}
+
+	seen := map[string]string{}
+	for _, token := range accounts {
+		for step := uint64(0); step <= 8; step++ {
+			id := freePiRotatedSessionIDFor(token, nil, step)
+			if id == "" {
+				t.Fatalf("empty session id for step %d", step)
+			}
+			if owner, dup := seen[id]; dup {
+				t.Errorf("session id collision: %q used by two accounts (%s and %s)",
+					id, owner, freePiAccountKey(token))
+			}
+			seen[id] = freePiAccountKey(token)
+		}
+	}
+
+	// A stored value in connection data must not let one account borrow another's
+	// id — the stale-persistence case that defeated rotation before.
+	borrowed := freePiRotatedSessionIDFor(freePiTestToken("user_alpha"),
+		map[string]any{"freePiSessionId": freePiAccountSessionID(freePiTestToken("user_beta"))}, 1)
+	if borrowed == freePiAccountSessionID(freePiTestToken("user_beta")) {
+		t.Error("a stored id let one account present another account's session id")
 	}
 }

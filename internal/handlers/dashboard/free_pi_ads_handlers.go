@@ -45,10 +45,11 @@ func (h *DashboardHandler) freePiConnectionForAd(connID string) (baseURL, token,
 // the creative is fetched under the session the completions use. An ad fetched
 // under a different id would be attributed to a session that never ran the
 // conversation.
-func freePiAdSessionID(token string, data map[string]any) string {
-	if stored, ok := data["freePiSessionId"].(string); ok && stored != "" {
-		return stored
-	}
+//
+// Derived unconditionally, never read from connection data: the executor no
+// longer honours a stored id, so preferring one here would report an impression
+// under a session the completions are not using.
+func freePiAdSessionID(token string, _ map[string]any) string {
 	return executor.FreePiSessionID(token)
 }
 

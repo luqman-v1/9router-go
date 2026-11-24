@@ -112,3 +112,45 @@ func TestClassifyError_FreePiCodesDoNotLeakIntoOtherProviders(t *testing.T) {
 		}
 	}
 }
+
+// TestFreePiIsConcurrentSessionCode pins the field the 409-failover decision
+// branches on. The code is the contract, never the message text: the wording is
+// server-owned and changes between deploys, so a body that merely mentions
+// sessions must not match.
+func TestFreePiIsConcurrentSessionCode(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "documented 409 envelope",
+			body: `{"code":"concurrent_session","message":"You've already got 4 free-pi CLI sessions running."}`,
+			want: true,
+		},
+		{
+			name: "nested error envelope",
+			body: `{"error":{"code":"concurrent_session","message":"4 sessions"}}`,
+			want: true,
+		},
+		{
+			name: "rate limit is a different verdict",
+			body: `{"code":"rate_limit_exceeded"}`,
+			want: false,
+		},
+		{
+			name: "message mentioning sessions is not enough",
+			body: `{"code":"other","message":"concurrent_session happened somewhere"}`,
+			want: false,
+		},
+		{name: "empty", body: "", want: false},
+		{name: "not json", body: "<html>409</html>", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FreePiIsConcurrentSessionCode([]byte(tt.body)); got != tt.want {
+				t.Errorf("FreePiIsConcurrentSessionCode(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}

@@ -164,27 +164,26 @@ func freePiSessionVariant(apiKey string, step uint64) string {
 
 // freePiSessionIDFor returns the upstream session id for one connection.
 //
-// precedence: an explicitly stored id (written at login) wins, so an operator
-// can pin it; otherwise it is derived from the account identity, which is what
-// makes every process and every extra connection converge on one session.
-func freePiSessionIDFor(apiKey string, connData map[string]any) string {
-	if connData != nil {
-		if stored, ok := connData["freePiSessionId"].(string); ok && stored != "" {
-			return stored
-		}
-	}
+// The id is ALWAYS derived from the account identity and never read from stored
+// connection data. That is the invariant the whole rotation design rests on: the
+// id must be a function of the account, so account A can never present account
+// B's id — which is exactly what upstream refuses with "This conversation
+// belongs to another free-pi account."
+//
+// A stored value used to win here, as an operator "pin". Nothing in the product
+// ever set one (the dashboard has no field for it) but the login handler wrote
+// the derived value into that slot as a cache, and every reader then treated it
+// as authoritative — so freePiRotatedSessionIDFor returned it at every step and
+// rotation could never change anything. Deriving unconditionally removes the
+// failure mode instead of documenting around it.
+func freePiSessionIDFor(apiKey string, _ map[string]any) string {
 	return freePiAccountSessionID(apiKey)
 }
 
 // freePiRotatedSessionIDFor returns the session id for one rotation step of one
-// account, honouring an operator's pinned id (a pin is a fixed point, so every
-// step returns it) and the stored rotation counter.
-func freePiRotatedSessionIDFor(apiKey string, connData map[string]any, step uint64) string {
-	if connData != nil {
-		if stored, ok := connData["freePiSessionId"].(string); ok && stored != "" {
-			return stored
-		}
-	}
+// account. Like the base id it is derived, never stored, so a step always names
+// an id belonging to THIS account and no other account can be handed it.
+func freePiRotatedSessionIDFor(apiKey string, _ map[string]any, step uint64) string {
 	return freePiSessionVariant(apiKey, step)
 }
 

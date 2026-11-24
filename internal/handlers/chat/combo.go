@@ -28,7 +28,9 @@ func isRetryableComboError(ue *upstreamError) bool {
 	if ue == nil {
 		return false
 	}
-	if ue.StatusCode >= 400 && ue.StatusCode < 500 && ue.StatusCode != http.StatusTooManyRequests {
+	if ue.StatusCode >= 400 && ue.StatusCode < 500 &&
+		ue.StatusCode != http.StatusTooManyRequests &&
+		!providers.FreePiIsConcurrentSessionCode(ue.Body) {
 		return false
 	}
 	return true
@@ -48,6 +50,17 @@ func isRetryableComboError(ue *upstreamError) bool {
 // cannot help: the request is what was rejected.
 func isRequestScopedComboError(ue *upstreamError) bool {
 	if ue == nil || ue.StatusCode < 400 || ue.StatusCode >= 500 {
+		return false
+	}
+	// free-pi's `concurrent_session` is a 409 whose verdict is about the
+	// ACCOUNT'S capacity, not about the request: the account already holds its
+	// maximum number of live sessions, so another account can serve this exact
+	// request unchanged. Treating it as request-scoped ended the pass and
+	// returned the conflict to the client, which is why a second free-pi account
+	// never picked up a mid-conversation switch. Keyed on the envelope `code`
+	// rather than the status: 409 is a generic conflict and only this provider's
+	// session code means "try another account".
+	if ue.StatusCode == http.StatusConflict && providers.FreePiIsConcurrentSessionCode(ue.Body) {
 		return false
 	}
 	return !providers.RetryableStatusCodes[ue.StatusCode]

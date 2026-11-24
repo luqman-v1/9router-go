@@ -399,13 +399,6 @@ func freePiSessionRotateRetry(ctx context.Context, client *http.Client, req *Req
 
 	next := state
 	next.SessionID = freePiRotatedSessionIDFor(req.APIKey, req.ConnData, state.RotationStep+1)
-	if next.SessionID == state.SessionID {
-		// An operator pinned the id: every step returns it, so there is nothing
-		// to rotate to and replaying would earn the same refusal.
-		log.Warn("free-pi", "conversation locked but the session id is pinned; not retrying",
-			"account", state.AccountKey, "session", state.SessionID)
-		return nil
-	}
 
 	log.Info("free-pi", "conversation locked by another account; retrying once on a fresh session",
 		"account", state.AccountKey, "from", state.SessionID, "to", next.SessionID)
