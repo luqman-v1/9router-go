@@ -113,6 +113,12 @@ func (h *MediaHandler) handleAntigravitySTT(w http.ResponseWriter, r *http.Reque
 	excludeIDs := []string{}
 	var lastErr error
 	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return r.Context().Err()
+		}
 		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "antigravity", pinned, excludeIDs, model)
 		if err != nil || conn == nil {
 			if lastErr != nil {
@@ -125,7 +131,8 @@ func (h *MediaHandler) handleAntigravitySTT(w http.ResponseWriter, r *http.Reque
 		} else {
 			lastErr = attemptErr
 		}
-		if usePinned {
+		var nonRetryable *antigravityNonRetryableError
+		if usePinned || errors.As(lastErr, &nonRetryable) || r.Context().Err() != nil {
 			return lastErr
 		}
 		excludeIDs = append(excludeIDs, conn.ID)
@@ -241,25 +248,29 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return fmt.Errorf("antigravity stt request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		errText := string(respBody[:min(500, len(respBody))])
 		log.Warn("media", "antigravity stt upstream error", "status", resp.StatusCode, "body", errText)
+		backoff := 0
 		if h.Repo != nil {
-			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
-			if !handlerutil.IsProbeContext(r.Context()) {
-				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody); classification.ShouldFallback {
-					cooldownSec := max(classification.CooldownMs/1000, 1)
-					_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
-				}
-			}
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
 		}
-		return fmt.Errorf("antigravity stt failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
+		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+		}
+		err := fmt.Errorf("antigravity stt failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
+		if !classification.ShouldFallback {
+			return &antigravityNonRetryableError{err: err}
+		}
+		return err
 	}
 
 	unwrapped := translator.UnwrapAntigravityResponse(respBody)

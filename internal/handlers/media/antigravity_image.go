@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,13 @@ import (
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
 )
+
+type antigravityNonRetryableError struct {
+	err error
+}
+
+func (e *antigravityNonRetryableError) Error() string { return e.err.Error() }
+func (e *antigravityNonRetryableError) Unwrap() error { return e.err }
 
 // handleAntigravityImage handles image generation requests for Antigravity,
 // executing via CloudCode's v1internal:generateContent and translating the response to OpenAI image format.
@@ -60,6 +68,12 @@ func (h *MediaHandler) handleAntigravityImage(w http.ResponseWriter, r *http.Req
 	excludeIDs := []string{}
 	var lastErr error
 	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return r.Context().Err()
+		}
 		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "antigravity", pinned, excludeIDs, cleanModel)
 		if err != nil || conn == nil {
 			if lastErr != nil {
@@ -72,7 +86,8 @@ func (h *MediaHandler) handleAntigravityImage(w http.ResponseWriter, r *http.Req
 		} else {
 			lastErr = attemptErr
 		}
-		if usePinned {
+		var nonRetryable *antigravityNonRetryableError
+		if usePinned || errors.As(lastErr, &nonRetryable) || r.Context().Err() != nil {
 			return lastErr
 		}
 		excludeIDs = append(excludeIDs, conn.ID)
@@ -184,9 +199,9 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		return fmt.Errorf("antigravity request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return fmt.Errorf("read antigravity response: %w", err)
 	}
@@ -194,32 +209,36 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	if resp.StatusCode != http.StatusOK {
 		errText := string(respBody[:min(500, len(respBody))])
 		log.Warn("media", "antigravity image error", "status", resp.StatusCode, "body", errText)
+		backoff := 0
 		if h.Repo != nil {
-			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
-			if !handlerutil.IsProbeContext(r.Context()) {
-				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody); classification.ShouldFallback {
-					cooldownSec := max(classification.CooldownMs/1000, 1)
-					// Google reports the real quota window on the error
-					// (error.details[].metadata.quotaResetTimeStamp); it pins
-					// the lock far more accurately than the backoff curve.
-					if resetSec, ok := geminiQuotaResetSeconds(respBody); ok {
-						cooldownSec = int(resetSec)
-					}
-					_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
-					var rawModel string
-					var rawBody struct {
-						Model string `json:"model"`
-					}
-					if err := json.Unmarshal(body, &rawBody); err == nil {
-						rawModel = rawBody.Model
-					}
-					if rawModel != "" && rawModel != cleanModel {
-						_ = h.Repo.LockConnectionModel(conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
-					}
-				}
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			// Google reports the real quota window on the error
+			// (error.details[].metadata.quotaResetTimeStamp); it pins
+			// the lock far more accurately than the backoff curve.
+			if resetSec, ok := geminiQuotaResetSeconds(respBody); ok {
+				cooldownSec = int(resetSec)
+			}
+			_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
+			var rawModel string
+			var rawBody struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(body, &rawBody); err == nil {
+				rawModel = rawBody.Model
+			}
+			if rawModel != "" && rawModel != cleanModel {
+				_ = h.Repo.LockConnectionModel(conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
 			}
 		}
-		return fmt.Errorf("antigravity image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
+		err := fmt.Errorf("antigravity image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
+		if !classification.ShouldFallback {
+			return &antigravityNonRetryableError{err: err}
+		}
+		return err
 	}
 
 	formatted, err := translator.FormatAntigravityImageResponse(respBody, prompt)
