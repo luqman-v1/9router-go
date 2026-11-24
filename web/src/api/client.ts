@@ -2883,6 +2883,27 @@ export const api = {
       body: JSON.stringify({ password, ...(advancedMode === undefined ? {} : { advancedMode }) }),
     })
     if (res.ok) {
+      sessionStorage.setItem('9router_auth', 'true')
+      localStorage.setItem('9router_auth', 'true')
+      return { success: true }
+    }
+    let errText = 'Setup failed'
+    try {
+      const errJson = await res.json()
+      errText = errJson.error?.message || errJson.error || errJson.message || errText
+    } catch {}
+    return { success: false, error: errText }
+  },
+  // Skip the password step: the dashboard answers without a login (the same
+  // switch Settings > Security exposes as "Require login"), so this is only
+  // offered on a fresh install from the local machine.
+  setupSkip: async (): Promise<{ success: boolean; error?: string }> => {
+    const res = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skipPassword: true }),
+    })
+    if (res.ok) {
       // The server sets the httpOnly auth_token cookie on success; the client
       // gate mirrors what api.login does.
       sessionStorage.setItem('9router_auth', 'true')

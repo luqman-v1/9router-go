@@ -32,6 +32,12 @@
   // off server-side; Advanced leaves the deployment as it always was.
   let setupStep = $state<'password' | 'mode'>('password')
   let advancedChoice = $state(true)
+  // Show/hide toggles for the two wizard password fields, mirroring the login
+  // form's eye button: a long generated password is easier to confirm when it
+  // can be read back.
+  let showSetupPassword = $state(false)
+  let showConfirmPassword = $state(false)
+  let skipLoading = $state(false)
   // White-label branding on the login screen. appName/appLogoUrl are the two
   // the sidebar already reads from the same settings row; loginLogo and
   // appTagline are the login-specific pair.
@@ -82,7 +88,12 @@
         // its setup POST anyway), so hiding the form would lock the operator
         // out entirely.
         firstRun =
-          !data.hasPassword && data.initialPasswordSet !== true && data.requestIsLocal === true
+          !data.hasPassword &&
+          data.initialPasswordSet !== true &&
+          data.requestIsLocal === true &&
+          // A gateway whose operator turned the login requirement off is
+          // configured, not unfinished: showing the wizard would re-enable it.
+          data.requireLogin !== false
         authMode = data.authMode || 'password'
         ssoType = data.ssoType || 'oidc'
         oidcConfigured = data.oidcConfigured === true
@@ -208,6 +219,32 @@
     isLoading = false
   }
 
+  // Skip the password step: keep the default password, finish with the default
+  // mode, and land in the dashboard. The operator can set a password later in
+  // Settings > Security.
+  async function handleSkipPassword() {
+    if (isLoading || skipLoading) return
+    skipLoading = true
+    errorMessage = ''
+    try {
+      const res = await api.setupSkip()
+      if (res.success) {
+        firstRun = false
+        if (onSuccess) {
+          onSuccess()
+        } else {
+          window.location.assign('/dashboard')
+        }
+      } else {
+        errorMessage = res.error || 'Setup failed'
+      }
+    } catch (err: unknown) {
+      errorMessage = err instanceof Error ? err.message : 'Setup failed'
+    } finally {
+      skipLoading = false
+    }
+  }
+
   async function handleModeSubmit(e: SubmitEvent) {
     e.preventDefault()
     if (isLoading) return
@@ -286,27 +323,51 @@
               </p>
               <div class="flex flex-col gap-2">
                 <label for="setup-password" class="text-sm font-medium text-text-main">New password</label>
-                <input
-                  id="setup-password"
-                  type="password"
-                  placeholder="At least 8 characters"
-                  bind:value={newPassword}
-                  required
-                  minlength="8"
-                  data-login-focus
-                  class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
-                />
+                <div class="relative">
+                  <input
+                    id="setup-password"
+                    type={showSetupPassword ? 'text' : 'password'}
+                    placeholder="At least 8 characters"
+                    bind:value={newPassword}
+                    required
+                    minlength="8"
+                    data-login-focus
+                    class="w-full py-2.5 px-3 pr-10 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onclick={() => (showSetupPassword = !showSetupPassword)}
+                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+                    aria-label={showSetupPassword ? 'Hide password' : 'Show password'}
+                  >
+                    <span class="material-symbols-outlined text-[20px]">
+                      {showSetupPassword ? 'visibility_off' : 'visibility'}
+                    </span>
+                  </button>
+                </div>
               </div>
               <div class="flex flex-col gap-2">
                 <label for="setup-password-confirm" class="text-sm font-medium text-text-main">Confirm password</label>
-                <input
-                  id="setup-password-confirm"
-                  type="password"
-                  placeholder="Repeat the password"
-                  bind:value={confirmPassword}
-                  required
-                  class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
-                />
+                <div class="relative">
+                  <input
+                    id="setup-password-confirm"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    placeholder="Repeat the password"
+                    bind:value={confirmPassword}
+                    required
+                    class="w-full py-2.5 px-3 pr-10 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onclick={() => (showConfirmPassword = !showConfirmPassword)}
+                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+                    aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                  >
+                    <span class="material-symbols-outlined text-[20px]">
+                      {showConfirmPassword ? 'visibility_off' : 'visibility'}
+                    </span>
+                  </button>
+                </div>
                 {#if errorMessage}
                   <p class="text-xs text-red-500">{errorMessage}</p>
                 {/if}
@@ -317,6 +378,14 @@
                 class="w-full h-9 px-4 text-sm rounded-[10px] font-medium bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>Continue</span>
+              </button>
+              <button
+                type="button"
+                onclick={handleSkipPassword}
+                disabled={isLoading || skipLoading}
+                class="text-xs text-text-muted hover:text-text-main transition-colors cursor-pointer"
+              >
+                {skipLoading ? 'Skipping...' : 'Skip — keep the default password (123456)'}
               </button>
               <p class="text-xs text-center text-text-muted">
                 Step 1 of 2. This is accepted from the local machine only, while no

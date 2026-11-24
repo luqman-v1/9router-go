@@ -252,3 +252,42 @@ func TestHandlePostSetup_RefusesCrossSiteOrigin(t *testing.T) {
 		t.Fatalf("cross-site setup stored a password hash")
 	}
 }
+
+// Skip stores no password and turns the login requirement off: the two facts
+// are one decision, and a stored hash would contradict the toggle.
+func TestHandlePostSetupSkipPassword(t *testing.T) {
+	authTestEnv(t)
+	t.Setenv("INITIAL_PASSWORD", "")
+	auth.ResetLoginLimiter()
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := NewDashboardHandler(repo)
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(`{"skipPassword":true}`))
+	req.RemoteAddr = "127.0.0.1:51000"
+	rec := httptest.NewRecorder()
+	h.HandlePostSetup(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/setup (skip) = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		t.Fatalf("GetSettingsRaw: %v", err)
+	}
+	if v, ok := raw["requireLogin"].(bool); !ok || v {
+		t.Fatalf("requireLogin = %v after skip, want false", raw["requireLogin"])
+	}
+	if hash, _ := raw["password"].(string); hash != "" {
+		t.Fatalf("skip stored a password hash")
+	}
+
+	// And the second POST is still refused — skip is not a reset.
+	again := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(`{"skipPassword":true}`))
+	again.RemoteAddr = "127.0.0.1:51000"
+	rec2 := httptest.NewRecorder()
+	h.HandlePostSetup(rec2, again)
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("second skip POST = %d, want 403", rec2.Code)
+	}
+}

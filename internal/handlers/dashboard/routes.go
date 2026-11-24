@@ -182,18 +182,13 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/keys/{id}/budget", h.HandleGetApiKeyBudget)
 		r.Put("/keys/{id}", h.HandleUpdateApiKey)
 
-		// F-3 Plans: reusable policy templates the keys inherit from. Gated on
-		// advanced mode: a personal gateway has one spender, so the route
-		// answers 403 rather than letting a typed URL reach a hidden surface.
-		r.Group(func(r chi.Router) {
-			r.Use(AdvancedModeGate(h.Repo))
-			r.Get("/plans", h.HandleListPlans)
-			r.Post("/plans", h.HandleCreatePlan)
-			r.Get("/plans/{id}", h.HandleGetPlan)
-			r.Put("/plans/{id}", h.HandleUpdatePlan)
-			r.Delete("/plans/{id}", h.HandleDeletePlan)
-			r.Get("/plans/{id}/keys", h.HandlePlanKeys)
-		})
+		// F-3 Plans: reusable policy templates the keys inherit from.
+		r.Get("/plans", h.HandleListPlans)
+		r.Post("/plans", h.HandleCreatePlan)
+		r.Get("/plans/{id}", h.HandleGetPlan)
+		r.Put("/plans/{id}", h.HandleUpdatePlan)
+		r.Delete("/plans/{id}", h.HandleDeletePlan)
+		r.Get("/plans/{id}/keys", h.HandlePlanKeys)
 
 		// F-5 Credential vault: status and master-key rotation.
 		r.Get("/vault/status", h.HandleGetVaultStatus)
@@ -208,30 +203,24 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/guardrails/logs", h.HandleListGuardrailLogs)
 
 		// Jailbreak: agent prompt presets library; per-model preset binding.
-		// Gated on advanced mode like Plans: the sidebar hides the entry in
-		// personal mode, so a typed URL gets the same answer instead of a
-		// surface the operator did not ask for.
-		r.Group(func(r chi.Router) {
-			r.Use(AdvancedModeGate(h.Repo))
-			r.Get("/jailbreak", h.HandleGetJailbreak)
-			r.Put("/jailbreak", h.HandlePutJailbreak)
-			r.Get("/jailbreak/presets", h.HandleListJailbreakPresets)
-			r.Put("/jailbreak/presets", h.HandlePutJailbreakPreset)
-			r.Delete("/jailbreak/presets/{id}", h.HandleDeleteJailbreakPreset)
-			r.Post("/jailbreak/presets/{id}/duplicate", h.HandleDuplicateJailbreakPreset)
-			r.Get("/jailbreak/models", h.HandleListJailbreakModels)
-			r.Get("/jailbreak/models/catalog", h.HandleJailbreakModelCatalog)
-			r.Put("/jailbreak/models", h.HandleSetJailbreakModel)
-			r.Put("/jailbreak/keys/model", h.HandleSetJailbreakKeyModel)
-			r.Get("/jailbreak/keys/bindings", h.HandleListJailbreakKeyBindings)
-			r.Delete("/jailbreak/models", h.HandleDeleteJailbreakModel)
-			r.Get("/jailbreak/excludes", h.HandleGetJailbreakExcludes)
-			r.Put("/jailbreak/excludes", h.HandlePutJailbreakExcludes)
-			r.Post("/jailbreak/import", h.HandleImportJailbreak)
-			r.Post("/jailbreak/resolve", h.HandleExplainJailbreak)
-			r.Get("/jailbreak/usage", h.HandleJailbreakUsage)
-			r.Post("/jailbreak/preview", h.HandlePreviewJailbreak)
-		})
+		r.Get("/jailbreak", h.HandleGetJailbreak)
+		r.Put("/jailbreak", h.HandlePutJailbreak)
+		r.Get("/jailbreak/presets", h.HandleListJailbreakPresets)
+		r.Put("/jailbreak/presets", h.HandlePutJailbreakPreset)
+		r.Delete("/jailbreak/presets/{id}", h.HandleDeleteJailbreakPreset)
+		r.Post("/jailbreak/presets/{id}/duplicate", h.HandleDuplicateJailbreakPreset)
+		r.Get("/jailbreak/models", h.HandleListJailbreakModels)
+		r.Get("/jailbreak/models/catalog", h.HandleJailbreakModelCatalog)
+		r.Put("/jailbreak/models", h.HandleSetJailbreakModel)
+		r.Put("/jailbreak/keys/model", h.HandleSetJailbreakKeyModel)
+		r.Get("/jailbreak/keys/bindings", h.HandleListJailbreakKeyBindings)
+		r.Delete("/jailbreak/models", h.HandleDeleteJailbreakModel)
+		r.Get("/jailbreak/excludes", h.HandleGetJailbreakExcludes)
+		r.Put("/jailbreak/excludes", h.HandlePutJailbreakExcludes)
+		r.Post("/jailbreak/import", h.HandleImportJailbreak)
+		r.Post("/jailbreak/resolve", h.HandleExplainJailbreak)
+		r.Get("/jailbreak/usage", h.HandleJailbreakUsage)
+		r.Post("/jailbreak/preview", h.HandlePreviewJailbreak)
 		r.Put("/jailbreak/presets/order", h.HandleReorderJailbreakPresets)
 		r.Post("/jailbreak/presets/upload", h.HandleUploadJailbreakPreset)
 		r.Get("/jailbreak/sync/sources", h.HandleListJailbreakSyncSources)

@@ -15,6 +15,29 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// setupCompleted reports whether the first-run wizard has nothing left to ask.
+// Three ways to be done: a stored hash, a configured INITIAL_PASSWORD, or an
+// explicit "no password here" (requireLogin false, written by the wizard's Skip
+// and by Settings > Security). The third is a decision, not an absence — a
+// gateway whose operator turned login off must not be shown a setup form that
+// would turn it back on.
+func setupCompleted(raw map[string]any) bool {
+	if hasStoredPassword(raw) || config.LoadConfig().InitialPassword != "" {
+		return true
+	}
+	if v, ok := raw["requireLogin"].(bool); ok && !v {
+		return true
+	}
+	return false
+}
+
+// personalModeHiddenNav is the sidebar hide list written when the operator
+// picks Personal. Plans, the token saver and Persona are the three surfaces
+// that only matter when someone else is spending the quota. The list is
+// advisory: the routes stay reachable, because the dashboard is single-operator
+// behind a password and Plans only arranges the operator's own keys.
+var personalModeHiddenNav = []string{"plans", "token-saver", "jailbreak"}
+
 // First-run setup wizard
 // A fresh install sets the dashboard password from the
 // browser before the first login, instead of making the operator type the
@@ -33,11 +56,11 @@ func (h *DashboardHandler) HandleGetSetup(w http.ResponseWriter, r *http.Request
 	raw := settingsOrEmpty(h)
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		// The wizard applies only when no password path exists at all: no
-		// stored hash and no INITIAL_PASSWORD. Aligns with the POST gate
-		// below, so the form never offers itself when the server would
+		// The wizard applies only while setup is incomplete: no stored hash,
+		// no INITIAL_PASSWORD, and no "skip" recorded. Aligns with the POST
+		// gate below, so the form never offers itself when the server would
 		// refuse it.
-		"status":         !hasStoredPassword(raw) && config.LoadConfig().InitialPassword == "",
+		"status":         !setupCompleted(raw),
 		"databaseType":   string(db.CurrentEngine()),
 		"requestIsLocal": nodeRequestIsLocal(r),
 	})
@@ -48,7 +71,7 @@ func (h *DashboardHandler) HandleGetSetup(w http.ResponseWriter, r *http.Request
 // dashboard they just unlocked. Only a fresh, local install qualifies.
 func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Request) {
 	raw := settingsOrEmpty(h)
-	if hasStoredPassword(raw) || config.LoadConfig().InitialPassword != "" {
+	if setupCompleted(raw) {
 		noStore(w)
 		handlerutil.WriteJSON(w, http.StatusForbidden, map[string]any{
 			"success": false,
@@ -85,6 +108,48 @@ func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	// Skip: the operator does not want a password on this machine. That is the
+	// same switch Settings > Security exposes as "Require login" — the
+	// dashboard then answers to anyone who can reach it, which is a deliberate
+	// choice for a box behind a firewall, not an accident. A password is never
+	// stored in this path, so turning the requirement back on falls through to
+	// INITIAL_PASSWORD / the default the same way a fresh install does.
+	skipPassword, _ := body["skipPassword"].(bool)
+	advanced := true
+	if v, ok := body["advancedMode"].(bool); ok {
+		advanced = v
+	}
+	if skipPassword {
+		updates := map[string]any{"requireLogin": false}
+		if !advanced {
+			if nav := normalizeNavVisibility(map[string]any{"hidden": personalModeHiddenNav}); nav != nil {
+				updates[navVisibilitySettingKey] = nav
+			}
+		}
+		if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
+			noStore(w)
+			handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+		token, err := auth.Sign(auth.Secret(), time.Now())
+		if err != nil {
+			noStore(w)
+			handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"success": false,
+				"error":   "Failed to create session",
+			})
+			return
+		}
+		auth.SetCookie(w, r, token)
+		h.RecordLogin(r, http.StatusOK, token)
+		noStore(w)
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "passwordSkipped": true})
+		return
+	}
+
 	password, _ := body["password"].(string)
 	password = strings.TrimSpace(password)
 	if len(password) < 8 {
@@ -106,18 +171,11 @@ func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// The wizard's second question: is this gateway for one person, or for
-	// keys someone else spends? Personal hides the operator surfaces and turns
-	// them off server-side; Advanced leaves the deployment as it always was.
-	// Absent means Advanced, so an older client keeps its behaviour.
+	// keys someone else spends? Personal fills the sidebar hide list so the
+	// first screen after login already matches the mode; Advanced writes no
+	// hide list, so the deployment keeps every entry it always had.
 	updates := map[string]any{"password": string(hashed)}
-	advanced := true
-	if v, ok := body["advancedMode"].(bool); ok {
-		advanced = v
-	}
-	updates[advancedModeSettingKey] = advanced
 	if !advanced {
-		// Fill the sidebar hide list too, so the first screen after login
-		// already matches the mode instead of showing entries that 403.
 		if nav := normalizeNavVisibility(map[string]any{"hidden": personalModeHiddenNav}); nav != nil {
 			updates[navVisibilitySettingKey] = nav
 		}

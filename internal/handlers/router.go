@@ -431,18 +431,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Put("/api/keys/{id}/models", dashH.HandleSetApiKeyModels)
 	r.Get("/api/keys/{id}/budget", dashH.HandleGetApiKeyBudget)
 	r.Put("/api/keys/{id}", dashH.HandleUpdateApiKey)
-	// Plans: reusable policy templates. Gated on advanced mode, the same way
-	// dashboard.RegisterRoutes gates its copy — a personal gateway answers 403
-	// instead of letting a typed URL reach a hidden surface.
-	r.Group(func(r chi.Router) {
-		r.Use(dashboard.AdvancedModeGate(dashH.Repo))
-		r.Get("/api/plans", dashH.HandleListPlans)
-		r.Post("/api/plans", dashH.HandleCreatePlan)
-		r.Get("/api/plans/{id}", dashH.HandleGetPlan)
-		r.Put("/api/plans/{id}", dashH.HandleUpdatePlan)
-		r.Delete("/api/plans/{id}", dashH.HandleDeletePlan)
-		r.Get("/api/plans/{id}/keys", dashH.HandlePlanKeys)
-	})
+	r.Get("/api/plans", dashH.HandleListPlans)
+	r.Post("/api/plans", dashH.HandleCreatePlan)
+	r.Get("/api/plans/{id}", dashH.HandleGetPlan)
+	r.Put("/api/plans/{id}", dashH.HandleUpdatePlan)
+	r.Delete("/api/plans/{id}", dashH.HandleDeletePlan)
+	r.Get("/api/plans/{id}/keys", dashH.HandlePlanKeys)
 	r.Get("/api/metrics", observ.Handler().ServeHTTP)
 	r.Get("/api/vault/status", dashH.HandleGetVaultStatus)
 	r.Get("/api/guardrails/policies", dashH.HandleGetGuardrailPolicies)
@@ -736,6 +730,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
+	// First-run setup (inspired by new-api's /api/setup): an anonymous GET/POST
 	// pair that lets a fresh install set the dashboard password from the
 	// browser. The handler itself refuses a stored hash and a non-loopback
 	// peer, so the anonymity is only usable before the gateway is configured.

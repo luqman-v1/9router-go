@@ -128,10 +128,12 @@ func sessionCookie(t *testing.T, res *Result) string {
 	return ""
 }
 
-// The wizard's second question is a real switch, not a label: Personal turns
-// the operator surfaces off server-side, so a typed URL gets 403 where the
-// sidebar only hides the entry. Advanced leaves the deployment as it was.
-func TestSetupWizardPersonalModeGatesPlans(t *testing.T) {
+// The wizard's second question is a sidebar preset, not an authz switch: a
+// personal deployment hides the operator surfaces, and the routes stay
+// reachable. Plans only arranges the operator's own keys on a gateway that is
+// already behind a password, so making it 403 bought nothing and cost a second
+// source of truth for the sidebar.
+func TestSetupWizardPersonalModeHidesSurfaces(t *testing.T) {
 	auth.ResetLoginLimiter()
 	env := newEnv(t)
 
@@ -144,23 +146,7 @@ func TestSetupWizardPersonalModeGatesPlans(t *testing.T) {
 	}
 	cookie := sessionCookie(t, res)
 
-	// The gate is the half a typed URL cannot walk around: personal mode
-	// answers 403 on the routes the sidebar only hides.
-	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
-	if plans.Status != http.StatusForbidden {
-		t.Fatalf("GET /api/plans (personal) = %d, want 403", plans.Status)
-	}
-	var errBody struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	plans.Decode(t, &errBody)
-	if errBody.Error.Message == "" {
-		t.Fatalf("personal-mode refusal carried no message")
-	}
-
-	// The sidebar hide list was written too, so the first screen matches.
+	// The sidebar hide list was written, so the first screen matches the mode.
 	status := env.Get(t, "/api/settings", WithoutAPIKey(), WithHeader("Cookie", cookie))
 	var settings struct {
 		NavVisibility map[string]any `json:"navVisibility"`
@@ -178,9 +164,16 @@ func TestSetupWizardPersonalModeGatesPlans(t *testing.T) {
 			t.Errorf("personal hide list missing %q (got %v)", want, hidden)
 		}
 	}
+
+	// And the route still answers: hidden, not forbidden.
+	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
+	if plans.Status != http.StatusOK {
+		t.Fatalf("GET /api/plans (personal) = %d, want 200 — the mode is a preset, not an authz gate", plans.Status)
+	}
 }
 
-func TestSetupWizardAdvancedModeKeepsPlans(t *testing.T) {
+// Advanced writes no hide list: the deployment keeps every entry it had.
+func TestSetupWizardAdvancedModeLeavesNavAlone(t *testing.T) {
 	auth.ResetLoginLimiter()
 	env := newEnv(t)
 
@@ -193,26 +186,58 @@ func TestSetupWizardAdvancedModeKeepsPlans(t *testing.T) {
 	}
 	cookie := sessionCookie(t, res)
 
-	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
-	if plans.Status != http.StatusOK {
-		t.Fatalf("GET /api/plans (advanced) = %d, want 200 (body: %s)", plans.Status, truncate(plans.Body))
+	status := env.Get(t, "/api/settings", WithoutAPIKey(), WithHeader("Cookie", cookie))
+	var settings struct {
+		NavVisibility any `json:"navVisibility"`
+	}
+	status.Decode(t, &settings)
+	if settings.NavVisibility != nil {
+		t.Fatalf("advanced setup wrote a hide list: %v", settings.NavVisibility)
 	}
 }
 
-// A POST that omits the question keeps the old behaviour: advanced, so an
-// older client cannot silently turn a resold gateway into a personal one.
-func TestSetupWizardDefaultsToAdvanced(t *testing.T) {
+// Skip keeps the default password and turns the login requirement off: the
+// operator asked for a dashboard with no password, which is the same switch
+// Settings > Security exposes as "Require login".
+func TestSetupWizardSkipPasswordDisablesLogin(t *testing.T) {
 	auth.ResetLoginLimiter()
 	env := newEnv(t)
 
-	res := env.Post(t, "/api/setup", map[string]any{"password": "first-run-password"}, WithoutAPIKey())
+	res := env.Post(t, "/api/setup", map[string]any{"skipPassword": true}, WithoutAPIKey())
 	if res.Status != http.StatusOK {
-		t.Fatalf("POST /api/setup = %d, want 200", res.Status)
+		t.Fatalf("POST /api/setup (skip) = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
 	}
-	cookie := sessionCookie(t, res)
+	var body struct {
+		Success         bool `json:"success"`
+		PasswordSkipped bool `json:"passwordSkipped"`
+	}
+	res.Decode(t, &body)
+	if !body.Success || !body.PasswordSkipped {
+		t.Fatalf("skip response = %+v, want success + passwordSkipped", body)
+	}
 
-	plans := env.Get(t, "/api/plans", WithoutAPIKey(), WithHeader("Cookie", cookie))
-	if plans.Status != http.StatusOK {
-		t.Fatalf("GET /api/plans (absent mode) = %d, want 200", plans.Status)
+	// No hash was stored, and the dashboard stopped asking for a login.
+	settingsRes := env.Get(t, "/api/settings", WithoutAPIKey())
+	var settings struct {
+		RequireLogin *bool  `json:"requireLogin"`
+		Password     string `json:"password"`
+	}
+	settingsRes.Decode(t, &settings)
+	if settings.RequireLogin == nil || *settings.RequireLogin {
+		t.Fatalf("requireLogin = %v after skip, want false", settings.RequireLogin)
+	}
+	if settings.Password != "" {
+		t.Fatalf("skip stored a password hash")
+	}
+
+	// The dashboard answers without a session.
+	status := env.Get(t, "/api/auth/status", WithoutAPIKey())
+	var authStatus struct {
+		Authenticated bool `json:"authenticated"`
+		RequireLogin  bool `json:"requireLogin"`
+	}
+	status.Decode(t, &authStatus)
+	if authStatus.RequireLogin {
+		t.Fatalf("auth status still reports requireLogin true after skip")
 	}
 }

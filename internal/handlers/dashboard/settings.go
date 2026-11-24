@@ -121,9 +121,6 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 	// Feature Visibility stores sidebar ids, so the payload is normalized here:
 	// the sidebar must never receive an id it cannot address (navvisibility.go).
 	applyNavVisibilityUpdate(updates)
-	// Advanced mode decides which operator surfaces exist, so its stored value
-	// has to stay a bool — a string "false" would read as enabled.
-	applyAdvancedModeUpdate(updates)
 	// Display currency stores a code plus a rate table, so the payload is
 	// normalized here: a cost surface must never read a NaN rate (currency.go).
 	applyDisplayCurrencyUpdate(updates)
