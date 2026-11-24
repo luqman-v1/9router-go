@@ -105,6 +105,21 @@ A preview reports what would change before anything is committed:
 `matched` is what the pattern selected; `applied` is what actually landed after
 the cap; `capped` tells you the cap bit.
 
+## Disabled members and pruning
+
+Disabling a model or a provider connection preserves the combo's saved config
+and skips it at runtime — re-enabling resumes routing without editing the
+combo. The check runs once per dispatch (one snapshot of disabled models,
+provider active status, and node prefixes), not per model in the chain. If
+every member is disabled or inactive, fallback combos are still evaluated
+before a `503` comes back.
+
+Deleting a custom model or a provider's models prunes every combo that
+referenced them, in one transaction — plain-string and weighted
+(`{"model": ..., "weight": ...}`) entries both. Deleting a provider node
+prunes atomically with the node itself. A combo never keeps a dead model
+around to fail on it.
+
 ## Timeout and grace period
 
 Set **Model response timeout** per combo in the Edit dialog (seconds, decimals

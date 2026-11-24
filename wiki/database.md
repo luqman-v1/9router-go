@@ -7,16 +7,31 @@ since: 1.9.14
 
 # Database
 
-9router-go reads the upstream 9Router database as-is. There is no import, export,
-or migration.
+No conversion is needed to read an upstream 9Router SQLite database — point
+9router-go at it and it renders the same data. (Moving 9router-go's own data
+to PostgreSQL is different, and is covered below.)
+
+## Engines
+
+Two engines, selected by `DATABASE_URL`:
+
+| Engine | When | Selected by |
+|---|---|---|
+| SQLite (default) | Zero-config, one file, the upstream-compatible shape | `DATABASE_URL` unset or a file path |
+| PostgreSQL (opt-in) | Many writers, a database you already back up and monitor, or a box where the ledger outgrew a single file | `DATABASE_URL` starting with `postgres://` or `postgresql://` |
+
+`DATABASE_URL` takes precedence over `DB_PATH`: a `postgres://` DSN means the
+gateway talks to PostgreSQL, anything else is a SQLite file path. The engine
+is the only thing the DSN decides — provider/model routing never inspects it.
 
 ## Location
 
-| | Path |
+| Engine | Path |
 |---|---|
-| macOS / Linux | `~/.9router/db/data.sqlite` |
-| Windows | `%APPDATA%\9router\db\data.sqlite` |
-| Docker | `/data/db/data.sqlite` inside the container |
+| SQLite, macOS / Linux | `~/.9router/db/data.sqlite` |
+| SQLite, Windows | `%APPDATA%\9router\db\data.sqlite` |
+| SQLite, Docker | `/data/db/data.sqlite` inside the container |
+| PostgreSQL | wherever `DATABASE_URL` points |
 
 ## Sharing with 9Router
 
@@ -44,12 +59,44 @@ same directory) works the same way. 9router-go will have added two columns to
 (`upstream_leases`). Upstream ignores both — its schema sync is additive and
 doesn't drop unknown columns.
 
+## Moving from SQLite to PostgreSQL
+
+The gateway ships a migration path, and it is two commands:
+
+```bash
+# 1. Export every table of the SQLite database to JSONL
+9router-go db export --from ~/.9router/db/data.sqlite --out ./db-dump
+
+# 2. Import the dump into PostgreSQL
+9router-go db import --to "postgres://user:pass@host:5432/9router" --from ./db-dump
+```
+
+Then run the gateway against PostgreSQL:
+
+```bash
+DATABASE_URL="postgres://user:pass@host:5432/9router" ./9router-go
+```
+
+The import normalises the SQLite shapes PostgreSQL rejects out of the box:
+`0/1` integers become `bool` for `BOOLEAN` columns, NUL bytes are stripped
+from `TEXT` (the credential mask carries them internally), and sequence
+resets skip tables whose primary key is not an integer. Schema parity is
+additive on both engines, so a migration lands with the same columns the
+SQLite bootstrap would have created.
+
+Connection pooling is PostgreSQL-only and tuned from the environment:
+`DB_MAX_CONNS` / `DB_MAX_IDLE_CONNS`, clamped to sane ceilings. SQLite
+keeps WAL mode and the per-connection PRAGMAs the Node/Bun upstream uses.
+
 ## What it does not do
 
 - **No legacy JSON import.** If your 9Router data still lives in old JSON files,
   start upstream once to convert them, then switch.
-- **No destructive migrations or pre-migration backups.** Its bootstrap only ever
-  *adds* — create missing tables, add missing columns, seed missing rows.
+- **No destructive migrations or pre-migration backups.** The schema bootstrap
+  only ever *adds* — create missing tables, add missing columns, seed missing
+  rows. The SQLite-to-PostgreSQL import above is a separate command you run
+  explicitly; it writes the target database and never touches the SQLite
+  source.
 - **No interpretation of `_meta.schemaVersion`.** That is upstream's migration
   bookkeeping. A database written by a much newer 9Router release should be
   checked before you rely on it.

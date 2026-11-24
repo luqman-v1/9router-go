@@ -8,7 +8,7 @@
 
 **Never stop coding. Save 20-40% tokens with RTK + auto-fallback to FREE & cheap AI models.**
 
-**Connect Claude Code, Cursor, Antigravity, Codex, Gemini, OpenCode, Cline, OpenClaw... to 40+ AI providers & 100+ models — no Node.js needed at runtime.**
+**Connect Claude Code, Cursor, Antigravity, Codex, Gemini, OpenCode, Cline, OpenClaw... to 150+ AI providers & 1000+ models — no Node.js needed at runtime.**
 
 [![CI](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml)
 [![Release](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml)
@@ -139,11 +139,15 @@ leaves nothing behind: the stale pid file is cleaned on the next command.
 `install` picks the native backend for the host. systemd, launchd, and cron all
 install into the **user** scope and need no root; runit's `~/service` path too.
 Two exceptions: OpenRC is a system service and needs root (`service install`
-refuses without it — run with `sudo`, or pick `--backend cron`), and on Windows
-install registers a scheduled task via `schtasks`, which requires an
-Administrator console. The Windows task runs as the current user at logon, so it
-reads that user's data dir rather than `SYSTEM`'s. Force a backend with
-`--backend systemd|launchd|openrc|runit|cron`.
+refuses without it — run with `sudo`, or pick `--backend cron`), and Windows
+has two backends: `windows-run` (a `HKCU\...\Run` registry entry, installed
+from a non-elevated session with no admin rights) and `windows-task` (a
+`schtasks` scheduled task, which requires an Administrator console). A
+non-elevated session gets `windows-run` directly; an elevated one tries
+`windows-task` first and falls back to `windows-run` if `schtasks` fails.
+Both run as the current user at logon, so they read that user's data dir rather
+than `SYSTEM`'s. Force a backend with
+`--backend systemd|launchd|openrc|runit|cron|windows-run|windows-task`.
 
 **2. Connect a FREE provider (no signup needed):**
 
@@ -356,6 +360,7 @@ For Claude Messages clients: `ANTHROPIC_BASE_URL=http://localhost:20130/v1`.
 | `HOST` / `BIND_ADDR` | all interfaces | Listener address |
 | `DATA_DIR` | `~/.9router` (`%APPDATA%/9router` on Windows) | Data root |
 | `DB_PATH` | `$DATA_DIR/db/data.sqlite` | SQLite file |
+| `DATABASE_URL` | unset | Database engine: a `postgres://` DSN selects PostgreSQL; anything else (or unset) is SQLite and `DB_PATH` applies. Takes precedence over `DB_PATH` |
 | `INITIAL_PASSWORD` | unset (fallback `123456` locally) | First dashboard password |
 | `RTK_ENABLED` | `true` | RTK input compression |
 | `CAVEMAN_ENABLED` / `PONYTAIL_ENABLED` | `false` | Style savers |
@@ -422,7 +427,11 @@ POST /v1/responses              Responses API
 POST /v1/embeddings             Embeddings
 POST /api/chat                  Ollama-compatible chat
 GET  /v1/models                 Model catalog
+GET  /v1/models/{id}            One model's detail
+GET  /v1beta/models             Gemini-native model list
+POST /v1beta/models/{model}     Gemini-native GenerateContent
 POST /v1/images/generations     Image generation
+POST /v1/images/edits           Image editing
 POST /v1/videos/generations     Video generation
 POST /v1/audio/speech           Text to speech
 POST /v1/audio/transcriptions   Speech to text
@@ -467,9 +476,9 @@ Everyone whose commit landed in the repository is credited on the wiki's [**Owne
 Repository references:
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — routing, providers, runtime layout
-- [`DATABASE.md`](DATABASE.md) — SQLite schema & operator contract
+- [`DATABASE.md`](DATABASE.md) — SQLite/PostgreSQL schema & operator contract
 - [`ROADMAP.md`](ROADMAP.md) — proposals only, not current behavior
-- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.15**, upstream baseline `decolua/9router`). Work merged since the last tag lives in [`.changes/`](.changes/) and is folded in at the next release; the dashboard's changelog modal shows both. Check what you are running with `9router-go version`.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.17**, upstream baseline `decolua/9router`). Work merged since the last tag lives in [`.changes/`](.changes/) and is folded in at the next release; the dashboard's changelog modal shows both. Check what you are running with `9router-go version`.
 - [`docs/TELEGRAM_RELEASE_NOTIFICATIONS.md`](docs/TELEGRAM_RELEASE_NOTIFICATIONS.md) — one-time setup for the release notice posted to Telegram
 
 ## Credits
