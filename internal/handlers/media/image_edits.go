@@ -45,6 +45,7 @@ func (h *MediaHandler) handleJSONImageEdits(w http.ResponseWriter, r *http.Reque
 		ResponseFormat string   `json:"response_format,omitempty"`
 		Background     string   `json:"background,omitempty"`
 		Quality        string   `json:"quality,omitempty"`
+		OutputFormat   string   `json:"output_format,omitempty"`
 		N              int      `json:"n,omitempty"`
 	}
 
@@ -68,6 +69,14 @@ func (h *MediaHandler) handleJSONImageEdits(w http.ResponseWriter, r *http.Reque
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: image")
 		return
 	}
+	if req.OutputFormat != "" {
+		switch strings.ToLower(strings.TrimSpace(req.OutputFormat)) {
+		case "png", "jpeg", "jpg", "webp", "gif", "svg":
+		default:
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid output_format")
+			return
+		}
+	}
 
 	reqBody := map[string]any{
 		"prompt": prompt,
@@ -87,6 +96,9 @@ func (h *MediaHandler) handleJSONImageEdits(w http.ResponseWriter, r *http.Reque
 	}
 	if req.Quality != "" {
 		reqBody["quality"] = strings.TrimSpace(req.Quality)
+	}
+	if req.OutputFormat != "" {
+		reqBody["output_format"] = strings.TrimSpace(req.OutputFormat)
 	}
 	if len(req.Images) > 0 {
 		reqBody["images"] = req.Images
@@ -171,12 +183,20 @@ func (h *MediaHandler) handleMultipartImageEdits(w http.ResponseWriter, r *http.
 	responseFormat := strings.TrimSpace(r.FormValue("response_format"))
 	background := strings.TrimSpace(r.FormValue("background"))
 	quality := strings.TrimSpace(r.FormValue("quality"))
-
+	outputFormat := strings.TrimSpace(r.FormValue("output_format"))
 	n := 0
 	if nStr := strings.TrimSpace(r.FormValue("n")); nStr != "" {
 		_, _ = fmt.Sscanf(nStr, "%d", &n)
 	}
 
+	if outputFormat != "" {
+		switch strings.ToLower(strings.TrimSpace(outputFormat)) {
+		case "png", "jpeg", "jpg", "webp", "gif", "svg":
+		default:
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid output_format")
+			return
+		}
+	}
 	reqBody := map[string]any{
 		"prompt":          prompt,
 		"image":           primaryImage,
@@ -185,6 +205,9 @@ func (h *MediaHandler) handleMultipartImageEdits(w http.ResponseWriter, r *http.
 		"response_format": responseFormat,
 		"background":      background,
 		"quality":         quality,
+	}
+	if outputFormat != "" {
+		reqBody["output_format"] = outputFormat
 	}
 	if len(images) > 0 {
 		reqBody["images"] = images

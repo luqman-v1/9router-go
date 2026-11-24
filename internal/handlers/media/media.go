@@ -414,7 +414,34 @@ func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
+	if err := validateImageOutputFormat(body); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	h.forwardMediaRequest(w, r, body, "dall-e-3", "/v1/images/generations")
+}
+
+// validateImageOutputFormat rejects an explicitly requested but unsupported
+// output_format (or non-string value) before the request reaches an upstream
+// provider, mirroring upstream's prepareImageOutputOptions. Requests without
+// output_format are untouched.
+func validateImageOutputFormat(body []byte) error {
+	var req struct {
+		OutputFormat any `json:"output_format"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.OutputFormat == nil {
+		return nil
+	}
+	s, ok := req.OutputFormat.(string)
+	if !ok {
+		return fmt.Errorf("invalid output_format")
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "png", "jpeg", "jpg", "webp", "gif", "svg":
+		return nil
+	default:
+		return fmt.Errorf("invalid output_format")
+	}
 }
 
 // HandleAudioSpeech handles /v1/audio/speech.
