@@ -40,6 +40,13 @@ Numbers follow Pro pro.26's per-model policy (60s doubling, capped at 10
 minutes; three cycles before a disable) from the upstream sweep that added the
 same layer there.
 
+Provenance, stated precisely because a reviewer asked: this is
+[giienew/9router-pro](https://github.com/giienew/9router-pro) pro.26, a
+sibling-reference in the AGENTS.md §1 sense — not a merged `decolua/9router`
+commit, and none has been found carrying these numbers. The policy is ported
+behaviour from a community edition of the same gateway, not upstream parity, and
+this fragment does not claim otherwise.
+
 Verified: `go build ./...` clean, `go vet` clean, `go test` green on
 `internal/modelbreaker` (table-driven state machine, cooldown caps, key
 splitting), `internal/errclass` and `internal/handlers/chat` (refusal before
