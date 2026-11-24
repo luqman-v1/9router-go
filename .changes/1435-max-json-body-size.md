@@ -1,0 +1,5 @@
+### feat(middleware): configurable JSON request body limit via `MAX_JSON_BODY_SIZE_MB`
+- **Configurable ceiling** (`internal/middleware/max_body.go`, `internal/app/handlers.go`): `MAX_JSON_BODY_SIZE_MB` (whole MiB, `1`–`1024`, default `10`) sets the JSON API body ceiling, so long `/v1/responses` sessions with images or large tool outputs no longer 413 at 10 MiB. Invalid values (zero, negative, non-numeric, above `1024`) fail startup instead of falling back silently. Media uploads keep their `128` MiB ceiling; the 413 message names the effective limit.
+- **Config** (`internal/config/config.go`): the variable is also read from `.env`.
+- **Tests** (`internal/middleware/max_body_test.go`, `internal/integration/body_limit_test.go`): env parsing (default, overrides, invalid and overflow values), chunked bodies without `Content-Length`, media lane under a raised JSON ceiling, and `/v1/responses` above the old 10 MiB through the real router.
+- **Docs**: `README.md`, `.env.example`, `wiki/operations.md`.

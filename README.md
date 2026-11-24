@@ -372,6 +372,7 @@ For Claude Messages clients: `ANTHROPIC_BASE_URL=http://localhost:20130/v1`.
 | `PPROF_ENABLED` | `false` | Expose `/debug/pprof/*` (keep off on untrusted networks) |
 | `TRUST_PROXY` / `TRUST_CLOUDFLARE` | unset | Trust forwarded client-IP headers |
 | `TRUSTED_PROXIES` | unset | CIDR list of the reverse proxies whose forwarded client-IP headers are trusted |
+| `MAX_JSON_BODY_SIZE_MB` | `10` | Request body ceiling for JSON APIs (`/v1/responses`, `/v1/chat/completions`, …), whole MiB from `1` to `1024`. Raise it (e.g. `64`) for long Codex / Claude Code sessions with images or large tool outputs; bodies are buffered in memory, so each in-flight request may hold up to this much. An invalid value fails startup. Media uploads keep their own `128` MiB ceiling unless this is higher |
 | `GEMINI_WEB_ROTATION` | `on` | Renew the Gemini Web session cookie in the background (see below) |
 
 #### Gemini Web session renewal
