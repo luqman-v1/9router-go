@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -417,5 +418,35 @@ func TestForwardQoder_MissingUserIDIsA401NamingTheFix(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "userId") {
 		t.Errorf("error %q must say the userId is missing", err)
+	}
+}
+
+// Issue #1423: /algo/api/v2/image/upload signs over the ASCII decimal multipart
+// byte length while Cosy-Bodyhash/Bodylength still describe the binary body.
+func TestBuildQoderCosyHeaders_SignatureBodyKeepsBodyIntegrityHeaders(t *testing.T) {
+	body := []byte("binary multipart body")
+	sigBody := []byte(strconv.Itoa(len(body)))
+	creds := QoderCosyCreds{UserID: "user-1", AuthToken: "jt-abc"}
+	url := "https://api2.qoder.sh/algo/api/v2/image/upload?request_id=abc"
+
+	base, err := buildQoderCosyHeaders(body, url, creds)
+	if err != nil {
+		t.Fatalf("base build: %v", err)
+	}
+	signed, err := buildQoderCosyHeaders(body, url, creds, sigBody)
+	if err != nil {
+		t.Fatalf("signed build: %v", err)
+	}
+	if signed["Cosy-Bodyhash"] != base["Cosy-Bodyhash"] {
+		t.Errorf("Cosy-Bodyhash changed: %q vs %q", signed["Cosy-Bodyhash"], base["Cosy-Bodyhash"])
+	}
+	if signed["Cosy-Bodylength"] != base["Cosy-Bodylength"] {
+		t.Errorf("Cosy-Bodylength changed: %q vs %q", signed["Cosy-Bodylength"], base["Cosy-Bodylength"])
+	}
+	if signed["Cosy-Bodyhash"] != md5Hex(body) {
+		t.Errorf("Cosy-Bodyhash = %q, want %q", signed["Cosy-Bodyhash"], md5Hex(body))
+	}
+	if signed["Cosy-Bodylength"] != fmt.Sprintf("%d", len(body)) {
+		t.Errorf("Cosy-Bodylength = %q, want %d", signed["Cosy-Bodylength"], len(body))
 	}
 }
