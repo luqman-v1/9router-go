@@ -83,6 +83,7 @@ func syncEnvFromViper(v *viper.Viper) {
 		"NO_PROXY", "no_proxy",
 		"STRICT_SSL",
 		"FORCE_FALLBACK_ON_ALL_UNAVAILABLE",
+		"MAX_JSON_BODY_SIZE_MB",
 	}
 	for _, key := range proxyKeys {
 		if os.Getenv(key) == "" {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 
 	"9router/proxy/internal/handlerutil"
@@ -21,6 +23,32 @@ const DefaultMaxBodySize = 10 * 1024 * 1024 // 10MB
 // rather than a raised global: raising the global would let every JSON endpoint
 // buffer 128MB and reintroduce the OOM risk DefaultMaxBodySize exists to stop.
 const MediaMaxBodySize = 128 * 1024 * 1024 // 128MB
+
+// MaxJSONBodySizeEnv names the operator override for DefaultMaxBodySize, in MiB.
+const MaxJSONBodySizeEnv = "MAX_JSON_BODY_SIZE_MB"
+
+// MaxJSONBodySizeCeilingMB bounds MaxJSONBodySizeEnv. Handlers buffer the whole
+// JSON body, so each in-flight request may hold up to this much memory; the
+// ceiling keeps a typo from turning the limit into an effectively unlimited one.
+const MaxJSONBodySizeCeilingMB = 1024
+
+// JSONBodyLimitFromEnv resolves the JSON body ceiling: DefaultMaxBodySize when
+// MaxJSONBodySizeEnv is unset or empty, otherwise the configured whole number of
+// MiB. Zero, negative, non-numeric and above-ceiling values are an error rather
+// than a silent fallback, so a misconfiguration fails the boot instead of
+// running with a limit the operator did not ask for.
+func JSONBodyLimitFromEnv() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(MaxJSONBodySizeEnv))
+	if raw == "" {
+		return DefaultMaxBodySize, nil
+	}
+	mb, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || mb < 1 || mb > MaxJSONBodySizeCeilingMB {
+		return 0, fmt.Errorf("invalid %s=%q: want a whole number of MiB between 1 and %d",
+			MaxJSONBodySizeEnv, raw, MaxJSONBodySizeCeilingMB)
+	}
+	return mb << 20, nil
+}
 
 // BodyLimitRule raises the body limit for a request path suffix.
 type BodyLimitRule struct {

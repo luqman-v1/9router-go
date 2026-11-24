@@ -106,7 +106,10 @@ func TestProvideRouter_SharesOneChatHandler(t *testing.T) {
 		t.Fatal("the control handler carries no semantic cache")
 	}
 
-	router, engineChatH := app.ProvideRouter(repo, ts)
+	router, engineChatH, err := app.ProvideRouter(repo, ts)
+	if err != nil {
+		t.Fatalf("ProvideRouter: %v", err)
+	}
 	if router == nil {
 		t.Fatal("ProvideRouter returned no router")
 	}

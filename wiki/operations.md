@@ -123,6 +123,24 @@ tell "this endpoint is saturated" from "this caller is abusive".
 The listener's read-header, idle, and max-header-byte limits are compiled in
 rather than configurable. Tune the proxy in front of the gateway instead.
 
+## Request body limits
+
+JSON API bodies (`/v1/responses`, `/v1/chat/completions`, `/v1/messages`,
+dashboard CRUD) are capped at 10 MiB. Set `MAX_JSON_BODY_SIZE_MB` (whole MiB,
+`1`–`1024`) to raise it — long Codex or Claude Code sessions carrying images
+and large tool outputs are the usual reason. A body over the ceiling gets a
+`413` naming the effective limit, with or without a `Content-Length`. An
+invalid value (zero, negative, non-numeric, above `1024`) fails startup.
+
+Handlers buffer the whole body, so every in-flight request may hold up to the
+ceiling in memory. Size it against concurrency and available RAM, and keep a
+reverse-proxy limit in front when the gateway is exposed.
+
+Media uploads (`/videos/generations`, `/videos/edits`, `/videos/extensions`,
+`/audio/transcriptions`) keep their own 128 MiB ceiling. A JSON ceiling set
+above 128 MiB applies to them too, since a per-path rule only ever raises the
+limit.
+
 ## Further reading
 
 - [`ARCHITECTURE.md`](https://github.com/luqman-v1/9router-go/blob/main/ARCHITECTURE.md)

@@ -106,7 +106,10 @@ func newEnvWithTokenSaver(t *testing.T, build func(*db.Repo) *handlers.TokenSave
 		ts = build(repo)
 	}
 
-	router, _ := app.ProvideRouter(repo, ts)
+	router, _, err := app.ProvideRouter(repo, ts)
+	if err != nil {
+		t.Fatalf("provide router: %v", err)
+	}
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 

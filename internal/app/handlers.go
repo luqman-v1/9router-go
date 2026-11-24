@@ -66,20 +66,27 @@ func ProvideTokenSaverConfig(repo *db.Repo, params CLIParams) *handlers.TokenSav
 // SQLite file with its own in-memory LRU: the dashboard would report zero
 // entries while the engine served hits, and clearing entries from the dashboard
 // would leave the engine still serving them (see handlers.SetupRoutes).
-func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) (*chi.Mux, *chat.ChatHandler) {
+func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) (*chi.Mux, *chat.ChatHandler, error) {
+	// An invalid MAX_JSON_BODY_SIZE_MB fails the boot instead of silently
+	// serving the default.
+	jsonLimit, err := middleware.JSONBodyLimitFromEnv()
+	if err != nil {
+		return nil, nil, err
+	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	// Body limits are path-aware: JSON APIs keep the 10MB ceiling, the media
-	// endpoints that receive multipart video/audio bodies get their own larger
-	// one (middleware.MediaBodyLimitRules). One middleware decides the ceiling
+	// Body limits are path-aware: JSON APIs get the configurable ceiling
+	// (MAX_JSON_BODY_SIZE_MB, 10MB by default), the media endpoints that
+	// receive multipart video/audio bodies get their own larger one
+	// (middleware.MediaBodyLimitRules). One middleware decides the ceiling
 	// per request — stacking a second MaxBody above this one would leave the
 	// smaller limit still cutting first (#125).
-	r.Use(middleware.MaxBodyByPath(middleware.DefaultMaxBodySize, middleware.MediaBodyLimitRules()))
+	r.Use(middleware.MaxBodyByPath(jsonLimit, middleware.MediaBodyLimitRules()))
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(middleware.RequestLogger)
 
 	engineChatH := handlers.SetupServerRouter(r, repo, ts)
-	return r, engineChatH
+	return r, engineChatH, nil
 }
 
 // ProvideHTTPHandler provides http.Handler from *chi.Mux.
