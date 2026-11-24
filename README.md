@@ -187,11 +187,14 @@ docker run -d --name 9router-go --restart unless-stopped \
 
 - 🖥️ Native Svelte 5 dashboard: providers, OAuth, combos, proxy pools, API keys, usage, quota, settings, plans, per-entry sidebar visibility
 - 💱 Cost display in USD, IDR, EUR and ten more currencies — editable rate table, dual display, one-click refresh from a public provider
-- 🔌 OpenAI Chat, Claude Messages, Gemini, Ollama-compatible, Responses, embeddings, media, search, web tools
+- 🔌 OpenAI Chat, Claude Messages, Gemini, Ollama-compatible, Responses, embeddings, media, search, web tools, rerank
 - 🔁 Combos with fallback, round-robin, sticky routing, fusion, capability-aware reordering
 - 👥 Per-provider executors, OAuth refresh, reactive 401 retry
 - 📡 Live usage + console-log SSE streams, stall detection
 - 💾 SQLite WAL persistence, outbound proxy support, self-update, MITM commands, Docker, cross-compilation
+- 💰 Per-key budget enforcement (USD + tokens, four periods, hard cutoff) and `/api/usage/export` — from [new-api](wiki/new-api-ports.md)
+- 📡 Uptime heartbeat (Push-Monitor / Uptime Kuma) — from [new-api](wiki/new-api-ports.md)
+- 🔀 Vertex `v1beta1` per-connection switch, and an optional HTTP/2 PING health check for idle upstream connections — from [new-api](wiki/new-api-ports.md)
 
 For sequential combo routing, set **Model response timeout** in seconds (decimals
 such as `5.3` are fine) in the combo's Edit dialog, or from the compact field on the
