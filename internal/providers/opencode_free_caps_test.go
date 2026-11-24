@@ -36,3 +36,22 @@ func TestOpenCodeFreeModelCaps(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCodeFreeModelCapsDetailLanes(t *testing.T) {
+	for _, p := range []string{"opencode", "oc", "opencode-go", "opencode-zen", "ocz"} {
+		t.Run(p, func(t *testing.T) {
+			if p == "opencode-go" {
+				caps := GetCapabilitiesDetailForModel(p, "beam-free")
+				if caps.MaxOutput != 131072 {
+					t.Errorf("beam-free max output = %d, want 131072", caps.MaxOutput)
+				}
+			}
+			if p == "opencode-zen" || p == "ocz" {
+				caps := GetCapabilitiesDetailForModel(p, "nemotron-3.5-lightning-free")
+				if caps.MaxOutput != 262144 {
+					t.Errorf("nemotron-3.5-lightning-free max output = %d, want 262144", caps.MaxOutput)
+				}
+			}
+		})
+	}
+}

@@ -897,7 +897,7 @@ func init() {
 		"hy3":                        {Reasoning: true, Tools: true, ThinkingFormat: "hunyuan", ContextWindow: 256000},
 		"muse-spark-1.2-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
 		"muse-spark-1.3-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
-		"beam-free":                  {Tools: true, ContextWindow: 1048576},
+		"beam-free":                  {Tools: true, ContextWindow: 1048576, MaxOutput: 131072},
 	}
 
 	// OpenCode Zen serves the same free ids as the free lane on the fast PAYG
@@ -908,7 +908,7 @@ func init() {
 	providerCapabilities["opencode-zen"] = map[string]Capabilities{
 		"ling-3.0-flash-fin-free":     {Reasoning: true, Tools: true, ContextWindow: 262144},
 		"nemotron-3-ultra-free":       {Reasoning: true, Tools: true, ContextWindow: 1000000},
-		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ContextWindow: 262144},
+		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ContextWindow: 262144, MaxOutput: 262144},
 		"hy4-flash-free":              {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 	}
 
