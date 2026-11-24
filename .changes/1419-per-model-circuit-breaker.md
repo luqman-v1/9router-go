@@ -63,3 +63,24 @@ treatment the provider breaker's registry already has, so a pair a test parks is
 still refused while a pair a neighbour warmed is not. Production behaviour is
 unchanged — the gate keeps its own unit coverage that charges a real pair and
 asserts the refusal.
+**Dashboard coverage.** The panel is a visible surface, so it gets a live suite
+rather than a unit test: `web/e2e/modelBreakerPanel.test.ts` boots the real
+gateway, points a connection at a fake upstream that answers a model-scoped 404,
+and lets the chat lane charge five real failures until the breaker opens its
+first cooldown. The assertions then read the row through `/api/model-breakers`
+and on screen — a panel that renders an empty table fails. It also drives
+**Reset** through the UI and checks the pair returns to `closed`. The capture is
+opt-in (`CAPTURE_SCREENSHOTS=1`) so CI asserts behaviour without writing files.
+
+Element-scoped evidence for the visible change lives in
+`docs/screenshots/1419-model-breakers-*.png`: the sidebar before and after the
+new entry, the panel route before (no such page) and after, and the charged
+`deepseek/deepseek-chat` row in **Cooling**. The `before` pair was captured from
+a `main` build; the `after` pair from this branch, both at the same viewport.
+
+**Provenance is now an authorised reference, not an implicit one.** AGENTS.md §1
+gains a `Secondary Reference: 9router-pro` subsection: Pro is a legitimate source
+for *operator-facing behaviour*, explicitly not for `/v1`·`/api` wire parity and
+not authority to port its UI. The numbers in this fragment come from
+`giienew/9router-pro` pro.26, and the fragment says so rather than implying they
+match a merged `decolua/9router` commit.

@@ -46,6 +46,41 @@ Some feature issues in this repo are not parity requests against `decolua/9route
 5. **Provider IDs are not portable verbatim.** OmniRoute has its own catalog. Map to `9router-go` provider IDs and obey §3 (strict provider isolation — no cross-provider aliasing or model hijacking).
 6. **Preserve upstream error semantics.** OmniRoute surfaces typed error classes with explicit status codes (e.g. `409 no_credit`); port that distinction rather than collapsing every upstream failure into one generic error.
 
+### Secondary Reference: 9router-pro (source of operator-facing features)
+
+Some feature issues here are sourced from **9Router Pro**, a community edition of
+the same upstream gateway. Cite it by file path or by its release tag.
+
+- **Reference Repository**: `https://github.com/giienew/9router-pro` — a fork of
+  `decolua/9router` published as `v<upstream>-pro.<n>` tags. It is a *sibling*
+  edition, not this repo's upstream: its dashboard is still React/Next.js, and
+  its `open-sse/` tree is the vendored upstream one.
+- **Scope of the authorisation, deliberately narrow.** Pro is a legitimate
+  reference for **operator-facing behaviour** — a policy, a guard rail, a
+  per-entity control an operator can see and change. It is **not** a reference
+  for wire-protocol parity (§1 still governs `/v1/*` and `/api/*` contracts), and
+  it is not authority to port its UI. Only the behaviour is ported; the
+  dashboard here stays the Svelte 5 one this project already has.
+- **Numbers are not self-justifying.** A Pro default (a cooldown, a threshold, a
+  cycle count) must be stated in the `.changes/` fragment as coming from Pro,
+  with the tag it came from, and the fragment must not imply upstream parity for
+  it. If a merged `decolua/9router` commit carries the same behaviour, cite that
+  instead — Pro is the fallback when upstream has none.
+
+**9router-pro Porting Protocol**
+1. **Read the cited source, never from memory.** Clone or fetch the tag named in
+   the issue (`git clone --depth 50 https://github.com/giienew/9router-pro`) and
+   read the actual file; a Pro changelog line is a summary, not a spec.
+2. **Port the behaviour, not the UI.** A Pro dashboard card becomes the
+   equivalent surface in `web/src/components/`, built from the design tokens in
+   §6.C — never a transliteration of its React component.
+3. **Keep provider isolation (§3).** Pro's catalog and its provider ids are its
+   own; map to this repo's ids and never cross-alias a model between providers.
+4. **A Pro-only feature is not upstream parity.** Say so in the fragment, and do
+   not list it on the parity page as an upstream match.
+5. **License check before porting.** Pro is MIT over `decolua/9router`'s MIT; keep
+   the upstream attribution that `README.md`'s Credits section carries.
+
 ### Secondary Reference: magpie / magpie-community plugins (Qoder wire contract)
 
 For **Qoder (`qoder`, `qoder-cn`) work only**, `yetone/magpie` and its community
