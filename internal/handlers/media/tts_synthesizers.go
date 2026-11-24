@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	json "encoding/json/v2"
 	"fmt"
+	"html"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -41,7 +42,7 @@ var directHTTPClient = &http.Client{
 
 func doDirectOrClient(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
 	if client == nil {
-		client = directHTTPClient
+		return directHTTPClient.Do(req)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -49,9 +50,22 @@ func doDirectOrClient(ctx context.Context, client *http.Client, req *http.Reques
 		// 403 (e.g. key rejected) must surface, not be retried against the
 		// same target where a sandbox mock could mask it as success.
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
+		}
+		if ctx.Err() != nil || client == directHTTPClient {
+			return nil, err
 		}
 		reqClone := req.Clone(ctx)
+		if req.Body != nil {
+			if req.GetBody == nil {
+				return nil, err
+			}
+			bodyCopy, getErr := req.GetBody()
+			if getErr != nil {
+				return nil, err
+			}
+			reqClone.Body = bodyCopy
+		}
 		return directHTTPClient.Do(reqClone)
 	}
 	return resp, nil
@@ -76,9 +90,9 @@ func getBingToken(ctx context.Context, client *http.Client) (string, string, str
 	if err != nil {
 		return "", "", "", fmt.Errorf("fetch bing translator: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", "", "", fmt.Errorf("read bing response: %w", err)
 	}
@@ -127,8 +141,7 @@ func SynthesizeEdgeTTS(ctx context.Context, client *http.Client, text, voice str
 		return nil, err
 	}
 
-	ssml := fmt.Sprintf("<speak version='1.0' xml:lang='%s'><voice xml:lang='%s' xml:gender='%s' name='%s'><prosody rate='0.00%%'>%s</prosody></voice></speak>",
-		lang, lang, gender, voice, text)
+	ssml := buildEdgeTTSSSML(lang, gender, voice, text)
 
 	form := url.Values{}
 	form.Set("ssml", ssml)
@@ -153,14 +166,14 @@ func SynthesizeEdgeTTS(ctx context.Context, client *http.Client, text, voice str
 	if err != nil {
 		return nil, fmt.Errorf("bing speech request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		errText, _ := io.ReadAll(resp.Body)
+		errText, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return nil, fmt.Errorf("bing speech returned %d: %s", resp.StatusCode, string(errText))
 	}
 
-	audio, err := io.ReadAll(resp.Body)
+	audio, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read speech response: %w", err)
 	}
@@ -169,6 +182,11 @@ func SynthesizeEdgeTTS(ctx context.Context, client *http.Client, text, voice str
 		return nil, fmt.Errorf("bing TTS returned empty audio")
 	}
 	return audio, nil
+}
+
+func buildEdgeTTSSSML(lang, gender, voice, text string) string {
+	return fmt.Sprintf("<speak version='1.0' xml:lang='%s'><voice xml:lang='%s' xml:gender='%s' name='%s'><prosody rate='0.00%%'>%s</prosody></voice></speak>",
+		html.EscapeString(lang), html.EscapeString(lang), html.EscapeString(gender), html.EscapeString(voice), html.EscapeString(text))
 }
 
 func getGoogleTTSToken(ctx context.Context, client *http.Client) (string, string, error) {
@@ -189,9 +207,9 @@ func getGoogleTTSToken(ctx context.Context, client *http.Client) (string, string
 	if err != nil {
 		return "", "", fmt.Errorf("fetch google translate: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", "", fmt.Errorf("read google translate page: %w", err)
 	}
@@ -264,9 +282,9 @@ func SynthesizeGoogleTTS(ctx context.Context, client *http.Client, text, voice s
 	if err != nil {
 		return nil, fmt.Errorf("google TTS request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read google TTS response: %w", err)
 	}
