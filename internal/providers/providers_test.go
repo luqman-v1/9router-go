@@ -246,8 +246,8 @@ func TestGetProviderModelKind(t *testing.T) {
 	}{
 		{provider: "nvidia", model: "fastpitch", want: "tts"},
 		{provider: "nvidia", model: "tacotron2", want: "tts"},
-		{provider: "nvidia", model: "nvidia/nv-embedqa-e5-v5", want: "embedding"},
-		{provider: "nvidia", model: "nv-embedqa-e5-v5", want: "embedding"},
+		{provider: "nvidia", model: "nvidia/nvclip", want: "embedding"},
+		{provider: "nvidia", model: "nvclip", want: "embedding"},
 		{provider: "nvidia", model: "nvidia/parakeet-ctc-1.1b-asr", want: "stt"},
 		{provider: "nvidia", model: "parakeet-ctc-1.1b-asr", want: "stt"},
 		{provider: "nvidia", model: "minimaxai/minimax-m3", want: ""},
