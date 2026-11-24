@@ -18,7 +18,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			"temperature": 0.7,
 			"max_tokens": 1000
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -72,7 +72,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 				{"type": "text", "text": "System instructions part 2"}
 			]
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -101,7 +101,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 				{"role": "assistant", "content": "hi"}
 			]
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -156,7 +156,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 				}
 			]
 		}`)
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -243,7 +243,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			]
 		}`)
 
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -336,7 +336,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			]
 		}`)
 
-		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
@@ -374,7 +374,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 					"messages": [{"role": "user", "content": "hello"}],
 					"tool_choice": ` + tc.toolChoice + `
 				}`)
-				openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+				openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON, "", "")
 				if err != nil {
 					t.Fatalf("failed to translate: %v", err)
 				}

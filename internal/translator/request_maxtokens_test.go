@@ -10,7 +10,7 @@ import (
 // max_tokens the same way gpt-5.x does (upstream decolua/9router 7c42d8f8).
 
 func TestTranslateClaudeToOpenAIMaxTokens(t *testing.T) {
-	out, err := TranslateClaudeToOpenAI([]byte(`{"model":"gpt-6.1","max_tokens":2048,"messages":[{"role":"user","content":"hi"}]}`))
+	out, err := TranslateClaudeToOpenAI([]byte(`{"model":"gpt-6.1","max_tokens":2048,"messages":[{"role":"user","content":"hi"}]}`), "", "")
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestTranslateClaudeToOpenAIMaxTokens(t *testing.T) {
 		t.Errorf("max_completion_tokens = %s, want 2048", m["max_completion_tokens"])
 	}
 
-	out, err = TranslateClaudeToOpenAI([]byte(`{"model":"some-other","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}`))
+	out, err = TranslateClaudeToOpenAI([]byte(`{"model":"some-other","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}`), "", "")
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}

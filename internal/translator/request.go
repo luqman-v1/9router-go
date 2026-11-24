@@ -68,6 +68,82 @@ func parseSystemPrompt(systemRaw jsontext.Value) string {
 	return ""
 }
 
+func convertClaudeSystemPrompt(systemRaw jsontext.Value, preserveCacheControl bool) any {
+	if len(systemRaw) == 0 {
+		return ""
+	}
+
+	var sysStr string
+	if err := json.Unmarshal(systemRaw, &sysStr); err == nil {
+		text := stripAnthropicBillingHeader(sysStr)
+		return text
+	}
+
+	var sysBlocks []ClaudeSystemBlock
+	if err := json.Unmarshal(systemRaw, &sysBlocks); err != nil {
+		log.Warn("translator", "parse system prompt failed")
+		return ""
+	}
+
+	hasCache := false
+	if preserveCacheControl {
+		for _, block := range sysBlocks {
+			if len(block.CacheControl) > 0 {
+				hasCache = true
+				break
+			}
+		}
+	}
+
+	if !hasCache {
+		var parts []string
+		for _, block := range sysBlocks {
+			text := stripAnthropicBillingHeader(block.Text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	blocks := make([]OpenAIContentBlock, 0, len(sysBlocks))
+	for _, block := range sysBlocks {
+		text := stripAnthropicBillingHeader(block.Text)
+		if text == "" && len(block.CacheControl) == 0 {
+			continue
+		}
+		tb := OpenAIContentBlock{
+			Type: "text",
+			Text: text,
+		}
+		if preserveCacheControl && len(block.CacheControl) > 0 {
+			tb.CacheControl = block.CacheControl
+		}
+		blocks = append(blocks, tb)
+	}
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks
+}
+
+func isEmptySystemContent(v any) bool {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val) == ""
+	case []OpenAIContentBlock:
+		if len(val) == 0 {
+			return true
+		}
+		for _, b := range val {
+			if strings.TrimSpace(b.Text) != "" || len(b.CacheControl) > 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
 func systemReminderText(content string) string {
 	text := strings.TrimSpace(content)
 	if text == "" {
@@ -77,25 +153,23 @@ func systemReminderText(content string) string {
 }
 
 func collapseTextParts(parts []OpenAIContentBlock) any {
-	// Only flatten content when every part is text. Any non-text part
-	// (image_url, file, …) keeps the content as an array so vision models
-	// receive their image parts. For text-only parts, join into one string.
-	allText := true
+	// Only flatten content when every part is a plain text block with no
+	// cache_control marker. A non-text part (image_url, file, …) already keeps
+	// the content as an array so vision models receive their image parts; a
+	// marker-bearing part keeps the array for the same reason — flattening to a
+	// string would silently drop the breakpoint (upstream OmniRoute #19755
+	// parity).
 	texts := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if p.Type != "text" {
-			allText = false
-			break
+		if p.Type != "text" || len(p.CacheControl) > 0 {
+			return parts
 		}
 		texts = append(texts, p.Text)
 	}
-	if allText {
-		return strings.Join(texts, "\n")
-	}
-	return parts
+	return strings.Join(texts, "\n")
 }
 
-func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
+func convertClaudeMessage(msg ClaudeMessage, preserveCacheControl bool) ([]OpenAIMessage, error) {
 	if msg.Role == "system" {
 		var contentStr string
 		if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
@@ -157,10 +231,14 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	for _, block := range blocks {
 		switch block.Type {
 		case "text":
-			textParts = append(textParts, OpenAIContentBlock{
+			tb := OpenAIContentBlock{
 				Type: "text",
 				Text: block.Text,
-			})
+			}
+			if preserveCacheControl && len(block.CacheControl) > 0 {
+				tb.CacheControl = block.CacheControl
+			}
+			textParts = append(textParts, tb)
 		case "thinking":
 			if block.Thinking != "" {
 				reasoningContent += block.Thinking
@@ -193,6 +271,7 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		case "tool_result":
 			var resultContent string
 			var resultImages []OpenAIContentBlock
+			var resultCacheControl jsontext.Value
 			if err := json.Unmarshal(block.Content, &resultContent); err != nil {
 				var contentArr []ClaudeContentBlock
 				if err2 := json.Unmarshal(block.Content, &contentArr); err2 == nil {
@@ -200,6 +279,9 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					for _, c := range contentArr {
 						if c.Type == "text" {
 							parts = append(parts, c.Text)
+							if preserveCacheControl && len(c.CacheControl) > 0 {
+								resultCacheControl = c.CacheControl
+							}
 						} else if c.Type == "image" && c.Source != nil && c.Source.Type == "base64" {
 							mediaType := c.Source.MediaType
 							if mediaType == "" {
@@ -224,10 +306,14 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 				Content:    resultContent,
 			})
 			if len(resultImages) > 0 {
-				textParts = append(textParts, OpenAIContentBlock{
+				imgText := OpenAIContentBlock{
 					Type: "text",
 					Text: fmt.Sprintf("[Image from tool result %s]", block.ToolUseID),
-				})
+				}
+				if resultCacheControl != nil {
+					imgText.CacheControl = resultCacheControl
+				}
+				textParts = append(textParts, imgText)
 				textParts = append(textParts, resultImages...)
 			}
 		}
@@ -397,7 +483,17 @@ func claudeDisablesParallelToolUse(choiceRaw jsontext.Value) bool {
 }
 
 // TranslateClaudeToOpenAI converts a Claude request payload to an OpenAI request payload.
-func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
+//
+// targetProvider and targetModel name the upstream the payload is headed for.
+// When they name an OpenRouter model served by Anthropic (provider "openrouter"
+// and a wire model under the "anthropic/" prefix), the Claude cache_control
+// breakpoints survive the conversion so the request-side filter can keep them:
+// Anthropic's own API honours them, and stripping them cost every
+// Anthropic-backed OpenRouter model its prompt cache. Every other target drops
+// the markers, and the OpenAI filter strips them again from the request body
+// (upstream OmniRoute #19755 parity). Pass "" for either when the caller does
+// not know the target; the markers are then dropped.
+func TranslateClaudeToOpenAI(claudeBody []byte, targetProvider, targetModel string) ([]byte, error) {
 	// The passthrough lane drops argumentless tool calls in
 	// SanitizeClaudePassthrough; a converted lane needs the same rule before the
 	// history is reshaped, or the model keeps reading its own bare call.
@@ -419,9 +515,10 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.MaxTokens = creq.MaxTokens
 	}
 	oreq.Stream = creq.Stream
+	preserveCacheControl := PreservesOpenRouterAnthropicCacheControl(targetProvider, targetModel)
 
-	sysContent := parseSystemPrompt(creq.System)
-	if sysContent != "" {
+	sysContent := convertClaudeSystemPrompt(creq.System, preserveCacheControl)
+	if !isEmptySystemContent(sysContent) {
 		oreq.Messages = append(oreq.Messages, OpenAIMessage{
 			Role:    "system",
 			Content: sysContent,
@@ -429,7 +526,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	}
 
 	for i, msg := range creq.Messages {
-		converted, err := convertClaudeMessage(msg)
+		converted, err := convertClaudeMessage(msg, preserveCacheControl)
 		if err != nil {
 			return nil, fmt.Errorf("convert msg[%d]: %w", i, err)
 		}
@@ -441,7 +538,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	if len(creq.Tools) > 0 {
 		var otools []OpenAITool
 		for _, tool := range creq.Tools {
-			otools = append(otools, OpenAITool{
+			ot := OpenAITool{
 				Type: "function",
 				Function: OpenAIFunction{
 					Name:        tool.Name,
@@ -449,7 +546,11 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 					Parameters:  tool.InputSchema,
 					Strict:      tool.Strict,
 				},
-			})
+			}
+			if preserveCacheControl && len(tool.CacheControl) > 0 {
+				ot.CacheControl = tool.CacheControl
+			}
+			otools = append(otools, ot)
 		}
 		oreq.Tools = otools
 	}
@@ -499,11 +600,88 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		}
 	}
 
+	if preserveCacheControl {
+		// Anthropic answers a request carrying more than four cache_control
+		// breakpoints with a 400, so keep at most the last four markers the
+		// client sent. The OpenAI filter preserves them from here, so a
+		// marker dropped now is one the upstream would otherwise reject.
+		capOpenAICacheControlBlocks(&oreq)
+	}
+
 	out, err := json.Marshal(oreq, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal OpenAI request: %w", err)
 	}
 	return out, nil
+}
+
+// PreservesOpenRouterAnthropicCacheControl reports whether a Claude→OpenAI
+// conversion must carry the Claude cache_control breakpoints through to the
+// request body. OpenRouter forwards the whole OpenAI body to the provider named
+// in the model id; a model under the "anthropic/" prefix is served by
+// Anthropic's own API, which honours the breakpoints a Claude Code caller
+// sent. Stripping them there cost every Anthropic-backed OpenRouter model its
+// prompt cache (upstream OmniRoute #19755 parity).
+func PreservesOpenRouterAnthropicCacheControl(provider, wireModel string) bool {
+	return provider == "openrouter" && strings.HasPrefix(strings.ToLower(wireModel), "anthropic/")
+}
+
+// capOpenAICacheControlBlocks enforces Anthropic's hard limit of four
+// cache_control breakpoints on a translated request, keeping the last markers
+// the client sent. The markers live on the OpenAI content blocks the filter
+// preserves; a request that carried more than four would otherwise be answered
+// with a 400.
+func capOpenAICacheControlBlocks(req *OpenAIRequest) {
+	// Gather every marker in document order so "last" means what it does to
+	// the client: tools first, then the messages in order.
+	markers := make([]jsontext.Value, 0, 4)
+	for i := range req.Tools {
+		if len(req.Tools[i].CacheControl) > 0 {
+			markers = append(markers, req.Tools[i].CacheControl)
+		}
+	}
+	for i := range req.Messages {
+		for _, block := range openAIMessageContentBlocks(&req.Messages[i]) {
+			if len(block.CacheControl) > 0 {
+				markers = append(markers, block.CacheControl)
+			}
+		}
+	}
+	if len(markers) <= cacheControlMarkerBudget {
+		return
+	}
+	// The tail of markers is what survives; drop the leading excess.
+	drop := len(markers) - cacheControlMarkerBudget
+	seen := 0
+	for i := range req.Tools {
+		if len(req.Tools[i].CacheControl) == 0 {
+			continue
+		}
+		if seen < drop {
+			req.Tools[i].CacheControl = nil
+		}
+		seen++
+	}
+	for i := range req.Messages {
+		blocks := openAIMessageContentBlocks(&req.Messages[i])
+		for j := range blocks {
+			if len(blocks[j].CacheControl) == 0 {
+				continue
+			}
+			if seen < drop {
+				blocks[j].CacheControl = nil
+			}
+			seen++
+		}
+	}
+}
+
+// openAIMessageContentBlocks returns the message's content as a block slice so
+// the caller can edit the blocks in place. A message whose content is a plain
+// string has no blocks.
+func openAIMessageContentBlocks(msg *OpenAIMessage) []OpenAIContentBlock {
+	blocks, _ := msg.Content.([]OpenAIContentBlock)
+	return blocks
 }
 
 // SanitizeClaudePassthrough drops foreign server_tool_use blocks that would poison Claude history.

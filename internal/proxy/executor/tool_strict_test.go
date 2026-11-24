@@ -205,7 +205,7 @@ func TestBuildResponsesBodyPreservesOptionalToolArguments(t *testing.T) {
 
 func TestClaudeOptionalToolArgumentsRemainOptionalInResponses(t *testing.T) {
 	body := []byte(`{"model":"gpt-6.1-sol","max_tokens":128,"messages":[{"role":"user","content":"Use workspace chung; omit isolation."}],"tools":[{"name":"probe","description":"Do not invent optional arguments","input_schema":{"type":"object","properties":{"prompt":{"type":"string"},"isolation":{"type":"string","enum":["worktree"]}},"required":["prompt"]}}]}`)
-	chat, err := translator.TranslateClaudeToOpenAI(body)
+	chat, err := translator.TranslateClaudeToOpenAI(body, "", "")
 	if err != nil {
 		t.Fatalf("translate Claude request: %v", err)
 	}

@@ -246,7 +246,7 @@ func pruneEmptyMessages(msgs []any) ([]any, bool) {
 // normalizeTools converts the tool declarations to the OpenAI shape and drops
 // an empty tool list, which some providers reject. The bool reports whether
 // the tool list changed.
-func normalizeTools(body map[string]any) bool {
+func normalizeTools(body map[string]any, opts FilterOptions) bool {
 	tools, ok := body["tools"].([]any)
 	if !ok || len(tools) == 0 {
 		if ok {
@@ -265,32 +265,54 @@ func normalizeTools(body map[string]any) bool {
 		}
 		if tool["type"] == openaiBlockFunction {
 			if _, has := tool["function"]; has {
+				if !opts.PreserveCacheControl {
+					if _, had := tool["cache_control"]; had {
+						delete(tool, "cache_control")
+						changed = true
+					}
+				}
 				norm = append(norm, tool)
 				continue
 			}
 		}
 		if name, _ := tool["name"].(string); name != "" {
+			// A Claude tool carries its cache_control marker beside the
+			// function; the normalized shape has to keep it there or a marker
+			// the provider preserves is lost before it reaches the wire
+			// (upstream OmniRoute #19755 parity).
+			cc := tool["cache_control"]
+			if !opts.PreserveCacheControl {
+				cc = nil
+			}
 			if _, has := tool["input_schema"]; has {
-				norm = append(norm, map[string]any{
+				fn := map[string]any{
 					"type": openaiBlockFunction,
 					"function": map[string]any{
 						"name":        name,
 						"description": stringField(tool, "description"),
 						"parameters":  parametersField(tool, "input_schema"),
 					},
-				})
+				}
+				if cc != nil {
+					fn["cache_control"] = cc
+				}
+				norm = append(norm, fn)
 				changed = true
 				continue
 			}
 			if _, has := tool["description"]; has {
-				norm = append(norm, map[string]any{
+				fn := map[string]any{
 					"type": openaiBlockFunction,
 					"function": map[string]any{
 						"name":        name,
 						"description": stringField(tool, "description"),
 						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 					},
-				})
+				}
+				if cc != nil {
+					fn["cache_control"] = cc
+				}
+				norm = append(norm, fn)
 				changed = true
 				continue
 			}

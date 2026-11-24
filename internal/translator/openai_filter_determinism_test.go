@@ -46,12 +46,12 @@ func TestFilterToOpenAIFormatJSONDeterministic(t *testing.T) {
 func TestTranslateClaudeToOpenAIToolChoiceIsDeterministic(t *testing.T) {
 	body := []byte(`{"model":"claude-x","max_tokens":100,"tool_choice":{"type":"tool","name":"f"},` +
 		`"messages":[{"role":"user","content":"hi"}]}`)
-	first, err := TranslateClaudeToOpenAI(body)
+	first, err := TranslateClaudeToOpenAI(body, "", "")
 	if err != nil {
 		t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 	}
 	for i := 0; i < 200; i++ {
-		got, err := TranslateClaudeToOpenAI(body)
+		got, err := TranslateClaudeToOpenAI(body, "", "")
 		if err != nil {
 			t.Fatalf("TranslateClaudeToOpenAI: %v", err)
 		}
