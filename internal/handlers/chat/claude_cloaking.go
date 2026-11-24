@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"9router/proxy/internal/translator"
 )
 
 // Claude OAuth cloaking — ports the Next.js dashboard's
@@ -266,6 +268,14 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 		}
 		name, _ := tool["name"].(string)
 		if name == "" {
+			clientDeclarations = append(clientDeclarations, tool)
+			continue
+		}
+		if name == translator.StructuredOutputTool {
+			// The gateway's forced structured-output tool (CarryClaudeStructuredOutput)
+			// is pinned by a tool_choice whose name is not in clientToolNames, so it
+			// would not be renamed in step 3: renaming it here would 400 upstream
+			// ("tool not found"). Keep it verbatim.
 			clientDeclarations = append(clientDeclarations, tool)
 			continue
 		}

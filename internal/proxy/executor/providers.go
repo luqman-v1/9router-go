@@ -1190,6 +1190,12 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	if provider == "minimax" || provider == "minimax-cn" {
 		delete(reqMap, "output_config")
 	}
+	// 6. Carry an OpenAI response_format onto the Claude request. It is an
+	// OpenAI-only field the strict Claude API rejects, and dropping it silently
+	// turns a structured-output ask into free text. Runs last, after every
+	// tool/tool_choice/thinking normalization above, so its decision (forced
+	// tool vs system-prompt instruction) is made on the final request state.
+	translator.CarryClaudeStructuredOutput(reqMap)
 
 	updated, err := marshalStable(reqMap)
 	if err != nil {
