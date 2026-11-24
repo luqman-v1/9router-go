@@ -424,6 +424,8 @@ var modelCapabilities = map[string]Capabilities{
 	"kimi-k3":                   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
 	"k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
 	"kimi-k3.1-pro":             {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"k3.1-pro":                  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"k3.1-pro-highspeed":        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
 	"kimi-for-coding":           {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
 	"kimi-for-coding-highspeed": {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
 	"kimi-k2.7-code":            {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
