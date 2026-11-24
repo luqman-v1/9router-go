@@ -72,10 +72,12 @@
           return
         }
         hasPassword = !!data.hasPassword
-        // Fresh install on the local machine: offer the setup wizard instead
-        // of the default-password login. A remote peer keeps the normal login
-        // (its setup POST is refused server-side anyway).
-        firstRun = !data.hasPassword
+        // Fresh install with no configured password path: offer the setup
+        // wizard instead of the default-password login. INITIAL_PASSWORD set
+        // means the operator already chose the first login's password, so the
+        // normal form shows. A remote peer keeps the normal login too (its
+        // setup POST is refused server-side anyway).
+        firstRun = !data.hasPassword && data.initialPasswordSet !== true
         authMode = data.authMode || 'password'
         ssoType = data.ssoType || 'oidc'
         oidcConfigured = data.oidcConfigured === true

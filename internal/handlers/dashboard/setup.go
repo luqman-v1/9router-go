@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/auth"
+	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 
@@ -30,7 +31,11 @@ func (h *DashboardHandler) HandleGetSetup(w http.ResponseWriter, r *http.Request
 	raw := settingsOrEmpty(h)
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":         !hasStoredPassword(raw),
+		// The wizard applies only when no password path exists at all: no
+		// stored hash and no INITIAL_PASSWORD. Aligns with the POST gate
+		// below, so the form never offers itself when the server would
+		// refuse it.
+		"status":         !hasStoredPassword(raw) && config.LoadConfig().InitialPassword == "",
 		"databaseType":   string(db.CurrentEngine()),
 		"requestIsLocal": nodeRequestIsLocal(r),
 	})
@@ -41,11 +46,11 @@ func (h *DashboardHandler) HandleGetSetup(w http.ResponseWriter, r *http.Request
 // dashboard they just unlocked. Only a fresh, local install qualifies.
 func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Request) {
 	raw := settingsOrEmpty(h)
-	if hasStoredPassword(raw) {
+	if hasStoredPassword(raw) || config.LoadConfig().InitialPassword != "" {
 		noStore(w)
 		handlerutil.WriteJSON(w, http.StatusForbidden, map[string]any{
 			"success": false,
-			"error":   "Setup already completed",
+			"error":   "Setup already completed or password path already chosen",
 		})
 		return
 	}

@@ -144,3 +144,53 @@ func TestHandleGetSetup_ReportsFreshAndConfigured(t *testing.T) {
 		t.Fatalf("configured install reported status=true")
 	}
 }
+
+// INITIAL_PASSWORD is a configured password path: when it is set, the
+// operator already chose how the first login authenticates, so the wizard
+// must not appear and the POST must be refused (it would otherwise override
+// the operator's chosen password with a browser-typed one).
+
+func TestHandleGetSetup_ReportsFreshWhenInitialPasswordUnset(t *testing.T) {
+	authTestEnv(t)
+	t.Setenv("INITIAL_PASSWORD", "")
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := NewDashboardHandler(repo)
+	req := httptest.NewRequest(http.MethodGet, "/api/setup", nil)
+	req.RemoteAddr = "127.0.0.1:51000"
+	rec := httptest.NewRecorder()
+	h.HandleGetSetup(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/setup status = %d, want 200", rec.Code)
+	}
+	var got struct {
+		Status bool `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.Status {
+		t.Fatalf("fresh install with INITIAL_PASSWORD empty: status = false, want true")
+	}
+}
+
+func TestHandlePostSetup_RefusesWhenInitialPasswordSet(t *testing.T) {
+	authTestEnv(t)
+	t.Setenv("INITIAL_PASSWORD", "123456")
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := NewDashboardHandler(repo)
+	rec := postSetup(t, h, "any-password")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/setup (INITIAL_PASSWORD set) = %d, want 403", rec.Code)
+	}
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		t.Fatalf("GetSettingsRaw: %v", err)
+	}
+	if hash, _ := raw["password"].(string); hash != "" {
+		t.Fatalf("setup with INITIAL_PASSWORD set stored a password hash")
+	}
+}

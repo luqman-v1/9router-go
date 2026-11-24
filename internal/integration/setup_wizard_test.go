@@ -83,3 +83,26 @@ func TestSetupWizardRejectsShortPassword(t *testing.T) {
 		t.Fatalf("POST /api/setup (short) = %d, want 400", res.Status)
 	}
 }
+
+// INITIAL_PASSWORD is a configured password path: the wizard must not apply
+// and the POST must be refused, otherwise a browser-typed password would
+// override the operator's chosen first-login password.
+func TestSetupWizardRefusedWhenInitialPasswordSet(t *testing.T) {
+	auth.ResetLoginLimiter()
+	t.Setenv("INITIAL_PASSWORD", "123456")
+	env := newEnv(t)
+
+	res := env.Post(t, "/api/setup", map[string]string{"password": "first-run-password"}, WithoutAPIKey())
+	if res.Status != http.StatusForbidden {
+		t.Fatalf("POST /api/setup (INITIAL_PASSWORD set) = %d, want 403", res.Status)
+	}
+
+	status := env.Get(t, "/api/setup", WithoutAPIKey())
+	var body struct {
+		Status bool `json:"status"`
+	}
+	status.Decode(t, &body)
+	if body.Status {
+		t.Fatalf("GET /api/setup (INITIAL_PASSWORD set) status = true, want false")
+	}
+}
