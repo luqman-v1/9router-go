@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -673,8 +674,37 @@ func (h *MediaHandler) trySystemoneConn(
 	}
 
 	copyUpstreamHeaders(w.Header(), resp.Header)
+	const maxSystemoneBody = 16 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxSystemoneBody))
+	if err != nil {
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: err.Error(), retryable: r.Context().Err() == nil}
+	}
+	outBody := respBody
+	// Only attempt Cloudflare envelope unwrap when the body fit within the cap;
+	// an oversized/truncated body falls back to passthrough without unwrapping.
+	if len(respBody) < maxSystemoneBody && resp.StatusCode == http.StatusOK {
+		var env struct {
+			Result  jsonv1.RawMessage `json:"result"`
+			Answers jsonv1.RawMessage `json:"answers"`
+		}
+		if err := json.Unmarshal(respBody, &env); err == nil && len(env.Result) > 0 {
+			topHasAnswers := len(bytes.TrimSpace(env.Answers)) > 0 && string(bytes.TrimSpace(env.Answers)) != "null"
+			if !topHasAnswers {
+				var result struct {
+					Answers jsonv1.RawMessage `json:"answers"`
+				}
+				if err := json.Unmarshal(env.Result, &result); err == nil {
+					resHasAnswers := len(bytes.TrimSpace(result.Answers)) > 0 && string(bytes.TrimSpace(result.Answers)) != "null"
+					if resHasAnswers {
+						outBody = env.Result
+						w.Header().Set("Content-Length", strconv.Itoa(len(outBody)))
+					}
+				}
+			}
+		}
+	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = w.Write(outBody)
 	if resp.StatusCode == http.StatusOK && conn != nil && h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
