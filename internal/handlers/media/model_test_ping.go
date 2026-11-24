@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
 
@@ -207,7 +208,13 @@ func probeFor(kind, model string) probePayload {
 		_ = mw.Close()
 		return probePayload{body: buf, contentType: mw.FormDataContentType()}
 	case "systemone":
-		if strings.HasSuffix(model, "clairic") {
+		provider := ""
+		modelID := model
+		if idx := strings.Index(model, "/"); idx >= 0 {
+			provider = model[:idx]
+			modelID = model[idx+1:]
+		}
+		if providers.GetProviderModelPayloadShape(provider, modelID) == "fields" {
 			return jsonProbe(map[string]any{
 				"model": model,
 				"state": "Customer: I was charged twice for my order this morning.",

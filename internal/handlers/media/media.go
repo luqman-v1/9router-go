@@ -476,14 +476,26 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
-	isClairic := strings.HasSuffix(reqBody.Model, "clairic")
-	if isClairic {
+	provider := ""
+	modelID := reqBody.Model
+	if idx := strings.Index(reqBody.Model, "/"); idx >= 0 {
+		provider = reqBody.Model[:idx]
+		modelID = reqBody.Model[idx+1:]
+	}
+	shape := providers.GetProviderModelPayloadShape(provider, modelID)
+	switch shape {
+	case "fields":
 		if reqBody.Fields == nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: fields")
 			return
 		}
-	} else {
-		if reqBody.Questions == nil && reqBody.Fields == nil {
+	case "questions":
+		if reqBody.Questions == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
+			return
+		}
+	default:
+		if reqBody.Questions == nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
 			return
 		}
@@ -515,16 +527,19 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 
 	preferredConnID := preferredMediaConnID(r, modelInfo)
 	usePinned := preferredConnID != ""
-	finalModel := modelInfo.Model
-	switch finalModel {
-	case "@cf/cloudflare/clef":
-		finalModel = "clef"
-	case "@cf/cloudflare/clef-omni":
-		finalModel = "clef-omni"
-	case "@cf/cloudflare/clairic":
-		finalModel = "clairic"
-	case "@cf/cloudflare/clef-flash":
-		finalModel = "clef-flash"
+	finalModel := ""
+	if h.Repo != nil {
+		if customs, err := h.Repo.GetCustomModels(); err == nil {
+			for _, cm := range customs {
+				if cm != nil && (cm.ProviderAlias == modelInfo.Provider || providers.ResolveAlias(cm.ProviderAlias) == providers.ResolveAlias(modelInfo.Provider)) && cm.ID == modelInfo.Model && cm.UpstreamModelID != "" {
+					finalModel = cm.UpstreamModelID
+					break
+				}
+			}
+		}
+	}
+	if finalModel == "" {
+		finalModel = providers.GetProviderModelUpstreamID(modelInfo.Provider, modelInfo.Model)
 	}
 	finalBody := handlerutil.UpdateModelInBody(body, finalModel)
 

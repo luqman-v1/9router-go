@@ -888,3 +888,58 @@ func GetProviderModels(aliasOrID string) []string {
 	}
 	return nil
 }
+
+// ProviderModelPayloadShapes maps a provider/model to the payload shape it
+// expects on the System One lane: "fields" for extraction models, "questions"
+// for decision models. A missing entry defaults to "questions".
+var ProviderModelPayloadShapes = map[string]map[string]string{
+	"cloudflare-ai": {
+		"@cf/cloudflare/clairic": "fields",
+	},
+	"cf": {
+		"@cf/cloudflare/clairic": "fields",
+	},
+}
+
+// ProviderModelUpstreamIDs maps a provider/model to the short selector the
+// upstream System One endpoint expects. A missing entry forwards the model id.
+var ProviderModelUpstreamIDs = map[string]map[string]string{
+	"cloudflare-ai": {
+		"@cf/cloudflare/clef":       "clef",
+		"@cf/cloudflare/clef-omni":  "clef-omni",
+		"@cf/cloudflare/clef-flash": "clef-flash",
+		"@cf/cloudflare/clairic":    "clairic",
+	},
+	"cf": {
+		"@cf/cloudflare/clef":       "clef",
+		"@cf/cloudflare/clef-omni":  "clef-omni",
+		"@cf/cloudflare/clef-flash": "clef-flash",
+		"@cf/cloudflare/clairic":    "clairic",
+	},
+}
+
+// GetProviderModelPayloadShape returns the payload shape for provider/model.
+func GetProviderModelPayloadShape(provider, model string) string {
+	canon := ResolveAlias(provider)
+	for _, p := range []string{provider, canon} {
+		if m, ok := ProviderModelPayloadShapes[p]; ok {
+			if s, ok := m[model]; ok {
+				return s
+			}
+		}
+	}
+	return "questions"
+}
+
+// GetProviderModelUpstreamID returns the upstream selector for provider/model.
+func GetProviderModelUpstreamID(provider, model string) string {
+	canon := ResolveAlias(provider)
+	for _, p := range []string{provider, canon} {
+		if m, ok := ProviderModelUpstreamIDs[p]; ok {
+			if id, ok := m[model]; ok {
+				return id
+			}
+		}
+	}
+	return model
+}

@@ -39,6 +39,14 @@ func (h *DashboardHandler) HandleGetCustomModels(w http.ResponseWriter, r *http.
 	})
 }
 
+func sanitizeUpstreamModelID(v string) string {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" || len(trimmed) > 256 || strings.ContainsAny(trimmed, "\r\n\x00") {
+		return ""
+	}
+	return trimmed
+}
+
 // HandleSaveCustomModel handles POST /api/models/custom.
 // Saves a custom model definition to kv scope customModels.
 func (h *DashboardHandler) HandleSaveCustomModel(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +108,9 @@ func (h *DashboardHandler) HandleSaveCustomModel(w http.ResponseWriter, r *http.
 			"id":    modelID,
 		})
 		return
+	}
+	if raw, ok := data["upstreamModelId"].(string); ok {
+		data["upstreamModelId"] = sanitizeUpstreamModelID(raw)
 	}
 	if err := validateCustomModelExtraBody(body, data, key); err != nil {
 		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{

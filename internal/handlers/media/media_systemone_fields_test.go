@@ -64,4 +64,48 @@ func TestHandleSystemone_FieldsPayload(t *testing.T) {
 			t.Errorf("sent model = %v, want clef", sent["model"])
 		}
 	})
+	t.Run("clairic questions-only fails", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(`{"model":"cf/@cf/cloudflare/clairic","state":"x","questions":{"q":{"type":"noul"}}}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.HandleSystemone(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("got status %d, want 400, body: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "Missing required field: fields") {
+			t.Fatalf("body = %s", rec.Body.String())
+		}
+	})
+	t.Run("clef fields-only fails", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(`{"model":"cf/@cf/cloudflare/clef","state":"x","fields":{"f":{}}}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.HandleSystemone(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("got status %d, want 400, body: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "Missing required field: questions") {
+			t.Fatalf("body = %s", rec.Body.String())
+		}
+	})
+	// custom model test
+	if err := repo.SetKV("customModels", "cf|custom-clairic|llm", `{"providerAlias":"cf","id":"custom-clairic","type":"llm","name":"custom-clairic","upstreamModelId":"clef-custom"}`); err != nil {
+		t.Fatalf("seed custom: %v", err)
+	}
+	t.Run("custom upstream id", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(`{"model":"cf/custom-clairic","state":"x","questions":{"q":{"type":"noul"}}}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.HandleSystemone(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("got status %d, want 200, body: %s", rec.Code, rec.Body.String())
+		}
+		var sent map[string]any
+		if err := json.Unmarshal([]byte(capturedBody.Load().(string)), &sent); err != nil {
+			t.Fatalf("unmarshal sent: %v", err)
+		}
+		if sent["model"] != "clef-custom" {
+			t.Errorf("sent model = %v, want clef-custom", sent["model"])
+		}
+	})
 }
