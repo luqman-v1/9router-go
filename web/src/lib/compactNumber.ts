@@ -31,6 +31,13 @@ export function setProviderTogglePersistent(on: boolean): void {
   localStorage.setItem(TOGGLE_PERSISTENT_KEY, on ? '1' : '0');
 }
 
+const COMPACT_TOKEN_UNITS = [
+  { value: 1_000_000_000_000, suffix: 'T' },
+  { value: 1_000_000_000, suffix: 'B' },
+  { value: 1_000_000, suffix: 'M' },
+  { value: 1_000, suffix: 'K' },
+]
+
 export function fmtTokens(n?: number, locale = 'en', force = false): string {
   const v = n || 0;
   if (!force && !isCompactUnitsEnabled()) return v.toLocaleString();
@@ -40,8 +47,21 @@ export function fmtTokens(n?: number, locale = 'en', force = false): string {
     if (v >= 1e4) return `${(v / 1e4).toFixed(1)}万`;
     return v.toLocaleString();
   }
-  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  for (let i = 0; i < COMPACT_TOKEN_UNITS.length; i++) {
+    const { value, suffix } = COMPACT_TOKEN_UNITS[i];
+    if (abs >= value) {
+      const scaled = abs / value;
+      if (Number(scaled.toFixed(1)) >= 1000 && i > 0) {
+        const upper = COMPACT_TOKEN_UNITS[i - 1];
+        return `${sign}${(abs / upper.value).toFixed(1)}${upper.suffix}`;
+      }
+      return `${sign}${scaled.toFixed(1)}${suffix}`;
+    }
+  }
+  if (Math.round(abs) >= 1000) {
+    return `${sign}1.0K`;
+  }
   return v.toLocaleString();
 }
