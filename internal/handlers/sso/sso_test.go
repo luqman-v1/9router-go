@@ -1,12 +1,14 @@
 package sso
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -223,4 +225,48 @@ func TestSSOUtils(t *testing.T) {
 func toJSONString(s string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`, "\t", `\t`)
 	return `"` + replacer.Replace(s) + `"`
+}
+
+func TestOIDC_FetchDiscoveryAndProbeHonorContextCancel(t *testing.T) {
+	newBlockingServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		unblock := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-unblock:
+			}
+		}))
+		t.Cleanup(func() {
+			close(unblock)
+			server.Close()
+		})
+		return server
+	}
+
+	t.Run("fetchDiscovery honors canceled context", func(t *testing.T) {
+		server := newBlockingServer(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+		_, err := fetchDiscovery(ctx, server.URL)
+		if err == nil {
+			t.Fatal("expected error from fetchDiscovery on canceled context")
+		}
+		if elapsed := time.Since(start); elapsed >= time.Second {
+			t.Fatalf("fetchDiscovery ignored context deadline, took %v", elapsed)
+		}
+	})
+
+	t.Run("probeClientSecret honors canceled context", func(t *testing.T) {
+		server := newBlockingServer(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+
+		_, err := probeClientSecret(ctx, server.URL, "cid", "csec", "https://app.example/cb")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+		}
+	})
 }

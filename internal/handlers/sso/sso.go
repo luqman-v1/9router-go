@@ -6,6 +6,7 @@
 package sso
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
 
 	json "encoding/json/v2"
 
@@ -31,6 +31,7 @@ const (
 	defaultScopes    = "openid profile email"
 	testCode         = "__oidc_test_invalid_code__"
 	testCodeVerifier = "__oidc_test_invalid_verifier__"
+	maxSSOBodyBytes  = 1 << 20
 )
 
 // Handler serves the dashboard SSO settings routes.
@@ -79,14 +80,14 @@ func (h *Handler) HandleOidcTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	discovery, err := fetchDiscovery(issuerURL)
+	discovery, err := fetchDiscovery(r.Context(), issuerURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	redirectURI := publicOrigin(r) + oidcCallback
-	probe, err := probeClientSecret(discovery.TokenEndpoint, clientID, clientSecret, redirectURI)
+	probe, err := probeClientSecret(r.Context(), discovery.TokenEndpoint, clientID, clientSecret, redirectURI)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -214,10 +215,16 @@ type probeOutcome struct {
 }
 
 // fetchDiscovery loads <issuer>/.well-known/openid-configuration.
-func fetchDiscovery(issuerURL string) (*discoveryDocument, error) {
+func fetchDiscovery(ctx context.Context, issuerURL string) (*discoveryDocument, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	discoveryURL := strings.TrimRight(strings.TrimSpace(issuerURL), "/") + discoveryPath
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(discoveryURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load OIDC discovery document from %s", discoveryURL)
+	}
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
 	}
@@ -226,7 +233,7 @@ func fetchDiscovery(issuerURL string) (*discoveryDocument, error) {
 		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
 	}
 	var doc discoveryDocument
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxSSOBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read OIDC discovery document from %s", discoveryURL)
 	}
@@ -243,7 +250,10 @@ var (
 
 // probeClientSecret exchanges a fake authorization code so the token endpoint
 // validates the client credentials without consuming a real code.
-func probeClientSecret(tokenEndpoint, clientID, clientSecret, redirectURI string) (*probeOutcome, error) {
+func probeClientSecret(ctx context.Context, tokenEndpoint, clientID, clientSecret, redirectURI string) (*probeOutcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if clientSecret == "" {
 		return &probeOutcome{
 			tested:  false,
@@ -267,8 +277,12 @@ func probeClientSecret(tokenEndpoint, clientID, clientSecret, redirectURI string
 	form.Set("redirect_uri", redirectURI)
 	form.Set("code_verifier", testCodeVerifier)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.PostForm(tokenEndpoint, form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +367,7 @@ func formatCertificate(cert string) []byte {
 // decodeJSONBody parses the request body, tolerating a missing or invalid body
 // the way Next's body.json().catch(() => ({})) does.
 func decodeJSONBody(r *http.Request, dst any) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSSOBodyBytes))
 	if err != nil {
 		return
 	}
@@ -362,7 +376,7 @@ func decodeJSONBody(r *http.Request, dst any) {
 
 // mustRead returns the raw response body bytes, empty on failure.
 func mustRead(resp *http.Response) []byte {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSSOBodyBytes))
 	if err != nil {
 		return nil
 	}
