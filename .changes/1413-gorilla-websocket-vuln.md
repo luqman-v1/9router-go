@@ -1,0 +1,7 @@
+### Bump `gorilla/websocket` past the GO-2026-6278 finding
+
+- **What changed.** `github.com/gorilla/websocket` moves from `v1.5.3` to `v1.5.4-0.20240701034025-d67f41855da4` — the commit that replaces the weak PRNG with `crypto/rand` for the WebSocket mask key. No semver tag carries it yet (`v1.5.3` is the latest), so the pseudo-version is the only way to pick the fix up.
+- **Why.** `GO-2026-6278` / `GHSA-w67g-5rqw-f597` reports that `gorilla/websocket` uses a cryptographically weak PRNG for the client-to-server mask key. The mask key is not a secret from the server's point of view, but a predictable one is still a protocol violation with a real attack surface, and `govulncheck` now refuses the tree: the Lint job on every open PR went red on it at once (verified on #1412, #1411, #1410 — every `websocket.*` call site in `browserlogin`, `media` and the OpenCode executor named in the finding).
+- **Nothing else moves.** `go.mod` / `go.sum` only; no call-site change, because the fix is inside the library. The five call sites (`browserlogin`, `gemini_live_stt`, and their tests) compile and test unchanged.
+- **Verification.** `govulncheck ./...` locally reports `No vulnerabilities found.` (was: five findings across four files). `go build ./...` clean. All six `CROSS_TARGETS` still build with `CGO_ENABLED=0` (§4.F portability gate). `go test ./internal/proxy/...` green.
+- **Upstream**: commit `d67f41855da42d7bccd9ef050c49f7e54e783b95` in gorilla/websocket, "Use crypto/rand for mask key".
