@@ -39,13 +39,13 @@ func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := p.Client.Do(req)
+	resp, err := refreshHTTPClient(p.Client).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("claude POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("claude read response: %w", err)
 	}
