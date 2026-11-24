@@ -145,6 +145,22 @@ func TestHandleOAuthKiroSocialExchange_missingCode(t *testing.T) {
 	}
 }
 
+func TestHandleOAuthKiroSocialExchange_codeOnlyRejected(t *testing.T) {
+	handler := NewOAuthHandler(nil)
+	// A code-only payload is the regression: the backend requires the PKCE
+	// verifier produced by social-authorize, so omitting it must be rejected.
+	req := httptest.NewRequest("POST", "/api/oauth/kiro/social-exchange", strings.NewReader(`{"code":"code-123","provider":"google"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleOAuthKiroSocialExchange(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for code-only payload, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "missing code or codeVerifier") {
+		t.Errorf("expected missing code or codeVerifier error, got %s", rec.Body.String())
+	}
+}
+
 func TestHandleOAuthKiroSocialExchange_HonorsContextAndTimeout(t *testing.T) {
 	t.Run("request context canceled", func(t *testing.T) {
 		unblock := make(chan struct{})

@@ -111,6 +111,35 @@ describe('dashboard API authentication and errors', () => {
     })
   })
 
+  it('uses the Kiro social PKCE authorize and exchange contract', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), init })
+      return Response.json({
+        success: true,
+        authUrl: 'https://prod.us-east-1.auth.desktop.kiro.dev/login',
+        state: 'state-123',
+        codeVerifier: 'verifier-123',
+      })
+    }
+    try {
+      await api.kiroSocialAuthorize('google')
+      await api.kiroSocialExchange('code-123', 'verifier-123', 'google')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    expect(requests[0]?.url).toBe('/api/oauth/kiro/social-authorize?provider=google')
+    expect(requests[1]?.url).toBe('/api/oauth/kiro/social-exchange')
+    expect(requests[1]?.init?.method).toBe('POST')
+    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
+      code: 'code-123',
+      codeVerifier: 'verifier-123',
+      provider: 'google',
+    })
+  })
+
   it('polls server callback relay by state', async () => {
     const originalFetch = globalThis.fetch
     let seenUrl = ''

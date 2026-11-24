@@ -2432,11 +2432,11 @@ export const api = {
       body: JSON.stringify({ apiKey, region }),
     }),
   kiroSocialAuthorize: (provider: 'google' | 'github') =>
-    request<{ authUrl: string; url: string; state: string }>(`/api/oauth/kiro/social-authorize?provider=${provider}`),
-  kiroSocialExchange: (code: string) =>
+    request<{ authUrl: string; url: string; state: string; codeVerifier: string }>(`/api/oauth/kiro/social-authorize?provider=${provider}`),
+  kiroSocialExchange: (code: string, codeVerifier: string, provider?: 'google' | 'github') =>
     request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/social-exchange', {
       method: 'POST',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, codeVerifier, provider }),
     }),
   cursorImport: (accessToken: string, machineId: string) =>
     request<{ success: boolean; id: string; error?: string }>('/api/oauth/cursor/import', {
