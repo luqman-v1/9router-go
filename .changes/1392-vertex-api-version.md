@@ -1,7 +1,0 @@
-### Vertex connections can target `v1beta1`
-
-- **What changed.** A Vertex connection's provider-specific data accepts `vertexApiVersion`, which switches the Gemini path from `/v1/` to `/v1beta1/`. Every existing connection keeps its behaviour: the default is `v1`, and a connection that never set the field reaches the same path it always did.
-- **Why.** Vertex serves some surfaces — Imagen, the newer Gemini features — only on `v1beta1`, and the executor hardcoded `/v1/`. A connection aimed at one of those models answered 404 no matter how the credential was shaped, because the version is part of the URL and not a request field.
-- **The key is `vertexApiVersion`, camelCase**, matching the other `providerSpecificData` fields the dashboard round-trips, and the dashboard response whitelist now carries it — without that, the edit form reopens with the field blanked and the operator cannot tell which version is set.
-- **Refactor worth noting.** The three `fmt.Sprintf` calls that built the URL now share one `vertexModelURL`, and the connection read lives in `readVertexConnectionSettings`. The URL was previously inlined three times with the version baked in, so the change would have been three separate edits with no way to test them together.
-- **Upstream**: `VertexAPIVersion` in `relaykit/dto/channel_settings.go`, `DefaultAPIVersion` in `relay/channel/vertex/url_builder.go` (QuantumNous/new-api).
