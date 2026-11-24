@@ -46,6 +46,13 @@ const (
 	vertexGoogleTokenURL = "https://oauth2.googleapis.com/token"
 	vertexCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
 
+	// vertexDefaultAPIVersion is the Vertex Gemini path version every existing
+	// connection expects. A connection may opt into v1beta1 through its data
+	// (`vertexApiVersion`) for surfaces Vertex only serves there — Imagen,
+	// newer Gemini features. Upstream: DefaultAPIVersion in
+	// relay/channel/vertex/url_builder.go.
+	vertexDefaultAPIVersion = "v1"
+
 	// vertexTokenSkew re-mints slightly before expiry so a request is never
 	// sent with a token that dies in flight.
 	vertexTokenSkew = 5 * time.Minute
@@ -222,6 +229,56 @@ func vertexJWTAssertion(sa *vertexServiceAccount) (string, error) {
 }
 
 // ForwardVertex serves both vertex and vertex-partner.
+//
+// vertexModelURL builds the Vertex Gemini path for one model call. The
+// publisher-scoped form is used whenever a project is known — both the OAuth
+// path (which requires it) and the API-key path with a project set — and the
+// project-less form is the API-key-without-project case, where Vertex serves
+// the model at the bare publisher root.
+//
+// The version is the path segment: `v1` for every existing connection, and
+// `v1beta1` for the surfaces Vertex only serves there (Imagen, newer Gemini
+// features). It comes from the connection's `vertexApiVersion` setting, not a
+// request field, because which versions a project can serve is a property of
+// the credential. It is not the `apiVersion` key, which belongs to Azure.
+func vertexModelURL(apiVersion, projectID, location, model, action, streamSuffix string) string {
+	if projectID == "" {
+		return fmt.Sprintf("https://aiplatform.googleapis.com/%s/publishers/google/models/%s:%s%s",
+			apiVersion, model, action, streamSuffix)
+	}
+	return fmt.Sprintf("https://aiplatform.googleapis.com/%s/projects/%s/locations/%s/publishers/google/models/%s:%s%s",
+		apiVersion, projectID, location, model, action, streamSuffix)
+}
+
+// vertexConnectionSettings is the per-connection routing configuration a
+// Vertex request resolves before it builds a URL.
+type vertexConnectionSettings struct {
+	ProjectID  string
+	Location   string
+	APIVersion string
+}
+
+// readVertexConnectionSettings reads the operator's per-connection overrides.
+// `vertexApiVersion` is the camelCase key every other providerSpecificData
+// field uses; it defaults to v1 so a connection that never set it keeps
+// reaching the path it always did.
+func readVertexConnectionSettings(connData map[string]any) vertexConnectionSettings {
+	out := vertexConnectionSettings{APIVersion: vertexDefaultAPIVersion}
+	if connData == nil {
+		return out
+	}
+	if s, ok := connData["projectId"].(string); ok {
+		out.ProjectID = strings.TrimSpace(s)
+	}
+	if s, ok := connData["location"].(string); ok {
+		out.Location = strings.TrimSpace(s)
+	}
+	if s, ok := connData["vertexApiVersion"].(string); ok && strings.TrimSpace(s) != "" {
+		out.APIVersion = strings.TrimSpace(s)
+	}
+	return out
+}
+
 func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	ctx := req.Ctx
 	if ctx == nil {
@@ -231,16 +288,10 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	sa := parseVertexServiceAccount(req.APIKey)
 	adc := parseVertexADC(req.APIKey)
 
-	projectID := ""
-	location := ""
-	if req.ConnData != nil {
-		if s, ok := req.ConnData["projectId"].(string); ok {
-			projectID = strings.TrimSpace(s)
-		}
-		if s, ok := req.ConnData["location"].(string); ok {
-			location = strings.TrimSpace(s)
-		}
-	}
+	settings := readVertexConnectionSettings(req.ConnData)
+	projectID := settings.ProjectID
+	location := settings.Location
+	apiVersion := settings.APIVersion
 	if sa != nil && projectID == "" {
 		projectID = sa.ProjectID
 	}
@@ -275,7 +326,9 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	var sendBody []byte
 	if req.Provider == "vertex-partner" {
 		// Partner models are the OpenAI-compatible surface, so the body needs
-		// no translation and the project is mandatory.
+		// no translation and the project is mandatory. The version stays the
+		// OpenAI-compatible endpoint's own: it is not the Gemini path this
+		// setting exists to switch.
 		if projectID == "" {
 			return fmt.Errorf("ForwardVertex: vertex-partner requires a project id")
 		}
@@ -303,24 +356,15 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 			if location == "" {
 				location = "us-central1"
 			}
-			targetURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s%s",
-				projectID, location, model, action, streamSuffix)
-		} else {
-			if location == "" {
-				location = "global"
-			}
-			if projectID != "" {
-				targetURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s%s",
-					projectID, location, model, action, streamSuffix)
+		} else if location == "" {
+			location = "global"
+		}
+		targetURL = vertexModelURL(apiVersion, projectID, location, model, action, streamSuffix)
+		if bearer == "" && rawKey != "" {
+			if strings.Contains(targetURL, "?") {
+				targetURL += "&key=" + url.QueryEscape(rawKey)
 			} else {
-				targetURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%s", model, action, streamSuffix)
-			}
-			if rawKey != "" {
-				if strings.Contains(targetURL, "?") {
-					targetURL += "&key=" + url.QueryEscape(rawKey)
-				} else {
-					targetURL += "?key=" + url.QueryEscape(rawKey)
-				}
+				targetURL += "?key=" + url.QueryEscape(rawKey)
 			}
 		}
 	}

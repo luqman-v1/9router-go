@@ -371,6 +371,10 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 		out := map[string]any{}
 		for _, f := range []string{
 			"baseUrl", "azureEndpoint", "deployment", "apiVersion", "accountId",
+			// Vertex: which path version the connection targets (v1 or v1beta1).
+			// Not secret, and without it the edit form reopens with the
+			// version blanked, so the operator cannot tell which is set.
+			"vertexApiVersion",
 			"region", "projectId", "resourceUrl", "proxyPoolId",
 			"connectionProxyEnabled", "connectionProxyUrl", "connectionNoProxy",
 			"githubLogin", "githubName", "githubEmail", "githubUserId",

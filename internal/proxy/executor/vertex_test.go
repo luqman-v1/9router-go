@@ -147,3 +147,92 @@ func TestVertexModelStripsPrefixAndSuffix(t *testing.T) {
 		}
 	}
 }
+
+// TestVertexModelURLDefaultIsV1 pins the default: every connection that never
+// set apiVersion must keep reaching the same /v1/ path it always did, or a
+// deploy silently moves every Vertex call to a version the project may not
+// serve.
+func TestVertexModelURLDefaultIsV1(t *testing.T) {
+	if vertexDefaultAPIVersion != "v1" {
+		t.Fatalf("vertexDefaultAPIVersion = %q, want \"v1\"", vertexDefaultAPIVersion)
+	}
+	got := vertexModelURL(vertexDefaultAPIVersion, "proj-1", "us-central1", "gemini-4-argon", "generateContent", "")
+	want := "https://aiplatform.googleapis.com/v1/projects/proj-1/locations/us-central1/publishers/google/models/gemini-4-argon:generateContent"
+	if got != want {
+		t.Errorf("vertexModelURL default = %q, want %q", got, want)
+	}
+}
+
+// TestVertexModelURLHonoursV1Beta1 is the opt-in: a connection that sets
+// apiVersion reaches the v1beta1 path, which is where Vertex serves Imagen and
+// the newer Gemini features.
+func TestVertexModelURLHonoursV1Beta1(t *testing.T) {
+	got := vertexModelURL("v1beta1", "proj-1", "us-central1", "gemini-4-argon", "generateContent", "")
+	want := "https://aiplatform.googleapis.com/v1beta1/projects/proj-1/locations/us-central1/publishers/google/models/gemini-4-argon:generateContent"
+	if got != want {
+		t.Errorf("vertexModelURL v1beta1 = %q, want %q", got, want)
+	}
+}
+
+// TestVertexModelURLProjectLessForm covers the API-key-without-project case:
+// no project segment, so the version sits right after the host.
+func TestVertexModelURLProjectLessForm(t *testing.T) {
+	got := vertexModelURL("v1beta1", "", "global", "gemini-4-argon", "generateContent", "")
+	want := "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-4-argon:generateContent"
+	if got != want {
+		t.Errorf("vertexModelURL project-less = %q, want %q", got, want)
+	}
+}
+
+// TestVertexModelURLStreamSuffix: the streaming query rides at the end, after
+// the action, in both forms.
+func TestVertexModelURLStreamSuffix(t *testing.T) {
+	scoped := vertexModelURL("v1", "proj-1", "us-central1", "gemini-4-argon", "streamGenerateContent", "?alt=sse")
+	if !strings.HasSuffix(scoped, ":streamGenerateContent?alt=sse") {
+		t.Errorf("scoped stream URL = %q, want the action then the sse suffix", scoped)
+	}
+	projectLess := vertexModelURL("v1", "", "global", "gemini-4-argon", "streamGenerateContent", "?alt=sse")
+	if !strings.HasSuffix(projectLess, ":streamGenerateContent?alt=sse") {
+		t.Errorf("project-less stream URL = %q, want the action then the sse suffix", projectLess)
+	}
+}
+
+// TestReadVertexConnectionSettingsDefaultsToV1 pins the safe default: a
+// connection that never set vertexApiVersion keeps reaching /v1/, so no
+// existing credential changes where it sends traffic.
+func TestReadVertexConnectionSettingsDefaultsToV1(t *testing.T) {
+	cases := []struct {
+		name  string
+		input map[string]any
+	}{
+		{"nil ConnData", nil},
+		{"empty ConnData", map[string]any{}},
+		{"unset version", map[string]any{"projectId": "proj-1", "location": "us-central1"}},
+		{"blank version", map[string]any{"vertexApiVersion": "   "}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := readVertexConnectionSettings(tt.input)
+			if got.APIVersion != "v1" {
+				t.Errorf("APIVersion = %q, want \"v1\"", got.APIVersion)
+			}
+		})
+	}
+}
+
+// TestReadVertexConnectionSettingsHonoursTheOverride is the opt-in: an
+// operator can move a connection to v1beta1 for the surfaces Vertex only
+// serves there.
+func TestReadVertexConnectionSettingsHonoursTheOverride(t *testing.T) {
+	got := readVertexConnectionSettings(map[string]any{
+		"projectId":        "proj-1",
+		"location":         "us-east1",
+		"vertexApiVersion": "v1beta1",
+	})
+	if got.APIVersion != "v1beta1" {
+		t.Errorf("APIVersion = %q, want \"v1beta1\"", got.APIVersion)
+	}
+	if got.ProjectID != "proj-1" || got.Location != "us-east1" {
+		t.Errorf("ProjectID = %q, Location = %q; want proj-1 / us-east1", got.ProjectID, got.Location)
+	}
+}
