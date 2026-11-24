@@ -2865,6 +2865,35 @@ export const api = {
     } catch {}
     return { requireLogin: false }
   },
+  // First-run setup (inspired by new-api's /api/setup): a fresh install sets
+  // the dashboard password from the browser before the first login. The
+  // server only accepts this from a loopback peer while no password is stored.
+  getSetup: async (): Promise<{ status: boolean; databaseType: string }> => {
+    const res = await fetch('/api/setup')
+    if (!res.ok) return { status: false, databaseType: 'sqlite' }
+    const data = await res.json()
+    return { status: !!data.status, databaseType: data.databaseType || 'sqlite' }
+  },
+  setup: async (password: string): Promise<{ success: boolean; error?: string }> => {
+    const res = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    })
+    if (res.ok) {
+      // The server sets the httpOnly auth_token cookie on success; the client
+      // gate mirrors what api.login does.
+      sessionStorage.setItem('9router_auth', 'true')
+      localStorage.setItem('9router_auth', 'true')
+      return { success: true }
+    }
+    let errText = 'Setup failed'
+    try {
+      const errJson = await res.json()
+      errText = errJson.error?.message || errJson.error || errJson.message || errText
+    } catch {}
+    return { success: false, error: errText }
+  },
   login: async (password: string, newPassword?: string): Promise<LoginResponse> => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',

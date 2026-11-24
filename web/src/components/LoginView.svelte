@@ -23,6 +23,11 @@
   let samlConfigured = $state(false)
   let samlLoginLabel = $state('Sign in with SAML SSO')
   let mustChange = $state(false)
+  // First-run setup (inspired by new-api's /api/setup): a fresh install sets
+  // the dashboard password from the browser instead of typing the well-known
+  // default first. hasPassword === false on a loopback peer is the wizard.
+  let firstRun = $state(false)
+  let confirmPassword = $state('')
   // White-label branding on the login screen. appName/appLogoUrl are the two
   // the sidebar already reads from the same settings row; loginLogo and
   // appTagline are the login-specific pair.
@@ -67,6 +72,10 @@
           return
         }
         hasPassword = !!data.hasPassword
+        // Fresh install on the local machine: offer the setup wizard instead
+        // of the default-password login. A remote peer keeps the normal login
+        // (its setup POST is refused server-side anyway).
+        firstRun = !data.hasPassword
         authMode = data.authMode || 'password'
         ssoType = data.ssoType || 'oidc'
         oidcConfigured = data.oidcConfigured === true
@@ -172,6 +181,39 @@
     }
   }
 
+  // First-run setup (inspired by new-api's /api/setup): set the dashboard
+  // password before the first login. The server signs the session in, so a
+  // successful setup lands in the dashboard without a second form.
+  async function handleSetupSubmit(e: SubmitEvent) {
+    e.preventDefault()
+    if (!newPassword || isLoading) return
+    if (newPassword !== confirmPassword) {
+      errorMessage = 'Passwords do not match'
+      return
+    }
+
+    isLoading = true
+    errorMessage = ''
+
+    try {
+      const res = await api.setup(newPassword)
+      if (res.success) {
+        firstRun = false
+        if (onSuccess) {
+          onSuccess()
+        } else {
+          window.location.assign('/dashboard')
+        }
+      } else {
+        errorMessage = res.error || 'Setup failed'
+      }
+    } catch (err: unknown) {
+      errorMessage = err instanceof Error ? err.message : 'Setup failed'
+    } finally {
+      isLoading = false
+    }
+  }
+
   function handleOidcLogin() {
     window.location.href = '/api/auth/oidc/start'
   }
@@ -218,7 +260,56 @@
       </div>
 
       <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
-        {#if mustChange}
+        {#if firstRun}
+          <form onsubmit={handleSetupSubmit} class="flex flex-col gap-4">
+            <p class="text-sm text-text-muted text-center">
+              Welcome to 9router-go. Set a dashboard password to finish setup.
+            </p>
+            <div class="flex flex-col gap-2">
+              <label for="setup-password" class="text-sm font-medium text-text-main">New password</label>
+              <input
+                id="setup-password"
+                type="password"
+                placeholder="At least 8 characters"
+                bind:value={newPassword}
+                required
+                minlength="8"
+                data-login-focus
+                class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
+              />
+            </div>
+            <div class="flex flex-col gap-2">
+              <label for="setup-password-confirm" class="text-sm font-medium text-text-main">Confirm password</label>
+              <input
+                id="setup-password-confirm"
+                type="password"
+                placeholder="Repeat the password"
+                bind:value={confirmPassword}
+                required
+                class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
+              />
+              {#if errorMessage}
+                <p class="text-xs text-red-500">{errorMessage}</p>
+              {/if}
+            </div>
+            <button
+              type="submit"
+              disabled={isLoading || !newPassword || newPassword.length < 8 || newPassword !== confirmPassword}
+              class="w-full h-9 px-4 text-sm rounded-[10px] font-medium bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              {#if isLoading}
+                <span class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white/20 border-t-white"></span>
+                <span>Setting up...</span>
+              {:else}
+                <span>Create password</span>
+              {/if}
+            </button>
+            <p class="text-xs text-center text-text-muted">
+              Inspired by new-api's first-run setup. This is accepted from the
+              local machine only, while no password is stored.
+            </p>
+          </form>
+        {:else if mustChange}
           <form onsubmit={handleSetNewPassword} class="flex flex-col gap-4">
             <p class="text-sm text-amber-600 dark:text-amber-400 text-center">
               Set a new password before accessing the dashboard remotely.
