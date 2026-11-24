@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -86,7 +87,7 @@ func (h *Handler) HandleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		redirectToLoginError(w, r, "oidc_base_url_required")
 		return
 	}
-	discovery, err := fetchDiscovery(cfg.IssuerURL)
+	discovery, err := fetchDiscovery(r.Context(), cfg.IssuerURL)
 	if err != nil {
 		log.Warn("sso", "oidc discovery failed", "issuer", cfg.IssuerURL, "error", err)
 		redirectToLoginError(w, r, "oidc_discovery_failed")
@@ -167,7 +168,7 @@ func (h *Handler) HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		redirectToLoginError(w, r, "oidc_not_configured")
 		return
 	}
-	discovery, err := fetchDiscovery(cfg.IssuerURL)
+	discovery, err := fetchDiscovery(r.Context(), cfg.IssuerURL)
 	if err != nil {
 		redirectToLoginError(w, r, "oidc_discovery_failed")
 		return
@@ -253,7 +254,7 @@ func exchangeOIDCCode(ctx context.Context, tokenEndpoint string, cfg oidcSetting
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var token oidcTokenResponse
-	if err := json.UnmarshalRead(resp.Body, &token); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(resp.Body, maxSSOBodyBytes), &token); err != nil {
 		return nil, fmt.Errorf("oidc: parse token response: %w", err)
 	}
 	if token.Error != "" {
