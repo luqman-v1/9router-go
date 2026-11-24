@@ -124,3 +124,36 @@ accounts × nine rotation steps) and `TestFreePiForward_RotatesEvenWithAStoredSe
 Both are load-bearing: restoring the old lookup makes the first fail with *"a
 stored id let one account present another account's session id"*. Two tests
 asserting the old pin behaviour were rewritten to assert the invariant instead.
+
+**Round-robin no longer moves a live conversation to a different account.** With
+`round-robin` + `sticky 1`, the rotation cursor was keyed by combo alone
+(`key := comboName`), and `sticky 1` advances on the very next request — so turn 2
+of a conversation was routed to the next account. free-pi binds a conversation to
+the account that opened it and refuses the switch with *"This conversation belongs
+to another free-pi account. Sharing or rotating accounts isn't allowed; use one
+account per person."*
+
+The rotation state is now keyed by **conversation** as well as combo
+(`conversationFingerprint`, anchored on the first user message so it is stable for
+the conversation's life), and a provider that declares `BindsConversations`
+pins its conversation's seat instead of counting it. Every turn of one
+conversation reuses the seat that opened it; round-robin still spreads **new**
+conversations across accounts, which is where the parallelism comes from.
+
+The capability is registry-declared (`ProviderConfig.BindsConversations` →
+`providers.BindsConversations`) rather than matched by provider id, per AGENTS.md
+§3.B/§3.C. The conversation-keyed map is bounded
+(`comboStickyMaxConversations = 8192`, evicting idle entries by `LastUsed` after
+6 h) because the key is client-driven — without that it would grow without limit
+(§4.G).
+
+This is deliberately **not** a request-shape change: the refusal is about which
+ACCOUNT owns the conversation, so altering or hashing message content cannot
+legitimately fix it, and rewriting the user's messages would corrupt context and
+defeat prompt caching. Keeping the conversation on one account is the honest
+equivalent of what a human client does.
+
+Pinned by `TestComboConversationSticksToItsAccount`, which is load-bearing:
+removing the pin makes it fail with *"turn 2 moved to free-pi/model-b; the
+conversation started on free-pi/model-a"*. It also asserts an ordinary provider
+still rotates per request, so the pin cannot leak beyond providers that need it.

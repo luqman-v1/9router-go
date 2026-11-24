@@ -35,6 +35,11 @@ type comboStickyState struct {
 	CurrentWeights map[string]int
 	LastSeat       string
 	ServingRotated []string
+
+	// LastUsed stamps the last request this state served. A conversation-keyed
+	// entry makes this map client-driven and therefore unbounded without it
+	// (AGENTS.md §4.G).
+	LastUsed time.Time
 }
 
 // smartStickyEntry is one session's pinned model in the smart strategy.
