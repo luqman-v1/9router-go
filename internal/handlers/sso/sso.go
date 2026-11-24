@@ -222,7 +222,7 @@ func fetchDiscovery(ctx context.Context, issuerURL string) (*discoveryDocument, 
 	discoveryURL := strings.TrimRight(strings.TrimSpace(issuerURL), "/") + discoveryPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
+		return nil, fmt.Errorf("failed to load OIDC discovery document from %s", discoveryURL)
 	}
 	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
