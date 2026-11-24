@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/kiroidentity"
 )
 
 // Upstream tries the Amazon surfaces before the Kiro IDE gateway
@@ -170,5 +171,23 @@ func TestForwardKiro_TargetAndProfileArn(t *testing.T) {
 	ua := receivedHeaders.Get("User-Agent")
 	if !strings.Contains(ua, "KiroIDE-"+KiroIDEVersion) {
 		t.Errorf("User-Agent missing KiroIDE version, got %q", ua)
+	}
+}
+
+// Upstream seed precedence includes the refresh token between clientId and
+// profileArn. The legacy two-arg helper keeps its behavior; the extended
+// helper is available to callers that have the refresh token in hand.
+func TestKiroMachineIDRefreshSeedPrecedence(t *testing.T) {
+	psd := map[string]any{"clientId": "cid", "profileArn": "arn"}
+	if got, want := resolveKiroMachineIDWithRefresh(psd, "rt", "at"), resolveKiroMachineID(psd, "at"); got != want {
+		t.Errorf("clientId must win: %q != %q", got, want)
+	}
+	noClient := map[string]any{"profileArn": "arn"}
+	got := resolveKiroMachineIDWithRefresh(noClient, "rt", "at")
+	if got == resolveKiroMachineIDWithRefresh(noClient, "", "at") {
+		t.Errorf("refreshToken must change the seed when clientId is absent")
+	}
+	if got != kiroidentity.MachineID("rt") {
+		t.Errorf("refreshToken seed mismatch: %q", got)
 	}
 }

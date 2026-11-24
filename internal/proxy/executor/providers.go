@@ -263,8 +263,34 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		return err
 	}
 
+	mode := kiroCreateResponseMode()
+	hasConversationState := kiroBodyHasConversationState(body)
+
+	// Direct mode: if configured to always use CreateResponse and the body has
+	// conversationState, try it first. Any HTTP answer (ok or not) is used;
+	// only a network failure/no response falls through to legacy.
+	if mode == "always" && hasConversationState {
+		crResp, crErr := tryKiroCreateResponse(ctx, req, body)
+		if crResp != nil {
+			defer func() { _ = crResp.Body.Close() }()
+			return writeKiroCreateResponse(w, req, crResp)
+		}
+		_ = crErr // network failure — continue to legacy
+	}
+
 	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, body, req.IsStream, req.ConnData)
 	if err != nil {
+		// auto: a 429 carrying USER_REQUEST_RATE_EXCEEDED means this account is
+		// enrolled in the create_response_api experiment. Fall back in-request
+		// to /v1/responses; never touch generic 429 cooldown/failover.
+		if mode == "auto" && hasConversationState && kiroRateExceededError(err) {
+			crResp, crErr := tryKiroCreateResponse(ctx, req, body)
+			if crResp != nil {
+				defer func() { _ = crResp.Body.Close() }()
+				return writeKiroCreateResponse(w, req, crResp)
+			}
+			_ = crErr
+		}
 		return fmt.Errorf("ForwardKiro: %w", err)
 	}
 	defer resp.Body.Close()
@@ -272,6 +298,67 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		return handleKiroStream(w, req, resp.Body)
 	}
 	return handleKiroNonStream(w, req, resp.Body)
+}
+
+// kiroBodyHasConversationState reports whether the translated upstream body is
+// a Kiro conversationState envelope (the only shape CreateResponse accepts).
+func kiroBodyHasConversationState(body []byte) bool {
+	var probe map[string]any
+	if json.Unmarshal(body, &probe) != nil {
+		return false
+	}
+	_, ok := probe["conversationState"]
+	return ok
+}
+
+// kiroRateExceededError matches the experiment's 429 marker without relying on
+// error text: UpstreamError carries the raw body.
+func kiroRateExceededError(err error) bool {
+	var upstream *proxy.UpstreamError
+	if !errors.As(err, &upstream) {
+		return false
+	}
+	return upstream.StatusCode == http.StatusTooManyRequests &&
+		bytes.Contains(upstream.Body, []byte(kiroCreateResponseMarker))
+}
+
+// tryKiroCreateResponse builds and sends the /v1/responses request. A non-nil
+// response means an HTTP answer arrived; nil means a network failure.
+func tryKiroCreateResponse(ctx context.Context, req *Request, kiroBody []byte) (*http.Response, error) {
+	crBody, err := buildKiroCreateResponseBody(kiroBody, req.ModelName, req.ConnData)
+	if err != nil {
+		return nil, err
+	}
+	region := ""
+	if req.ConnData != nil {
+		region, _ = req.ConnData["region"].(string)
+	}
+	endpoint := kiroCreateResponseURL
+	if endpoint == "" {
+		endpoint = kiroCreateResponseEndpoint(region)
+	}
+	headers := buildKiroCreateResponseHeaders(req.APIKey, req.ConnData, crBody)
+	return executeKiroCreateResponse(ctx, req.Client, endpoint, headers, crBody)
+}
+
+// writeKiroCreateResponse turns the CreateResponse HTTP answer into the
+// client's requested format. The CreateResponse output is SSE — never feed it
+// to the binary EventStream parser used by the legacy Kiro path.
+func writeKiroCreateResponse(w http.ResponseWriter, req *Request, resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
+	}
+	model := req.ModelName
+	if model == "" {
+		model = "kiro"
+	}
+	stream := kiroCreateResponseStream(req.Ctx, resp.Body, model)
+	defer func() { _ = stream.Close() }()
+	if req.IsStream {
+		return execSSEStream(w, stream, req)
+	}
+	return jsonResponse(req.Ctx, w, stream, req.TranslateResp, req.ResponseBuf)
 }
 
 // kiroUpstreamBody translates an OpenAI chat body into the Kiro envelope,
