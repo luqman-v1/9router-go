@@ -3,7 +3,9 @@ package dashboard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -925,6 +927,29 @@ func TestHandleValidateProvider_OpencodeSuccess(t *testing.T) {
 	}
 	if !strings.Contains(p.body, `"stream":true`) {
 		t.Errorf("probe body missing stream:true: %s", p.body)
+	}
+	if out["valid"] != true {
+		t.Errorf("expected valid=true, got %v", out["valid"])
+	}
+}
+
+func TestHandleValidateProvider_OpencodeGoSendsSessionHeader(t *testing.T) {
+	calls := withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		return http.StatusOK, []byte(`data: {"choices":[{"delta":{"content":"Hello!"}}]}\n\n`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"opencode-go","apiKey":"sk-test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 probe, got %d", len(*calls))
+	}
+	p := (*calls)[0]
+	sum := sha256.Sum256([]byte("sk-test"))
+	want := "validate-" + hex.EncodeToString(sum[:])[:16]
+	if got := p.headers.Get("x-opencode-session"); got != want {
+		t.Errorf("x-opencode-session = %q, want %q", got, want)
 	}
 	if out["valid"] != true {
 		t.Errorf("expected valid=true, got %v", out["valid"])
