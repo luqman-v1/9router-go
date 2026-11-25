@@ -189,6 +189,10 @@ func (h *DashboardHandler) HandlePostSetup(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	// The wizard just replaced the stored hash (and possibly bumped nothing —
+	// a first install has no epoch). Install the new state before the session
+	// below is signed, so the token it carries verifies against it.
+	h.refreshSessionEpoch()
 
 	token, err := auth.Sign(auth.Secret(), time.Now())
 	if err != nil {

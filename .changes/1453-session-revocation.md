@@ -28,3 +28,13 @@ Two properties the first cut missed, both fixed here:
   a bare password session, so an OIDC/SAML operator does not silently become a
   "Password user" in the dashboard. The claims are read before the change: the
   change bumps the epoch, which invalidates the very token they come from.
+
+The reset and setup paths are now covered in-process too. `POST
+/api/auth/reset-password` clears the stored hash and `POST /api/setup` writes
+the first one; neither goes through `changeDashboardPassword`, so the
+in-memory fingerprint stayed stale until the next restart — the same
+failure mode this PR closes, reached through a different write. Both handlers
+now reinstall the epoch from the store (`auth.LoadSessionEpoch`) right after
+the settings write: a token minted before a reset stops verifying the moment
+the reset lands, and the session the setup wizard hands back verifies against
+the hash it just wrote. Tests pin both, and one fails without the refresh.

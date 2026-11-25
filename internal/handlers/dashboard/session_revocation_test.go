@@ -204,3 +204,103 @@ func TestPasswordChangeKeepsSSOClaims(t *testing.T) {
 		t.Errorf("tv = %d, want the new epoch", claims.TV)
 	}
 }
+
+// A session captured before a password RESET keeps working until the process
+// restarts if only the stored hash changes: `ph` is checked against an
+// in-memory fingerprint, and the reset handler is the one password write that
+// does not go through changeDashboardPassword. The reset must reinstall the
+// epoch in-process.
+func TestPasswordResetRevokesOlderSessionsInProcess(t *testing.T) {
+	authTestEnv(t)
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	auth.SetSessionEpoch(0, "")
+	t.Cleanup(func() { auth.SetSessionEpoch(0, "") })
+	ResetResetPasswordLimiter()
+
+	h := NewDashboardHandler(repo)
+	storePassword(t, repo, "before-reset")
+	// Boot installs the epoch from the stored hash; without this the login
+	// mints a token at (0, "") and a reset back to "" would still match.
+	auth.LoadSessionEpoch(repo)
+
+	login := postLogin(t, h, "before-reset")
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status = %d: %s", login.Code, login.Body.String())
+	}
+	oldToken := authCookieValue(t, login)
+	if oldToken == "" {
+		t.Fatal("login set no session cookie")
+	}
+	if !auth.Verify(oldToken, auth.Secret()) {
+		t.Fatal("the login cookie must verify before the reset")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", strings.NewReader(`{"confirm":true}`))
+	req.RemoteAddr = "127.0.0.1:41234"
+	req.Host = "localhost:20128"
+	rec := httptest.NewRecorder()
+	h.HandleResetPassword(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No restart: the same process, the token minted before the reset.
+	if auth.Verify(oldToken, auth.Secret()) {
+		t.Error("the pre-reset token still verifies after the reset, in-process")
+	}
+
+	// And the gateway is not bricked: the fallback password is accepted again.
+	// Checked through the verifier rather than the login route, which
+	// deliberately refuses the default password to a remote caller.
+	if !h.verifyDashboardPassword(defaultInitialPassword) {
+		t.Error("the default password must verify after a reset")
+	}
+}
+
+// The setup wizard writes the first stored hash. A session minted on a fresh
+// install (no password yet) must not survive it: its `ph` is the fingerprint of
+// the empty hash, and the wizard replaces that hash. Without the in-process
+// refresh the token keeps verifying until a restart.
+func TestSetupRevokesOlderSessionsInProcess(t *testing.T) {
+	authTestEnv(t)
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	auth.SetSessionEpoch(0, "")
+	t.Cleanup(func() { auth.SetSessionEpoch(0, "") })
+
+	h := NewDashboardHandler(repo)
+	// Boot on a fresh install: epoch installed from the (empty) stored state,
+	// so a token minted here carries PH = sha256("").
+	auth.LoadSessionEpoch(repo)
+
+	stale, err := auth.Sign(auth.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if !auth.Verify(stale, auth.Secret()) {
+		t.Fatal("the pre-setup token must verify before the wizard runs")
+	}
+
+	body := `{"password":"first-password"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:41234"
+	req.Host = "localhost:20128"
+	rec := httptest.NewRecorder()
+	h.HandlePostSetup(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No restart: same process, the token minted before the wizard.
+	if auth.Verify(stale, auth.Secret()) {
+		t.Error("a token minted on the passwordless install still verifies after setup")
+	}
+	fresh := authCookieValue(t, rec)
+	if fresh == "" {
+		t.Fatal("setup must hand back a session")
+	}
+	if !auth.Verify(fresh, auth.Secret()) {
+		t.Error("the session setup minted does not verify against the state it wrote")
+	}
+}
