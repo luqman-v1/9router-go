@@ -254,7 +254,12 @@ func (h *ChatHandler) handleAccountFallback(
 			ConnData: connData, Body: body, Attempts: attemptCount(ctx),
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 		}
+		// Count the attempt as load while it runs, including a long streaming
+		// reply: least-busy reads these counts. The release below reports the
+		// outcome, so a key that refused is deprioritized for a while.
+		leastBusy.notePick(connObj.ID)
 		err = h.tryForwardWithConnection(params)
+		leastBusy.noteRelease(connObj.ID, err != nil)
 		// A pool is many egresses behind ONE connection, but this loop advances
 		// over connections. Without this walk a provider with one connection and
 		// a hundred proxies got exactly one attempt per request, and the turn
