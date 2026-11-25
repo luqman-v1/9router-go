@@ -15,6 +15,7 @@ import (
 
 	"9router/proxy/internal/acp/agy"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/translator"
 )
 
 // buildFakeAGY writes a tiny ACP-speaking Go binary used as AGY_PATH.
@@ -35,6 +36,7 @@ func main(){
   case "session/new":
    fmt.Fprintf(w,"{\"jsonrpc\":\"2.0\",\"id\":%v,\"result\":{\"sessionId\":\"s-1\"}}\n",id)
   case "session/prompt":
+   if p:=os.Getenv("AGY_ACP_PROMPT_CAPTURE"); p!="" { b,_:=json.Marshal(m["params"]); _=os.WriteFile(p,b,0o600) }
    fmt.Fprintln(w,"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"PONG\"}}}")
    w.Flush()
    fmt.Fprintf(w,"{\"jsonrpc\":\"2.0\",\"id\":%v,\"result\":{\"stopReason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"PONG\"}]}}\n",id)
@@ -101,6 +103,66 @@ func TestForwardAGYACPNonStream(t *testing.T) {
 	if len(out.Choices) == 0 || out.Choices[0].Message.Content != "PONGPONG" {
 		// Streamed chunk + final result both recorded.
 		t.Errorf("unexpected content: %s", rec.Body.String())
+	}
+}
+
+func TestForwardAGYACPInjectsIdentityOnWire(t *testing.T) {
+	fake := buildFakeAGY(t)
+	t.Cleanup(agy.DefaultPool().Close)
+	t.Setenv("AGY_PATH", fake)
+	capture := filepath.Join(t.TempDir(), "prompt.json")
+	t.Setenv("AGY_ACP_PROMPT_CAPTURE", capture)
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "gemini-4-hydrogen-high",
+		"messages": []map[string]any{
+			{"role": "system", "content": "be terse"},
+			{"role": "user", "content": "kamu model apa"},
+		},
+		"stream": false,
+	})
+	req := &Request{
+		Ctx:          context.Background(),
+		Config:       &providers.ProviderConfig{BaseURL: "agy-acp://acp/stdio"},
+		Provider:     "agy-acp",
+		APIKey:       "probe-key",
+		Body:         body,
+		ConnectionID: "conn-wire-identity",
+		ConnData:     map[string]any{},
+		ACPCredentials: func(ctx context.Context, connData map[string]any, connectionID string) (string, string, time.Time, error) {
+			return "access", "refresh", time.Now().Add(time.Hour), nil
+		},
+	}
+	rec := httptest.NewRecorder()
+	if err := ForwardAGYACP(rec, req); err != nil {
+		t.Fatalf("ForwardAGYACP: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	raw, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("no ACP prompt captured: %v", err)
+	}
+	var params struct {
+		Prompt []agy.PromptBlock `json:"prompt"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatalf("decode captured prompt: %v", err)
+	}
+	if len(params.Prompt) != 1 {
+		t.Fatalf("prompt blocks = %d, want 1", len(params.Prompt))
+	}
+	text := params.Prompt[0].Text
+	identity := translator.AntigravityDefaultSystem
+	if !strings.Contains(text, identity) {
+		t.Fatalf("ACP wire prompt missing identity:\n%s", text)
+	}
+	identityAt := strings.Index(text, identity)
+	systemAt := strings.Index(text, "[System]\nbe terse")
+	userAt := strings.Index(text, "[User]\nkamu model apa")
+	if systemAt < 0 || userAt < 0 || identityAt > systemAt || systemAt > userAt {
+		t.Fatalf("bad order: identity=%d caller system=%d user=%d", identityAt, systemAt, userAt)
 	}
 }
 
