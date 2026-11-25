@@ -3,6 +3,8 @@ package handlers
 import (
 	"testing"
 	"time"
+
+	"9router/proxy/internal/analyticsrange"
 )
 
 // A fixed instant in the middle of a month, so a month-to-date window and a
@@ -71,11 +73,13 @@ func TestParseChartPeriodMonth(t *testing.T) {
 	}
 }
 
-func TestAnalyticsRangeMonth(t *testing.T) {
-	// The analytics sections resolve through their own helper; it must agree, or
-	// the cards on one page would describe different periods.
+// The details table, the stats cards and the chart all read the one resolver;
+// this pins that the month window they share opens where the analytics sections
+// open theirs (analyticsrange has its own test for that half).
+func TestResolveUsagePeriodMonthAgreesWithAnalytics(t *testing.T) {
 	since := resolveUsagePeriod("month", monthTestNow)
-	if since.since.Day() != 1 || since.since.Hour() != 0 {
-		t.Errorf("month start = %v, want the 1st at midnight", since.since)
+	analytics := analyticsrange.Resolve("month", monthTestNow)
+	if !since.since.Equal(analytics.Cutoff()) {
+		t.Errorf("stats month start = %v, analytics month start = %v; one page must describe one window", since.since, analytics.Cutoff())
 	}
 }
