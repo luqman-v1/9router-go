@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"9router/proxy/internal/translator"
 )
 
 // ChatRequest is the subset of an OpenAI Chat Completions body the ACP
@@ -66,6 +68,17 @@ type PromptBlock struct {
 	Text string `json:"text,omitempty"`
 }
 
+// hasAntigravityIdentity reports whether the caller already supplied the
+// official identity, so the ACP prompt does not duplicate it.
+func hasAntigravityIdentity(req *ChatRequest) bool {
+	for _, m := range req.Messages {
+		if strings.Contains(m.text(), "You are Antigravity") {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildPrompt folds an OpenAI message history into one ACP prompt using the
 // labelled format proven by upstream devin-cli.js. Tool calls and results are
 // rendered explicitly so agy treats a returned result as data, not as a
@@ -74,6 +87,11 @@ func BuildPrompt(req *ChatRequest) []PromptBlock {
 	var out strings.Builder
 	out.WriteString(gatewayPreamble)
 	out.WriteString("\n\n")
+	if !hasAntigravityIdentity(req) {
+		out.WriteString("[System]\n")
+		out.WriteString(translator.AntigravityDefaultSystem)
+		out.WriteString("\n\n")
+	}
 	for _, m := range req.Messages {
 		text := m.text()
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {

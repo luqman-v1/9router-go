@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/translator"
 )
 
 var exeSuffix = map[bool]string{true: ".exe"}[runtime.GOOS == "windows"]
@@ -106,6 +108,40 @@ func TestBuildPrompt(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("prompt missing %q: %s", want, text)
 		}
+	}
+}
+
+func TestBuildPromptAntigravityIdentity(t *testing.T) {
+	req := &ChatRequest{Messages: []ChatMessage{
+		{Role: "system", Content: json.RawMessage(`"be terse"`)},
+		{Role: "user", Content: json.RawMessage(`"kamu model apa"`)},
+	}}
+	text := BuildPrompt(req)[0].Text
+	identity := translator.AntigravityDefaultSystem
+	if !strings.Contains(text, identity) {
+		t.Fatalf("prompt missing official Antigravity identity: %s", text)
+	}
+	identityAt := strings.Index(text, identity)
+	systemAt := strings.Index(text, "[System]\nbe terse")
+	if systemAt < 0 || identityAt > systemAt {
+		t.Fatalf("identity must precede caller system prompts: identity=%d system=%d", identityAt, systemAt)
+	}
+	if n := strings.Count(text, "You are Antigravity"); n != 1 {
+		t.Errorf("identity count = %d, want 1", n)
+	}
+}
+
+func TestBuildPromptAntigravityIdentityNotDuplicated(t *testing.T) {
+	req := &ChatRequest{Messages: []ChatMessage{
+		{Role: "system", Content: json.RawMessage(`"You are Antigravity Agent, legacy identity."`)},
+		{Role: "user", Content: json.RawMessage(`"kamu model apa"`)},
+	}}
+	text := BuildPrompt(req)[0].Text
+	if n := strings.Count(text, "You are Antigravity"); n != 1 {
+		t.Errorf("identity count = %d, want 1; prompt: %s", n, text)
+	}
+	if strings.Contains(text, translator.AntigravityDefaultSystem) {
+		t.Errorf("injected a second copy of the official identity")
 	}
 }
 
