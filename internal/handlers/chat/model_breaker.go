@@ -73,9 +73,12 @@ func modelBreakerSuccess(provider, model string) {
 
 // modelBreakerFailure charges one outcome.
 //
-// The status is classified, not pattern-matched, and only a model-scoped
-// failure counts: internal/errclass's ScopeModel means the model itself is gone
-// or the prompt does not fit it. A provider-scoped 5xx or transport error is
+// The status is classified, not pattern-matched, and only an availability
+// failure counts: internal/errclass's ScopeModel plus KindModelUnavailable
+// means the model itself is gone. A context-window overflow is ScopeModel
+// too, but it is shaped by the caller's own prompt, so charging it would
+// let any caller open the breaker for a pair and 503 every other tenant
+// (#1450). A provider-scoped 5xx or transport error is
 // internal/resilience/open-sse's to charge — counting it here would put every
 // model of a briefly-down provider into cooldown and then disable all of them
 // after three cycles, which is the failure this layer exists to prevent. The
