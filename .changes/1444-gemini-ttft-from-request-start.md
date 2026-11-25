@@ -1,0 +1,2 @@
+### Fixed
+- **Gemini/Antigravity TTFT is measured from the request start** — `handleGeminiStream` stamped its own clock, but it only runs after the upstream answered with headers, which on the antigravity lane can be 30s later. A first byte at 26.2s was recorded as `ttft_ms=6`, and because the dashboard derives tokens/s as `completion / (total - ttft)`, the whole wait landed in the denominator: 504 tokens over 27.9s showed 14.3 tps instead of 292.5.
