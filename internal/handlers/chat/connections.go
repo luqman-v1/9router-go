@@ -1467,6 +1467,13 @@ func (h *ChatHandler) applyConnectionStrategy(conns []*models.ProviderConnection
 		}
 		return rotated
 
+	case "least-busy", "leastbusy":
+		// Spread a burst across keys by current load instead of by position:
+		// the in-flight counts are the ones the forward path noted for turns
+		// still running, so a long streaming reply keeps its key out of the
+		// next pick (see leastbusy.go).
+		return leastBusy.order(conns)
+
 	default:
 		// "none", "fallback", or empty: keep DB priority order
 		return conns

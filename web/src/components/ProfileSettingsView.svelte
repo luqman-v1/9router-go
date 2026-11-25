@@ -1205,6 +1205,9 @@
           >
             <option value="failover">Failover (Try next on error/rate-limit)</option>
             <option value="round-robin">Round Robin (Distribute requests across all connections)</option>
+            <option value="least-busy">
+              Least Busy (Send each request to the least-loaded connection)
+            </option>
             <option value="sticky-round-robin">Sticky Round-Robin (Keep active connection up to limit)</option>
           </select>
         </div>
