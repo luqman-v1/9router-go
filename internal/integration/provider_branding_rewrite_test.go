@@ -114,13 +114,13 @@ func TestProviderBrandingRewrite(t *testing.T) {
 	if len(parsed.Request.Contents) == 0 {
 		t.Fatalf("parsed envelope has no contents; the Cloud Code body layout changed and the checks below would not run\nbody: %s", truncate([]byte(sent)))
 	}
-	for _, part := range parsed.Request.SystemInstruction.Parts {
-		if !strings.Contains(part.Text, renamedForm) {
-			t.Errorf("system instruction text missing rewritten branding %q: %q", renamedForm, part.Text)
-		}
-		if strings.Contains(part.Text, providerToken) {
-			t.Errorf("system instruction text still contains the competing branding %q: %q", providerToken, part.Text)
-		}
+	// The client's system prompt is preserved after the leading Antigravity identity prompt.
+	userPart := parsed.Request.SystemInstruction.Parts[len(parsed.Request.SystemInstruction.Parts)-1]
+	if !strings.Contains(userPart.Text, renamedForm) {
+		t.Errorf("system instruction text missing rewritten branding %q: %q", renamedForm, userPart.Text)
+	}
+	if strings.Contains(userPart.Text, providerToken) {
+		t.Errorf("system instruction text still contains the competing branding %q: %q", providerToken, userPart.Text)
 	}
 	for _, content := range parsed.Request.Contents {
 		for _, part := range content.Parts {
