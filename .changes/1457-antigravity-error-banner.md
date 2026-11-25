@@ -36,3 +36,14 @@
   against 3,829 ns / 16 for the map shape. `IsBannerSuspect` on a 1,650-char
   text is 58 µs / 5 allocs and only runs while the text is still
   banner-shaped — a real answer outgrows the shape on the first frame.
+- **A structural frame is relayed, not held.** The hold-until-it-parses rule
+  above had no way to tell "JSON still arriving" from "JSON complete, no prose
+  in it", so Anthropic's `content_block_start` for `thinking` /
+  `redacted_thinking` and its `signature_delta` were held as if they were the
+  first half of a split banner. They carry no text, so the hold never resolved,
+  the first-output gate was never satisfied, and a healthy thinking stream timed
+  out (`TestComboResponseTimeout_ClaudeThinkingSatisfiesGate`, red on CI). A
+  frame that parses and yields no text is now relayed and commits the peek;
+  only an unparseable frame is held. `FrameParses` decides that, and two tests
+  pin it: the table of structural frames, and a full thinking stream that must
+  commit and deliver its text.

@@ -172,6 +172,30 @@ func ExtractSSEText(chunk []byte) string {
 	return sb.String()
 }
 
+// FrameParses reports whether chunk holds at least one complete JSON `data:`
+// frame. The peeker uses it to tell a frame that is still arriving (hold it —
+// its first half looks like content to the substring heuristics) from a frame
+// that finished without text (a structural Anthropic frame such as a thinking
+// or signature_delta block — relay it; holding it would starve the
+// first-output gate and time out a healthy stream).
+func FrameParses(chunk []byte) bool {
+	for _, line := range bytes.Split(chunk, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(trimmed[len("data:"):])
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		var v any
+		if json.Unmarshal(payload, &v, handlerutil.UpstreamBody) == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // bannerFrame is the typed view of one SSE frame the banner decision needs.
 // A struct instead of map[string]any: the decision runs on every content write
 // of every streaming request, and the map shape measured 1.2 us / 16 allocs per

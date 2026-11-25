@@ -220,10 +220,18 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 			p.commitLocked()
 			return p.ResponseWriter.Write(b)
 		}
-		// Either a banner, or a frame whose JSON is incomplete (the content
-		// substring matched but nothing parsed). Both are held: the first so
-		// the turn can be retried, the second until the next write completes
-		// the frame.
+		// Two cases reach here with no text: a banner, and a frame whose JSON
+		// is still arriving (the content substring matched but nothing parsed
+		// yet). A THIRD does too, and it must not be held: a complete frame
+		// that simply carries no prose — an Anthropic content_block_start for
+		// thinking/redacted_thinking, a signature_delta. Holding those starves
+		// the first-output gate and times out a healthy stream, so a frame
+		// that parses is relayed.
+		if text == "" && FrameParses(b) {
+			p.sawContent = true
+			p.commitLocked()
+			return p.ResponseWriter.Write(b)
+		}
 		p.heldContent = true
 		p.bannerText = text
 		p.buf.Write(b)
@@ -238,7 +246,7 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 	if p.heldContent {
 		chunk := append(append([]byte(nil), p.buf.Bytes()...), b...)
 		text := ExtractSSEText(chunk)
-		if text == "" && len(chunk) < bannerHoldLimit {
+		if text == "" && len(chunk) < bannerHoldLimit && !FrameParses(chunk) {
 			p.buf.Write(b)
 			return len(b), nil
 		}

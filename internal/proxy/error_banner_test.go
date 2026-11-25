@@ -202,3 +202,88 @@ func readAllString(r interface{ Read([]byte) (int, error) }) (string, error) {
 		}
 	}
 }
+
+// A complete frame that carries no prose — an Anthropic thinking or
+// signature_delta block — is content the gate counts, but the banner peeker
+// has no text to classify. It must be relayed, not held: holding it starves
+// the first-output gate and times out a healthy stream.
+func TestFrameParses(t *testing.T) {
+	tests := []struct {
+		name  string
+		chunk string
+		want  bool
+	}{
+		{
+			name:  "redacted_thinking content_block_start",
+			chunk: "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"redacted_data\"}}\n\n",
+			want:  true,
+		},
+		{
+			name:  "signature_delta",
+			chunk: "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_xyz\"}}\n\n",
+			want:  true,
+		},
+		{
+			name:  "thinking content_block_start with empty thinking",
+			chunk: "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+			want:  true,
+		},
+		{
+			name:  "text_delta carries content",
+			chunk: "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+			want:  true,
+		},
+		{
+			name:  "split mid-JSON does not parse",
+			chunk: "data: {\"choices\":[{\"delta\":{\"content\":\"Agent exec",
+			want:  false,
+		},
+		{
+			name:  "no data line",
+			chunk: "event: ping\n\n",
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FrameParses([]byte(tt.chunk)); got != tt.want {
+				t.Errorf("FrameParses() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The healthy-stream path a thinking stream takes: structural frames relay,
+// the following text frame commits, and nothing is held.
+func TestPeekerRelaysThinkingStream(t *testing.T) {
+	rec := httptest.NewRecorder()
+	p := NewStreamContentPeeker(rec)
+
+	structural := []string{
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\"}}\n\n",
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step one\"}}\n\n",
+	}
+	for _, c := range structural {
+		if _, err := p.Write([]byte(c)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if p.heldContent {
+		t.Error("a structural frame must not be held")
+	}
+	if !p.committed {
+		t.Error("a structural frame must commit the stream")
+	}
+
+	text := "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n"
+	if _, err := p.Write([]byte(text)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := p.Finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "done") {
+		t.Errorf("expected the committed response to contain the answer, got %q", rec.Body.String())
+	}
+}
