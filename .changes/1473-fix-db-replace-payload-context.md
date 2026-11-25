@@ -1,9 +1,14 @@
-### fix(db): pass request context through ReplaceProviderConnectionPayload
+### fix(db): propagate request context through all DB write paths
 
-`ReplaceProviderConnectionPayload` used `r.db.Exec` without a context, so the
-UPDATE could not be cancelled or timed out — it would hold a write lock for the
-full statement duration even if the caller had already gone away.
+`ReplaceProviderConnectionPayload`, `CreateProviderConnectionFull`,
+`UpdateConnectionData`, `SetConnectionSealed`, `sealOnWrite`,
+`NextConnectionPriority`, `ResolveDefaultPriority`, and
+`RewrapConnectionDEKs` now accept `ctx context.Context` and use
+`ExecContext`/`QueryRowContext`/`QueryContext` instead of context-less
+`Exec`/`QueryRow`/`Query`. A context-less write holds a SQLite write lock
+for the full statement duration even after the handler's context is
+cancelled — client disconnect, timeout, or graceful shutdown cannot stop it.
 
-- `ReplaceProviderConnectionPayload` now takes `ctx context.Context` as its
-  first parameter and uses `ExecContext`.
-- Both dashboard callers pass `r.Context()`.
+All dashboard handlers, OAuth refresh paths, executor paths, and
+integration tests now pass `r.Context()` or their existing context through
+the full write path.
