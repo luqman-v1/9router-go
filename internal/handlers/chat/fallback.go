@@ -73,14 +73,9 @@ func (h *ChatHandler) handleAccountFallback(
 	if FallbackAttemptRecorderFrom(ctx) == nil {
 		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
 	}
-	// Per-model admission for custom providers, before any connection is
-	// dialled: one hot model on a shared endpoint must fail over (or answer
-	// 429) instead of draining the endpoint's quota for every other model. A
-	// refusal carries Local=true, so failover moves on without cooling the
-	// credential — it was never exercised.
-	if err := h.admitPerModel(ctx, provider, model); err != nil {
-		return err
-	}
+	// Per-model admission moved into tryForwardWithConnection, which every
+	// dispatch path (this one, the combo loops, fusion) calls: one choke
+	// point instead of one per path.
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
@@ -687,6 +682,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// when it failed, so the answer is final: no account rotation, no combo
 	// fallback, and no zero-content probe that would replay an empty answer.
 	customJSON := isCustomJSONConn(connData)
+	// Per-model admission for custom providers, here rather than only in
+	// handleAccountFallback: the combo dispatch paths (combo.go's OpenAI and
+	// Messages loops, combo_fusion.go's panel calls) reach the upstream through
+	// this one function, so a cap on a combo member is enforced on the combo
+	// path too — the member fails over to the next one instead of serving.
+	// A refusal carries Local=true, so failover moves on without cooling the
+	// credential — it was never exercised.
+	if err := h.admitPerModel(ctx, provider, model); err != nil {
+		return err
+	}
 	// Unified thinking normalisation, inbound half: capture the client's
 	// reasoning intent before any converter rewrites the body. model stays
 	// the requested id for logs/usage; wireModel is suffix-free.

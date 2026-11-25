@@ -372,6 +372,30 @@ func cloneSettings(s *SettingsData) *SettingsData {
 	out.CapacityAdapter = cloneCapacityAdapters(s.CapacityAdapter)
 	out.ProviderOverrides = cloneProviderOverrides(s.ProviderOverrides)
 	out.ProviderThinking = cloneProviderThinking(s.ProviderThinking)
+	out.PerModelRateLimit = clonePerModelRateLimit(s.PerModelRateLimit)
+	return &out
+}
+
+// clonePerModelRateLimit deep-copies the per-model cap block. Every other map
+// in SettingsData is copied here, and this one is no exception: the cached
+// settings value is shared, and a caller that wrote into Overrides it was
+// handed would change the answer every other reader sees.
+func clonePerModelRateLimit(s *PerModelRateLimitSettings) *PerModelRateLimitSettings {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.Overrides != nil {
+		out.Overrides = make(map[string]*PerModelRateLimitOverride, len(s.Overrides))
+		for k, v := range s.Overrides {
+			if v == nil {
+				out.Overrides[k] = nil
+				continue
+			}
+			ov := *v
+			out.Overrides[k] = &ov
+		}
+	}
 	return &out
 }
 

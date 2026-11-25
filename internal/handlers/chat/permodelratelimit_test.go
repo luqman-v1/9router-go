@@ -14,13 +14,13 @@ func newTestLimiter(now *time.Time) *PerModelRateLimiter {
 }
 
 func TestPerModelLimitDefaultsAndClamp(t *testing.T) {
-	limit := resolvePerModelRateLimit(&db.SettingsData{}, "openai-compatible-x", "m")
+	limit := resolvePerModelRateLimit(nil, "openai-compatible-x", "m")
 	if !limit.Enabled || limit.Limit != perModelDefaultLimit || limit.WindowMs != perModelDefaultWindowMs {
 		t.Fatalf("defaults = %+v, want enabled with the built-in default", limit)
 	}
 
 	// A typo cannot wedge chat: the limit clamps instead of rejecting.
-	huge := &db.SettingsData{PerModelRateLimit: &db.PerModelRateLimitSettings{Limit: 99_999_999, WindowMs: 1}}
+	huge := &db.PerModelRateLimitSettings{Limit: 99_999_999, WindowMs: 1}
 	limit = resolvePerModelRateLimit(huge, "p", "m")
 	if limit.Limit != perModelMaxLimit {
 		t.Errorf("limit = %d, want clamped to %d", limit.Limit, perModelMaxLimit)
@@ -31,25 +31,25 @@ func TestPerModelLimitDefaultsAndClamp(t *testing.T) {
 }
 
 func TestPerModelLimitDisabled(t *testing.T) {
-	off := &db.SettingsData{PerModelRateLimit: &db.PerModelRateLimitSettings{Enabled: new(false)}}
+	off := &db.PerModelRateLimitSettings{Enabled: new(false)}
 	if got := resolvePerModelRateLimit(off, "p", "m"); got.Enabled {
 		t.Error("enabled:false must turn the limiter off")
 	}
 
-	zero := &db.SettingsData{PerModelRateLimit: &db.PerModelRateLimitSettings{Limit: 0}}
+	zero := &db.PerModelRateLimitSettings{Limit: 0}
 	if got := resolvePerModelRateLimit(zero, "p", "m"); got.Enabled {
 		t.Error("limit:0 must turn the limiter off")
 	}
 }
 
 func TestPerModelLimitOverridePrecedence(t *testing.T) {
-	settings := &db.SettingsData{PerModelRateLimit: &db.PerModelRateLimitSettings{
+	settings := &db.PerModelRateLimitSettings{
 		Limit: 100,
 		Overrides: map[string]*db.PerModelRateLimitOverride{
 			"prov":         {Limit: 50},
 			"prov/model-a": {Limit: 5},
 		},
-	}}
+	}
 
 	if got := resolvePerModelRateLimit(settings, "prov", "model-a"); got.Limit != 5 {
 		t.Errorf("per-model override = %d, want 5", got.Limit)
