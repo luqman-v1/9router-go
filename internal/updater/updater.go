@@ -783,6 +783,28 @@ func runCheckCycle(ctx context.Context) {
 	}
 }
 
+// resolveSelfExecutable is the binary the replacement process re-execs, with
+// symlinks resolved so a version-manager shim does not spawn the old target.
+func resolveSelfExecutable() (string, error) {
+	execPath, err := selfExecutable()
+	if err != nil {
+		return "", fmt.Errorf("locate binary: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlink: %w", err)
+	}
+	return resolved, nil
+}
+
+// RestartSupported reports whether RestartSelf can find the binary it would
+// re-exec. A caller uses it to refuse a restart it cannot deliver instead of
+// answering as if one were under way.
+func RestartSupported() error {
+	_, err := resolveSelfExecutable()
+	return err
+}
+
 // RestartSelf replaces this process with a fresh one running the updated
 // binary.
 //
@@ -791,15 +813,9 @@ func runCheckCycle(ctx context.Context) {
 // earlier races it for the port. main runs the hook once fxApp.Stop has closed
 // the listener, so the new process always finds the port free.
 func RestartSelf() {
-	execPath, err := selfExecutable()
+	execPath, err := resolveSelfExecutable()
 	if err != nil {
-		log.Error("updater", "locate binary for restart failed", "error", err)
-		return
-	}
-
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		log.Error("updater", "resolve symlink for restart failed", "error", err)
+		log.Error("updater", "restart self failed", "error", err)
 		return
 	}
 

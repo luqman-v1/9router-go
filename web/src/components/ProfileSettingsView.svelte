@@ -104,6 +104,7 @@
   let isPruning = $state(false)
   let isPruningUsage = $state(false)
   let isVacuuming = $state(false)
+  let isRestarting = $state(false)
   // Global System Prompt State
   let enableSystemPrompt = $state(false)
   let systemPromptPrefix = $state('')
@@ -794,6 +795,35 @@
     }
   }
 
+  async function handleRestartGateway() {
+    if (!confirm('Restart the gateway process? Every in-flight request is dropped.')) return
+    const answer = window.prompt('Type "RESTART" to confirm:')
+    if (answer !== 'RESTART') return
+    isRestarting = true
+    try {
+      await api.restartGateway()
+    } catch (err) {
+      isRestarting = false
+      alert(`Failed to restart: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    // The listener closes, then a replacement process takes the port. Give the
+    // drain a moment, then poll an authenticated endpoint: a 200 means the new
+    // process is serving, so reload instead of leaving a dead page.
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        await api.getDatabaseStats()
+        window.location.reload()
+        return
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
+    isRestarting = false
+    alert('The gateway did not answer after a restart. Check the process log.')
+  }
+
   function formatBytes(bytes?: number): string {
     if (!bytes || bytes <= 0) return '0 B'
     const units = ['B', 'KB', 'MB', 'GB']
@@ -1402,6 +1432,27 @@
           </div>
         </div>
       </div>
+    </Card>
+
+    <!-- Gateway process -->
+    <Card padding="md" class="space-y-3">
+      <div class="flex items-center gap-2 pb-2 border-b border-border">
+        <RefreshCw class="w-4 h-4 text-brand-500" />
+        <h2 class="text-sm font-bold text-text-main">Gateway Process</h2>
+      </div>
+      <p class="text-xs text-text-muted leading-relaxed">
+        Restart the gateway binary in place. In-flight requests are dropped and the dashboard reconnects once the
+        replacement is listening. Docker containers exit and come back only when their restart policy allows it.
+      </p>
+      <button
+        type="button"
+        onclick={handleRestartGateway}
+        disabled={isRestarting}
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500/10 hover:bg-brand-500/20 border border-brand-500/30 text-xs text-brand-500 font-semibold transition cursor-pointer disabled:opacity-50"
+      >
+        <RefreshCw class="w-3.5 h-3.5 {isRestarting ? 'animate-spin' : ''}" />
+        <span>{isRestarting ? 'Restarting...' : 'Restart Gateway'}</span>
+      </button>
     </Card>
 
     <!-- SECTION 6: Global System Prompt & Anti-Poisoning -->
