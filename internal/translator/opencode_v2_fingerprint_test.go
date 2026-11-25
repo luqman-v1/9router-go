@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func opencodeGenuineToolDescription(name string) any {
+	for _, def := range openCodeGenuineTools {
+		if fn, _ := def["function"].(map[string]any); fn["name"] == name {
+			return fn["description"]
+		}
+	}
+	return nil
+}
+
 func decodeShaped(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -51,8 +60,11 @@ func TestConcealOpenCodeV2InstallsInertBuiltins(t *testing.T) {
 			t.Fatalf("builtin %q missing", name)
 		}
 		fn := tm["function"].(map[string]any)
-		if fn["description"] != "Unavailable placeholder." {
-			t.Fatalf("builtin %q is not an inert placeholder: %v", name, fn["description"])
+		// The gate validates the built-in definitions against the CLI 2.x
+		// capture (a stub answers 403 FreeTierError), so the declarations are
+		// verbatim and the prompt does the steering instead.
+		if fn["description"] != opencodeGenuineToolDescription(name) {
+			t.Fatalf("builtin %q is not the verbatim CLI definition", name)
 		}
 	}
 	messages := m["messages"].([]any)

@@ -24,13 +24,14 @@ import (
 // Declaring the caller's tools in place of the built-ins passes the gate but
 // loses the turn: the harness preamble runs in Code Mode, which says the
 // built-ins are the only tools there are, and the model follows it — it
-// narrates, or calls a built-in placeholder, instead of the caller's tool
-// (measured live 2026-11-25). So the caller's declarations travel natively
-// beside an inert placeholder for every built-in, the preamble's Code Mode
-// section is stripped, and a note after the caller's own text states that the
-// built-ins are placeholders and the caller's tools are called directly by
-// name. The returned rename map is empty: no name is rewritten, so response
-// tool_calls arrive in the caller's own spelling and need no restoring.
+// narrates, or calls a built-in, instead of the caller's tool (measured live
+// 2026-11-25). So the caller's declarations travel natively beside the
+// built-in set (whose definitions must stay the verbatim CLI text — the gate
+// refuses a stub, internal/integration encodes the rule), the preamble's Code
+// Mode section is stripped, and a note after the caller's own text states the
+// built-ins are inert and the caller's tools are called directly by name. The
+// returned rename map is empty: no name is rewritten, so response tool_calls
+// arrive in the caller's own spelling and need no restoring.
 //
 // flat is true for Responses API bodies and false for Chat Completions;
 // Claude Messages bodies (a "system" field or input_schema tools) are
@@ -108,42 +109,97 @@ func isOpenCodeClaudeShapedRequest(request map[string]any) bool {
 	return false
 }
 
-// installCallerToolsWithInertBuiltins keeps the caller's own tool
-// declarations and appends an inert placeholder for every gate built-in.
-// The inference gate 429s a request whose built-in names are missing
-// entirely, while replacing the caller's declarations outright makes the
-// model call the placeholders instead of the caller's tools; declared
-// natively side by side, the model picks the caller's tools (measured
-// live: 6/6 requests accepted, caller tool emitted).
+// openCodeGenuineTools are the CLI's built-in definitions parsed once from the
+// verbatim capture. They are injected byte-exact, not as stubs: the gate
+// validates the "read" definition against the CLI 2.x text and answers a stub
+// with 403 FreeTierError (internal/integration: the inference-gate fake encodes
+// the same rule).
+var openCodeGenuineTools = func() []map[string]any {
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(openCodeGenuineToolsJSON), &tools); err != nil {
+		return nil
+	}
+	return tools
+}()
+
+// installCallerToolsWithInertBuiltins keeps the caller's own tool declarations
+// and appends the built-in definitions the gate requires. Dropping the built-in
+// names entirely is refused (429 FreeUsageLimitError), and replacing the
+// caller's declarations outright loses the turn: the preamble's Code Mode
+// section tells the model the built-ins are the only tools, so it narrates or
+// calls a built-in instead of the caller's tool. Declared natively side by side
+// with the Code Mode section stripped and the direct-call note appended, the
+// model picks the caller's tools (measured live: 6/6 caller tool emitted).
 func installCallerToolsWithInertBuiltins(request map[string]any, flat, claude bool) {
 	tools, _ := request["tools"].([]any)
 	out := make([]any, 0, len(tools)+len(openCodeGenuineToolNames))
+	declared := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		out = append(out, ensureOpencodeToolSchema(tool, flat, claude))
-	}
-	for _, name := range openCodeGenuineToolNames {
-		switch {
-		case claude:
-			out = append(out, map[string]any{
-				"name":         name,
-				"description":  "Unavailable placeholder.",
-				"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
-			})
-		case flat:
-			out = append(out, map[string]any{
-				"type": "function", "name": name, "description": "Unavailable placeholder.",
-				"parameters": map[string]any{"type": "object", "properties": map[string]any{}},
-				"strict":     false,
-			})
-		default:
-			out = append(out, map[string]any{"type": "function", "function": map[string]any{
-				"name":        name,
-				"description": "Unavailable placeholder.",
-				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
-			}})
+		if name := opencodeToolDeclarationName(tool, flat, claude); name != "" {
+			declared[name] = true
 		}
 	}
+	for _, name := range openCodeGenuineToolNames {
+		// Two tools with one name answer a server error, so a caller tool of
+		// that name replaces the built-in rather than joining it.
+		if declared[name] {
+			continue
+		}
+		out = append(out, opencodeGenuineToolDefinition(name, flat, claude))
+	}
 	request["tools"] = out
+}
+
+// opencodeToolDeclarationName reads a declared tool's name in the lane's own
+// spelling.
+func opencodeToolDeclarationName(tool any, flat, claude bool) string {
+	m, ok := tool.(map[string]any)
+	if !ok {
+		return ""
+	}
+	switch {
+	case claude:
+		name, _ := m["name"].(string)
+		return name
+	case flat:
+		name, _ := m["name"].(string)
+		return name
+	default:
+		fn, _ := m["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		return name
+	}
+}
+
+// opencodeGenuineToolDefinition re-shapes one captured built-in definition into
+// the lane's wire format. The chat lane gets the captured object verbatim.
+func opencodeGenuineToolDefinition(name string, flat, claude bool) any {
+	for _, def := range openCodeGenuineTools {
+		fn, _ := def["function"].(map[string]any)
+		if fn == nil || fn["name"] != name {
+			continue
+		}
+		switch {
+		case claude:
+			return map[string]any{
+				"name":         fn["name"],
+				"description":  fn["description"],
+				"input_schema": fn["parameters"],
+			}
+		case flat:
+			return map[string]any{
+				"type":        "function",
+				"name":        fn["name"],
+				"description": fn["description"],
+				"parameters":  fn["parameters"],
+				"strict":      false,
+			}
+		default:
+			return def
+		}
+	}
+	return nil
 }
 
 // ensureOpencodeToolSchema gives a caller tool declaration an empty object
