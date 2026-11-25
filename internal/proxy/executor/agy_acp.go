@@ -16,6 +16,42 @@ import (
 	"9router/proxy/internal/translator"
 )
 
+// agy emits one large agent_message_chunk per answer. The gateway cannot make
+// the upstream generate tokens sooner, but it can reveal the text in small,
+// flushed deltas so clients render progressively instead of seeing one blob.
+const (
+	agyStreamPieceRunes = 24
+	agyStreamPieceDelay = 12 * time.Millisecond
+)
+
+func emitPaced(ctx context.Context, emit func(map[string]any) error,
+	base func([]map[string]any) map[string]any, field, text string) error {
+	runes := []rune(text)
+	for len(runes) > 0 {
+		n := len(runes)
+		if n > agyStreamPieceRunes {
+			n = agyStreamPieceRunes
+		}
+		piece := string(runes[:n])
+		runes = runes[n:]
+		chunk := base([]map[string]any{{
+			"index": 0, "delta": map[string]any{field: piece}, "finish_reason": nil,
+		}})
+		if err := emit(chunk); err != nil {
+			return err
+		}
+		if len(runes) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(agyStreamPieceDelay):
+		}
+	}
+	return nil
+}
+
 // ForwardAGYACP serves OpenAI Chat Completions through the official agy CLI
 // over ACP. It is intentionally a separate provider from antigravity: no
 // cross-provider aliasing, no shared HTTP transport.
@@ -182,6 +218,7 @@ func ForwardAGYACP(w http.ResponseWriter, req *Request) error {
 			return err
 		}
 		first := true
+		var streamEmitErr error
 		streamErr := agy.RunTurn(ctx, opts, model, prompt, func(ev agy.TurnEvent) {
 			onEvent(ev)
 			if ev.Kind == agy.UpdateThinking && ev.Text != "" && thinking != "" {
@@ -194,9 +231,14 @@ func ForwardAGYACP(w http.ResponseWriter, req *Request) error {
 					markTTFT(req, req.StartTime)
 				}
 				first = false
-				_ = emit(base([]map[string]any{{"index": 0, "delta": map[string]any{"content": ev.Text}, "finish_reason": nil}}))
+				if err := emitPaced(ctx, emit, base, "content", ev.Text); err != nil && streamEmitErr == nil {
+					streamEmitErr = err
+				}
 			}
 		})
+		if streamErr == nil {
+			streamErr = streamEmitErr
+		}
 		if streamErr != nil {
 			if !opened {
 				// Nothing is on the wire yet, so the failure can still be a
