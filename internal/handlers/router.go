@@ -493,6 +493,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/settings/database/prune", dashH.HandlePruneDatabase)
 	r.Post("/api/settings/database/prune-usage", dashH.HandlePruneUsageHistory)
 	r.Post("/api/settings/database/vacuum", dashH.HandleVacuumDatabase)
+	// Process control. The mirror of dashboard.RegisterRoutes, which is mounted
+	// by tests only; a route added there alone 404s here on the real server.
+	r.Post("/api/system/restart", dashH.HandleRestartGateway)
 	r.Post("/api/settings/proxy-test", dashH.HandleProxyTest)
 	// White-label logo upload: the file lands under DATA_DIR/uploads and
 	// appLogoUrl is rewritten to the path this gateway serves it from.

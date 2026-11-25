@@ -2182,6 +2182,14 @@ export const api = {
       '/api/settings/database/vacuum',
       { method: 'POST' }
     ),
+  // The body carries the confirmation word: the gateway ignores a restart
+  // request that could not set a JSON body, so a cross-site form post cannot
+  // stop the process.
+  restartGateway: () =>
+    request<{ success: boolean; restarting: boolean }>('/api/system/restart', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'restart' }),
+    }),
   testRtk: (data: { text: string; config?: Record<string, unknown> }) =>
     request<{
       originalTokens: number

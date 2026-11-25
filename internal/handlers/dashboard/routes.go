@@ -250,6 +250,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/settings/database/prune", h.HandlePruneDatabase)
 		r.Post("/settings/database/prune-usage", h.HandlePruneUsageHistory)
 		r.Post("/settings/database/vacuum", h.HandleVacuumDatabase)
+		// Process control. Registered here and in SetupDashboardRoutes: this
+		// table is mounted by tests only, so a route added here alone 404s on
+		// the real server.
+		r.Post("/system/restart", h.HandleRestartGateway)
 		r.Post("/settings/proxy-test", h.HandleProxyTest)
 		// White-label logo upload: the file lands under DATA_DIR/uploads and
 		// appLogoUrl is rewritten to the path this gateway serves it from.

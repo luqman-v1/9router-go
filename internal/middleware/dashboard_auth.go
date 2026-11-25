@@ -51,6 +51,11 @@ func IsAlwaysProtectedPath(path string) bool {
 		"/api/settings/database/vacuum",
 		"/api/version/shutdown",
 		"/api/version/update",
+		// Restarting the process is a control action on the box, not a data
+		// read: an engine client API key is a credential handed to a tenant and
+		// must never be able to stop the gateway, and an install with login
+		// disabled still must not expose it to anyone who can reach the port.
+		"/api/system/restart",
 		"/admin/health/reset",
 		"/api/oauth/cursor/auto-import",
 		"/api/oauth/kiro/auto-import":
