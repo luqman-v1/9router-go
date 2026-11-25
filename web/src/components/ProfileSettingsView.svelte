@@ -1435,7 +1435,7 @@
     </Card>
 
     <!-- Gateway process -->
-    <Card padding="md" class="space-y-3">
+    <Card id="gateway-process" padding="md" class="space-y-3">
       <div class="flex items-center gap-2 pb-2 border-b border-border">
         <RefreshCw class="w-4 h-4 text-brand-500" />
         <h2 class="text-sm font-bold text-text-main">Gateway Process</h2>

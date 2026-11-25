@@ -27,9 +27,10 @@ const CAPTURE = process.env.CAPTURE_SCREENSHOTS === '1'
 let app: Dashboard
 let page: Page
 
-/** The card the operator sees, addressed by its heading's card. */
+/** The card the operator sees. Card forwards only `id`, so the capture is
+ * scoped by that rather than by whichever ancestor the DOM happens to return. */
 function gatewayCard(page: Page) {
-  return page.locator('div').filter({ has: page.getByRole('heading', { name: 'Gateway Process' }) }).last()
+  return page.locator('#gateway-process')
 }
 
 beforeAll(async () => {
