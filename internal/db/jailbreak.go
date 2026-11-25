@@ -648,3 +648,22 @@ func (r *Repo) DeleteJailbreakModel(modelID string) error {
 	}
 	return err
 }
+
+// DeleteJailbreakKeyModel removes one key-scoped binding outright. It is the
+// per-key twin of DeleteJailbreakModel: the stored row is "<apiKeyID>:<modelID>",
+// so the dashboard's per-key delete button drops exactly that row and leaves
+// the same model's global binding untouched.
+func (r *Repo) DeleteJailbreakKeyModel(apiKeyID, modelID string) error {
+	if apiKeyID == "" {
+		return fmt.Errorf("empty api key id")
+	}
+	if modelID == "" {
+		return fmt.Errorf("empty model id")
+	}
+	_, err := r.db.ExecContext(context.Background(), `DELETE FROM kv WHERE scope = ? AND key = ?`,
+		jailbreakScope, jailbreakModelPrefix+apiKeyID+":"+modelID)
+	if err == nil {
+		r.invalidateJailbreakRuleset()
+	}
+	return err
+}

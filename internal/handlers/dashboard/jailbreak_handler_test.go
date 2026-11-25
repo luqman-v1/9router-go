@@ -636,6 +636,104 @@ func TestJailbreakKeyModelBindings(t *testing.T) {
 	}
 }
 
+// TestJailbreakKeyModelDelete pins the per-key delete button's contract: the
+// row is dropped outright (a later read no longer lists it), while the same
+// model's global binding and another key's binding survive. An empty keyId or
+// model id is refused, and deleting an absent row still answers ok.
+func TestJailbreakKeyModelDelete(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	r := setupTestRouter(repo)
+
+	if err := repo.SetJailbreakModelPreset("gpt-4o", "global-preset", true); err != nil {
+		t.Fatalf("seed global binding: %v", err)
+	}
+	if err := repo.SetJailbreakKeyModelPreset("key-alpha", "gpt-4o", "deepseek", true); err != nil {
+		t.Fatalf("seed key binding: %v", err)
+	}
+	if err := repo.SetJailbreakKeyModelPreset("key-beta", "gpt-4o", "claude", true); err != nil {
+		t.Fatalf("seed other-key binding: %v", err)
+	}
+
+	payload, _ := json.Marshal(map[string]any{"keyId": "key-alpha", "id": "gpt-4o"})
+	req := httptest.NewRequest(http.MethodDelete, "/api/jailbreak/keys/model", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+
+	// The deleted row is gone from key-alpha's list...
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId=key-alpha", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read key-alpha status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]db.JailbreakModelConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode bindings: %v", err)
+	}
+	if _, ok := got["gpt-4o"]; ok {
+		t.Errorf("key-alpha bindings = %v, want gpt-4o deleted", got)
+	}
+
+	// ...while key-beta's binding for the same model survives.
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId=key-beta", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read key-beta status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	got = map[string]db.JailbreakModelConfig{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode bindings: %v", err)
+	}
+	if cfg, ok := got["gpt-4o"]; !ok || cfg.PresetID != "claude" || !cfg.Enabled {
+		t.Errorf("key-beta bindings = %v, want gpt-4o -> claude untouched", got)
+	}
+
+	// The global binding for the same model is untouched as well.
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/models", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read global status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	global := map[string]db.JailbreakModelConfig{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &global); err != nil {
+		t.Fatalf("decode global: %v", err)
+	}
+	if cfg, ok := global["gpt-4o"]; !ok || cfg.PresetID != "global-preset" || !cfg.Enabled {
+		t.Errorf("global bindings = %v, want gpt-4o -> global-preset untouched", global)
+	}
+
+	// Deleting an absent row still answers ok (idempotent).
+	req = httptest.NewRequest(http.MethodDelete, "/api/jailbreak/keys/model", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("repeat DELETE status = %d, want 200", rec.Code)
+	}
+
+	// Empty keyId or model id is refused rather than deleting something.
+	for name, body := range map[string]map[string]any{
+		"empty keyId": {"keyId": "", "id": "gpt-4o"},
+		"empty id":    {"keyId": "key-alpha", "id": "  "},
+	} {
+		bad, _ := json.Marshal(body)
+		req = httptest.NewRequest(http.MethodDelete, "/api/jailbreak/keys/model", bytes.NewReader(bad))
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: DELETE status = %d, want 400", name, rec.Code)
+		}
+	}
+}
+
 func presetIDs(list []*db.JailbreakDoc) []string {
 	out := make([]string, 0, len(list))
 	for _, d := range list {

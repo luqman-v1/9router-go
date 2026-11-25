@@ -3141,6 +3141,14 @@ export const api = {
         body: JSON.stringify({ keyId, id, presetId, enabled }),
       },
     ),
+  // Drop one key-scoped binding outright. The per-key delete button calls this;
+  // unlike setJailbreakKeyModel('off'), which only turns the row off, this
+  // removes it. The same model's global binding is untouched.
+  deleteJailbreakKeyModel: (keyId: string, id: string) =>
+    request<{ ok: boolean; keyId: string; id: string }>('/api/jailbreak/keys/model', {
+      method: 'DELETE',
+      body: JSON.stringify({ keyId, id }),
+    }),
   deleteJailbreakModel: (id: string) =>
     request<{ ok: boolean; id: string }>('/api/jailbreak/models', {
       method: 'DELETE',
