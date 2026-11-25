@@ -33,6 +33,10 @@ const thinkingHeadroomTokens = 8192
 // antigravityDecoyUnavailable is the placeholder description for injected decoy tools.
 const antigravityDecoyUnavailable = "This tool is currently unavailable."
 
+// AntigravityDefaultSystem is the official Antigravity 2.33.0 identity sent ahead of generation requests.
+// Parity with upstream decolua/9router#4221 (commit e37cb78e1).
+const AntigravityDefaultSystem = "You are Antigravity Agent, a powerful agentic AI coding assistant designed by the Google engineering team.\nYou are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\nThe USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags."
+
 // antigravityRequestBlacklist are fields Google generateContent rejects when
 // present at the request root (thinking/reasoning fields set by upstream clients).
 var antigravityRequestBlacklist = []string{
@@ -1067,6 +1071,32 @@ func fixAntigravityContents(req *GeminiRequest, model string) bool {
 	return false
 }
 
+// ensureAntigravityIdentity prepends the official Antigravity 2.33.0 identity to
+// systemInstruction.parts unless it is already present.
+func ensureAntigravityIdentity(req *GeminiRequest) {
+	if req == nil {
+		return
+	}
+	hasAgIdentity := false
+	if req.SystemInstruction != nil {
+		for _, part := range req.SystemInstruction.Parts {
+			if strings.Contains(part.Text, "You are Antigravity") {
+				hasAgIdentity = true
+				break
+			}
+		}
+	}
+	if !hasAgIdentity {
+		if req.SystemInstruction == nil {
+			req.SystemInstruction = &GeminiContent{
+				Role: "user",
+			}
+		}
+		identityPart := GeminiPart{Text: AntigravityDefaultSystem}
+		req.SystemInstruction.Parts = append([]GeminiPart{identityPart}, req.SystemInstruction.Parts...)
+	}
+}
+
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.
 // sessionID scopes conversation and trajectory UUIDs per connection or client session.
 func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionID ...string) ([]byte, error) {
@@ -1094,6 +1124,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 			geminiReq.SessionID = numeric
 		}
 		fixAntigravityContents(&geminiReq, modelName)
+		ensureAntigravityIdentity(&geminiReq)
 		cleanedReq := StripCompetitivePrompts(&geminiReq)
 		if len(cleanedReq.Tools) > 0 {
 			cloaked, _ := CloakAntigravityRequest(cleanedReq, "")

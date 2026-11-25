@@ -54,8 +54,8 @@ func TestJailbreakNativeWire(t *testing.T) {
 				"projectId": "proj-test-1",
 			},
 			prompt:     geminiPrompt,
-			nativePath: []string{"request", "systemInstruction", "parts", "0", "text"},
-			absent:     `"systemInstruction"`,
+			nativePath: []string{"request", "systemInstruction", "parts", "1", "text"},
+			absent:     geminiPrompt,
 		},
 		{
 			name:     "kiro",
