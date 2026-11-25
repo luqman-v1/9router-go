@@ -46,16 +46,19 @@ func ParseResponsesUsage(body []byte) *OpenAIUsage {
 	}
 
 	cached := 0
-	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
+	if u.InputTokensDetails != nil {
+		// Explicitly present counter: preserve its value even when it is 0,
+		// so an explicit cache-miss (cached_tokens: 0) is not confused with
+		// an absent counter (nil) downstream.
 		cached = u.InputTokensDetails.CachedTokens
-	} else if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+	} else if u.PromptTokensDetails != nil {
 		cached = u.PromptTokensDetails.CachedTokens
 	} else if u.CachedTokens > 0 {
 		cached = u.CachedTokens
 	} else if u.CacheReadInputTokens > 0 {
 		cached = u.CacheReadInputTokens
 	}
-	if cached > 0 {
+	if u.InputTokensDetails != nil || u.PromptTokensDetails != nil || cached > 0 {
 		out.CachedTokens = cached
 		out.PromptTokensDetails = &PromptTokensDetails{CachedTokens: cached}
 	}

@@ -12,6 +12,10 @@ func TestParseResponsesUsage(t *testing.T) {
 		wantPrompt     int
 		wantCompletion int
 		wantCached     int
+		// wantDetails asserts whether PromptTokensDetails is populated even
+		// when CachedTokens is 0 (explicit counter present) or omitted
+		// entirely (absent counter).
+		wantDetails bool
 	}{
 		{
 			name:           "non-streaming body",
@@ -31,6 +35,7 @@ func TestParseResponsesUsage(t *testing.T) {
 			wantPrompt:     80,
 			wantCompletion: 5,
 			wantCached:     64,
+			wantDetails:    true,
 		},
 		{
 			name:           "terminal stream event with cached tokens",
@@ -38,6 +43,7 @@ func TestParseResponsesUsage(t *testing.T) {
 			wantPrompt:     5000,
 			wantCompletion: 150,
 			wantCached:     4000,
+			wantDetails:    true,
 		},
 		{
 			name:           "terminal stream event response.done with prompt_tokens_details",
@@ -45,6 +51,25 @@ func TestParseResponsesUsage(t *testing.T) {
 			wantPrompt:     1000,
 			wantCompletion: 200,
 			wantCached:     800,
+			wantDetails:    true,
+		},
+		{
+			// Explicit cached_tokens: 0 must be preserved, not treated as absent.
+			name:           "explicit cached_tokens zero",
+			body:           `{"usage":{"input_tokens":80,"output_tokens":5,"input_tokens_details":{"cached_tokens":0}}}`,
+			wantPrompt:     80,
+			wantCompletion: 5,
+			wantCached:     0,
+			wantDetails:    true,
+		},
+		{
+			// Completely absent counters leave PromptTokensDetails nil.
+			name:           "no cached counter at all",
+			body:           `{"usage":{"input_tokens":80,"output_tokens":5}}`,
+			wantPrompt:     80,
+			wantCompletion: 5,
+			wantCached:     0,
+			wantDetails:    false,
 		},
 		{
 			name: "no usage at all",
@@ -80,6 +105,16 @@ func TestParseResponsesUsage(t *testing.T) {
 			}
 			if got.CachedTokens != tt.wantCached {
 				t.Errorf("CachedTokens = %d, want %d", got.CachedTokens, tt.wantCached)
+			}
+			if tt.wantDetails {
+				if got.PromptTokensDetails == nil {
+					t.Fatal("expected PromptTokensDetails to be populated, got nil")
+				}
+				if got.PromptTokensDetails.CachedTokens != tt.wantCached {
+					t.Errorf("PromptTokensDetails.CachedTokens = %d, want %d", got.PromptTokensDetails.CachedTokens, tt.wantCached)
+				}
+			} else if got.PromptTokensDetails != nil {
+				t.Fatalf("expected PromptTokensDetails to be nil, got %+v", got.PromptTokensDetails)
 			}
 		})
 	}
