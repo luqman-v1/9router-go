@@ -1637,8 +1637,8 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 	}
 	out := body
 	var origTokens, savedTokens, savedPct int
-	format := detectReaFormat(out, claudeNative)
 	if h.TokenSaver.ReaAllowEnabled() {
+		format := detectReaFormat(out, claudeNative)
 		if next, did := tokensaver.ApplyReaAllow(out, format); did {
 			out = next
 		}
