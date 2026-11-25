@@ -156,15 +156,15 @@ func (h *DashboardHandler) HandleAuthStatus(w http.ResponseWriter, r *http.Reque
 		// operator already chose how the first login authenticates, so the
 		// first-run setup wizard must not replace the login form.
 		"initialPasswordSet": config.LoadConfig().InitialPassword != "",
-		"displayName":    displayName,
-		"loginMethod":    loginMethod,
-		"authenticated":  claims != nil,
-		"oidcName":       oidcName,
-		"oidcEmail":      oidcEmail,
-		"oidcLogin":      oidcLogin,
-		"samlName":       samlName,
-		"samlEmail":      samlEmail,
-		"samlLogin":      samlLogin,
+		"displayName":        displayName,
+		"loginMethod":        loginMethod,
+		"authenticated":      claims != nil,
+		"oidcName":           oidcName,
+		"oidcEmail":          oidcEmail,
+		"oidcLogin":          oidcLogin,
+		"samlName":           samlName,
+		"samlEmail":          samlEmail,
+		"samlLogin":          samlLogin,
 		// White-label branding: the login screen reads these the same way the
 		// sidebar reads the settings row, so an operator's name, tagline and
 		// login logo appear before authentication too. Empty values are sent as

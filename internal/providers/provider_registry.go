@@ -852,6 +852,17 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://www.alibabacloud.com/campaign/ai-landing-page-token",
 		Notice:       &Notice{APIKeyURL: "https://modelstudio.console.alibabacloud.com/?apiKey=1"},
 	},
+	"qwencloud": {
+		ID:           "qwencloud",
+		Name:         "QwenCloud",
+		Alias:        "qwencloud",
+		Category:     CategoryAPIKey,
+		Color:        "#8B3DFE",
+		Icon:         "cloud",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://token-plan.maas.qwencloudapi.com",
+		Notice:       &Notice{APIKeyURL: "https://token-plan.maas.qwencloudapi.com"},
+	},
 	"anthropic": {
 		ID:            "anthropic",
 		Name:          "Anthropic",

@@ -9,6 +9,7 @@ import (
 // ProviderConfig describes how to reach an upstream provider.
 type ProviderConfig struct {
 	BaseURL       string
+	ValidateURL   string            // endpoint used to validate credentials/models
 	AuthHeader    string            // "Authorization" or "x-api-key"
 	AuthScheme    string            // "bearer" or "raw"
 	NoAuth        bool              // true = no API key required
@@ -893,6 +894,14 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:              "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
 		AuthHeader:           "Authorization",
 		AuthScheme:           "bearer",
+		PreserveCacheControl: true,
+	},
+	"qwencloud": {
+		BaseURL:              "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1/chat/completions",
+		ValidateURL:          "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1/models",
+		AuthHeader:           "Authorization",
+		AuthScheme:           "bearer",
+		Format:               "openai",
 		PreserveCacheControl: true,
 	},
 	"fish-audio": {
