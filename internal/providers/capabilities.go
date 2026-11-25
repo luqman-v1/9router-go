@@ -900,9 +900,16 @@ func init() {
 	// zcode: ZCode start-plan lane. The gateway accepts the Anthropic Messages
 	// wire with the same GLM models as the apikey lane; thinking follows the
 	// zai format (the executor already maps it).
+	//
+	// glm-5.4 is published by the models.dev coding-plan feed
+	// (`zai-coding-plan`/`zhipuai-coding-plan`) with a 1M window. It is not yet
+	// in upstream's static capabilities table, whose `*glm-5*` catch-all would
+	// otherwise answer 200k. Keep the static fallback here, and let the
+	// catalog alias in catalog_sync.go make the feed authoritative when loaded.
 	providerCapabilities["zcode"] = map[string]Capabilities{
 		"glm-5.3":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
 		"glm-5.3-flash": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
+		"glm-5.4":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
 	}
 	// DaoXE (daoxe) — OpenAI-compatible free tier
 	providerCapabilities["daoxe"] = map[string]Capabilities{

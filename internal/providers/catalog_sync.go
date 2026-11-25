@@ -93,8 +93,13 @@ var (
 
 // ProviderAliases maps 9router provider IDs to models.dev provider IDs for limit resolution.
 var ProviderAliases = map[string]string{
-	"glm":           "zai",
-	"glm-cn":        "zhipuai",
+	"glm":    "zai",
+	"glm-cn": "zhipuai",
+	// The ZCode start-plan lane is served from the Z.ai coding-plan catalog.
+	// Without this mapping `zcode/glm-5.4` misses models.dev's 1M entry and
+	// falls through to the `*glm-5*` 200k pattern. This is only a catalog
+	// lookup key — routing and credentials stay strictly zcode-owned.
+	"zcode":         "zai-coding-plan",
 	"claude":        "anthropic",
 	"gemini":        "google",
 	"kimi":          "moonshotai",
