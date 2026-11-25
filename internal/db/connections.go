@@ -222,7 +222,7 @@ func (r *Repo) ResolveConnectionRoutingByPrefix(prefix string) (provider string,
 // data in place, keeping its id and position in the rotation. This is what an
 // explicit overwrite does: the caller asked to change the key behind a name
 // they already own, not to add a second row with the same name.
-func (r *Repo) ReplaceProviderConnectionPayload(id, name, dataJSON string) error {
+func (r *Repo) ReplaceProviderConnectionPayload(ctx context.Context, id, name, dataJSON string) error {
 	// Seal first: this is the dashboard's overwrite path, so the new key must
 	// never land in `data` in the clear even for the moment between the two
 	// statements.
@@ -231,7 +231,7 @@ func (r *Repo) ReplaceProviderConnectionPayload(id, name, dataJSON string) error
 		return err
 	}
 	now := nowUTC()
-	res, err := r.db.Exec(
+	res, err := r.db.ExecContext(ctx,
 		`UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?`,
 		name, sealed, now, id,
 	)

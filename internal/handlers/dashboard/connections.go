@@ -614,7 +614,7 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 			// Overwriting rewrites the row in place, keeping its id and its
 			// place in the rotation; adding a second row with the same name would
 			// leave the account picker with two candidates it cannot tell apart.
-			if err := h.Repo.ReplaceProviderConnectionPayload(existing.ID, name, dataStr); err != nil {
+			if err := h.Repo.ReplaceProviderConnectionPayload(r.Context(), existing.ID, name, dataStr); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -658,7 +658,7 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			if err := h.Repo.ReplaceProviderConnectionPayload(dup.ID, connectionDisplayName(dup), dataStr); err != nil {
+			if err := h.Repo.ReplaceProviderConnectionPayload(r.Context(), dup.ID, connectionDisplayName(dup), dataStr); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
