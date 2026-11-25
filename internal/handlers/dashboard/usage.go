@@ -41,6 +41,43 @@ func acquireQuotaSlot(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// antigravityUsageToken resolves the Google token and project used by the
+// dashboard quota RPCs. agy-acp connections either carry their own token or
+// reference an antigravity source connection; both read the same quota API.
+func (h *DashboardHandler) antigravityUsageToken(ctx context.Context, provider string, data map[string]any) (string, string) {
+	accessToken, _ := data["accessToken"].(string)
+	projectID, _ := data["projectId"].(string)
+	if provider != "agy-acp" || accessToken != "" || h.Repo == nil {
+		return accessToken, projectID
+	}
+
+	source := ""
+	if psd, ok := data["providerSpecificData"].(map[string]any); ok {
+		source, _ = psd["sourceConnection"].(string)
+	}
+	if source == "" {
+		source, _ = data["sourceConnection"].(string)
+	}
+	if source == "" {
+		return accessToken, projectID
+	}
+	src, err := h.Repo.GetProviderConnectionByID(source)
+	if err != nil || src == nil || src.Provider != "antigravity" {
+		return accessToken, projectID
+	}
+	var srcData map[string]any
+	if err := json.Unmarshal([]byte(src.Data), &srcData); err != nil {
+		return accessToken, projectID
+	}
+	srcCreds := usageCredentials{raw: srcData, provider: "antigravity"}
+	if srcCreds.needsRefresh() {
+		h.runUsageRefresh(ctx, src, srcCreds)
+	}
+	accessToken, _ = srcData["accessToken"].(string)
+	projectID, _ = srcData["projectId"].(string)
+	return accessToken, projectID
+}
+
 // HandleGetConnectionUsage handles GET /api/usage/{connectionId}
 //
 // Upstream parity (src/app/api/usage/[connectionId]/route.js): an OAuth
@@ -119,9 +156,10 @@ func (h *DashboardHandler) HandleGetConnectionUsage(w http.ResponseWriter, r *ht
 
 	// Antigravity quota resolution (dashboard presentation with tier check +
 	// weekly overlay — parity with open-sse/services/usage/google.js).
-	if conn.Provider == "antigravity" && data != nil {
-		accessToken, _ := data["accessToken"].(string)
-		projectID, _ := data["projectId"].(string)
+	// agy-acp reads the same Google quota RPCs; it used to fall through to
+	// the lock-only fallback and never show per-model rows.
+	if (conn.Provider == "antigravity" || conn.Provider == "agy-acp") && data != nil {
+		accessToken, projectID := h.antigravityUsageToken(r.Context(), conn.Provider, data)
 		if accessToken != "" {
 			// The slot above is already held; taking a second one made every
 			// Antigravity account queue for two consecutive 250ms gaps even

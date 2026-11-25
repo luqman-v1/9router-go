@@ -1992,19 +1992,25 @@ var antigravityDailyBaseURL = "https://daily-cloudcode-pa.googleapis.com"
 const antigravityDashboardUA = providers.AntigravityCLIUserAgent
 
 var antigravityImportantModels = map[string]bool{
+	// Upstream open-sse/services/usage/google.js curates the paid-tier rows;
+	// Hydrogen is the newest Gemini 4 family and must appear in the tracker.
+	"gemini-4-hydrogen-xhigh": true, "gemini-4-hydrogen-high": true,
+	"gemini-4-hydrogen-medium": true, "gemini-4-hydrogen-low": true,
 	"gemini-4-carbon-high": true, "gemini-4-carbon-medium": true, "gemini-4-carbon-low": true,
 	"gemini-4-carbon":     true,
 	"gemini-4-argon-high": true, "gemini-4-argon-medium": true, "gemini-4-argon-low": true,
-	"gemini-4-argon":     true,
-	"gemini-4-neon-high": true, "gemini-4-neon-medium": true, "gemini-4-neon-low": true,
+	"gemini-4-argon":      true,
+	"gemini-4-neon-xhigh": true,
+	"gemini-4-neon-high":  true, "gemini-4-neon-medium": true, "gemini-4-neon-low": true,
 	"gemini-4-neon":         true,
 	"gemini-3.8-flash-high": true, "gemini-3.8-flash-medium": true, "gemini-3.8-flash-low": true,
 	"gemini-3.7-flash-high": true, "gemini-3.7-flash-medium": true, "gemini-3.7-flash-low": true,
 	"gemini-3.6-flash-high": true, "gemini-3.6-flash-medium": true, "gemini-3.6-flash-low": true,
 	"gemini-3.1-pro-high": true, "gemini-pro-agent": true, "gemini-3.1-pro-low": true,
 	"claude-sonnet-5-5-high": true, "claude-sonnet-5-5-medium": true, "claude-sonnet-5-5-low": true,
-	"claude-sonnet-5-5": true, "claude-opus-5-5-high": true, "claude-opus-5-5-medium": true,
-	"claude-opus-5-5-low": true, "claude-opus-5-5": true,
+	"claude-sonnet-5-5-max": true,
+	"claude-sonnet-5-5":     true, "claude-opus-5-5-high": true, "claude-opus-5-5-medium": true,
+	"claude-opus-5-5-low": true, "claude-opus-5-5": true, "claude-opus-5-5-max": true,
 	"claude-sonnet-4-6": true, "claude-opus-4-6-thinking": true,
 	"gpt-oss-120b-medium":    true,
 	"gemini-3.1-flash-image": true,
