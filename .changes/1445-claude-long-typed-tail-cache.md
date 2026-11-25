@@ -1,0 +1,2 @@
+### Fixed
+- **A long Claude conversation ending in typed text now caches its tail** — `markFinalToolResults` only placed a breakpoint when the final turn carried a `tool_result`, so a session whose turns end in text was billed for its whole history at full price on every request that woke it. Observed live: `cached=28538 create=0 input_tokens=168517`, repeating at 80k–197k prompts through the day. Past a 200 KB body the typed tail now takes the free marker slot too; below it nothing changes.
