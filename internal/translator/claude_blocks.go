@@ -82,15 +82,23 @@ func markLastCacheableBlock(content []any) bool {
 	return false
 }
 
-// markFinalToolResults caches the tool loop's final tool results.
+// markFinalToolResults caches the tail of the conversation.
 //
-// A tool loop's request ends with the results of the last assistant turn's
-// tool calls — after that turn's breakpoint — so they are billed as uncached
-// input and only written to the cache by the *next* request, which appends to
-// them. While the 4-marker budget has room, a 5m breakpoint on that final user
-// turn caches them now and the next step reads them. A turn that already holds a
-// marker is left alone, so re-anchoring stays idempotent.
-func markFinalToolResults(req map[string]any) bool {
+// A request ends after the head breakpoints (last system block, last tool), so
+// its tail — the tool loop's final results, or a user's latest message — sits
+// past the last breakpoint and is billed as uncached input. While the 4-marker
+// budget has room, a 5m breakpoint on the final user turn writes that tail now
+// so the next request reads it instead of paying for it again. A turn that
+// already holds a marker is left alone, so re-anchoring stays idempotent.
+//
+// A typed user tail is normally left alone: it holds one message, and paying
+// for that at full price beats writing it at 1.25x. On a long conversation the
+// tail is the conversation, though — a session that wakes after the 5m window
+// re-bills its whole history at full price on every request that ends in text.
+// Past typedTailCacheMinBody the tail earns the breakpoint too.
+const typedTailCacheMinBody = 200_000
+
+func markFinalToolResults(req map[string]any, bodyLen int) bool {
 	messages, ok := req["messages"].([]any)
 	if !ok || len(messages) == 0 {
 		return false
@@ -104,9 +112,17 @@ func markFinalToolResults(req map[string]any) bool {
 	}
 	content, ok := last["content"].([]any)
 	if !ok {
-		return false
+		if bodyLen < typedTailCacheMinBody {
+			return false
+		}
+		text, isText := last["content"].(string)
+		if !isText || strings.TrimSpace(text) == "" {
+			return false
+		}
+		content = []any{map[string]any{"type": "text", "text": text}}
+		last["content"] = content
 	}
-	hasResult, hasMarker := false, false
+	hasResult := false
 	for _, bRaw := range content {
 		block, ok := bRaw.(map[string]any)
 		if !ok {
@@ -116,10 +132,10 @@ func markFinalToolResults(req map[string]any) bool {
 			hasResult = true
 		}
 		if block["cache_control"] != nil {
-			hasMarker = true
+			return false
 		}
 	}
-	if !hasResult || hasMarker {
+	if !hasResult && bodyLen < typedTailCacheMinBody {
 		return false
 	}
 	if countCacheControlBlocks(req) >= cacheControlMarkerBudget {

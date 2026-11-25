@@ -1346,7 +1346,7 @@ func AnchorClaudeCacheWithTTL(body []byte, ttl string) []byte {
 
 	// 5. A tool loop's final tool results sit after the head anchors, so they
 	//    get the remaining slot of the budget when one is free.
-	markFinalToolResults(req)
+	markFinalToolResults(req, len(body))
 
 	// 6. Ensure total cache_control blocks <= the marker budget.
 	capCacheControlBlocks(req)
