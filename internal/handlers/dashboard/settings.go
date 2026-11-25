@@ -95,6 +95,11 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 			handlerutil.WriteJSONError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
+		// The change revoked every session, the caller's included: re-issue the
+		// cookie so the operator who made the change stays signed in.
+		if token, signErr := auth.Sign(auth.Secret(), time.Now()); signErr == nil {
+			auth.SetCookie(w, r, token)
+		}
 	} else {
 		delete(updates, "currentPassword")
 		delete(updates, "newPassword")
@@ -378,7 +383,18 @@ func (h *DashboardHandler) changeDashboardPassword(currentPassword, newPassword 
 	if err != nil {
 		return err
 	}
-	return h.Repo.UpdateSettingsRaw(map[string]any{"password": string(hashed)})
+	// The epoch rides in the same write as the password: a stored password the
+	// tokens still match, with an epoch that says otherwise, is the one state
+	// that must never be observable.
+	next := auth.SessionTokenVersion(raw) + 1
+	if err := h.Repo.UpdateSettingsRaw(map[string]any{
+		"password":     string(hashed),
+		"tokenVersion": next,
+	}); err != nil {
+		return err
+	}
+	auth.SetSessionEpoch(next, auth.PasswordFingerprint(string(hashed)))
+	return nil
 }
 
 // verifyDashboardPassword mirrors Next's verifyDashboardPassword: a stored
