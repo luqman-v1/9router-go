@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/config"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -56,6 +57,15 @@ func getAntigravityOAuthConfig() (clientID, clientSecret, tokenURL string) {
 }
 
 func getAntigravityRedirectURI(r *http.Request) string {
+	// A dashboard served through a reverse proxy loses its listener port, so
+	// the browser would derive http://localhost:80/443/callback and the
+	// callback page would never reach this gateway. In that mode the server
+	// pins the loopback redirect to the actual listener port; the gateway's
+	// /callback page records the code server-side and the dashboard picks it
+	// up through /api/oauth/callback-result (cross-origin safe).
+	if r.URL.Query().Get("proxy") == "1" {
+		return fmt.Sprintf("http://localhost:%d/callback", config.LoadConfig().Port)
+	}
 	redirectURI := strings.TrimSpace(r.URL.Query().Get("redirect_uri"))
 	if validRedirectURI(redirectURI) {
 		return redirectURI

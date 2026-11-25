@@ -1692,10 +1692,16 @@
     copiedAuthUrl = false
     try {
       const redirectUri = loopbackCallback()
+      // Behind a reverse proxy the dashboard origin carries no listener port,
+      // so the browser would send the code to localhost:80/443 where nothing
+      // listens. Ask the gateway to pin the loopback redirect to its own port;
+      // its /callback page records the code and the modal polls it back
+      // cross-origin through /api/oauth/callback-result.
+      const behindProxy = !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
       const res =
         providerId === 'agy-acp'
-          ? await api.getAGYACPAuthorizeUrl(redirectUri)
-          : await api.getAntigravityAuthorizeUrl(redirectUri)
+          ? await api.getAGYACPAuthorizeUrl(redirectUri, behindProxy)
+          : await api.getAntigravityAuthorizeUrl(redirectUri, behindProxy)
       oauthAuthUrl = res.authUrl || res.url || res.redirectUrl
       if (res.state) {
         rememberPending({

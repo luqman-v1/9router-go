@@ -2245,18 +2245,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ connectionId, model }),
     }),
-  getAntigravityAuthorizeUrl: (redirectUri: string) =>
+  getAntigravityAuthorizeUrl: (redirectUri: string, proxy = false) =>
     request<{ url: string; redirectUrl: string; authUrl: string; state: string; redirectUri: string }>(
-      `/api/oauth/antigravity/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
+      `/api/oauth/antigravity/authorize?redirect_uri=${encodeURIComponent(redirectUri)}${proxy ? '&proxy=1' : ''}`,
     ),
   antigravityExchange: (code: string, redirectUri: string, state?: string) =>
     request<{ success: boolean; error?: string }>('/api/oauth/antigravity/exchange', {
       method: 'POST',
       body: JSON.stringify({ code, redirectUri, state }),
     }),
-  getAGYACPAuthorizeUrl: (redirectUri: string) =>
+  getAGYACPAuthorizeUrl: (redirectUri: string, proxy = false) =>
     request<{ url: string; redirectUrl: string; authUrl: string; state: string; redirectUri: string }>(
-      `/api/oauth/agy-acp/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
+      `/api/oauth/agy-acp/authorize?redirect_uri=${encodeURIComponent(redirectUri)}${proxy ? '&proxy=1' : ''}`,
     ),
   agyACPExchange: (code: string, redirectUri: string, state?: string) =>
     request<{ success: boolean; error?: string }>('/api/oauth/agy-acp/exchange', {
