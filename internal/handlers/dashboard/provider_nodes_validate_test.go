@@ -109,7 +109,26 @@ func TestValidateProviderNode_InvalidURLFormat(t *testing.T) {
 	}
 }
 
-func TestValidateProviderNode_SSRFBlocksPrivateForRemoteCaller(t *testing.T) {
+// A private/LAN endpoint is a normal upstream while private networking is on
+// (the default), so a remote caller may validate it. The strict opt-out
+// (ALLOW_PRIVATE_NETWORKING=false) restores the refusal.
+func TestValidateProviderNode_PrivateTargetForRemoteCaller(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidateNode(t, `{"baseUrl":"http://127.0.0.1:11434","apiKey":"k"}`, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !nodeValid(t, out) {
+		t.Errorf("remote caller should reach a private node while private networking is on, got %q", nodeOut(t, out, "error"))
+	}
+	if len(*calls) == 0 {
+		t.Errorf("expected a probe for the private node")
+	}
+}
+
+func TestValidateProviderNode_StrictModeBlocksPrivateForRemoteCaller(t *testing.T) {
+	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
 	calls := staticProbeStub(t, http.StatusOK)
 
 	rec, out := postValidateNode(t, `{"baseUrl":"http://127.0.0.1:11434","apiKey":"k"}`, false)
@@ -117,7 +136,7 @@ func TestValidateProviderNode_SSRFBlocksPrivateForRemoteCaller(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	if got := nodeOut(t, out, "error"); got != "URL not allowed" {
-		t.Errorf("remote caller should be SSRF-blocked, got %q", got)
+		t.Errorf("strict mode: remote caller should be SSRF-blocked, got %q", got)
 	}
 	if len(*calls) != 0 {
 		t.Errorf("expected no probe for blocked URL, got %d", len(*calls))

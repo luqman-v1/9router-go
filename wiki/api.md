@@ -30,6 +30,8 @@ POST /messages/count_tokens     Claude token counting
 POST /responses                 Responses API
 POST /responses/compact         Compact a Responses conversation
 POST /api/chat                  Ollama-compatible chat
+GET  /v1beta/models             Gemini-native model list
+POST /v1beta/models/{model}     Gemini-native GenerateContent
 GET  /v1/models                 Model catalog
 GET  /v1/models/{id}            One model's detail
 GET  /v1/models/{kind}          Models by kind (llm, embedding, image, tts, stt, video)
@@ -130,6 +132,7 @@ DELETE /api/keys/{id}
 PUT    /api/keys/{id}/toggle
 POST   /api/keys/{id}/rotate
 POST   /api/keys/{id}/reset-quota
+GET    /api/keys/{id}/budget          Per-period spend for one key
 GET    /api/keys/{id}/models          Per-key model allowlist
 PUT    /api/keys/{id}/models
 
@@ -200,6 +203,7 @@ GET    /api/cache
 DELETE /api/cache
 GET    /api/cache/entries
 DELETE /api/cache/entries
+POST   /api/cache/semantic/invalidate   Drop the semantic cache by filter
 ```
 
 ### Settings and maintenance

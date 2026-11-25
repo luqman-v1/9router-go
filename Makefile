@@ -52,6 +52,20 @@ AUTO_UPDATE ?= false
 # single-quoted form passed a quoted symbol name straight to the linker.
 LDFLAGS := -s -w -X "9router/proxy/internal/updater.CurrentVersion=$(VERSION)"
 
+# Portability contract (§4.F): every target builds with cgo disabled, so the
+# release stays one pure-Go binary per platform. Leaving CGO_ENABLED at its
+# implicit "1 when a C compiler is installed" is not harmless: the gcc-compiled
+# runtime/cgo shims inherit the build host's -march, and a build made on a
+# modern runner emitted AVX in x_cgo_getstackbound. That binary dies with
+# SIGILL before main() on Celeron/Pentium-class x86-64 CPUs (e.g. N4000), which
+# have SSE4.2 but no AVX. GOAMD64=v1 pins the Go half to the same baseline;
+# CGO_ENABLED=0 removes the C half entirely. Both stay overridable for anyone
+# who explicitly asks for cgo.
+CGO_ENABLED ?= 0
+GOAMD64 ?= v1
+export CGO_ENABLED
+export GOAMD64
+
 .PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev changelog-merge
 
 ## web-build — build frontend static assets (Svelte/Vite) into web/dist
@@ -215,7 +229,7 @@ bench-go:
 # Instead the per-target OS/ARCH go through `export`, which is a Make directive
 # and therefore identical under sh and cmd. The export is scoped to cross-one
 # so an empty GOARCH can never leak into the normal build target.
-CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
+CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 android-arm64
 
 ifneq ($(filter cross-one cross-tray-one,$(MAKECMDGOALS)),)
 export GOOS := $(CROSS_OS)
@@ -226,6 +240,16 @@ CROSS_BIN := 9router-go
 
 cross-linux-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-linux-amd64
+
+# Explicit no-AVX asset for x86-64 CPUs that stop at SSE4.2 (Celeron/Pentium
+# N-series, older Atom, some VMs). It is built by the same cross-one recipe and
+# therefore carries the same CGO_ENABLED=0/GOAMD64=v1 settings as every other
+# target, which makes it byte-identical to 9router-go-linux-amd64 today. The
+# separate name is the point: install.sh picks an asset by name, so an operator
+# on an affected CPU has a stable thing to ask for, and a future build change
+# cannot silently drop the baseline guarantee for them.
+cross-linux-amd64-noavx:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-linux-amd64-noavx
 
 cross-linux-arm64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=arm64 OUT=$(CROSS_BIN)-linux-arm64
@@ -240,7 +264,26 @@ cross-windows-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-windows-amd64.exe
 	@$(MAKE) --no-print-directory cross-tray-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-tray-windows-amd64.exe
 
-CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
+# The Android build of the same binary, which the APK bundles as lib9router.so
+# and — this is why it is a release asset — what the app's in-place gateway
+# updater downloads when a new gateway must ship without a new APK.
+#
+# It is not a platform Go treats like the others: no os/user, no /etc lookups,
+# and no NDK here because the only ABI published is arm64, which needs no
+# external linker. The name has to stay `9router-go-android-arm64`; the app
+# matches the release asset by that exact string.
+#
+# WHAT AN ANDROID GATEWAY CANNOT DO ON ITS OWN: it cannot reach the network
+# without DNS. There is no /etc/resolv.conf on Android, so the pure Go resolver
+# falls back to [::1]:53 and every outbound call fails with "connection
+# refused" — which reads as a provider outage. The app therefore sets
+# DNS_SERVERS (from the active network's link properties) when it spawns this
+# binary. A gateway started any other way on Android will serve locally and
+# fail every upstream request.
+cross-android-arm64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=android CROSS_ARCH=arm64 OUT=$(CROSS_BIN)-android-arm64
+
+CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-amd64-noavx cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64 cross-android-arm64
 
 cross: web-build
 	@$(MAKE) -j $(CROSS_BUILD_TARGETS)
@@ -251,8 +294,13 @@ cross: web-build
 cross-one:
 	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-go/
 
+TRAY_LDFLAGS := $(LDFLAGS)
+ifeq ($(CROSS_OS),windows)
+TRAY_LDFLAGS += -H=windowsgui
+endif
+
 cross-tray-one:
-	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
+	go build -ldflags="$(TRAY_LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	$(BINARY) mitm enable

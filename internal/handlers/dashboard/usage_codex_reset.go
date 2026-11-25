@@ -12,6 +12,7 @@ import (
 	"9router/proxy/internal/codexquota"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 )
 
 // Codex reset credits — port of OmniRoute's
@@ -193,7 +194,9 @@ func (h *DashboardHandler) HandleConsumeCodexResetCredit(w http.ResponseWriter, 
 	}
 	chat.ClearCodexQuotaBlock(target.ConnectionID)
 	if h.Repo != nil {
-		_ = h.Repo.ResetProviderHealth("codex", "")
+		if err := h.Repo.ResetConnectionHealthState(target.ConnectionID); err != nil {
+			log.Warn("failed to reset connection health state", "connId", target.ConnectionID, "error", err)
+		}
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"outcome":        outcome,

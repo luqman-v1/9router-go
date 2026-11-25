@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/proxy"
 	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
@@ -98,10 +99,6 @@ func geminiWebProxyFrom(reference *http.Client) string {
 	if reference == nil {
 		return ""
 	}
-	transport, ok := reference.Transport.(*http.Transport)
-	if !ok || transport.Proxy == nil {
-		return ""
-	}
 	// The proxy function is asked for a URL to a fixed placeholder target. It
 	// resolves per scheme and host, and a pool's answer does not vary by the
 	// upstream it is relaying to.
@@ -109,11 +106,7 @@ func geminiWebProxyFrom(reference *http.Client) string {
 	if err != nil {
 		return ""
 	}
-	proxyURL, err := transport.Proxy(&http.Request{URL: target})
-	if err != nil || proxyURL == nil {
-		return ""
-	}
-	return proxyURL.String()
+	return proxy.ProxyURLForTarget(reference, target)
 }
 
 // do issues one request through the stealth stack.

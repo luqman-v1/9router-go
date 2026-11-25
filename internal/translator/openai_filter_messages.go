@@ -19,6 +19,33 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 			continue
 		}
 		role, _ := msg["role"].(string)
+		// Some OpenAI-compatible providers deserialize `reasoning` and
+		// `reasoning_content` as aliases of one field. When an assistant
+		// message carries both, keep the explicit canonical `reasoning_content`
+		// and drop only the colliding string `reasoning`. Structured reasoning
+		// (map/array) is preserved, and a standalone `reasoning` is untouched.
+		if role == "assistant" {
+			if _, isStr := msg["reasoning"].(string); isStr {
+				if _, hasRC := msg["reasoning_content"]; hasRC {
+					msg = shallowCopy(msg)
+					delete(msg, "reasoning")
+					changed = true
+				}
+			}
+		}
+		if opts.StrictReasoningRemoving && role == "assistant" {
+			copied := false
+			for _, key := range []string{"reasoning_content", "reasoning", "reasoning_details"} {
+				if _, has := msg[key]; has {
+					if !copied {
+						msg = shallowCopy(msg)
+						copied = true
+					}
+					delete(msg, key)
+					changed = true
+				}
+			}
+		}
 		if role == "developer" {
 			msg = shallowCopy(msg)
 			msg["role"] = "system"
@@ -29,11 +56,25 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 		// calls keeps its tool_calls — both are the OpenAI contract, and
 		// upstream keeps them as-is for the same reason.
 		if role == "tool" {
+			if opts.FlattenContent {
+				if parts, ok := msg["content"].([]any); ok {
+					msg = shallowCopy(msg)
+					msg["content"] = flattenContentParts(parts)
+					changed = true
+				}
+			}
 			out = append(out, msg)
 			continue
 		}
 		if role == "assistant" {
 			if _, has := msg["tool_calls"]; has {
+				if opts.FlattenContent {
+					if parts, ok := msg["content"].([]any); ok {
+						msg = shallowCopy(msg)
+						msg["content"] = flattenContentParts(parts)
+						changed = true
+					}
+				}
 				out = append(out, msg)
 				continue
 			}
@@ -43,6 +84,13 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 			continue
 		}
 		if parts, ok := msg["content"].([]any); ok {
+			if opts.FlattenContent {
+				msg = shallowCopy(msg)
+				msg["content"] = flattenContentParts(parts)
+				changed = true
+				out = append(out, msg)
+				continue
+			}
 			filtered, blocksChanged := filterContentBlocks(parts, opts)
 			if blocksChanged {
 				msg = shallowCopy(msg)
@@ -107,6 +155,27 @@ func filterContentBlocks(parts []any, opts FilterOptions) ([]any, bool) {
 		changed = true
 	}
 	return filtered, changed
+}
+
+// flattenContentParts joins the text blocks of an array content into a single
+// string, matching upstream open-sse/translator/concerns/paramSupport.js
+// STRIP_RULES for cloudflare-ai:
+//
+//	msg.content.map(b => (b && b.type === 'text' && typeof b.text === 'string') ? b.text : '').join('')
+//
+// Only blocks with type == "text" and a string text field contribute; others contribute nothing.
+func flattenContentParts(parts []any) string {
+	var sb strings.Builder
+	for _, p := range parts {
+		if block, ok := p.(map[string]any); ok {
+			if typ, _ := block["type"].(string); typ == openaiBlockText {
+				if text, ok := block["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+	}
+	return sb.String()
 }
 
 // pruneEmptyMessages drops the turns that carry no content, but never a tool
@@ -177,7 +246,7 @@ func pruneEmptyMessages(msgs []any) ([]any, bool) {
 // normalizeTools converts the tool declarations to the OpenAI shape and drops
 // an empty tool list, which some providers reject. The bool reports whether
 // the tool list changed.
-func normalizeTools(body map[string]any) bool {
+func normalizeTools(body map[string]any, opts FilterOptions) bool {
 	tools, ok := body["tools"].([]any)
 	if !ok || len(tools) == 0 {
 		if ok {
@@ -196,32 +265,54 @@ func normalizeTools(body map[string]any) bool {
 		}
 		if tool["type"] == openaiBlockFunction {
 			if _, has := tool["function"]; has {
+				if !opts.PreserveCacheControl {
+					if _, had := tool["cache_control"]; had {
+						delete(tool, "cache_control")
+						changed = true
+					}
+				}
 				norm = append(norm, tool)
 				continue
 			}
 		}
 		if name, _ := tool["name"].(string); name != "" {
+			// A Claude tool carries its cache_control marker beside the
+			// function; the normalized shape has to keep it there or a marker
+			// the provider preserves is lost before it reaches the wire
+			// (upstream OmniRoute #19755 parity).
+			cc := tool["cache_control"]
+			if !opts.PreserveCacheControl {
+				cc = nil
+			}
 			if _, has := tool["input_schema"]; has {
-				norm = append(norm, map[string]any{
+				fn := map[string]any{
 					"type": openaiBlockFunction,
 					"function": map[string]any{
 						"name":        name,
 						"description": stringField(tool, "description"),
 						"parameters":  parametersField(tool, "input_schema"),
 					},
-				})
+				}
+				if cc != nil {
+					fn["cache_control"] = cc
+				}
+				norm = append(norm, fn)
 				changed = true
 				continue
 			}
 			if _, has := tool["description"]; has {
-				norm = append(norm, map[string]any{
+				fn := map[string]any{
 					"type": openaiBlockFunction,
 					"function": map[string]any{
 						"name":        name,
 						"description": stringField(tool, "description"),
 						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 					},
-				})
+				}
+				if cc != nil {
+					fn["cache_control"] = cc
+				}
+				norm = append(norm, fn)
 				changed = true
 				continue
 			}
@@ -269,7 +360,17 @@ func normalizeToolChoice(body map[string]any) bool {
 	case "any":
 		body["tool_choice"] = "required"
 		return true
-	case "tool":
+	case "none":
+		body["tool_choice"] = "none"
+		return true
+	case "tool", openaiBlockFunction:
+		// Flat Responses API shape: {"type": "function", "name": "search"}
+		// (or Claude-shaped {"type": "tool", "name": ...}). OpenAI Chat wants
+		// the nested {"type": "function", "function": {"name": ...}}. A choice
+		// that already carries a "function" map is left untouched.
+		if _, ok := choice["function"].(map[string]any); ok {
+			return false
+		}
 		if name, _ := choice["name"].(string); name != "" {
 			body["tool_choice"] = map[string]any{
 				"type":     openaiBlockFunction,

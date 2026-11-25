@@ -330,7 +330,7 @@ func TestBackfillCompressionAnalytics(t *testing.T) {
 	}
 
 	// Run backfill migration
-	if err := BackfillCompressionAnalytics(database); err != nil {
+	if err := BackfillCompressionAnalytics(context.Background(), database); err != nil {
 		t.Fatalf("BackfillCompressionAnalytics error = %v", err)
 	}
 
@@ -360,7 +360,7 @@ func TestBackfillCompressionAnalytics(t *testing.T) {
 	}
 
 	// Test Idempotency: run backfill again, count should still be 3
-	if err := BackfillCompressionAnalytics(database); err != nil {
+	if err := BackfillCompressionAnalytics(context.Background(), database); err != nil {
 		t.Fatalf("second backfill error = %v", err)
 	}
 	var countAfter int

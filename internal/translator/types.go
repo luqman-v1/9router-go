@@ -21,8 +21,20 @@ type StreamState struct {
 	ThinkingBlockIndex   int
 	ToolCalls            map[int]ToolCallState
 	ToolArgBuffers       map[int]string
-	FinishReason         string
-	Usage                *OpenAIUsage
+	// DSMLBuffer accumulates response content that may contain DeepSeek DSML
+	// tool invocation blocks across stream chunks.
+	DSMLBuffer string
+	// DSMLBuffered records that a DSML marker was seen and buffered content is
+	// being held back until finish rather than streamed as raw text.
+	DSMLBuffered bool
+	// DSMLEmitted is the number of DSML tool calls already emitted as tool_use
+	// blocks, so a re-parse of the growing buffer does not re-emit them.
+	DSMLEmitted int
+	// DSMLCleanedLen is how many bytes of the cleaned buffer have already been
+	// streamed as text, so cleaned text is never streamed twice.
+	DSMLCleanedLen int
+	FinishReason   string
+	Usage          *OpenAIUsage
 	// TerminalSent records that the terminal message_delta + message_stop
 	// pair actually went out. FinishReason alone does not imply it: with
 	// stream_options.include_usage the usage chunk arrives AFTER the finish
@@ -45,13 +57,36 @@ type ToolCallState struct {
 
 // OpenAIUsage tracks token counts.
 type OpenAIUsage struct {
-	PromptTokens             int                      `json:"prompt_tokens"`
-	CompletionTokens         int                      `json:"completion_tokens"`
-	CachedTokens             int                      `json:"cached_tokens"`
-	CacheCreationInputTokens int                      `json:"cache_creation_input_tokens"`
-	PromptTokensDetails      *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails  *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
-	PromptCacheIncluded      bool                     `json:"-"`
+	PromptTokens             int `json:"prompt_tokens"`
+	CompletionTokens         int `json:"completion_tokens"`
+	CachedTokens             int `json:"cached_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	// Anthropic splits a cache write by the window it was billed at. They are
+	// kept apart because the two windows are priced differently (1.25x vs 2x)
+	// and an operator tuning the ttl needs to see which one traffic used.
+	CacheCreation5mInputTokens int                      `json:"cache_creation_5m_input_tokens,omitempty"`
+	CacheCreation1hInputTokens int                      `json:"cache_creation_1h_input_tokens,omitempty"`
+	PromptTokensDetails        *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails    *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptCacheIncluded        bool                     `json:"-"`
+}
+
+// claudeCacheCreation is Anthropic's per-window split of a cache write.
+// Older models and non-Anthropic upstreams omit it, so a nil pointer means
+// "not reported" rather than "no 5-minute write".
+type claudeCacheCreation struct {
+	Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+}
+
+// apply copies the split onto u. It is safe on a nil receiver so a caller can
+// chain it without a nil check.
+func (cc *claudeCacheCreation) apply(u *OpenAIUsage) {
+	if cc == nil || u == nil {
+		return
+	}
+	u.CacheCreation5mInputTokens = cc.Ephemeral5m
+	u.CacheCreation1hInputTokens = cc.Ephemeral1h
 }
 
 type PromptTokensDetails struct {
@@ -117,6 +152,7 @@ type OpenAIRespMsg struct {
 	Role             string                 `json:"role"`
 	Content          string                 `json:"content"`
 	ReasoningContent string                 `json:"reasoning_content"`
+	ReasonResult     string                 `json:"reason_result"`
 	Reasoning        string                 `json:"reasoning"`
 	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
 }
@@ -156,8 +192,9 @@ func (d OpenAIReasoningDetail) MarshalJSON() ([]byte, error) {
 // OpenAIDelta holds the per-chunk delta in an OpenAI stream.
 type OpenAIDelta struct {
 	Role             string                  `json:"role"`
-	Content          string                  `json:"content"`
+	Content          any                     `json:"content"`
 	ReasoningContent string                  `json:"reasoning_content"`
+	ReasonResult     string                  `json:"reason_result"`
 	Reasoning        string                  `json:"reasoning"`
 	ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
 	ToolCalls        []OpenAIToolCallStream  `json:"tool_calls"`
@@ -179,8 +216,9 @@ type OpenAIFunctionStream struct {
 
 // Claude System Prompt block
 type ClaudeSystemBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type         string         `json:"type"`
+	Text         string         `json:"text"`
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // ClaudeContentBlock represents one content block in a Claude message.
@@ -194,6 +232,11 @@ type ClaudeContentBlock struct {
 	Input     jsontext.Value     `json:"input,omitempty"`
 	ToolUseID string             `json:"tool_use_id,omitempty"`
 	Content   jsontext.Value     `json:"content,omitempty"`
+	// CacheControl is Anthropic's per-block prompt-cache breakpoint. The
+	// Claude→OpenAI converter carries it through only for the OpenRouter
+	// Anthropic lane, where the marker must reach the filter so the breakpoints
+	// survive to the Anthropic-backed model (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // ClaudeImageSource holds base64 image data.
@@ -220,6 +263,10 @@ type ClaudeTool struct {
 	// from an explicit false, which is a real client instruction. A non-boolean
 	// value is dropped rather than fatal — see UnmarshalStrict.
 	Strict *bool `json:"strict,omitempty"`
+	// CacheControl is Anthropic's per-tool prompt-cache breakpoint, preserved
+	// for the OpenRouter Anthropic lane alongside the content-block markers
+	// (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // UnmarshalStrict decodes a tool strict flag, reporting whether one was
@@ -237,10 +284,11 @@ func UnmarshalStrict(data []byte) (*bool, error) {
 // claudeToolJSON mirrors ClaudeTool with the strict field left raw, so a
 // non-boolean value can be dropped instead of aborting the decode.
 type claudeToolJSON struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema jsontext.Value `json:"input_schema,omitempty"`
-	Strict      jsontext.Value `json:"strict,omitempty"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  jsontext.Value `json:"input_schema,omitempty"`
+	Strict       jsontext.Value `json:"strict,omitempty"`
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // UnmarshalJSON decodes a Claude tool, dropping a non-boolean strict.
@@ -250,6 +298,7 @@ func (t *ClaudeTool) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	t.Name, t.Description, t.InputSchema = raw.Name, raw.Description, raw.InputSchema
+	t.CacheControl = raw.CacheControl
 	if len(raw.Strict) > 0 {
 		strict, err := UnmarshalStrict(raw.Strict)
 		if err != nil {
@@ -267,8 +316,8 @@ type ClaudeToolChoice struct {
 	// emit at most one tool call per turn. It is the counterpart of OpenAI's
 	// parallel_tool_calls:false (parity with decolua/9router#4581). Plain bool
 	// with omitempty: only an explicit true is worth putting on the wire.
-	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
-	Name string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+	Name                   string `json:"name,omitempty"`
 }
 
 // ClaudeThinking represents the thinking configuration in a Claude request.
@@ -306,9 +355,9 @@ type OpenAIRequest struct {
 	ToolChoice          any             `json:"tool_choice,omitempty"`
 	// ParallelToolCalls carries OpenAI's single-tool-call policy. Pointer so an
 	// absent field stays absent while an explicit false still serialises.
-	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	Stream              bool            `json:"stream,omitempty"`
+	ParallelToolCalls *bool  `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
+	Stream            bool   `json:"stream,omitempty"`
 }
 
 // OpenAIMessage is a single message in OpenAI format.
@@ -326,6 +375,11 @@ type OpenAIContentBlock struct {
 	Text     string          `json:"text,omitempty"`
 	ImageUrl *OpenAIImageUrl `json:"image_url,omitempty"`
 	File     *OpenAIFile     `json:"file,omitempty"`
+	// CacheControl is Anthropic's per-block prompt-cache breakpoint. The
+	// Claude→OpenAI converter carries it through only for the OpenRouter
+	// Anthropic lane so the marker survives the filter; every other lane
+	// strips it (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // OpenAIFile holds inline file/document data (e.g. data:application/pdf;base64,...).
@@ -355,6 +409,9 @@ type OpenAIFunctionCall struct {
 type OpenAITool struct {
 	Type     string         `json:"type"`
 	Function OpenAIFunction `json:"function"`
+	// CacheControl is Anthropic's per-tool prompt-cache breakpoint, preserved
+	// for the OpenRouter Anthropic lane (upstream OmniRoute #19755 parity).
+	CacheControl jsontext.Value `json:"cache_control,omitempty"`
 }
 
 // OpenAIFunction holds the function definition for an OpenAI tool.

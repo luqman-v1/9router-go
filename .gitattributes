@@ -1,0 +1,68 @@
+# Line endings are a property of the checkout, not of the content. This repo had
+# no .gitattributes, so Git stored whatever the writing machine produced: five
+# text files sit at HEAD with CRLF (`web/src/api/client.ts` at 3042 lines) while
+# their neighbours in the same directory are LF. Nothing in the tree declared
+# which was intended, so the only way to tell was to open the blob.
+#
+# The cost is not cosmetic. With `core.autocrlf=false`, touching a CRLF file
+# rewrites every line of it: `jailbreak_sync_test.go`, normalised to LF by hand
+# in #1362, showed as 659 insertions and 659 deletions to say nothing.
+#
+# This file and the renormalised blobs below are one change, and they have to be:
+# `eol=lf` makes Git check every text file out as LF, so a blob still stored as
+# CRLF reads as modified on every Linux checkout until its blob is converted.
+# Splitting them would leave the tree dirty between the two.
+
+# LF in the repository, LF on every checkout. `text=auto` still lets Git decide
+# what counts as text rather than naming every extension, so a type omitted
+# below is handled rather than stored as an opaque blob.
+* text=auto eol=lf
+
+# Named explicitly where a wrong guess is expensive: a misextension here either
+# corrupts a binary or bloats a text file.
+*.go text eol=lf
+*.ts text eol=lf
+*.svelte text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.svg text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.txt text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.example text eol=lf
+*.webmanifest text eol=lf
+
+# Explicit binary. Without these, `text=auto` sniffs bytes and an unlucky
+# sequence in a font or an icon turns it into a permanently damaged text diff.
+# `default.pgo` is the reason `.pgo` is named: it is a gzip-compressed PGO
+# profile, not a Go source file, so a text rule on the extension corrupts it.
+*.pgo binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary
+*.zip binary
+*.gz binary
+
+# CHANGELOG.md is the one file deliberately left alone: it ships CRLF, and
+# `make changelog-merge` rewrites the whole file at every release anyway, so a
+# conversion here buys nothing and §7.6 forbids this path appearing in a PR
+# diff. `-text` keeps it byte-identical in the blob and on every checkout, which
+# is what stops it showing as modified on Linux while its neighbours convert.
+CHANGELOG.md -text

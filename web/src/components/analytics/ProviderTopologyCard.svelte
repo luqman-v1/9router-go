@@ -26,7 +26,6 @@
     pulseProvider = '',
     lastProvider = '',
     errorProvider = '',
-    onRefresh
   }: Props = $props()
 
   // Upstream parity (#4615): an empty list renders an empty state, it does not

@@ -44,6 +44,7 @@ func pidAlive(pid int) bool {
 	}
 	return true
 }
+
 // requestStop sends SIGTERM, the port's "drain in-flight work and exit" signal.
 func requestStop(pid int) error {
 	return syscall.Kill(pid, syscall.SIGTERM)

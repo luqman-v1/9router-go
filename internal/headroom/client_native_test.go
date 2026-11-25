@@ -38,7 +38,7 @@ func TestHeadroomClient_NativeToolOutputCompression(t *testing.T) {
 			{"type": "function_call_output", "call_id": "c1", "output": %q}
 		]}`, longText)
 
-		client := NewClient(ts.URL, "key", nil)
+		client := NewClientWithEngine(ts.URL, "key", nil, EngineExternal)
 		resBody, compressed, err := client.Compress(context.Background(), []byte(body), "gpt-5.6", 1000)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -69,7 +69,7 @@ func TestHeadroomClient_NativeToolOutputCompression(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "key", nil)
+		client := NewClientWithEngine(ts.URL, "key", nil, EngineExternal)
 
 		jsonBody := []byte(`{"model": "gpt-5.6", "input": [
 			{"type": "function_call_output", "call_id": "c1", "output": "{\"result\": 1}"}
@@ -100,7 +100,7 @@ func TestHeadroomClient_NativeToolOutputCompression(t *testing.T) {
 			{"type": "function_call_output", "call_id": "c1", "output": %q}
 		]}`, longText)
 
-		client := NewClient(ts.URL, "key", nil)
+		client := NewClientWithEngine(ts.URL, "key", nil, EngineExternal)
 		resBody, compressed, err := client.Compress(context.Background(), []byte(body), "gpt-5.6", 1000)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -129,7 +129,7 @@ func TestHeadroomClient_NativeToolOutputCompression(t *testing.T) {
 			{"type": "function_call_output", "call_id": "c1", "output": %q}
 		]}`, longText)
 
-		client := NewClient(ts.URL, "key", nil)
+		client := NewClientWithEngine(ts.URL, "key", nil, EngineExternal)
 		if _, compressed, _ := client.Compress(context.Background(), []byte(body), "gpt-5.6", 1000); compressed {
 			t.Error("a longer response must not be written back")
 		}

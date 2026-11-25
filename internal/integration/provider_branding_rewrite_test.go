@@ -84,10 +84,10 @@ func TestProviderBrandingRewrite(t *testing.T) {
 
 	// Assert prompt texts (or the request body generally) contain NO occurrence of the decoded renamed form.
 	// Note: model names or userAgent headers might contain renamed, but the prompt content must not.
-	// Let's check system_instruction and contents specifically.
+	// Let's check systemInstruction and contents specifically.
 	//
 	// The Cloud Code envelope nests the Gemini payload under "request", so the
-	// prompt fields live at request.system_instruction / request.contents — not
+	// prompt fields live at request.systemInstruction / request.contents — not
 	// at the top level of the body. Parsing the wrong level yields empty part
 	// lists and silently skips every assertion below, so the level is asserted
 	// first and the parsed parts are required to be non-empty.
@@ -97,7 +97,7 @@ func TestProviderBrandingRewrite(t *testing.T) {
 				Parts []struct {
 					Text string `json:"text"`
 				} `json:"parts"`
-			} `json:"system_instruction"`
+			} `json:"systemInstruction"`
 			Contents []struct {
 				Parts []struct {
 					Text string `json:"text"`
@@ -109,18 +109,18 @@ func TestProviderBrandingRewrite(t *testing.T) {
 		t.Fatalf("failed to unmarshal upstream body: %v", err)
 	}
 	if len(parsed.Request.SystemInstruction.Parts) == 0 {
-		t.Fatalf("parsed envelope has no system_instruction parts; the Cloud Code body layout changed and the checks below would not run\nbody: %s", truncate([]byte(sent)))
+		t.Fatalf("parsed envelope has no systemInstruction parts; the Cloud Code body layout changed and the checks below would not run\nbody: %s", truncate([]byte(sent)))
 	}
 	if len(parsed.Request.Contents) == 0 {
 		t.Fatalf("parsed envelope has no contents; the Cloud Code body layout changed and the checks below would not run\nbody: %s", truncate([]byte(sent)))
 	}
-	for _, part := range parsed.Request.SystemInstruction.Parts {
-		if !strings.Contains(part.Text, renamedForm) {
-			t.Errorf("system instruction text missing rewritten branding %q: %q", renamedForm, part.Text)
-		}
-		if strings.Contains(part.Text, providerToken) {
-			t.Errorf("system instruction text still contains the competing branding %q: %q", providerToken, part.Text)
-		}
+	// The client's system prompt is preserved after the leading Antigravity identity prompt.
+	userPart := parsed.Request.SystemInstruction.Parts[len(parsed.Request.SystemInstruction.Parts)-1]
+	if !strings.Contains(userPart.Text, renamedForm) {
+		t.Errorf("system instruction text missing rewritten branding %q: %q", renamedForm, userPart.Text)
+	}
+	if strings.Contains(userPart.Text, providerToken) {
+		t.Errorf("system instruction text still contains the competing branding %q: %q", providerToken, userPart.Text)
 	}
 	for _, content := range parsed.Request.Contents {
 		for _, part := range content.Parts {

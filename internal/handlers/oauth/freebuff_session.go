@@ -140,7 +140,7 @@ func (h *OAuthHandler) HandleFreebuffSessionStatus(w http.ResponseWriter, r *htt
 		return
 	}
 	upReq.Header.Set("Authorization", "Bearer "+authToken)
-	upReq.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	upReq.Header.Set("User-Agent", "Freebuff-CLI/0.2.36")
 	upReq.Header.Set("Accept", "application/json")
 
 	resp, err := executor.DoFreebuffHTTP(r.Context(), nil, upReq)

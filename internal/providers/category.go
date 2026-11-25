@@ -187,6 +187,19 @@ func GetCatalogByCategory() map[Category][]ProviderMeta {
 		for _, meta := range ProviderRegistry {
 			catalog[meta.Category] = append(catalog[meta.Category], meta)
 		}
+		// The published prefix is what /v1/models serves, so it is what the
+		// dashboard must copy. It comes from GetProviderAlias, not from the
+		// registry entry's own alias field: the two differ for a handful of
+		// providers (`freebuff` publishes as "freebuff", not "fb"), and the
+		// published one is the value that resolves at the router.
+		for cat, metas := range catalog {
+			for i := range metas {
+				if metas[i].ModelPrefix == "" {
+					metas[i].ModelPrefix = GetProviderAlias(metas[i].ID)
+				}
+			}
+			catalog[cat] = metas
+		}
 		for cat := range catalog {
 			sort.SliceStable(catalog[cat], func(i, j int) bool {
 				if catalog[cat][i].Priority != catalog[cat][j].Priority {

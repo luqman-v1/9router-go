@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -193,8 +194,113 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 	return body
 }
 
+// normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
+// validation survives the model's Harmony reasoning channel. Groq answers
+// 400 json_validate_failed ("Failed to validate JSON") when a structured
+// response_format rides next to a raw/unparsed reasoning stream that leaks
+// analysis-channel text into the content. Pinning reasoning_format to
+// "parsed" moves the chain-of-thought into message.reasoning and leaves the
+// JSON payload clean. A client-supplied reasoning_format is respected.
+// Non-gpt-oss Groq models and non-JSON requests are left byte-identical.
+//
+// It also clamps reasoning_effort to Groq's enum for gpt-oss
+// (low|medium|high, probed live 2026-11-07: minimal/xhigh/auto/none/max all
+// answer 400). Out-of-range levels coming from the unified thinking pass
+// (the capability table advertises minimal..xhigh for gpt-oss) are folded to
+// the nearest valid level by rank; a valid level or an absent effort is
+// left untouched. This clamp runs on every gpt-oss request, not only JSON
+// ones, because the 400 is unrelated to response_format.
+func normalizeGroqGPTOSSRequest(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isGroqGPTOSSModel(model) {
+		return body
+	}
+	changed := false
+	if clamped, ok := clampGroqReasoningEffort(m["reasoning_effort"]); ok {
+		m["reasoning_effort"] = clamped
+		changed = true
+	}
+	if rf, ok := m["response_format"]; ok {
+		if rfMap, ok := rf.(map[string]any); ok {
+			if rfType, _ := rfMap["type"].(string); rfType == "json_object" || rfType == "json_schema" {
+				if _, exists := m["reasoning_format"]; !exists {
+					m["reasoning_format"] = "parsed"
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	if out, err := marshalStable(m); err == nil {
+		return out
+	}
+	return body
+}
+
+// clampGroqReasoningEffort folds a reasoning_effort outside Groq's
+// gpt-oss enum (low|medium|high) to the nearest valid level by rank.
+// Ranking follows the unified effort vocabulary (none < minimal < low <
+// medium < high < xhigh < max): anything at or below low becomes low,
+// anything at or above high becomes high, anything else (auto, unknown,
+// non-string) becomes medium. (clamped, true) when the wire value must
+// change; a valid level or an absent effort returns ("", false).
+func clampGroqReasoningEffort(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		if v == nil {
+			return "", false
+		}
+		return "medium", true
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "low", "medium", "high":
+		return "", false
+	case "", "none", "minimal", "default":
+		return "low", true
+	case "xhigh", "max", "ultra":
+		return "high", true
+	}
+	return "medium", true
+}
+
+// isGroqGPTOSSModel reports whether a Groq wire model id is a gpt-oss
+// Harmony model (openai/gpt-oss-120b, openai/gpt-oss-20b) whose reasoning
+// stream must be parsed for structured outputs to validate.
+func isGroqGPTOSSModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "gpt-oss")
+}
+
+// applyToolNameAlias rewrites req.Body to alias tool names that violate the
+// upstream's function-name constraint (over 64 chars, or carrying a char
+// outside [A-Za-z0-9_-]) for the providers that enforce it, and returns the
+// fitted body and map for response restoration. If the provider does not
+// enforce the limit or no name violates it, req.Body is unchanged and a nil map
+// is returned. translator.UsesToolNameHash is the single source of truth for
+// which providers that is (openai, azure, azure-openai, azure-ai).
+func applyToolNameAlias(req *Request) ([]byte, map[string]string) {
+	if !translator.UsesToolNameHash(req.Provider) {
+		return req.Body, nil
+	}
+	return translator.FitToolNamesForProvider(req.Body, req.Provider)
+}
+
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
+	// Alias tool names the upstream would reject (over 64 chars, or carrying a
+	// char outside [A-Za-z0-9_-]). OmniRoute #20258 spec:
+	// `${safePrefix}_${sha256(name)[:12]}`.
+	fittedBody, toolNameMap := applyToolNameAlias(req)
+	if len(toolNameMap) > 0 {
+		req.Body = fittedBody
+		req.ToolNameMap = mergeToolNameMaps(req.ToolNameMap, toolNameMap)
+	}
 	// Provider-scoped param rules from upstream paramSupport strip unsupported
 	// params on the outgoing body (executors/default.js:91). The openai rule
 	// renames max_tokens because current OpenAI models answer 400 "Use
@@ -205,6 +311,9 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	if req.Provider == "deepseek" {
 		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
 	}
+	if req.Provider == "groq" {
+		req.Body = normalizeGroqGPTOSSRequest(req.Body)
+	}
 	if req.Provider == "volcengine-ark" {
 		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
 		// than its output-token ceiling, so a client budget above it is folded
@@ -212,7 +321,35 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 		// declared maxOutput from the capability registry, capped at Ark's 4096.
 		req.Body = clampVolcengineArkGLM5OutputTokens(req.Provider, req.Body)
 	}
-	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
+	body := req.Body
+	if isMistralVibeRequest(req) {
+		// ForwardMistral normally does this before calling us; the guard keeps
+		// direct callers (tests and internal relays) on the same wire contract.
+		body = normalizeMistralVibeRequest(body)
+		if req.OnUpstreamError == nil {
+			req.OnUpstreamError = func(status int, detail []byte) ([]byte, bool) {
+				if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+					return nil, false
+				}
+				return snapMistralVibeReasoningEffort(body, detail)
+			}
+		}
+	}
+	// The response body is transferred to bodyCloser below, not leaked here.
+	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream) //nolint:bodyclose
+	if err != nil && req.OnUpstreamError != nil {
+		// Non-2xx answers arrive as a typed UpstreamError with the body already
+		// captured. A provider-scoped hook may repair a fixable param; replay
+		// at most once, then fall through to the original error.
+		var upstreamErr *proxy.UpstreamError
+		if errors.As(err, &upstreamErr) {
+			if rewritten, ok := req.OnUpstreamError(upstreamErr.StatusCode, upstreamErr.Body); ok {
+				req.OnUpstreamError = nil
+				body = rewritten
+				resp, err = proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, body, req.IsStream) //nolint:bodyclose
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("ForwardOpenAI upstream: %w", err)
 	}
@@ -255,6 +392,11 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 				if rerr != nil {
 					return fmt.Errorf("read upstream body: %w", rerr)
 				}
+				if isMistralVibeRequest(req) {
+					full := append(head, rest...)
+					full = normalizeMistralVibeCompletion(full)
+					return jsonResponse(req.Ctx, w, bytes.NewReader(full), req.TranslateResp, req.ResponseBuf)
+				}
 				return jsonResponse(req.Ctx, w, bytes.NewReader(append(head, rest...)), req.TranslateResp, req.ResponseBuf)
 			}
 		}
@@ -280,6 +422,14 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 		decloaked := DecloakClaudeResponseBody(raw, req.ToolNameMap)
 		return jsonResponse(req.Ctx, w, bytes.NewReader(decloaked), req.TranslateResp, req.ResponseBuf)
 	}
+	if isMistralVibeRequest(req) {
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		if rerr != nil {
+			return fmt.Errorf("read upstream body: %w", rerr)
+		}
+		raw = normalizeMistralVibeCompletion(raw)
+		return jsonResponse(req.Ctx, w, bytes.NewReader(raw), req.TranslateResp, req.ResponseBuf)
+	}
 	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
@@ -292,6 +442,7 @@ func execSSEStream(w http.ResponseWriter, upstream io.Reader, req *Request) erro
 		W: w, Upstream: upstream, Translate: req.TranslateResp, StartTime: startTime,
 		TTFT: req.TTFT, Buf: req.ResponseBuf, Ctx: req.Ctx, ToolNameMap: req.ToolNameMap,
 		LiftReasoningAliases: req.LiftReasoningAliases,
+		MistralVibe:          isMistralVibeRequest(req),
 	})
 }
 
@@ -317,6 +468,9 @@ type sseStreamOpts struct {
 	// LiftReasoningAliases patches passthrough deltas to expose alias-shaped
 	// thinking as reasoning_content (opencode quirk).
 	LiftReasoningAliases bool
+	// MistralVibe enables GLM content-part normalization and tool-call finish
+	// repair on the /v1/chat/completions wire.
+	MistralVibe bool
 }
 
 // sseStream pipes SSE chunks to client with optional format translation.
@@ -333,6 +487,11 @@ func sseStream(o sseStreamOpts) error {
 	// because translateResponse describes a Claude client, which a Responses
 	// client never sets.
 	if translator.NeedsResponsesBridge(ctx) {
+		if o.MistralVibe {
+			o.Upstream = &mistralVibeSSEPatchReader{
+				src: o.Upstream, patcher: &mistralVibeStreamPatcher{},
+			}
+		}
 		return streamChatToResponses(o)
 	}
 
@@ -346,6 +505,7 @@ func sseStream(o sseStreamOpts) error {
 			var writeErr error
 			doneSent := false
 			sawTerminal := false // saw message_delta (with stop_reason) or message_stop
+			var streamUsage *translator.OpenAIUsage
 			err := proxy.ScanStream(upstream, func(chunk []byte) {
 				if writeErr != nil || doneSent {
 					return
@@ -372,11 +532,13 @@ func sseStream(o sseStreamOpts) error {
 						doneSent = true
 						return
 					}
-					if ttft != nil && *ttft == 0 {
-						*ttft = time.Since(startTime).Milliseconds()
+					if acc := translator.AccumulateClaudeStreamUsage(streamUsage, ev.Payload); acc != nil && acc != streamUsage {
+						streamUsage = acc
+						translator.SetUsage(ctx, streamUsage)
 					}
+					markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 					if buf != nil {
-						buf.Write(ev.Payload)
+						_, _ = buf.Write(ev.Payload)
 					}
 					var line []byte
 					if ev.Type != "" {
@@ -419,14 +581,16 @@ func sseStream(o sseStreamOpts) error {
 		// the  closing tag can be split across chunk boundaries.
 		composerDecoder := &composerThinkingDecoder{}
 		patchers = append(patchers, composerDecoder.Process)
+		if o.MistralVibe {
+			patchers = append(patchers, (&mistralVibeStreamPatcher{}).Process)
+		}
+		var streamUsage *translator.OpenAIUsage
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
-			if ttft != nil && *ttft == 0 {
-				*ttft = time.Since(startTime).Milliseconds()
-			}
+			markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 			if buf != nil {
-				buf.Write(chunk)
+				_, _ = buf.Write(chunk)
 			}
-			captureUsageFromSSEChunk(ctx, chunk)
+			streamUsage = captureUsageFromSSEChunk(ctx, streamUsage, chunk)
 		}, patchers...)
 	}
 
@@ -451,11 +615,9 @@ func sseStream(o sseStreamOpts) error {
 		if bytes.Contains(translated, []byte("[DONE]")) {
 			finished = true
 		}
-		if ttft != nil && *ttft == 0 {
-			*ttft = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 		if buf != nil {
-			buf.Write(translated)
+			_, _ = buf.Write(translated)
 		}
 		hw.Write(translated)
 		if flusher != nil {
@@ -487,17 +649,34 @@ func sseStream(o sseStreamOpts) error {
 	return err
 }
 
-func captureUsageFromSSEChunk(ctx context.Context, chunk []byte) {
+// captureUsageFromSSEChunk accumulates usage from SSE frames across chunks.
+// acc carries the running Claude stream usage (message_start + message_delta)
+// across calls; the caller threads it back in. A Claude event is handled first
+// because a message_delta carries only output_tokens, and the generic parsers
+// would otherwise replace the prompt/cache figures set at message_start.
+func captureUsageFromSSEChunk(ctx context.Context, acc *translator.OpenAIUsage, chunk []byte) *translator.OpenAIUsage {
 	const maxUsageFrame = 1 << 20
 	trimmed := bytes.TrimSpace(chunk)
 	if len(trimmed) > maxUsageFrame {
 		trimmed = trimmed[:maxUsageFrame]
 	}
 	if !bytes.Contains(trimmed, []byte("data:")) {
-		return
+		return acc
+	}
+	// Every parser the scan feeds requires the JSON `"usage"` key, so a chunk
+	// without the substring cannot yield usage. The check is what keeps this
+	// cheap: without it, each read pays a fresh ScanStream — a new 64KB
+	// scanner buffer per call — on content chunks that never carry usage.
+	if !bytes.Contains(trimmed, []byte(`"usage"`)) {
+		return acc
 	}
 	_ = proxy.ScanStream(bytes.NewReader(trimmed), func(payload []byte) {
 		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+			return
+		}
+		if next := translator.AccumulateClaudeStreamUsage(acc, payload); next != acc {
+			acc = next
+			translator.SetUsage(ctx, acc)
 			return
 		}
 		usage := translator.ParseResponseUsage(payload)
@@ -505,9 +684,11 @@ func captureUsageFromSSEChunk(ctx context.Context, chunk []byte) {
 			usage = translator.ParseResponsesUsage(payload)
 		}
 		if usage != nil {
+			acc = usage
 			translator.SetUsage(ctx, usage)
 		}
 	})
+	return acc
 }
 
 // jsonResponse writes the upstream JSON response with optional translation.
@@ -540,7 +721,7 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 			return &proxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := proxy.EmptyUpstreamError(body); err != nil {
+	} else if err := proxy.EmptyUpstreamError(body); err != nil && !proxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 

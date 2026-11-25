@@ -183,7 +183,7 @@ func (c *deepSeekHifCache) fetchViaTransport(ctx context.Context, turn deepSeekT
 
 	response, err := turn.transport.send(fetchCtx, http.MethodGet, url, nil, map[string]string{
 		"accept":             "*/*",
-		"accept-encoding":    "gzip, deflate, br, zstd",
+		"accept-encoding":    "gzip, deflate",
 		"accept-language":    "en-US,en;q=0.9",
 		"origin":             turn.origin,
 		"priority":           "u=1, i",

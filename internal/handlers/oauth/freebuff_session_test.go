@@ -108,8 +108,8 @@ func TestHandleFreebuffSessionStatus_ActiveSession(t *testing.T) {
 	if authHeader != "Bearer fb-secret-token-123" {
 		t.Errorf("expected Authorization Bearer fb-secret-token-123, got %q", authHeader)
 	}
-	if uaHeader != "codebuff-cli/0.0.138" {
-		t.Errorf("expected User-Agent codebuff-cli/0.0.138, got %q", uaHeader)
+	if uaHeader != "Freebuff-CLI/0.2.36" {
+		t.Errorf("expected User-Agent Freebuff-CLI/0.2.36, got %q", uaHeader)
 	}
 	if acceptHeader != "application/json" {
 		t.Errorf("expected Accept application/json, got %q", acceptHeader)

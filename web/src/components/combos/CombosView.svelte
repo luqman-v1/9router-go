@@ -10,6 +10,8 @@
     updateComboStrategy,
     updateComboBudgetCalls,
     updateComboBudgetWindow,
+    updateComboContextWindowMode,
+    updateComboContextWindow,
     updateFirstTokenGrace,
     updateFirstTokenTimeout,
     updateJudgeModel,
@@ -306,6 +308,38 @@
       console.error('Failed to update combo budget window:', e)
     }
   }
+// The advertised context window mode rides beside the budget: min/max/min
+// fallback decide what /v1/models promises, and custom needs its own
+// explicit window written alongside it.
+async function handleSetContextWindowMode(
+  combo: Combo,
+  mode: 'min' | 'max' | 'custom' | null
+) {
+  const previous = comboStrategies
+  const updated = updateComboContextWindowMode(comboStrategies, combo.name, mode)
+  if (updated === previous) return
+  comboStrategies = updated
+  try {
+    await api.patchSettings({ comboStrategies: updated })
+    onRefresh()
+  } catch (e) {
+    if (comboStrategies === updated) comboStrategies = previous
+    console.error('Failed to update combo context window mode:', e)
+  }
+}
+async function handleSetContextWindow(combo: Combo, contextWindow: number) {
+  const previous = comboStrategies
+  const updated = updateComboContextWindow(comboStrategies, combo.name, contextWindow)
+  if (updated === previous) return
+  comboStrategies = updated
+  try {
+    await api.patchSettings({ comboStrategies: updated })
+    onRefresh()
+  } catch (e) {
+    if (comboStrategies === updated) comboStrategies = previous
+    console.error('Failed to update combo context window:', e)
+  }
+}
 
   async function handleSetJudge(comboName: string, judgeModel: string) {
     const updated = updateJudgeModel(comboStrategies, comboName, judgeModel)
@@ -382,15 +416,16 @@
     models: string[],
     matchRules: SmartRule[],
     timeoutMs: number,
-    graceMs: number | undefined
+    graceMs: number | undefined,
+    customPrompt: string
   ) {
     isSavingCombo = true
     comboSaveError = ''
     try {
       if (editingCombo) {
-        await api.updateCombo(editingCombo.id, { name, models, matchRules })
+        await api.updateCombo(editingCombo.id, { name, models, matchRules, customPrompt })
       } else {
-        await api.createCombo({ name, models, strategy: 'fallback', matchRules })
+        await api.createCombo({ name, models, strategy: 'fallback', matchRules, customPrompt })
       }
       // Strategies are keyed by combo name, so the timeout and grace are
       // written under the saved name, in one patch, and only when they differ
@@ -577,7 +612,7 @@
           type="button"
           onclick={() => (searchQuery = '')}
           aria-label="Clear search"
-          class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-muted transition-colors hover:text-text-main"
+          class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-2.5 sm:p-1 text-text-muted transition-colors hover:text-text-main"
         >
           <X class="h-4 w-4" />
         </button>
@@ -694,6 +729,8 @@
             onToggleStoredOrder={handleToggleStoredOrder}
             onSetBudgetCalls={handleSetBudgetCalls}
             onSetBudgetWindow={handleSetBudgetWindow}
+            onSetContextWindowMode={handleSetContextWindowMode}
+            onSetContextWindow={handleSetContextWindow}
             onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
             onClearJudge={clearJudge}
             onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}
@@ -706,6 +743,7 @@
             testData={comboTestResults[combo.id]}
             isSelected={selectedIds.has(combo.id)}
             onToggleSelect={toggleSelect}
+            {providerNodes}
           />
         {/each}
       </div>

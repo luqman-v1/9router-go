@@ -53,11 +53,11 @@ func (h *DashboardHandler) HandleAutoFamilyCombos(w http.ResponseWriter, r *http
 			return
 		}
 		if existing == nil {
-			if err := h.Repo.CreateCombo(id, name, autoFamilyComboKind, string(modelsJSON), "fallback"); err != nil {
+			if err := h.Repo.CreateCombo(id, name, autoFamilyComboKind, string(modelsJSON), "fallback", ""); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-		} else if err := h.Repo.UpdateCombo(id, name, autoFamilyComboKind, string(modelsJSON), "fallback"); err != nil {
+		} else if err := h.Repo.UpdateCombo(id, name, autoFamilyComboKind, string(modelsJSON), "fallback", ""); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

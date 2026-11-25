@@ -1,0 +1,86 @@
+name: PG smoke
+
+# §4.H.5 gate: any PR touching internal/db or internal/dbmigrate must boot
+# against PostgreSQL 16, run schema bootstrap, exercise the JSON shim
+# expressions, and complete an export/import round-trip. The SQLite suite
+# staying green does not satisfy this.
+
+on:
+  pull_request:
+    paths:
+      - "internal/db/**"
+      - "internal/dbmigrate/**"
+      - ".github/workflows/pg-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "internal/db/**"
+      - "internal/dbmigrate/**"
+
+jobs:
+  pg-smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: router
+          POSTGRES_USER: router
+          POSTGRES_PASSWORD: router
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U router -d router"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build web
+        run: cd web && bun install --frozen-lockfile && bun run build
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests (SQLite)
+        run: go test -count=1 ./internal/db/... ./internal/dbmigrate/...
+
+      - name: Differential JSON shim tests (PG16)
+        env:
+          TEST_PG_DSN: postgres://router:router@localhost:5432/router?sslmode=disable
+        run: go test -tags=integration -count=1 -run TestJSONShimDifferential ./internal/db/ -v
+
+      - name: Export/Import round-trip
+        env:
+          TEST_PG_DSN: postgres://router:router@localhost:5432/router?sslmode=disable
+        run: |
+          go build -o /tmp/9router-go ./cmd/9router-go/  # web/dist already built above
+
+          # Create a small SQLite fixture with one row in each core table.
+          TMP=$(mktemp -d)
+          sqlite3 "$TMP/fixture.sqlite" <<SQL
+            CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK(id = 1), data TEXT NOT NULL);
+            INSERT INTO settings VALUES(1, '{"theme":"dark"}');
+            CREATE TABLE _meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO _meta VALUES('schemaVersion', '1');
+          SQL
+
+          # Export → Import → verify row count on PG.
+          /tmp/9router-go db export --from "$TMP/fixture.sqlite" --out "$TMP/dump/"
+          /tmp/9router-go db import --to "$TEST_PG_DSN" --from "$TMP/dump/"
+
+          psql "$TEST_PG_DSN" -c "SELECT COUNT(1) FROM settings" | grep -q "1" \
+            || { echo "settings row missing on PG"; exit 1; }
+          echo "PG smoke round-trip OK"

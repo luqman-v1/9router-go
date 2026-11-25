@@ -77,6 +77,13 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("transform body: %w", err)
 	}
+	responsesLite := false
+	if req.Provider != "perplexity-agent" {
+		transformedBody, responsesLite, err = shapeCodexResponsesBody(transformedBody, codexLiteRequested(req.Ctx))
+		if err != nil {
+			return fmt.Errorf("shape Codex body: %w", err)
+		}
+	}
 
 	// Resolve conversation-stable session_id for Codex prompt caching
 	sessionID := req.SessionID
@@ -95,8 +102,6 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 
 	// Inject prompt_cache_key for stable Codex prompt caching if not already set
 	transformedBody = injectCodexPromptCacheKey(transformedBody, sessionID)
-
-	responsesLite := codexResponsesLiteBody(transformedBody)
 
 	// The ChatGPT Codex backend rejects unsupported parameters and requires the allowlist
 	transformedBody = stripCodexUnsupportedTokenParams(transformedBody, responsesLite)
@@ -258,8 +263,34 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		return err
 	}
 
+	mode := kiroCreateResponseMode()
+	hasConversationState := kiroBodyHasConversationState(body)
+
+	// Direct mode: if configured to always use CreateResponse and the body has
+	// conversationState, try it first. Any HTTP answer (ok or not) is used;
+	// only a network failure/no response falls through to legacy.
+	if mode == "always" && hasConversationState {
+		crResp, crErr := tryKiroCreateResponse(ctx, req, body)
+		if crResp != nil {
+			defer func() { _ = crResp.Body.Close() }()
+			return writeKiroCreateResponse(w, req, crResp)
+		}
+		_ = crErr // network failure — continue to legacy
+	}
+
 	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, body, req.IsStream, req.ConnData)
 	if err != nil {
+		// auto: a 429 carrying USER_REQUEST_RATE_EXCEEDED means this account is
+		// enrolled in the create_response_api experiment. Fall back in-request
+		// to /v1/responses; never touch generic 429 cooldown/failover.
+		if mode == "auto" && hasConversationState && kiroRateExceededError(err) {
+			crResp, crErr := tryKiroCreateResponse(ctx, req, body)
+			if crResp != nil {
+				defer func() { _ = crResp.Body.Close() }()
+				return writeKiroCreateResponse(w, req, crResp)
+			}
+			_ = crErr
+		}
 		return fmt.Errorf("ForwardKiro: %w", err)
 	}
 	defer resp.Body.Close()
@@ -267,6 +298,67 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		return handleKiroStream(w, req, resp.Body)
 	}
 	return handleKiroNonStream(w, req, resp.Body)
+}
+
+// kiroBodyHasConversationState reports whether the translated upstream body is
+// a Kiro conversationState envelope (the only shape CreateResponse accepts).
+func kiroBodyHasConversationState(body []byte) bool {
+	var probe map[string]any
+	if json.Unmarshal(body, &probe) != nil {
+		return false
+	}
+	_, ok := probe["conversationState"]
+	return ok
+}
+
+// kiroRateExceededError matches the experiment's 429 marker without relying on
+// error text: UpstreamError carries the raw body.
+func kiroRateExceededError(err error) bool {
+	var upstream *proxy.UpstreamError
+	if !errors.As(err, &upstream) {
+		return false
+	}
+	return upstream.StatusCode == http.StatusTooManyRequests &&
+		bytes.Contains(upstream.Body, []byte(kiroCreateResponseMarker))
+}
+
+// tryKiroCreateResponse builds and sends the /v1/responses request. A non-nil
+// response means an HTTP answer arrived; nil means a network failure.
+func tryKiroCreateResponse(ctx context.Context, req *Request, kiroBody []byte) (*http.Response, error) {
+	crBody, err := buildKiroCreateResponseBody(kiroBody, req.ModelName, req.ConnData)
+	if err != nil {
+		return nil, err
+	}
+	region := ""
+	if req.ConnData != nil {
+		region, _ = req.ConnData["region"].(string)
+	}
+	endpoint := kiroCreateResponseURL
+	if endpoint == "" {
+		endpoint = kiroCreateResponseEndpoint(region)
+	}
+	headers := buildKiroCreateResponseHeaders(req.APIKey, req.ConnData, crBody)
+	return executeKiroCreateResponse(ctx, req.Client, endpoint, headers, crBody)
+}
+
+// writeKiroCreateResponse turns the CreateResponse HTTP answer into the
+// client's requested format. The CreateResponse output is SSE — never feed it
+// to the binary EventStream parser used by the legacy Kiro path.
+func writeKiroCreateResponse(w http.ResponseWriter, req *Request, resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
+	}
+	model := req.ModelName
+	if model == "" {
+		model = "kiro"
+	}
+	stream := kiroCreateResponseStream(req.Ctx, resp.Body, model)
+	defer func() { _ = stream.Close() }()
+	if req.IsStream {
+		return execSSEStream(w, stream, req)
+	}
+	return jsonResponse(req.Ctx, w, stream, req.TranslateResp, req.ResponseBuf)
 }
 
 // kiroUpstreamBody translates an OpenAI chat body into the Kiro envelope,
@@ -304,16 +396,17 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 	// plane; fold them onto the dotted upstream alias.
 	model = normalizeKiroUpstreamModelId(model)
 
-	profileArn := ""
+	profileArn, authMethod := "", ""
 	if req.ConnData != nil {
 		if s, ok := req.ConnData["profileArn"].(string); ok {
 			profileArn = strings.TrimSpace(s)
 		}
+		authMethod, _ = req.ConnData["authMethod"].(string)
 	}
 
 	out, err := translator.OpenAIToKiro(req.Body, translator.KiroTranslateOptions{
 		Model:      model,
-		ProfileArn: profileArn,
+		ProfileArn: providers.KiroEffectiveProfileARN(authMethod, profileArn),
 	})
 	if err != nil {
 		log.Error("executor", "kiro translation failed", "model", model, "error", err)
@@ -327,6 +420,11 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 
 // ForwardAzure forwards to Azure OpenAI with dynamic URL from env vars.
 func ForwardAzure(w http.ResponseWriter, req *Request) error {
+	fittedBody, toolNameMap := applyToolNameAlias(req)
+	if len(toolNameMap) > 0 {
+		req.Body = fittedBody
+		req.ToolNameMap = mergeToolNameMaps(req.ToolNameMap, toolNameMap)
+	}
 	var oreq struct {
 		Model string `json:"model"`
 	}
@@ -368,11 +466,15 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	if req.IsStream {
 		r.Header.Set("Accept", "text/event-stream")
 	}
+	if req.IsStream && r.Header.Get("Accept-Encoding") == "" {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
+	proxy.UnwrapIdentityGzip(r, resp)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -657,11 +759,15 @@ func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Req
 			r.Header.Set(k, v)
 		}
 	}
+	if r.Header.Get("Accept-Encoding") == "" {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	proxy.UnwrapIdentityGzip(r, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
@@ -712,7 +818,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		// The free-tier gate fingerprints the lowercase tool quartet; capitalised
 		// variants from Claude Code CLI are renamed here and restored on the
 		// response (translator.ConcealFingerprintTools).
-		transformedBody, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(transformedBody, true, isOpenCodeAutoToolChoiceModel(cleanModel))
+		transformedBody, toolNameMap := shapeOpenCodeFreeBody(transformedBody, true, cleanModel)
 		transformedBody = translator.ApplyFingerprintSystemPrompt(transformedBody)
 		req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 		w = NewToolNameRestoringWriter(w, toolNameMap)
@@ -734,9 +840,9 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 			return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, transformedBody, req.IsStream)
 		}, func() (*http.Response, error) {
 			return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, transformedBody, req.IsStream)
-		}, rotateOpencodeStableSession(opencodeStableSessionKey(req, true), hint, func(session string) {
+		}, opencodeSessionRotation(req, true, hint, func(session string) {
 			cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, req.IsStream)
-		}))
+		}), forgetOpencodeStableSession(req, true, hint))
 		if err != nil {
 			return fmt.Errorf("ForwardOpencode (muse-spark responses): %w", err)
 		}
@@ -744,15 +850,21 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 		}
 
+		// First SSE frame before the 200 head, same as the chat lane: a
+		// refusal or a stall must still be able to fail over.
+		responsesBody, ferr := awaitOpenCodeFirstEvent(ctx, resp, 0)
+		if ferr != nil {
+			return ferr
+		}
 		if req.IsStream {
-			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-responses")
+			stallReader := proxy.NewStallReaderWithContext(ctx, responsesBody, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-responses")
 			defer stallReader.Close()
 			return handleCodexStream(w, req, stallReader)
 		}
-		return handleCodexStream(w, req, resp.Body)
+		return handleCodexStream(w, req, responsesBody)
 	}
 
 	body := InjectReasoningContent(req.Body, "opencode")
@@ -763,7 +875,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	// there (upstream quirks.reasoningAliasFields).
 	req.LiftReasoningAliases = true
 	// opencode Chat Completions path: same conceal + restore of tool names.
-	body, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel)
 	body = translator.ApplyFingerprintSystemPrompt(body)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
@@ -783,6 +895,11 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		if cleanModel != "" {
 			reqMap["model"] = cleanModel
 		}
+		// A reasoning model spends the same output ceiling on its thinking as on
+		// the answer, so a small client budget returns empty content with
+		// finish_reason "length" — see output_budget.go for the measurements.
+		clampOpenCodeOutputBudget(reqMap, "opencode", cleanModel)
+		includeStreamUsage(reqMap)
 		// The free backend validates reasoning_effort against the plain
 		// OpenAI enum and answers 400 "Invalid option" for "auto", which
 		// adaptive thinking (Claude Code's thinking:{type:"adaptive"})
@@ -794,7 +911,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		// Deterministic marshaling keeps the serialized request prefix
 		// stable across turns, which DeepSeek's prefix prompt cache
 		// requires; json/v2 randomizes map member order by default.
-		if b, err := marshalStable(reqMap); err == nil {
+		if b, err := marshalOpenCodeFreeChatBody(reqMap); err == nil {
 			body = b
 		}
 	}
@@ -814,9 +931,9 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, body, true)
 	}, func() (*http.Response, error) {
 		return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, body, true)
-	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, true), hint, func(session string) {
+	}, opencodeSessionRotation(req, true, hint, func(session string) {
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, true)
-	}))
+	}), forgetOpencodeStableSession(req, true, hint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencode: %w", err)
 	}
@@ -824,13 +941,22 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+	}
+
+	// Read the first SSE frame before committing 200 OK. The free-tier gate can
+	// answer a refusal inside a 200 frame, or stall before its first one, and
+	// once the response head is on the wire no failover is possible — so this
+	// has to happen here rather than inside the stream writer.
+	streamBody, ferr := awaitOpenCodeFirstEvent(ctx, resp, 0)
+	if ferr != nil {
+		return ferr
 	}
 
 	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+		return execSSEStream(w, streamBody, req)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(streamBody, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read opencode response: %w", err)
 	}
@@ -1051,6 +1177,8 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	// (upstream thinkingUnified captureThinking)
 	applyClaudeThinkingDisplay(reqMap)
 	applyClaudeThinkingType(reqMap, provider, model)
+	SanitizeClaudeThinking(reqMap)
+	applyClaudeThinkingOffAndToolChoice(reqMap, provider, model)
 	enforceClaudeThinkingSampling(reqMap)
 	delete(reqMap, "stream_options")
 	delete(reqMap, "store")
@@ -1062,6 +1190,12 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	if provider == "minimax" || provider == "minimax-cn" {
 		delete(reqMap, "output_config")
 	}
+	// 6. Carry an OpenAI response_format onto the Claude request. It is an
+	// OpenAI-only field the strict Claude API rejects, and dropping it silently
+	// turns a structured-output ask into free text. Runs last, after every
+	// tool/tool_choice/thinking normalization above, so its decision (forced
+	// tool vs system-prompt instruction) is made on the final request state.
+	translator.CarryClaudeStructuredOutput(reqMap)
 
 	updated, err := marshalStable(reqMap)
 	if err != nil {
@@ -1090,6 +1224,65 @@ func enforceClaudeThinkingSampling(reqMap map[string]any) {
 	if hasTemp || hasTopP {
 		reqMap["temperature"] = 1.0
 		delete(reqMap, "top_p")
+	}
+}
+
+// applyClaudeThinkingOffAndToolChoice ports the Anthropic per-model rules that
+// upstream applies in formats/claude.js prepareClaudeRequest (decolua/9router
+// f3e1f716). Runs on every Claude-bound body so an OpenAI client, a native
+// passthrough and the provider-level "off" override are all covered.
+//
+//   - thinkingCanDisable:false: a model that cannot switch thinking off
+//     (Opus 5.5) must never see thinking.type "disabled" — upstream clamps the
+//     request to minimal effort, drops the thinking block and sets
+//     output_config.effort "low" (thinkingUnified.js applyFormat claude-adaptive).
+//   - thinkingOffType: a model that rejects thinking "disabled" (Sonnet 5.5) takes
+//     thinkingOffType ("between_tools") in its place, and between_tools only
+//     accepts effort up to high.
+//   - forcedToolChoice: a model that rejects forced tool_choice pinning
+//     ("any" or a named tool) gets tool_choice downgraded to "auto". "required"
+//     is left untouched, matching upstream, which only downgrades "any"/"tool".
+func applyClaudeThinkingOffAndToolChoice(reqMap map[string]any, provider, model string) {
+	caps := providers.GetCapabilitiesForModel(provider, model)
+	thinking, _ := reqMap["thinking"].(map[string]any)
+	disabled := thinking != nil && thinking["type"] == "disabled"
+
+	if disabled && !caps.CanDisableThinking() {
+		// thinking can't be switched off: clamp to minimal, drop the block,
+		// and carry the effort on output_config (upstream claude-adaptive).
+		delete(reqMap, "thinking")
+		outCfg, _ := reqMap["output_config"].(map[string]any)
+		if outCfg == nil {
+			outCfg = map[string]any{}
+			reqMap["output_config"] = outCfg
+		}
+		if _, set := outCfg["effort"]; !set {
+			outCfg["effort"] = "low"
+		}
+		disabled = false
+	}
+
+	if disabled && caps.ThinkingOffType != "" {
+		reqMap["thinking"] = map[string]any{"type": caps.ThinkingOffType}
+		if oc, _ := reqMap["output_config"].(map[string]any); oc != nil {
+			switch oc["effort"] {
+			case "xhigh", "max":
+				oc["effort"] = "high"
+			}
+		}
+	}
+
+	if !caps.CanForceToolChoice() {
+		if tc, _ := reqMap["tool_choice"].(map[string]any); tc != nil {
+			switch tc["type"] {
+			case "any", "tool":
+				graded := map[string]any{"type": "auto"}
+				if v, ok := tc["disable_parallel_tool_use"]; ok {
+					graded["disable_parallel_tool_use"] = v
+				}
+				reqMap["tool_choice"] = graded
+			}
+		}
 	}
 }
 
@@ -1293,17 +1486,26 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 		}
 		role, _ := msgMap["role"].(string)
 
-		if role == "system" {
+		// Anthropic allows only user/assistant/system; OpenAI's newer
+		// "developer" role is the same thing as system.
+		if role == "system" || role == "developer" {
+			// Upstream #5739: client billing headers vary per Claude Code turn and
+			// must not enter the cached system prompt. Anthropic only ignores the
+			// header when it is the separate system[0] block supplied by cloaking.
 			switch c := msgMap["content"].(type) {
 			case string:
-				if strings.TrimSpace(c) != "" {
-					systemParts = append(systemParts, c)
+				text := translator.StripAnthropicBillingHeader(c)
+				if strings.TrimSpace(text) != "" {
+					systemParts = append(systemParts, text)
 				}
 			case []any:
 				for _, block := range c {
 					if bMap, ok := block.(map[string]any); ok {
-						if text, ok := bMap["text"].(string); ok && strings.TrimSpace(text) != "" {
-							systemParts = append(systemParts, text)
+						if text, ok := bMap["text"].(string); ok {
+							text = translator.StripAnthropicBillingHeader(text)
+							if strings.TrimSpace(text) != "" {
+								systemParts = append(systemParts, text)
+							}
 						}
 					}
 				}
@@ -1319,7 +1521,7 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 			// that re-serialize the block through a strict Rust struct — Zed
 			// answers "missing field `is_error`" to a request Anthropic itself
 			// accepts. Emitting it always keeps one body valid on both.
-			isError, _ := msgMap["is_error"].(bool)
+			isError := translator.ToolResultIsError(msgMap)
 			intermediate = append(intermediate, map[string]any{
 				"role": "user",
 				"content": []any{
@@ -1514,44 +1716,25 @@ func deriveOpencodeSession(rawSession, clientTool, connID string) string {
 	return proxy.TranslateOpenCodeSessionID(raw, clientTool)
 }
 
-// museSparkMinOutputTokens is the output-budget floor for Muse Spark. These
-// models spend 570-1320 hidden reasoning tokens before emitting any completion
-// text, so a caller-set budget below the floor is consumed entirely by
-// reasoning: the upstream answers 200 with an empty message, or stalls the
-// stream until the gateway's watchdog reports a 502, and the caller sees a
-// failure that names neither the model nor the budget.
-//
-// 512 is upstream's measured boundary (max_tokens 64/100 → empty content,
-// 256/512/1024 → content present), not a round number picked here. Port of
-// OmniRoute MUSE_SPARK_MIN_OUTPUT_TOKENS
-// (open-sse/executors/opencodeMuseSpark.ts).
-const museSparkMinOutputTokens = 512
-
 // museSparkOutputBudgetFields are the three spellings an OpenAI-shaped request
 // may use for its output cap: Chat Completions' max_tokens, Responses'
-// max_output_tokens, and the OpenAI-compatible max_completion_tokens. A Muse
-// Spark request may arrive on either lane, so all three are clamped.
+// max_output_tokens, and the OpenAI-compatible max_completion_tokens. A request
+// may arrive on either lane, so all three are clamped.
 var museSparkOutputBudgetFields = []string{"max_tokens", "max_output_tokens", "max_completion_tokens"}
 
-// clampMuseSparkOutputBudget raises a caller-set output budget to the floor and
-// returns the fields it changed. It only ever raises: an explicit larger budget
-// and a request that set no budget at all stay byte-identical, because
-// synthesizing a cap the caller never asked for would silently shorten real
-// answers.
+// clampMuseSparkOutputBudget raises a caller-set output budget to the floor for
+// the muse-spark responses lane. The floor and the measurement behind it live
+// in output_budget.go; this wrapper only supplies the lane's scope.
+//
+// Muse Spark spends 570-1320 hidden reasoning tokens before emitting any
+// completion text, so a budget below the floor is consumed entirely by
+// reasoning: the upstream answers 200 with an empty message, or stalls the
+// stream until the gateway's watchdog reports a 502.
 func clampMuseSparkOutputBudget(m map[string]any, cleanModel string) []string {
 	if m == nil || !isOpencodeResponsesModel(cleanModel) {
 		return nil
 	}
-	var raised []string
-	for _, field := range museSparkOutputBudgetFields {
-		budget, ok := outputBudgetOf(m[field])
-		if !ok || budget >= museSparkMinOutputTokens {
-			continue
-		}
-		m[field] = museSparkMinOutputTokens
-		raised = append(raised, field)
-	}
-	return raised
+	return clampOutputBudget(m, true, providers.GetCapabilitiesForModel("opencode", cleanModel).MaxOutput)
 }
 
 // outputBudgetOf reads the numeric shape an output cap decodes to. A JSON
@@ -1699,6 +1882,8 @@ func opencodeGoInferenceBase(base string) string {
 	switch {
 	case strings.HasSuffix(base, "/zen/go/v1"):
 		return strings.TrimSuffix(base, "/zen/go/v1") + "/inference/openai/v1"
+	case strings.HasSuffix(base, "/inference/go/openai/v1"):
+		return strings.TrimSuffix(base, "/inference/go/openai/v1") + "/inference/openai/v1"
 	case strings.HasSuffix(base, "/inference/openai/v1"):
 		return base
 	case strings.HasSuffix(base, "/inference/v1"):
@@ -1714,7 +1899,7 @@ func opencodeGoInferenceBase(base string) string {
 // Responses lane upstream), v2 fingerprint, public credentials.
 func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel string) error {
 	body := InjectReasoningContent(req.Body, "opencode-go")
-	body, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel)
 	body = translator.ApplyFingerprintSystemPrompt(body)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
@@ -1730,7 +1915,11 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		if cleanModel != "" {
 			reqMap["model"] = cleanModel
 		}
-		if b, err := marshalStable(reqMap); err == nil {
+		// Same reasoning-budget floor as the free chat lane: this lane reaches
+		// the same keyless gate, so the same empty-answer failure applies.
+		clampOpenCodeOutputBudget(reqMap, "opencode-go", cleanModel)
+		includeStreamUsage(reqMap)
+		if b, err := marshalOpenCodeFreeChatBody(reqMap); err == nil {
 			body = b
 		}
 	}
@@ -1750,9 +1939,9 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		return forwardOpencodeRequest(ctx, req.Client, &cfg, "public", body, true)
 	}, func() (*http.Response, error) {
 		return forwardOpencodeRequestDirect(ctx, &cfg, "public", body, true)
-	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, true), hint, func(session string) {
+	}, opencodeSessionRotation(req, true, hint, func(session string) {
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(baseHeaders, session, true)
-	}))
+	}), forgetOpencodeStableSession(req, true, hint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (free lane): %w", err)
 	}
@@ -1760,13 +1949,22 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+	}
+
+	// Read the first SSE frame before committing 200 OK. The free-tier gate can
+	// answer a refusal inside a 200 frame, or stall before its first one, and
+	// once the response head is on the wire no failover is possible — so this
+	// has to happen here rather than inside the stream writer.
+	streamBody, ferr := awaitOpenCodeFirstEvent(ctx, resp, 0)
+	if ferr != nil {
+		return ferr
 	}
 
 	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+		return execSSEStream(w, streamBody, req)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(streamBody, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read opencode-go free response: %w", err)
 	}
@@ -1796,7 +1994,7 @@ func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, se
 		geminiURL = fmt.Sprintf("%s/%s:%s", base, cleanModel, action)
 	}
 
-	geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(req.Body, req.SessionID)
+	geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(req.Body, req.SessionID, req.APIKeyID)
 	if err != nil {
 		return fmt.Errorf("translate to Gemini for opencode-go: %w", err)
 	}
@@ -1827,7 +2025,7 @@ func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, se
 	}
 
 	if req.IsStream {
-		return geminiStream(w, resp.Body, ctx)
+		return geminiStream(w, resp.Body, ctx, req)
 	}
 	return geminiNonStream(w, resp.Body)
 }
@@ -1876,6 +2074,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		// The lane URL is what a relay forwards to, so it is built without a relay
 		// branch.
 		cfg := *req.Config
+		cfg.BaseURL = strings.Replace(cfg.BaseURL, "opencode.ai/zen/go/v1", "opencode.ai/inference/go/openai/v1", 1)
 		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
 			if strings.HasSuffix(baseURL, "/chat/completions") {
@@ -1915,7 +2114,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 		}
 
 		if req.IsStream {
@@ -1927,8 +2126,8 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 
 	if opencodeGoMessagesModels[reqObj.Model] || opencodeGoMessagesModels[cleanModel] {
-		// Route to /zen/go/v1/messages (Anthropic/Claude format)
-		messagesURL := "https://opencode.ai/zen/go/v1/messages"
+		// Route to /inference/go/anthropic/v1/messages (Anthropic/Claude format)
+		messagesURL := "https://opencode.ai/inference/go/anthropic/v1/messages"
 		if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
 			base := strings.TrimRight(req.Config.BaseURL, "/")
 			if strings.HasSuffix(base, "/chat/completions") {

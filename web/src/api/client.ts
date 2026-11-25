@@ -36,7 +36,16 @@ export interface ProviderConnection {
   lastErrorSource?: 'chat' | null
   displayName?: string | null
   assignedModel?: string | null
-  providerSpecificData?: { assignedModel?: string | null; [key: string]: unknown }
+  mediaEnabled?: boolean
+  isMediaActive?: boolean
+  disabledKinds?: string[]
+  providerSpecificData?: {
+    assignedModel?: string | null
+    disabledKinds?: string[]
+    mediaEnabled?: boolean
+    isMediaActive?: boolean
+    [key: string]: unknown
+  }
 }
 
 export interface Combo {
@@ -49,6 +58,8 @@ export interface Combo {
   updatedAt: string
   /** Raw JSON of the combo's smart rules. Absent means the combo has none. */
   matchRules?: string
+  /** Combo-specific system prompt; unset falls back to the global custom prompt. */
+  customPrompt?: string
   /** Derived server-side: the members the rules currently own. */
   autoMembers?: string[]
 }
@@ -102,16 +113,21 @@ export interface ModelCaps {
  * A model the gateway has confirmed is gone upstream.
  *
  * `status` is "gone" when a live request drew an HTTP 410 naming the model,
- * and "retired" when a catalogue sync found it absent from a complete list.
+ * "retired" when a catalogue sync found it absent from a complete list, and
+ * "cooldown" when a live failure marked it temporarily unavailable for a
+ * fixed window (5 minutes). A cooldown is transient: it never overwrites a
+ * permanent "gone" or "retired" record, and it lapses on its own.
  */
 export interface ModelDeprecation {
   provider: string
   model: string
-  status: 'gone' | 'retired' | ''
+  status: 'gone' | 'retired' | 'cooldown' | ''
   message?: string
   /** The upstream's own replacement, when it named one. */
   successor?: string
   detectedAt?: string
+  /** RFC3339 UTC. Only set for status "cooldown"; the badge lapses after it. */
+  cooldownUntil?: string
 }
 
 /** Deprecations keyed "<provider>/<model>" — the same key a combo entry uses. */
@@ -151,6 +167,16 @@ export interface APIKey {
   metadata?: string
   /** Plan template this key inherits from. Empty means no plan. */
   planId?: string
+  /** Per-period cost budget, in integer USD micros (1e-6 of a dollar). 0 means no cost limit. */
+  limitMicros?: number
+  /** Per-period token budget. 0 means no token limit. */
+  limitTokens?: number
+  /** Window the budget resets on. Empty means monthly — the engine's default. */
+  budgetPeriod?: PlanPeriod
+  /** Warn at this percentage of the period budget, 0-100. 0 means no warning. */
+  alertPct?: number
+  /** True when exhausted requests are refused with 402; false when they only carry a warning header. */
+  hardCutoff?: boolean
 }
 
 export interface APIKeyPolicy {
@@ -169,8 +195,59 @@ export interface APIKeyPolicy {
   name?: string
   /** Plan template to inherit. An empty string detaches the key. */
   planId?: string
+/**
+   * Per-period cost budget, in integer USD micros (1e-6 of a dollar). Always send
+   * a number: the server treats an omitted field as "keep stored value" and an
+   * explicit 0 as "disable", so 0 is how the operator clears a cost limit.
+   */
+  limitMicros?: number
+  /** Per-period token budget. 0 means no token limit. */
+  limitTokens?: number
+  /** Window the budget resets on: "daily" | "weekly" | "monthly" | "total". Always sent; empty means monthly. */
+  budgetPeriod?: string
+  /** Warn at this percentage of the period budget, 0-100. 0 means no warning. */
+  alertPct?: number
+  /** True when exhausted requests are refused with 402; false when they only carry a warning header. */
+  hardCutoff?: boolean
+  /** Model allowlist, in the shape the policy route writes it whole.
+   *  `restricted` accompanies `allow`: an omitted flag means "unrestricted", so
+   *  sending only `allow` does not restrict a key. */
+  access?: { restricted?: boolean; allow: string[] }
 }
 
+/**
+ * A key's period budget as the budget engine sees it: the ceiling, what has
+ * already been spent against it in the open window, and where the two stand
+ * relative to each other.
+ */
+export interface ApiKeyBudget {
+  id: string
+  /** Cost ceiling for the open window, integer USD micros. 0 means no cost limit. */
+  limitMicros: number
+  /** Token ceiling for the open window. 0 means no token limit. */
+  limitTokens: number
+  /** Window the numbers reset on. */
+  period: PlanPeriod
+  /** Warning threshold, 0-100. 0 means no warning. */
+  alertPct: number
+  /** True when exhausted requests are refused with 402; false when they only carry a warning header. */
+  hardCutoff: boolean
+  /** A budget is armed when at least one axis has a nonzero ceiling. */
+  armed: boolean
+  /** Spend recorded in the open window, integer USD micros. */
+  spentMicros: number
+  /** Spend recorded in the open window, tokens. */
+  spentTokens: number
+  /** What is left on each axis before the window resets. */
+  remainingMicros: number
+  remainingTokens: number
+  /** RFC3339 UTC. Empty for the "total" period, which never resets. */
+  resetAt: string
+  /** "ok", "approaching" (past alertPct) or "exhausted". */
+  status: 'ok' | 'approaching' | 'exhausted'
+  /** Present when spend cannot be measured — e.g. a key whose secret was hashed away. */
+  note?: string
+}
 /** A reusable policy template (F-3). Keys inherit its limits as defaults. */
 export interface Plan {
   id: string
@@ -238,6 +315,11 @@ export interface Settings {
   appName?: string
   appLogoUrl?: string
   requireApiKey?: boolean
+  appDescription?: string
+  appTagline?: string
+  loginLogo?: string
+  trayAppName?: string
+  trayIcon?: string
   tunnelDashboardAccess?: boolean
   tunnelWatchdogEnabled?: boolean
   tailscaleWatchdogEnabled?: boolean
@@ -265,11 +347,18 @@ export interface Settings {
   adhdLevel?: string
   headroomEnabled?: boolean
   headroomAutostart?: boolean
+  headroomEngine?: 'builtin' | 'external'
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean
+  /** Qoder / Qoder CN daily-credit check-in. */
+  qoderCheckin?: boolean
+  /** MiniMax Code daily check-in (每日签到). */
+  minimaxCheckin?: boolean
   semanticCacheEnabled?: boolean
   semanticCacheTTL?: number
+  // Prompt-cache window 9router pins on Claude head anchors: "5m" (default) or "1h".
+  claudeCacheTtl?: '5m' | '1h'
   semanticCacheMaxEntries?: number
   autoUpdate?: boolean
   /** Dashboard security & SSO (profile page, Next parity). */
@@ -520,6 +609,7 @@ export interface HeadroomStatusResponse {
   version?: string | null
   extras?: { code?: boolean; ml?: boolean }
   url?: string
+  engine?: 'builtin' | 'external'
   error?: string
 }
 
@@ -595,6 +685,19 @@ export interface ProviderNode {
    * what a node is currently allowed.
    */
   limits?: ProviderNodeLimits
+}
+
+/** Availability of a live candidate provider namespace or composed id. */
+export interface ProviderNodeFieldAvailability {
+  value: string
+  status: 'available' | 'taken' | 'invalid' | 'automatic' | 'random'
+  reason?: string
+  providerId?: string
+}
+
+export interface ProviderNodeAvailability {
+  prefix: ProviderNodeFieldAvailability
+  urlSuffix: ProviderNodeFieldAvailability
 }
 
 /**
@@ -690,6 +793,7 @@ export interface ConnectionQuotaInfo {
 
 export interface ConnectionUsageResponse {
   plan?: string
+  message?: string
   quotas?: Record<string, ConnectionQuotaInfo> | ConnectionQuotaInfo[]
   error?: string
 }
@@ -843,7 +947,7 @@ export interface FreebuffSessionSwitchResponse {
 }
 
 export interface FreebuffSessionStatusResponse {
-  status: 'active' | 'none' | 'unauthorized' | 'banned' | 'country_blocked'
+  status: 'active' | 'queued' | 'ended' | 'none' | 'unauthorized' | 'banned' | 'country_blocked'
   /** Account this report describes — set so the UI can name it. */
   connectionId?: string
   connectionName?: string
@@ -978,6 +1082,25 @@ export interface CacheEntriesResponse {
   }
 }
 
+/** One provider/model pair's circuit breaker snapshot. */
+export interface ModelBreakerStatus {
+  /** `closed` serves normally; `cooling` sits out a cooldown; `disabled` needs a reset. */
+  state: 'closed' | 'cooling' | 'disabled'
+  provider: string
+  model: string
+  /** Consecutive model-scoped failures since the last success. */
+  failures: number
+  /** Cooldown cycles already served, which is what makes the next one longer. */
+  cooldowns: number
+  /** Milliseconds until the pair is probed again. 0 when there is no timer. */
+  retryAfterMs: number
+}
+
+/** The panel response: held-back pairs ordered first by the backend. */
+export interface ModelBreakerStatusResponse {
+  models: ModelBreakerStatus[]
+}
+
 export interface CompressionModeStats {
   count: number
   tokensSaved: number
@@ -1064,10 +1187,70 @@ export interface JailbreakDoc {
   excludes?: JailbreakKeyword[]
   /** Operator arrangement position in the preset list. */
   order?: number
+  /**
+   * Where the prompt lands in the outbound body. "" and "system" prepend it as
+   * the system prompt (the default a legacy or imported preset keeps);
+   * "append" places it after the original content.
+   */
+  position?: string
+  /**
+   * What kind of turn the prompt travels as. "" sends it as a system prompt;
+   * "chat" sends it as a scripted trailing user turn for endpoints with no
+   * system prompt slot.
+   */
+  mode?: string
+  /**
+   * Scope of one client API key: empty is every key, a non-empty id makes this
+   * preset visible only to requests that present that key. The resolver
+   * prefers a key-scoped match over the global one.
+   */
+  apiKeyId?: string
   /** RFC3339 UTC stamp the store filled on first write. */
   createdAt?: string
   /** RFC3339 UTC stamp of the last write. */
   updatedAt?: string
+  /**
+   * Provenance of a preset the auto-sync worker wrote: the repository it came
+   * from ("owner/repo@ref") and the file inside it. A preset carrying both is
+   * rewritten by every pass of that source; one carrying neither was typed,
+   * uploaded or imported by hand and sync never touches it.
+   */
+  syncOrigin?: string
+  syncPath?: string
+}
+
+/** One GitHub collection the preset library auto-syncs from. */
+export interface JailbreakSyncSource {
+  id: string
+  /** Anything the GitHub import accepts: owner/repo, a GitHub URL, or a raw file URL. */
+  target: string
+  /** Branch, tag or sha to follow. Empty follows the repository default. */
+  ref?: string
+  /** Paused sources are kept and never fetched. */
+  enabled: boolean
+  /** Label the panel shows; derived from the target when absent. */
+  name?: string
+  lastSyncAt?: string
+  lastError?: string
+  lastResult?: JailbreakSyncResult
+}
+
+/** What one pass of one source did. */
+export interface JailbreakSyncResult {
+  written: number
+  updated: number
+  orphaned: number
+  failed: number
+  files?: JailbreakSyncFile[]
+}
+
+/** One file of one pass. */
+export interface JailbreakSyncFile {
+  path: string
+  preset?: string
+  /** "written" | "updated" | "unchanged" | "orphaned" | "failed" */
+  action: string
+  reason?: string
 }
 
 /**
@@ -1083,6 +1266,8 @@ export interface JailbreakKeyword {
 export interface JailbreakModelConfig {
   enabled: boolean
   presetId: string
+  /** Empty is every key; a key-scoped binding outranks the same model's global one. */
+  apiKeyId?: string
 }
 
 /** The global exclude list: models matching these rules are never injected. */
@@ -1117,7 +1302,7 @@ export interface JailbreakImportResult {
 /** Why one model id resolved (or did not resolve) to a preset. */
 export interface JailbreakMatch {
   injected: boolean
-  /** global-exclude | exact-binding | keyword | preset-exclude | no-match */
+  /** global-exclude | exact-binding | key-binding | keyword | preset-exclude | no-match */
   reason: string
   presetId?: string
   presetName?: string
@@ -1357,6 +1542,19 @@ export function normalizeConnection(c: ProviderConnection): ProviderConnection {
   } as ProviderConnection
 }
 
+// One MiniMax Code account's last daily check-in outcome, as the background
+// loop records it. Mirrors internal/minimaxcheckin.Result.
+export interface MiniMaxCheckinResult {
+  outcome: 'claimed' | 'done' | 'inactive' | 'ineligible' | 'failed'
+  credit: number
+  streak: number
+  message?: string
+  provider: string
+  account: string
+  accountId: string
+  checkedAt: string
+}
+
 // Connections API
 export const api = {
   // Connections
@@ -1523,6 +1721,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
+  /** Checks a candidate prefix and URL suffix for immediate availability. */
+  checkProviderNodeAvailability: (payload: { prefix?: string; urlSuffix?: string; type?: string; apiType?: string }) =>
+    request<ProviderNodeAvailability>('/api/provider-nodes/availability', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   deleteProviderNode: (id: string) =>
     request<{ success: boolean }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'DELETE',
@@ -1549,7 +1753,7 @@ export const api = {
     ),
   /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
   getConnectionModels: (connectionId: string) =>
-    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string } | string> }>(
+    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string; context_length?: number; contextLength?: number; max_completion_tokens?: number; maxOutputTokens?: number; capabilities?: { vision?: boolean; reasoning?: boolean } } | string> }>(
       `/api/providers/${encodeURIComponent(connectionId)}/models`,
     ),
 
@@ -1558,7 +1762,7 @@ export const api = {
     const res = await request<any>('/api/combos')
     return Array.isArray(res) ? res : (res.combos || [])
   },
-  createCombo: (payload: { id?: string; name: string; kind?: string; models: string | string[]; strategy?: string; matchRules?: SmartRule[] }) =>
+  createCombo: (payload: { id?: string; name: string; kind?: string; models: string | string[]; strategy?: string; matchRules?: SmartRule[]; customPrompt?: string }) =>
     request<{ success: boolean; id: string }>('/api/combos', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -1670,6 +1874,12 @@ export const api = {
     }),
   getApiKeyModels: (id: string) =>
     request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`),
+  /**
+   * The key's period budget as the engine sees it — ceiling, open-window spend
+   * and status. The spend is read-only context for the policy modal; it is not
+   * part of what a save writes.
+   */
+  getKeyBudget: (id: string) => request<ApiKeyBudget>(`/api/keys/${encodeURIComponent(id)}/budget`),
   setApiKeyModels: (id: string, models: string[]) =>
     request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`, {
       method: 'PUT',
@@ -1928,6 +2138,14 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(settings),
     }),
+  // MiniMax Code daily check-in: the last outcome per account, and an
+  // immediate claim for one connection (magpie's "Check in now").
+  getMiniMaxCheckins: () =>
+    request<{ checkins: Record<string, MiniMaxCheckinResult> }>('/api/minimax/checkins'),
+  miniMaxCheckinNow: (connectionId: string) =>
+    request<MiniMaxCheckinResult>(`/api/minimax/checkins/${encodeURIComponent(connectionId)}`, {
+      method: 'POST',
+    }),
   /**
    * Reads live USD rates for the requested codes and overlays them on the
    * stored table. `codes` is the catalog the dashboard offers
@@ -1964,6 +2182,14 @@ export const api = {
       '/api/settings/database/vacuum',
       { method: 'POST' }
     ),
+  // The body carries the confirmation word: the gateway ignores a restart
+  // request that could not set a JSON body, so a cross-site form post cannot
+  // stop the process.
+  restartGateway: () =>
+    request<{ success: boolean; restarting: boolean }>('/api/system/restart', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'restart' }),
+    }),
   testRtk: (data: { text: string; config?: Record<string, unknown> }) =>
     request<{
       originalTokens: number
@@ -2027,12 +2253,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ connectionId, model }),
     }),
-  getAntigravityAuthorizeUrl: (redirectUri: string) =>
+  getAntigravityAuthorizeUrl: (redirectUri: string, proxy = false) =>
     request<{ url: string; redirectUrl: string; authUrl: string; state: string; redirectUri: string }>(
-      `/api/oauth/antigravity/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
+      `/api/oauth/antigravity/authorize?redirect_uri=${encodeURIComponent(redirectUri)}${proxy ? '&proxy=1' : ''}`,
     ),
   antigravityExchange: (code: string, redirectUri: string, state?: string) =>
     request<{ success: boolean; error?: string }>('/api/oauth/antigravity/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code, redirectUri, state }),
+    }),
+  getAGYACPAuthorizeUrl: (redirectUri: string, proxy = false) =>
+    request<{ url: string; redirectUrl: string; authUrl: string; state: string; redirectUri: string }>(
+      `/api/oauth/agy-acp/authorize?redirect_uri=${encodeURIComponent(redirectUri)}${proxy ? '&proxy=1' : ''}`,
+    ),
+  agyACPExchange: (code: string, redirectUri: string, state?: string) =>
+    request<{ success: boolean; error?: string }>('/api/oauth/agy-acp/exchange', {
       method: 'POST',
       body: JSON.stringify({ code, redirectUri, state }),
     }),
@@ -2103,6 +2338,10 @@ export const api = {
     request<{ status: string; connectionId?: string; email?: string; error?: string }>(
       `/api/oauth/codex/poll-status?state=${encodeURIComponent(state)}`
     ),
+  getOAuthCallbackResult: (state: string) =>
+    request<{ found: boolean; state?: string; raw?: string; error?: string; errorDesc?: string }>(
+      `/api/oauth/callback-result?state=${encodeURIComponent(state)}`
+    ),
   codexStopProxy: () => request<{ success: boolean }>('/api/oauth/codex/stop-proxy'),
   authcodeAuthorize: (provider: string, redirectUri?: string) => {
     const q = new URLSearchParams({ provider })
@@ -2135,6 +2374,73 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider, device_code: deviceCode, session }),
     }),
+  // Free-pi sign-in is a GitHub device flow behind a consent gate, so it gets
+  // its own three calls rather than the generic deviceStart/devicePoll pair:
+  // initiate refuses to contact upstream until the caller asserts that this
+  // user accepted this consent version.
+  freePiConsent: () =>
+    request<{ provider: string; version: string; text: string }>('/api/oauth/free-pi/consent'),
+  freePiInitiate: (consentVersion: string) =>
+    request<{
+      sessionId: string
+      userCode: string
+      verificationUri: string
+      verificationUriComplete?: string
+      interval: number
+      expiresIn: number
+      consentVersion: string
+    }>('/api/oauth/free-pi/initiate', {
+      method: 'POST',
+      body: JSON.stringify({ consentAccepted: true, consentVersion }),
+    }),
+  freePiPoll: (sessionId: string) =>
+    request<{ status: string; connectionId?: string; retryAfter?: number; message?: string }>(
+      '/api/oauth/free-pi/poll',
+      { method: 'POST', body: JSON.stringify({ sessionId }) }
+    ),
+  // The dashboard equivalent of free-pi-cli's /close-other-session.
+  freePiResetSession: (connectionId: string) =>
+    request<{ released: boolean }>('/api/oauth/free-pi/session/reset', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId }),
+    }),
+  // The banner creative. Serving it does not report an impression: that only
+  // happens after the component paints it, via freePiImpression.
+  freePiAd: (connectionId: string) =>
+    request<{
+      ad: {
+        adId: string
+        clickUrl?: string
+        source?: string
+        creative: { title?: string; body?: string; cta?: string; imageUrl?: string }
+      } | null
+    }>(`/api/free-pi/ad?connectionId=${encodeURIComponent(connectionId)}`),
+  freePiImpression: (connectionId: string, adId: string) =>
+    request<{ recorded: boolean }>('/api/free-pi/ad/impression', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, adId }),
+    }),
+  freebuffAd: (connectionId: string) =>
+    request<{
+      ad: {
+        adId: string
+        clickUrl?: string
+        creative: {
+          title?: string
+          body?: string
+          cta?: string
+          imageUrl?: string
+          sponsorName?: string
+          brandColor?: string
+        }
+      } | null
+    }>(`/api/freebuff/ad?connectionId=${encodeURIComponent(connectionId)}`),
+  freebuffImpression: (connectionId: string, adId: string) =>
+    request<{ recorded: boolean }>('/api/freebuff/ad/impression', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, adId }),
+    }),
+
   kiroImport: (refreshToken: string) =>
     request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/import', {
       method: 'POST',
@@ -2153,11 +2459,11 @@ export const api = {
       body: JSON.stringify({ apiKey, region }),
     }),
   kiroSocialAuthorize: (provider: 'google' | 'github') =>
-    request<{ authUrl: string; url: string; state: string }>(`/api/oauth/kiro/social-authorize?provider=${provider}`),
-  kiroSocialExchange: (code: string) =>
+    request<{ authUrl: string; url: string; state: string; codeVerifier: string }>(`/api/oauth/kiro/social-authorize?provider=${provider}`),
+  kiroSocialExchange: (code: string, codeVerifier: string, provider?: 'google' | 'github') =>
     request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/social-exchange', {
       method: 'POST',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, codeVerifier, provider }),
     }),
   cursorImport: (accessToken: string, machineId: string) =>
     request<{ success: boolean; id: string; error?: string }>('/api/oauth/cursor/import', {
@@ -2337,6 +2643,20 @@ export const api = {
   consumeCodexResetCredit: (connectionId: string, selectionToken: string, idempotencyKey?: string) =>
     request<CodexResetCreditConsumeResponse>(
       `/api/usage/${encodeURIComponent(connectionId)}/reset-credits/consume`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selectionToken, idempotencyKey }),
+      }
+    ),
+  // Claude reset credits (cedar_ember grants). Only for provider == "claude".
+  listClaudeResetCredits: (connectionId: string) =>
+    request<CodexResetCreditListResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/claude-reset-credits`
+    ),
+  consumeClaudeResetCredit: (connectionId: string, selectionToken: string, idempotencyKey?: string) =>
+    request<CodexResetCreditConsumeResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/claude-reset-credits/consume`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2572,6 +2892,58 @@ export const api = {
     } catch {}
     return { requireLogin: false }
   },
+  // the dashboard password from the browser before the first login. The
+  // server only accepts this from a loopback peer while no password is stored.
+  getSetup: async (): Promise<{ status: boolean; databaseType: string }> => {
+    const res = await fetch('/api/setup')
+    if (!res.ok) return { status: false, databaseType: 'sqlite' }
+    const data = await res.json()
+    return { status: !!data.status, databaseType: data.databaseType || 'sqlite' }
+  },
+  setup: async (
+    password: string,
+    advancedMode?: boolean
+  ): Promise<{ success: boolean; error?: string }> => {
+    const res = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, ...(advancedMode === undefined ? {} : { advancedMode }) }),
+    })
+    if (res.ok) {
+      sessionStorage.setItem('9router_auth', 'true')
+      localStorage.setItem('9router_auth', 'true')
+      return { success: true }
+    }
+    let errText = 'Setup failed'
+    try {
+      const errJson = await res.json()
+      errText = errJson.error?.message || errJson.error || errJson.message || errText
+    } catch {}
+    return { success: false, error: errText }
+  },
+  // Skip the password step: the dashboard answers without a login (the same
+  // switch Settings > Security exposes as "Require login"), so this is only
+  // offered on a fresh install from the local machine.
+  setupSkip: async (): Promise<{ success: boolean; error?: string }> => {
+    const res = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skipPassword: true }),
+    })
+    if (res.ok) {
+      // The server sets the httpOnly auth_token cookie on success; the client
+      // gate mirrors what api.login does.
+      sessionStorage.setItem('9router_auth', 'true')
+      localStorage.setItem('9router_auth', 'true')
+      return { success: true }
+    }
+    let errText = 'Setup failed'
+    try {
+      const errJson = await res.json()
+      errText = errJson.error?.message || errJson.error || errJson.message || errText
+    } catch {}
+    return { success: false, error: errText }
+  },
   login: async (password: string, newPassword?: string): Promise<LoginResponse> => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
@@ -2653,6 +3025,19 @@ export const api = {
       request<CompressionAnalyticsSummary>(
         `/api/analytics/compression?period=${encodeURIComponent(period)}`
       ),
+    // Per-model circuit breaker: one provider/model pair, distinct from the
+    // provider breaker. `retryAfterMs` is 0 for a pair that does not come
+    // back on a timer (closed, or disabled).
+    getModelBreakers: () => request<ModelBreakerStatusResponse>('/api/model-breakers'),
+    /** Lifts one pair. The only way a disabled model serves again. */
+    resetModelBreaker: (provider: string, model: string) =>
+      request<{ status: string }>(
+        `/api/model-breakers/${encodeURIComponent(provider)}/${encodeURIComponent(model)}/reset`,
+        { method: 'POST' }
+      ),
+    /** Lifts every pair, for after a provider-wide outage. */
+    resetAllModelBreakers: () =>
+      request<{ status: string }>('/api/model-breakers/reset', { method: 'POST' }),
   logout: async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' })
@@ -2684,6 +3069,8 @@ export const api = {
     keywords?: JailbreakKeyword[]
     excludes?: JailbreakKeyword[]
     order?: number
+    syncOrigin?: string
+    syncPath?: string
   }) =>
     request<{ success: boolean }>('/api/jailbreak/presets', {
       method: 'PUT',
@@ -2694,10 +3081,73 @@ export const api = {
       method: 'DELETE',
     }),
   listJailbreakModels: () => request<Record<string, JailbreakModelConfig>>('/api/jailbreak/models'),
+  // Preset auto-sync: the GitHub collections the library follows. One pass
+  // rewrites only the presets it wrote itself, so an operator's hand-made
+  // preset is never touched and a file upstream dropped is reported as
+  // orphaned rather than deleted.
+  listJailbreakSyncSources: () =>
+    request<{ sources: JailbreakSyncSource[] }>('/api/jailbreak/sync/sources'),
+  saveJailbreakSyncSources: (sources: JailbreakSyncSource[]) =>
+    request<{ sources: JailbreakSyncSource[]; ok: boolean }>('/api/jailbreak/sync/sources', {
+      method: 'PUT',
+      body: JSON.stringify({ sources }),
+    }),
+  runJailbreakSync: () =>
+    request<{ outcomes: { source: JailbreakSyncSource; result: JailbreakSyncResult }[]; ok: boolean }>(
+      '/api/jailbreak/sync/run',
+      { method: 'POST' },
+    ),
+  // GitHub credential and mirror. The api.github.com quota is 60 anonymous
+  // requests an hour and 5,000 with a token, so a library following several
+  // collections needs one. The token is never returned by the GET — only
+  // whether one is set and where it came from.
+  getJailbreakGithub: () =>
+    request<{
+      tokenSet: boolean
+      source: 'dashboard' | 'environment' | 'none'
+      apiBase: string
+      rawBase: string
+      envToken: boolean
+      envMirror: boolean
+      /** Bodies held for a conditional (If-None-Match) re-fetch. */
+      cached: number
+      cacheMax: number
+    }>('/api/jailbreak/github'),
+  setJailbreakGithubToken: (token: string) =>
+    request<{ ok: boolean; tokenSet: boolean }>('/api/jailbreak/github/token', {
+      method: 'PUT',
+      body: JSON.stringify({ token }),
+    }),
   setJailbreakModel: (id: string, presetId: string, enabled: boolean) =>
     request<{ success: boolean }>('/api/jailbreak/models', {
       method: 'PUT',
       body: JSON.stringify({ id, presetId, enabled }),
+    }),
+  // One API key's bindings, already filtered to that key: the map is keyed by
+  // the bare model id, so a row here is the key's own override of whatever the
+  // global binding above says.
+  listJailbreakKeyBindings: (keyId: string) =>
+    request<Record<string, JailbreakModelConfig>>(
+      `/api/jailbreak/keys/bindings?keyId=${encodeURIComponent(keyId)}`,
+    ),
+  // Arm a preset for one model under one key only. The same `enabled` toggle
+  // convention the global write uses: omitted arms it, presetId "off"/"none"
+  // means turn it off rather than delete the row.
+  setJailbreakKeyModel: (keyId: string, id: string, presetId: string, enabled: boolean) =>
+    request<{ ok: boolean; keyId: string; id: string; enabled: boolean; presetId: string }>(
+      '/api/jailbreak/keys/model',
+      {
+        method: 'PUT',
+        body: JSON.stringify({ keyId, id, presetId, enabled }),
+      },
+    ),
+  // Drop one key-scoped binding outright. The per-key delete button calls this;
+  // unlike setJailbreakKeyModel('off'), which only turns the row off, this
+  // removes it. The same model's global binding is untouched.
+  deleteJailbreakKeyModel: (keyId: string, id: string) =>
+    request<{ ok: boolean; keyId: string; id: string }>('/api/jailbreak/keys/model', {
+      method: 'DELETE',
+      body: JSON.stringify({ keyId, id }),
     }),
   deleteJailbreakModel: (id: string) =>
     request<{ ok: boolean; id: string }>('/api/jailbreak/models', {
@@ -2735,6 +3185,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ id, messages }),
     }),
+  /**
+   * The same preview, resolved under one client API key's scope.
+   *
+   * The gateway's preview endpoint already reads `apiKeyId` from the body — the
+   * tester needs both scopes of one id to diff them, and passing the key here is
+   * what makes the second body the one that key would actually carry.
+   */
+  previewJailbreakKey: (
+    id: string,
+    messages: { role: string; content: string }[],
+    apiKeyId: string,
+  ) =>
+    request<{
+      injected: boolean
+      reason: string
+      presetId?: string
+      presetName?: string
+      prompt?: string
+      messages: { role: string; content: string }[]
+    }>('/api/jailbreak/preview', {
+      method: 'POST',
+      body: JSON.stringify({ id, messages, apiKeyId }),
+    }),
   reorderJailbreakPresets: (order: string[]) =>
     request<{ ok: boolean }>('/api/jailbreak/presets/order', {
       method: 'PUT',
@@ -2744,10 +3217,13 @@ export const api = {
     request<{ models: string[] }>('/api/jailbreak/models/catalog'),
   getJailbreakUsage: () =>
     request<{ usage: Record<string, number> }>('/api/jailbreak/usage'),
-  explainJailbreak: (id: string) =>
+  // The scope is the second resolver argument: passing one client key's id
+  // re-runs the same resolution under that key, so a key-scoped binding can be
+  // shown winning over the same model's global binding.
+  explainJailbreak: (id: string, apiKeyId = '') =>
     request<JailbreakMatch>('/api/jailbreak/resolve', {
       method: 'POST',
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, apiKeyId }),
     }),
   duplicateJailbreakPreset: (id: string, newId?: string) =>
     request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {

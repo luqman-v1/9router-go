@@ -6,6 +6,7 @@
 package sso
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
 
 	json "encoding/json/v2"
 
@@ -31,6 +31,7 @@ const (
 	defaultScopes    = "openid profile email"
 	testCode         = "__oidc_test_invalid_code__"
 	testCodeVerifier = "__oidc_test_invalid_verifier__"
+	maxSSOBodyBytes  = 1 << 20
 )
 
 // Handler serves the dashboard SSO settings routes.
@@ -79,14 +80,14 @@ func (h *Handler) HandleOidcTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	discovery, err := fetchDiscovery(issuerURL)
+	discovery, err := fetchDiscovery(r.Context(), issuerURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	redirectURI := publicOrigin(r) + oidcCallback
-	probe, err := probeClientSecret(discovery.TokenEndpoint, clientID, clientSecret, redirectURI)
+	probe, err := probeClientSecret(r.Context(), discovery.TokenEndpoint, clientID, clientSecret, redirectURI)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -200,6 +201,7 @@ func spMetadataXML(issuer, acsURL string) string {
 
 // discoveryDocument holds the OIDC discovery fields the dashboard displays.
 type discoveryDocument struct {
+	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	JwksURI               string `json:"jwks_uri"`
@@ -213,19 +215,25 @@ type probeOutcome struct {
 }
 
 // fetchDiscovery loads <issuer>/.well-known/openid-configuration.
-func fetchDiscovery(issuerURL string) (*discoveryDocument, error) {
+func fetchDiscovery(ctx context.Context, issuerURL string) (*discoveryDocument, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	discoveryURL := strings.TrimRight(strings.TrimSpace(issuerURL), "/") + discoveryPath
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(discoveryURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load OIDC discovery document from %s", discoveryURL)
+	}
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
 	}
 	var doc discoveryDocument
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxSSOBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read OIDC discovery document from %s", discoveryURL)
 	}
@@ -242,7 +250,10 @@ var (
 
 // probeClientSecret exchanges a fake authorization code so the token endpoint
 // validates the client credentials without consuming a real code.
-func probeClientSecret(tokenEndpoint, clientID, clientSecret, redirectURI string) (*probeOutcome, error) {
+func probeClientSecret(ctx context.Context, tokenEndpoint, clientID, clientSecret, redirectURI string) (*probeOutcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if clientSecret == "" {
 		return &probeOutcome{
 			tested:  false,
@@ -266,12 +277,16 @@ func probeClientSecret(tokenEndpoint, clientID, clientSecret, redirectURI string
 	form.Set("redirect_uri", redirectURI)
 	form.Set("code_verifier", testCodeVerifier)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.PostForm(tokenEndpoint, form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := oidcHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
 
 	var data map[string]any
 	_ = json.Unmarshal(mustRead(resp), &data)
@@ -352,7 +367,7 @@ func formatCertificate(cert string) []byte {
 // decodeJSONBody parses the request body, tolerating a missing or invalid body
 // the way Next's body.json().catch(() => ({})) does.
 func decodeJSONBody(r *http.Request, dst any) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSSOBodyBytes))
 	if err != nil {
 		return
 	}
@@ -361,15 +376,26 @@ func decodeJSONBody(r *http.Request, dst any) {
 
 // mustRead returns the raw response body bytes, empty on failure.
 func mustRead(resp *http.Response) []byte {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSSOBodyBytes))
 	if err != nil {
 		return nil
 	}
 	return body
 }
 
-// publicOrigin resolves the externally visible origin, honoring BASE_URL and
-// forwarded headers the same way the Next dashboard does.
+// publicOrigin resolves the externally visible origin for the SSO flows.
+//
+// It returns BASE_URL when set, and otherwise falls back to the Host header —
+// but never to X-Forwarded-Host or X-Forwarded-Proto. Those two are the pieces
+// an attacker in front of an unvalidating reverse proxy controls, and the value
+// they influence here becomes the OIDC redirect_uri / SAML ACS URL. A forged
+// redirect_uri lets the authorization code be delivered to the attacker's host,
+// which is code interception, not a cosmetic mismatch.
+//
+// The trade-off is deliberate: an operator behind a TLS-terminating proxy must
+// set BASE_URL. ssoBaseURLRequired reports that condition so the flow can fail
+// with an actionable message instead of silently building a wrong redirect_uri
+// from the internal scheme.
 func publicOrigin(r *http.Request) string {
 	if base := strings.TrimSpace(os.Getenv("BASE_URL")); base != "" {
 		return strings.TrimRight(base, "/")
@@ -378,16 +404,24 @@ func publicOrigin(r *http.Request) string {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
-		if p := strings.ToLower(strings.Split(proto, ",")[0]); p == "https" || p == "http" {
-			scheme = p
-		}
-	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	return scheme + "://" + host
+	return scheme + "://" + r.Host
+}
+
+// baseURLConfigured reports whether BASE_URL is set. The browser-facing SSO
+// flows refuse to start without it when the request did not arrive over TLS,
+// because the only remaining origin source is a header.
+func baseURLConfigured() bool {
+	return strings.TrimSpace(os.Getenv("BASE_URL")) != ""
+}
+
+// originIsTrustworthy reports whether publicOrigin's answer can be used as a
+// redirect_uri. It is true when BASE_URL pins the origin, or when the request
+// itself arrived over TLS on the connection (the Host header still came from
+// the client, but a forged one only breaks the caller's own login — it cannot
+// redirect someone else's authorization code, because the same caller would
+// have had to start the flow).
+func originIsTrustworthy(r *http.Request) bool {
+	return baseURLConfigured() || r.TLS != nil
 }
 
 // firstNonEmpty returns the first non-blank value.

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 )
 
@@ -120,5 +121,47 @@ func TestValidateCommandCodeKey_WhoamiProbe(t *testing.T) {
 	bad := validateProviderKey(context.Background(), "commandcode", cfg, "bad-key", nil)
 	if bad.valid || bad.message != "Invalid API key" {
 		t.Errorf("bad key outcome = %+v", bad)
+	}
+}
+
+func TestCommandCodeGoatIsUsageEligible(t *testing.T) {
+	for _, id := range []string{"commandcode-goat", "commandcode"} {
+		if !strSliceContains(usageSupportedProviders, id) {
+			t.Errorf("%q missing from usageSupportedProviders", id)
+		}
+		if !strSliceContains(usageApikeyProviders, id) {
+			t.Errorf("%q missing from usageApikeyProviders", id)
+		}
+	}
+	for _, p := range []string{"commandcode-goat", "cmc-goat", "commandcode", "cmc"} {
+		conn := &models.ProviderConnection{Provider: p, AuthType: "apikey"}
+		if !isUsageEligibleConnection(conn) {
+			t.Errorf("isUsageEligibleConnection(%q, apikey) = false, want true", p)
+		}
+	}
+}
+
+func TestFetchProviderUsage_CommandCodeGoat(t *testing.T) {
+	stubCommandCodeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/alpha/whoami":
+			w.Write([]byte(`{"org":{"id":"org-1"}}`))
+		case "/alpha/billing/credits":
+			w.Write([]byte(`{"credits":{"monthlyCredits":5,"purchasedCredits":0,"freeCredits":0}}`))
+		case "/alpha/billing/subscriptions":
+			w.Write([]byte(`{"data":{"planId":"go"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	for _, p := range []string{"commandcode-goat", "cmc-goat"} {
+		res, ok := fetchProviderUsage(context.Background(), p, map[string]any{"apiKey": "k"})
+		if !ok {
+			t.Fatalf("fetchProviderUsage(%q) returned ok=false", p)
+		}
+		if res.plan != "Go" {
+			t.Errorf("for provider %q, plan = %q, want Go", p, res.plan)
+		}
 	}
 }

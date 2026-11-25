@@ -253,7 +253,7 @@ func TestIsLLMModelID(t *testing.T) {
 	}{
 		{modelID: "claude-sonnet-4.6", wantLLM: true},
 		{modelID: "deepseek-ai/DeepSeek-V4-Flash", wantLLM: true},
-		{modelID: "nvidia/nv-embedqa-e5-v5", wantLLM: false},
+		{modelID: "nvidia/nemotron-3.5-embed-8b", wantLLM: false},
 		{modelID: "text-embedding-3-large", wantLLM: false},
 		{modelID: "tts-1-hd", wantLLM: false},
 		{modelID: "openai/gpt-4o-mini-tts", wantLLM: false},
@@ -408,7 +408,7 @@ func TestHandleModels_MediaKindModelsExcluded(t *testing.T) {
 	// "nvidia/" qualifier before the kind lookup, so that vendor-prefixed id
 	// misses the registry kind and falls through to the id heuristic — same
 	// result on both sides.
-	for _, media := range []string{"fastpitch", "tacotron2", "nv-embedqa-e5-v5"} {
+	for _, media := range []string{"fastpitch", "tacotron2", "nvclip"} {
 		if strings.Contains(joined, media) {
 			t.Errorf("media model %q must not appear in the LLM list, got:\n%s", media, joined)
 		}

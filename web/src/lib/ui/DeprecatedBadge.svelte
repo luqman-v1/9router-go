@@ -16,7 +16,7 @@
 
   let dep = $derived(deprecationFor(provider, model))
 
-  const label = $derived(dep?.status === 'gone' ? 'Deprecated' : 'Retired')
+  const label = $derived(dep?.status === 'gone' ? 'Deprecated' : dep?.status === 'cooldown' ? 'Cooling down' : 'Retired')
 
   // The tooltip carries what the operator needs to act: what upstream said,
   // and the replacement to edit the combo entry to. A badge that only says

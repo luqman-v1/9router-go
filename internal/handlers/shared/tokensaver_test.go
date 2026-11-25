@@ -2,6 +2,8 @@ package shared
 
 import (
 	"testing"
+
+	"9router/proxy/internal/db"
 )
 
 func TestNewTokenSaverConfig(t *testing.T) {
@@ -128,5 +130,22 @@ func TestInjectionGuardToggle(t *testing.T) {
 	c.SetInjectionGuard(true)
 	if !c.InjectionGuardEnabled() {
 		t.Error("expected guard re-enabled after SetInjectionGuard(true)")
+	}
+}
+
+// TestClaudeCacheTTL_DefaultsTo5m pins the request-path read: an unset or
+// unknown value must come back as the 5-minute window, never as an empty marker.
+func TestClaudeCacheTTL_DefaultsTo5m(t *testing.T) {
+	c := &TokenSaverConfig{}
+	if got := c.ClaudeCacheTTL(); got != "5m" {
+		t.Errorf("zero config: got %q, want 5m", got)
+	}
+	c.UpdateFromSettings(&db.SettingsData{ClaudeCacheTTL: "1h"})
+	if got := c.ClaudeCacheTTL(); got != "1h" {
+		t.Errorf("after 1h: got %q, want 1h", got)
+	}
+	c.UpdateFromSettings(&db.SettingsData{ClaudeCacheTTL: "bogus"})
+	if got := c.ClaudeCacheTTL(); got != "5m" {
+		t.Errorf("unknown value: got %q, want 5m", got)
 	}
 }

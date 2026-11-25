@@ -100,6 +100,32 @@ func TestLevelMaps(t *testing.T) {
 	}
 }
 
+func TestToKimiReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *Intent
+		want string
+	}{
+		{name: "auto", in: &Intent{Mode: ModeAuto}, want: "high"},
+		{name: "minimal", in: &Intent{Mode: ModeLevel, Level: "minimal"}, want: "low"},
+		{name: "xhigh", in: &Intent{Mode: ModeLevel, Level: "xhigh"}, want: "max"},
+		{name: "low", in: &Intent{Mode: ModeLevel, Level: "low"}, want: "low"},
+		{name: "medium", in: &Intent{Mode: ModeLevel, Level: "medium"}, want: "medium"},
+		{name: "high", in: &Intent{Mode: ModeLevel, Level: "high"}, want: "high"},
+		{name: "max", in: &Intent{Mode: ModeLevel, Level: "max"}, want: "max"},
+		{name: "none dropped", in: &Intent{Mode: ModeNone}, want: ""},
+		{name: "unknown dropped", in: &Intent{Mode: ModeLevel, Level: "ultra"}, want: ""},
+		{name: "nil", in: nil, want: ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ToKimiReasoningEffort(tt.in); got != tt.want {
+				t.Errorf("ToKimiReasoningEffort(%+v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEffortToThinkingLevelUnknown(t *testing.T) {
 	cases := map[string]string{
 		"ultra":   "high",
@@ -139,6 +165,62 @@ func TestNormalizeOpenAILevelUnknown(t *testing.T) {
 		if got := NormalizeOpenAILevel(tt.level, tt.supported); got != tt.want {
 			t.Errorf("NormalizeOpenAILevel(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
 		}
+	}
+}
+
+// TestLevelForPreservesAuto pins that levelFor leaves "auto" verbatim: the
+// step writer relies on this to ship reasoning_effort:"auto" unchanged.
+func TestLevelForPreservesAuto(t *testing.T) {
+	cases := []struct {
+		level     string
+		supported []string
+		want      string
+	}{
+		{"auto", nil, "auto"},
+		{"auto", []string{"none", "minimal", "low", "medium", "high", "xhigh"}, "auto"},
+		{"auto", []string{"none", "low", "medium", "high"}, "auto"},
+		{"low", nil, "low"},
+		{"low", []string{"none", "low", "medium", "high", "xhigh"}, "low"},
+		{"medium", nil, "medium"},
+		{"high", nil, "high"},
+		{"max", nil, "xhigh"},
+		{"ultra", []string{"max"}, "max"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.level, func(t *testing.T) {
+			if got := levelFor(tt.level, tt.supported); got != tt.want {
+				t.Errorf("levelFor(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOpenAILevelForResolvesAutoToHigh pins that "auto" never reaches an OpenAI
+// wire verbatim: openAILevelFor resolves it to "high" (the only sensible
+// concrete level a strict OpenAI-compatible upstream accepts instead of
+// rejecting "auto").
+func TestOpenAILevelForResolvesAutoToHigh(t *testing.T) {
+	cases := []struct {
+		level     string
+		supported []string
+		want      string
+	}{
+		{"auto", nil, "high"},
+		{"auto", []string{"none", "minimal", "low", "medium", "high", "xhigh"}, "high"},
+		{"auto", []string{"none", "low", "medium", "high"}, "high"},
+		{"low", nil, "low"},
+		{"low", []string{"none", "low", "medium", "high", "xhigh"}, "low"},
+		{"medium", nil, "medium"},
+		{"high", nil, "high"},
+		{"max", nil, "xhigh"},
+		{"ultra", []string{"max"}, "max"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.level, func(t *testing.T) {
+			if got := openAILevelFor(tt.level, tt.supported); got != tt.want {
+				t.Errorf("openAILevelFor(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -40,6 +40,64 @@ func applyClaudeThinkingDisplay(reqMap map[string]any) {
 	thinking["display"] = display
 }
 
+// SanitizeClaudeThinking normalizes the thinking object for Anthropic Messages API:
+//   - Removes `display` if thinking type is "disabled" (Anthropic rejects display with disabled)
+//   - Normalizes invalid `display` values: on adaptive thinking, Anthropic returns 400
+//     (thinking.adaptive.display: Input should be 'summarized', 'omitted') for anything other
+//     than 'summarized' or 'omitted'. Experimental client values like 'updates' or 'highlights'
+//     are clamped to 'summarized'.
+func SanitizeClaudeThinking(reqMap map[string]any) bool {
+	thinking, ok := reqMap["thinking"].(map[string]any)
+	if !ok || thinking == nil {
+		return false
+	}
+	tType, _ := thinking["type"].(string)
+	if tType == "disabled" {
+		if _, has := thinking["display"]; has {
+			delete(thinking, "display")
+			return true
+		}
+		return false
+	}
+	if d, ok := thinking["display"].(string); ok && d != "" {
+		norm := strings.ToLower(strings.TrimSpace(d))
+		if norm == "summarized" || norm == "omitted" {
+			return false
+		}
+		if tType == "adaptive" {
+			switch norm {
+			case "none", "off", "hidden", "false":
+				thinking["display"] = "omitted"
+			default:
+				thinking["display"] = "summarized"
+			}
+			return true
+		}
+		// Non-adaptive thinking: clamp experimental values that Anthropic rejects
+		if norm == "updates" || norm == "highlights" {
+			thinking["display"] = "summarized"
+			return true
+		}
+	}
+	return false
+}
+
+// SanitizeClaudeThinkingBody runs SanitizeClaudeThinking on raw JSON bytes.
+func SanitizeClaudeThinkingBody(body []byte) []byte {
+	var reqMap map[string]any
+	if err := json.Unmarshal(body, &reqMap); err != nil {
+		return body
+	}
+	if !SanitizeClaudeThinking(reqMap) {
+		return body
+	}
+	out, err := json.Marshal(reqMap)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // openAIThinkingDisplay reports the Claude display value an OpenAI-shaped body
 // is asking for, or "" when it is not asking for reasoning at all.
 func openAIThinkingDisplay(reqMap map[string]any) string {

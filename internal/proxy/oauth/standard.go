@@ -8,9 +8,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/providers"
 )
+
+const maxRefreshBodyBytes = 1 << 20
+
+var defaultRefreshHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+func refreshHTTPClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return defaultRefreshHTTPClient
+}
 
 // NewStandardRefresher creates a refresher for a standard OAuth2 refresh_token grant.
 func NewStandardRefresher(tokenURL, clientID, clientSecret string) Refresher {
@@ -47,13 +59,13 @@ func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, va
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := refreshHTTPClient(client).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}

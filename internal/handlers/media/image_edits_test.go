@@ -442,3 +442,219 @@ func TestHandleImageEdits_WhitespacePrompt(t *testing.T) {
 		t.Errorf("expected 'Missing required field: prompt' in response, got %s", rec.Body.String())
 	}
 }
+
+func TestHandleImageEdits_TableDriven(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody struct {
+			Prompt         string `json:"prompt"`
+			Image          string `json:"image"`
+			Mask           string `json:"mask"`
+			Model          string `json:"model"`
+			Size           string `json:"size"`
+			ResponseFormat string `json:"response_format"`
+		}
+		_ = json.UnmarshalRead(r.Body, &reqBody)
+
+		if reqBody.Prompt != "make it purple" {
+			t.Errorf("unexpected prompt: %q", reqBody.Prompt)
+		}
+		if reqBody.Image == "" {
+			t.Errorf("expected image in upstream payload")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"created":1,"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}]}`))
+	}))
+	defer upstream.Close()
+
+	ag := providers.KnownProviders["openai"]
+	origBase := ag.BaseURL
+	ag.BaseURL = upstream.URL
+	providers.KnownProviders["openai"] = ag
+	defer func() {
+		ag.BaseURL = origBase
+		providers.KnownProviders["openai"] = ag
+	}()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+
+	connData, _ := json.Marshal(map[string]any{"apiKey": "sk-test", "baseUrl": upstream.URL})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-1', 'openai', 'apikey', 'OpenAI Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	tests := []struct {
+		name         string
+		contentType  string
+		buildBody    func() *bytes.Buffer
+		wantStatus   int
+		wantErrorMsg string
+	}{
+		{
+			name:        "Multipart with image file and prompt parsed and routed",
+			contentType: "", // computed by multipart writer
+			buildBody: func() *bytes.Buffer {
+				var buf bytes.Buffer
+				mw := multipart.NewWriter(&buf)
+				_ = mw.WriteField("prompt", "make it purple")
+				_ = mw.WriteField("model", "dall-e-2")
+				fw, _ := mw.CreateFormFile("image", "test.png")
+				_, _ = fw.Write([]byte("sample png data"))
+				_ = mw.Close()
+				return &buf
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:        "JSON with image URL and prompt parsed and routed",
+			contentType: "application/json",
+			buildBody: func() *bytes.Buffer {
+				payload := map[string]any{
+					"prompt": "make it purple",
+					"model":  "dall-e-2",
+					"image":  "https://example.com/test.png",
+				}
+				b, _ := json.Marshal(payload)
+				return bytes.NewBuffer(b)
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:        "Missing required image in JSON returns clean 400 Bad Request",
+			contentType: "application/json",
+			buildBody: func() *bytes.Buffer {
+				payload := map[string]any{
+					"prompt": "make it purple",
+					"model":  "dall-e-2",
+				}
+				b, _ := json.Marshal(payload)
+				return bytes.NewBuffer(b)
+			},
+			wantStatus:   http.StatusBadRequest,
+			wantErrorMsg: "Missing required field: image",
+		},
+		{
+			name:        "Missing required prompt in JSON returns clean 400 Bad Request",
+			contentType: "application/json",
+			buildBody: func() *bytes.Buffer {
+				payload := map[string]any{
+					"image": "https://example.com/test.png",
+					"model": "dall-e-2",
+				}
+				b, _ := json.Marshal(payload)
+				return bytes.NewBuffer(b)
+			},
+			wantStatus:   http.StatusBadRequest,
+			wantErrorMsg: "Missing required field: prompt",
+		},
+		{
+			name:        "Missing required prompt in multipart returns clean 400 Bad Request",
+			contentType: "",
+			buildBody: func() *bytes.Buffer {
+				var buf bytes.Buffer
+				mw := multipart.NewWriter(&buf)
+				_ = mw.WriteField("model", "dall-e-2")
+				fw, _ := mw.CreateFormFile("image", "test.png")
+				_, _ = fw.Write([]byte("sample png data"))
+				_ = mw.Close()
+				return &buf
+			},
+			wantStatus:   http.StatusBadRequest,
+			wantErrorMsg: "Missing required field: prompt",
+		},
+		{
+			name:        "Missing required image in multipart returns clean 400 Bad Request",
+			contentType: "",
+			buildBody: func() *bytes.Buffer {
+				var buf bytes.Buffer
+				mw := multipart.NewWriter(&buf)
+				_ = mw.WriteField("prompt", "make it purple")
+				_ = mw.WriteField("model", "dall-e-2")
+				_ = mw.Close()
+				return &buf
+			},
+			wantStatus:   http.StatusBadRequest,
+			wantErrorMsg: "Missing required field: image",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := tt.buildBody()
+			req := httptest.NewRequest("POST", "/v1/images/edits", buf)
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			} else {
+				// Detect boundary from buffer for multipart
+				data := buf.Bytes()
+				firstLine := string(bytes.SplitN(data, []byte("\r\n"), 2)[0])
+				boundary := strings.TrimPrefix(firstLine, "--")
+				req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+			}
+
+			rec := httptest.NewRecorder()
+			handler.HandleImageEdits(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status code = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantErrorMsg != "" {
+				if !strings.Contains(rec.Body.String(), tt.wantErrorMsg) {
+					t.Errorf("expected error containing %q, got %s", tt.wantErrorMsg, rec.Body.String())
+				}
+				// Verify OpenAI error format
+				var errResp struct {
+					Error struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+					t.Errorf("expected valid JSON error response: %v", err)
+				}
+				if errResp.Error.Type != "invalid_request_error" {
+					t.Errorf("expected type invalid_request_error, got %q", errResp.Error.Type)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleImageEdits_RoutesToProviders(t *testing.T) {
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+
+	// Seed codex connection
+	connData, _ := json.Marshal(map[string]any{"apiKey": "sk-codex-test"})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cx', 'codex', 'apikey', 'Codex Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	// Call with codex model and valid payload. It will route to handleCodexImage and fail on upstream URL/connection, not a 400 bad request.
+	payload := map[string]any{
+		"prompt": "make it orange",
+		"model":  "codex/gpt-image-1.5",
+		"image":  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+	}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest("POST", "/v1/images/edits", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleImageEdits(rec, req)
+
+	// Route reached provider handler (Codex)
+	if rec.Code == http.StatusBadRequest {
+		t.Errorf("expected routing to provider handler, got 400 Bad Request: %s", rec.Body.String())
+	}
+}

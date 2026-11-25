@@ -2,10 +2,11 @@ package dashboard
 
 import (
 	"context"
-	json "encoding/json/v2"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,5 +255,82 @@ func TestHandleGetCacheEntries_And_Delete(t *testing.T) {
 	}
 	if sc.Len() != 0 {
 		t.Errorf("sc.Len = %d after clear, want 0", sc.Len())
+	}
+}
+
+// HandleInvalidateSemanticCache requires at least one filter and reports the
+// number of entries it removed as `invalidated`, alongside `success`.
+func TestHandleInvalidateSemanticCache(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	sc := semanticcache.New(semanticcache.Config{
+		Enabled:    true,
+		TTL:        1 * time.Hour,
+		MaxEntries: 100,
+	}, nil)
+
+	put := func(model, content string) {
+		req := &translator.OpenAIRequest{
+			Model: model,
+			Messages: []translator.OpenAIMessage{
+				{Role: "user", Content: content},
+			},
+		}
+		if err := sc.Store(context.Background(), req, []byte(`{"ok":true}`), "application/json"); err != nil {
+			t.Fatalf("seed entry: %v", err)
+		}
+	}
+	put("gpt-4o", "prompt one")
+	put("GPT-4o", "prompt two")
+	put("claude-3-5", "prompt three")
+
+	r := chi.NewRouter()
+	dashH := NewDashboardHandler(database)
+	dashH.SemanticCache = sc
+	RegisterRoutes(r, dashH)
+
+	// No filter -> 400
+	empty := httptest.NewRequest(http.MethodPost, "/api/cache/semantic/invalidate", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, empty)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty body status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Model only: both gpt-4o entries match (case-insensitively in memory) ->
+	// 2 reported invalidated, 1 left.
+	modelReq := httptest.NewRequest(http.MethodPost, "/api/cache/semantic/invalidate", strings.NewReader(`{"model":"gpt-4o"}`))
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, modelReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var inv struct {
+		Invalidated *int `json:"invalidated"`
+		Success     bool `json:"success"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &inv); err != nil {
+		t.Fatalf("decode invalidate response %q: %v", rec.Body.String(), err)
+	}
+	if inv.Invalidated == nil {
+		t.Fatalf("response %q missing \"invalidated\"", rec.Body.String())
+	}
+	if *inv.Invalidated != 2 || !inv.Success {
+		t.Errorf("response = %q, want invalidated=2 success=true", rec.Body.String())
+	}
+	if sc.Len() != 1 {
+		t.Fatalf("sc.Len = %d after gpt-4o invalidate, want 1", sc.Len())
+	}
+
+	// Remaining entry is claude-3-5. Prefix that matches nothing -> 0 deleted.
+	noneReq := httptest.NewRequest(http.MethodPost, "/api/cache/semantic/invalidate", strings.NewReader(`{"prefix":"nope"}`))
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, noneReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prefix status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if sc.Len() != 1 {
+		t.Fatalf("sc.Len = %d after unmatched prefix, want 1", sc.Len())
 	}
 }

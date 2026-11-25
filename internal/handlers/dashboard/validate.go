@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -20,7 +21,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/browsercookies"
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
@@ -100,6 +104,10 @@ func isProxyFailure(err error, resp *http.Response) bool {
 var validateProbeDo = func(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, validateProbeTimeout)
 	defer cancel()
+	// A caller-supplied identity always wins; an unset one would go out as the
+	// Go default, which Cloudflare-fronted catalogues (Nous Research) answer
+	// with HTTP 403 "Attention Required!".
+	headers = handlerutil.WithDefaultUserAgent(headers)
 	var reader io.Reader
 	if len(body) > 0 {
 		reader = bytes.NewReader(body)
@@ -165,6 +173,10 @@ func (h *DashboardHandler) HandleValidateProvider(w http.ResponseWriter, r *http
 		Provider             string         `json:"provider"`
 		APIKey               string         `json:"apiKey"`
 		ProviderSpecificData map[string]any `json:"providerSpecificData"`
+		// ValidateOnly and ModelID only apply to custom JSON nodes: saving a
+		// connection checks configuration, a test request names its model.
+		ValidateOnly bool   `json:"validateOnly"`
+		ModelID      string `json:"modelId"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -182,6 +194,10 @@ func (h *DashboardHandler) HandleValidateProvider(w http.ResponseWriter, r *http
 	// Custom provider nodes (OpenAI-compatible, Anthropic-compatible, Custom Embedding)
 	if h.Repo != nil {
 		if node, nodeData, err := h.Repo.GetProviderNodeByID(provider); err == nil && node != nil {
+			if nodeData != nil && nodeData.APIType == customjson.APIType {
+				handlerutil.WriteJSON(w, http.StatusOK, validateCustomJSONConnection(r.Context(), nodeData, req.APIKey, strings.TrimSpace(req.ModelID), req.ValidateOnly))
+				return
+			}
 			h.validateProviderNodeConnection(w, r, node, nodeData, req.APIKey, req.ProviderSpecificData)
 			return
 		}
@@ -351,7 +367,7 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 
 	// 3. OpenAI Compatible (Default)
 	base := strings.TrimSuffix(baseURL, "/")
-	status, body, err := validateProbeDo(ctx, http.MethodGet, base+"/models", map[string]string{
+	status, body, err := validateProbeDo(ctx, http.MethodGet, chat.CompatibleNodeModelsURL(base), map[string]string{
 		"Authorization": "Bearer " + apiKey,
 	}, nil)
 	if err != nil {
@@ -394,7 +410,7 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 		"max_tokens": 1,
 		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 	})
-	chatStatus, _, chatErr := validateProbeDo(ctx, http.MethodPost, base+"/chat/completions", map[string]string{
+	chatStatus, _, chatErr := validateProbeDo(ctx, http.MethodPost, chat.ChatCompletionsURL(base), map[string]string{
 		"Authorization": "Bearer " + apiKey,
 		"Content-Type":  "application/json",
 	}, chatPayload)
@@ -425,6 +441,23 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 
 // (GET /models, falling back to a minimal chat request).
 func validateProviderKey(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
+	// A web-cookie provider whose credential is the whole site Cookie header
+	// (gemini-web) takes a paste that is often a Cookie-Editor JSON export
+	// rather than a header: render it once here so every probe below reads the
+	// header form. An empty credential stays empty (gemini-web works
+	// anonymously) and an ordinary header passes through. deepseek-web,
+	// grok-web, perplexity-web and uc-web are deliberately excluded: their
+	// apiKey is a token or a single cookie value (deepseek-web's userToken is
+	// even a JSON-wrapped localStorage value), which the JSON-cookie parser
+	// must not try to read as an export.
+	switch provider {
+	case "gemini-web":
+		if normalized, err := browsercookies.NormalizeCookieHeaderInput(apiKey); err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		} else if normalized != "" {
+			apiKey = normalized
+		}
+	}
 	if cfg.NoAuth {
 		// gemini-web is the one NoAuth provider whose credential is optional
 		// rather than absent: the site serves an anonymous visitor, and a pasted
@@ -435,13 +468,15 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		if provider == "gemini-web" && strings.TrimSpace(apiKey) != "" {
 			return validateGeminiWeb(ctx, apiKey)
 		}
-		if provider == "opencode" {
-			return validateOpencode(ctx, cfg, psd)
+		if provider == "opencode" || provider == "opencode-go" {
+			return validateOpencode(ctx, cfg, psd, apiKey)
 		}
 		return validateOutcome{valid: true, supported: true}
 	}
 
 	switch provider {
+	case "opencode", "opencode-go":
+		return validateOpencode(ctx, cfg, psd, apiKey)
 	case "cloudflare-ai":
 		return validateCloudflareAI(ctx, cfg, apiKey, psd)
 	case "azure":
@@ -486,14 +521,31 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 			return validateOutcome{supported: true, message: fmt.Sprintf("Runcrate API error (%d)", status)}
 		}
 		return validateOutcome{valid: true, supported: true}
+	case "deeprelay":
+		// The wallet endpoint proves both the key and the billing:read scope the
+		// quota tracker needs, without spending a token on a completion.
+		headers := validateAuthHeaders(cfg, apiKey)
+		headers["Accept"] = "application/json"
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			deeprelayBalanceURL, headers, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("DeepRelay API error (%d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	case "v1m":
 		return validateV1M(ctx, apiKey)
 	case "nace":
 		return validateSystemOneLane(ctx, apiKey, naceProbeURL, naceProbeModel)
-	case "commandcode":
-		// The registry's /alpha/generate consumes credits and needs a
-		// conversation id, so only whoami can validate a key against this
-		// upstream.
+	case "commandcode", "commandcode-goat":
+		// Command Code uses the same user_... key across the CLI (/alpha/generate)
+		// and the documented Provider API. whoami validates the key without
+		// spending credits on either lane.
 		headers := validateAuthHeaders(cfg, apiKey)
 		headers["Accept"] = "application/json"
 		status, _, err := validateProbeDo(ctx, http.MethodGet,
@@ -516,6 +568,40 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateOutcome{valid: valid, supported: true, message: message}
 	case "nous":
 		return validateNous(ctx, apiKey)
+	case "fal-ai":
+		// Match saved-connection tests: check auth against the model catalog
+		// without queueing a paid image generation (upstream 0cf07ccf).
+		// fal's auth header is "Key <key>", not the registry's bearer scheme.
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			"https://api.fal.ai/v1/models?limit=1",
+			map[string]string{"Authorization": "Key " + apiKey}, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Unable to verify API key (Fal returned %d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
+	case "synthetic":
+		// /openai/v1/models is public and answers 200 for any Bearer value, so
+		// it cannot tell a bad key from a good one; quotas can (upstream
+		// registry/synthetic.js validateUrl, wired by 402230ed).
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			"https://api.synthetic.new/v2/quotas",
+			map[string]string{"Authorization": "Bearer " + apiKey, "Accept": "application/json"}, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Unable to verify API key (Synthetic returned %d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	}
 
 	if isAnthropicProbe(cfg) {
@@ -705,7 +791,7 @@ func validateAzure(ctx context.Context, apiKey string, psd map[string]any) valid
 	return out
 }
 
-func validateOpencode(ctx context.Context, cfg providers.ProviderConfig, psd map[string]any) validateOutcome {
+func validateOpencode(ctx context.Context, cfg providers.ProviderConfig, psd map[string]any, apiKey string) validateOutcome {
 	model := "deepseek-v4.1-flash-free"
 	if psd != nil {
 		if m, ok := psd["defaultModel"].(string); ok && strings.TrimSpace(m) != "" {
@@ -723,11 +809,18 @@ func validateOpencode(ctx context.Context, cfg providers.ProviderConfig, psd map
 		"stream":     true,
 		"max_tokens": 1,
 	})
+	authKey := apiKey
+	if strings.TrimSpace(authKey) == "" {
+		authKey = "public"
+	}
+	sum := sha256.Sum256([]byte(apiKey))
+	sessionID := "validate-" + hex.EncodeToString(sum[:])[:16]
 	headers := map[string]string{
-		"Authorization":     "Bearer public",
-		"x-opencode-client": "cli",
-		"User-Agent":        "opencode/latest/2.1.4/cli",
-		"Content-Type":      "application/json",
+		"Authorization":      "Bearer " + authKey,
+		"x-opencode-client":  "cli",
+		"x-opencode-session": sessionID,
+		"User-Agent":         "opencode/latest/2.1.4/cli",
+		"Content-Type":       "application/json",
 	}
 	url := strings.TrimSpace(cfg.BaseURL)
 	if url == "" {
@@ -826,7 +919,7 @@ func validateGrokWeb(ctx context.Context, apiKey string) validateOutcome {
 	})
 	headers := map[string]string{
 		"Accept":             "*/*",
-		"Accept-Encoding":    "gzip, deflate, br, zstd",
+		"Accept-Encoding":    "gzip, deflate",
 		"Accept-Language":    "en-US,en;q=0.9",
 		"Cache-Control":      "no-cache",
 		"Content-Type":       "application/json",

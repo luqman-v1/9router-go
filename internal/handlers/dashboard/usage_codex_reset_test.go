@@ -152,6 +152,62 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	}
 }
 
+// Consuming a reset credit on one connection must not clear model locks or
+// quota backoffs on a sibling connection of the same provider — the health
+// reset is scoped to the target connection, not broadcast to the whole provider.
+func TestCodexResetCreditConsumeDoesNotUnlockOtherConnections(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	var consumeBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/credits/consume" {
+			raw, _ := io.ReadAll(r.Body)
+			json.Unmarshal(raw, &consumeBody)
+			w.Write([]byte(`{"outcome":"reset"}`))
+			return
+		}
+		w.Write([]byte(`{"credits":[{"credit_id":"c1"}]}`))
+	}))
+	defer srv.Close()
+	pointCodexResetURLs(t, srv.URL)
+	insertResetCreditConn(t, repo, "codex-1", "codex", "oauth", codexOAuthData("tok-1", "acct-1"))
+	insertResetCreditConn(t, repo, "codex-2", "codex", "oauth", codexOAuthData("tok-2", "acct-2"))
+
+	// Both connections carry a model lock and a quota backoff.
+	repo.LockConnectionModel("codex-1", "gpt-6.1-sol", 3600, 1)
+	repo.LockConnectionModel("codex-2", "gpt-6.1-sol", 3600, 1)
+	chat.BlockCodexConnectionUntil("codex-1", time.Now().UTC().Add(time.Hour))
+	chat.BlockCodexConnectionUntil("codex-2", time.Now().UTC().Add(time.Hour))
+
+	body, _ := json.Marshal(map[string]string{"selectionToken": "c1", "idempotencyKey": "idem-1"})
+	req := httptest.NewRequest(http.MethodPost, "/api/usage/codex-1/reset-credits/consume", bytes.NewReader(body))
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("consume: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// codex-1: lock cleared, quota unblocked.
+	if locked, _ := repo.IsConnectionModelLocked("codex-1", "gpt-6.1-sol"); locked {
+		t.Error("expected codex-1 model lock to be cleared")
+	}
+	if chat.IsCodexConnectionExhausted("codex-1") {
+		t.Error("expected codex-1 quota block to be cleared")
+	}
+
+	// codex-2: lock and backoff must remain untouched.
+	if locked, _ := repo.IsConnectionModelLocked("codex-2", "gpt-6.1-sol"); !locked {
+		t.Error("expected codex-2 model lock to remain locked")
+	}
+	if !chat.IsCodexConnectionExhausted("codex-2") {
+		t.Error("expected codex-2 quota block to remain in place")
+	}
+}
+
 // A "no credit" refusal must reach the dashboard as a 409 with its code, not a
 // generic 200 or a 500 — the modal tells the user which case it is.
 func TestCodexResetCreditConsumeSurfacesTypedRefusal(t *testing.T) {

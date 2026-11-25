@@ -32,7 +32,10 @@ const qoderDefaultMaxTokens = 32_768
 
 // qoderSystemRole is the OpenAI role that carries the system prompt, which
 // Qoder rejects inside `messages`.
-const qoderSystemRole = "system"
+const (
+	qoderSystemRole    = "system"
+	qoderDeveloperRole = "developer"
+)
 
 // content-block discriminators (open-sse/translator/schema/blocks.js).
 const (
@@ -340,7 +343,7 @@ func qoderNormalizedMessages(messages []any) ([]any, string) {
 		if !ok {
 			continue
 		}
-		if msg["role"] == qoderSystemRole {
+		if msg["role"] == qoderSystemRole || msg["role"] == qoderDeveloperRole {
 			if text := qoderTextOf(msg["content"]); text != "" {
 				systemParts = append(systemParts, text)
 			}
@@ -422,7 +425,10 @@ func buildQoderChatRequestWithAttachments(ctx context.Context, body []byte, mode
 	}
 
 	model, _ := request["model"].(string)
-	qoderKey := qoderModelKey(model)
+	// Friendly names resolve here too: qoderModelConfig has already fetched
+	// the catalog when one was needed, so its display names (and the static
+	// alias table) reduce the wire id to the same raw key the config carries.
+	qoderKey := qoderResolveModelKey(creds, region, model)
 	if qoderKey == "" {
 		return qoderBuiltChat{}, fmt.Errorf("qoder: request carries no model")
 	}

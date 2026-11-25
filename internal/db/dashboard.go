@@ -166,15 +166,15 @@ func (r *Repo) ReorderProviderConnections(provider, id string, direction int) er
 }
 
 // CreateCombo inserts a new combo routing configuration.
-func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
+func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy, customPrompt string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var kindVal any
 	if kind != "" {
 		kindVal = kind
 	}
 	_, err := r.db.Exec(
-		`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, name, kindVal, modelsJSON, now, now,
+		`INSERT INTO combos (id, name, kind, models, customPrompt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, kindVal, modelsJSON, customPrompt, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create combo %s: %w", id, err)
@@ -187,15 +187,15 @@ func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
 }
 
 // UpdateCombo updates an existing combo routing configuration.
-func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy string) error {
+func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy, customPrompt string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var kindVal any
 	if kind != "" {
 		kindVal = kind
 	}
 	_, err := r.db.Exec(
-		`UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
-		name, kindVal, modelsJSON, now, id,
+		`UPDATE combos SET name = ?, kind = ?, models = ?, customPrompt = ?, updatedAt = ? WHERE id = ?`,
+		name, kindVal, modelsJSON, customPrompt, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update combo %s: %w", id, err)
@@ -514,7 +514,40 @@ func (r *Repo) GetKVScope(scope string) (map[string]string, error) {
 	return result, nil
 }
 
+// GetKV retrieves a single key-value pair for a given scope and key.
+// Returns an empty string and nil error if the key does not exist.
+func (r *Repo) GetKV(scope, key string) (string, error) {
+	return r.GetKVContext(context.Background(), scope, key)
+}
+
+// GetKVContext retrieves a single key-value pair with context.
+func (r *Repo) GetKVContext(ctx context.Context, scope, key string) (string, error) {
+	var val string
+	err := r.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE scope = ? AND key = ?`, scope, key).Scan(&val)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get kv [%s] %s: %w", scope, key, err)
+	}
+	return val, nil
+}
+
 // SetKV inserts or updates a key-value pair for a given scope.
+func (r *Repo) SetKVContext(ctx context.Context, scope, key, value string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO kv (scope, key, value) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
+		scope, key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("set kv [%s] %s: %w", scope, key, err)
+	}
+	return nil
+}
+
 func (r *Repo) SetKV(scope, key, value string) error {
 	_, err := r.db.Exec(
 		`INSERT INTO kv (scope, key, value) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
@@ -523,6 +556,7 @@ func (r *Repo) SetKV(scope, key, value string) error {
 	if err != nil {
 		return fmt.Errorf("set kv [%s] %s: %w", scope, key, err)
 	}
+	r.invalidateKVScope(scope)
 	return nil
 }
 
@@ -561,6 +595,7 @@ func (r *Repo) SetKVMany(ctx context.Context, scope string, entries []KVEntry) e
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("set kv batch [%s]: %w", scope, err)
 	}
+	r.invalidateKVScope(scope)
 	return nil
 }
 
@@ -570,7 +605,15 @@ func (r *Repo) DeleteKV(scope, key string) error {
 	if err != nil {
 		return fmt.Errorf("delete kv [%s] %s: %w", scope, key, err)
 	}
+	r.invalidateKVScope(scope)
 	return nil
+}
+
+// invalidateKVScope drops any snapshot built from scope.
+func (r *Repo) invalidateKVScope(scope string) {
+	if scope == customModelsScope {
+		r.InvalidateCustomModelExtraBody()
+	}
 }
 
 // GetSettingsRaw reads settings row id=1 data JSON into map[string]any.

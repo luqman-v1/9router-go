@@ -29,6 +29,13 @@ const upstreamLevelsFixtureVersion = "v0.5.109"
 // codebuddy-cn/deepseek-v4.1-flash resolves to: the tag's answer is the
 // generic set, the PR's is codebuddy-cn's published set.
 var pendingUpstreamDivergences = map[string]map[string][]string{
+	// Groq gpt-oss accepts only low|medium|high (probed live: minimal/xhigh/auto/none/max
+	// all answer 400). Upstream still advertises the openai format default
+	// [none..xhigh] for groq/gpt-oss, so the picker would offer levels Groq
+	// rejects. Go-intentional divergence, not pending.
+	"groq": {
+		"openai/gpt-oss-120b": {"low", "medium", "high"},
+	},
 	// Upstream #4614 also dropped glm-5v-turbo / kimi-k2.7 / kimi-k2.6 from
 	// the codebuddy-cn capability table, and v0.5.99 keeps them dropped. Go
 	// keeps the rows so a saved combo naming one stays routable, which leaves
@@ -40,6 +47,15 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"glm-5v-turbo":        {"minimal", "low", "medium", "high", "xhigh"},
 		"kimi-k2.7":           {"minimal", "low", "medium", "high", "xhigh"},
 		"kimi-k2.6":           {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	// The nvidia provider rows (nemotron reasoning models on the openai wire)
+	// landed upstream after the v0.5.109 capture: the tag had no nvidia block,
+	// so the fixture recorded the *nemotron* pattern's base set. Master
+	// v0.5.119 declares thinkingFormat "openai" for these ids and resolves the
+	// full openai set — verified by running upstream getThinkingLevels. Go
+	// mirrors master; the exemption goes away at the next fixture re-capture.
+	"nvidia": {
+		"nvidia/nemotron-3-ultra-550b-a55b": {"none", "minimal", "low", "medium", "high", "xhigh"},
 	},
 	// Upstream has no agnes entry in capabilities.js at all, so it publishes
 	// no reasoning levels for the provider. Go declares agnes-3.0-pro and
@@ -95,12 +111,22 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"gemini-3.7-flash": {"low", "medium", "high"},
 		"gemini-3.6-flash": {"low", "medium", "high"},
 		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+		// Upstream f3e1f716 sets thinkingCanDisable:false on the dotted
+		// claude-opus-5.5 ids (thinking can't be switched off), so the
+		// picker drops "none". The v0.5.109 fixture predates that commit.
+		"claude-opus-5.5": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"gh": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
 		"gemini-3.7-flash": {"low", "medium", "high"},
 		"gemini-3.6-flash": {"low", "medium", "high"},
 		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+		"claude-opus-5.5":  {"low", "medium", "high", "xhigh", "max"},
+	},
+	// Token Harbor (th/thh) serves the same dotted claude-opus-5.5 from the
+	// upstream catalog; see the github note above.
+	"tokenharbor": {
+		"claude-opus-5.5": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"bedrock": {
 		"us.anthropic.claude-fable-5": {"low", "medium", "high", "xhigh", "max"},

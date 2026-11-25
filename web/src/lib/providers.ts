@@ -20,6 +20,14 @@ export interface ProviderCatalogItem {
   name: string
   category: 'oauth' | 'free' | 'freeTier' | 'apikey' | 'webCookie' | 'custom'
   alias?: string
+  /**
+   * The prefix this provider's model ids are published under — what
+   * /v1/models serves and what the copy button hands out. It is the
+   * gateway's own answer, so it always round-trips. It differs from
+   * `alias` for a few providers (`freebuff` publishes as "freebuff", its
+   * upstream alias is "fb"), so the two are not interchangeable.
+   */
+  modelPrefix?: string
   color?: string
   icon?: string
   noAuth?: boolean
@@ -78,6 +86,12 @@ export interface ProviderCatalog {
   noAuth: ProviderCatalogItem[]
   kinds: Record<string, string>
   categories: string[]
+  /**
+   * Every provider id and resolution alias a provider node may not claim as its
+   * prefix. Served by the guard itself so a suggested prefix cannot be one the
+   * server answers 409 for; the sections above do not cover this set.
+   */
+  reservedPrefixes?: string[]
 }
 
 export const PROVIDER_CATEGORIES = [
@@ -106,6 +120,10 @@ export const PROVIDER_CATEGORIES = [
 export const PROVIDER_CATALOG: ProviderCatalogItem[] = []
 export const PROVIDER_CATALOG_MAP = new Map<string, ProviderCatalogItem>()
 let noAuthProviders: ProviderCatalogItem[] = []
+/** Provider ids and aliases a node may not claim as a prefix (server guard set). */
+let reservedPrefixes: string[] = []
+/** `reservedPrefixes` as a set, built on first use (the dialog asks per keystroke). */
+let reservedPrefixSet: Set<string> | null = null
 let loaded = false
 /** Resolves when the catalog has been fetched. Rejects on a failed fetch. */
 let inflight: Promise<void> | null = null
@@ -130,6 +148,8 @@ export async function loadProviderCatalog(): Promise<void> {
       }
     }
     noAuthProviders = data.noAuth ?? []
+    reservedPrefixes = data.reservedPrefixes ?? []
+    reservedPrefixSet = null
     PROVIDER_CATALOG_MAP.clear()
     for (const p of PROVIDER_CATALOG) PROVIDER_CATALOG_MAP.set(p.id, p)
     loaded = true
@@ -138,10 +158,16 @@ export async function loadProviderCatalog(): Promise<void> {
 }
 
 /** Test seam: install a catalog without a network round trip. */
-export function __setProviderCatalogForTest(items: ProviderCatalogItem[], noAuth: ProviderCatalogItem[] = []): void {
+export function __setProviderCatalogForTest(
+  items: ProviderCatalogItem[],
+  noAuth: ProviderCatalogItem[] = [],
+  reserved: string[] = [],
+): void {
   PROVIDER_CATALOG.length = 0
   for (const p of items) PROVIDER_CATALOG.push(p)
   noAuthProviders = noAuth
+  reservedPrefixes = reserved
+  reservedPrefixSet = null
   PROVIDER_CATALOG_MAP.clear()
   for (const p of PROVIDER_CATALOG) PROVIDER_CATALOG_MAP.set(p.id, p)
   loaded = true
@@ -150,6 +176,20 @@ export function __setProviderCatalogForTest(items: ProviderCatalogItem[], noAuth
 /** True once the catalog has been fetched (or injected). */
 export function isProviderCatalogLoaded(): boolean {
   return loaded
+}
+
+/**
+ * The set of prefixes a provider node may not claim, or an empty set before the
+ * catalog has loaded.
+ *
+ * Membership is what the server's conflict guard checks, so a prefix suggested
+ * from this set is one the create/update will accept. Built lazily and kept
+ * until the next load, because the dialog asks on every keystroke of the name
+ * field while the set itself changes once per boot.
+ */
+export function getReservedPrefixes(): Set<string> {
+  if (!reservedPrefixSet) reservedPrefixSet = new Set(reservedPrefixes)
+  return reservedPrefixSet
 }
 
 export function getNoAuthProviders(): ProviderCatalogItem[] {

@@ -91,6 +91,21 @@ func (t *comboResponseTimeout) finish() bool {
 	return t.expired
 }
 
+// disarm stops the timer for a candidate that must run to completion — a
+// custom JSON business endpoint, whose call is never replayed, so cutting it
+// short could only lose an answer to an operation that may already have run.
+// It reports false when the timeout had already expired, in which case the
+// candidate's context is canceled and nothing has been sent yet.
+func (t *comboResponseTimeout) disarm() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.expired {
+		return false
+	}
+	t.timer.Stop()
+	return true
+}
+
 func (t *comboResponseTimeout) timedOut() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

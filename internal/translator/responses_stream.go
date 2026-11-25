@@ -106,7 +106,7 @@ func TranslateOpenAIToResponses(chunk *OpenAIChunk, s *ResponsesState) []Respons
 // translateContent turns the answer text of one chunk into events, splitting any
 // inline <think> block out as reasoning on the way through.
 func (s *ResponsesState) translateContent(out *[]ResponsesEvent, choice OpenAIChoice, delta OpenAIDelta) {
-	content := delta.Content
+	content := deltaContentString(delta.Content)
 	if content == "" {
 		return
 	}

@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"9router/proxy/internal/log"
 	"bytes"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -10,25 +11,39 @@ import (
 )
 
 // extractReasoningText pulls reasoning out of a Chat delta across the three
-// shapes vendors use: reasoning_content, reasoning, and reasoning_details.
+// shapes vendors use: reasoning_content, reason_result, and reasoning_details,
+// plus thinking parts embedded in array-shaped delta.content (Mistral).
 func extractReasoningText(delta OpenAIDelta) string {
 	if delta.ReasoningContent != "" {
 		return delta.ReasoningContent
 	}
+	if delta.ReasonResult != "" {
+		return delta.ReasonResult
+	}
 	if delta.Reasoning != "" {
 		return delta.Reasoning
 	}
-
-	var b strings.Builder
-	for _, detail := range delta.ReasoningDetails {
-		switch {
-		case detail.Text != "":
-			b.WriteString(detail.Text)
-		case detail.Content != "":
-			b.WriteString(detail.Content)
+	if len(delta.ReasoningDetails) > 0 {
+		var b strings.Builder
+		for _, detail := range delta.ReasoningDetails {
+			switch {
+			case detail.Text != "":
+				b.WriteString(detail.Text)
+			case detail.Content != "":
+				b.WriteString(detail.Content)
+			}
+		}
+		if s := b.String(); s != "" {
+			return s
 		}
 	}
-	return b.String()
+	// Only when no legacy reasoning field is present: Mistral streams
+	// thinking parts inside delta.content arrays.
+	if arr, ok := delta.Content.([]any); ok {
+		_, think := extractContentParts(arr)
+		return think
+	}
+	return ""
 }
 
 func formatSSE(event map[string]any) string {
@@ -149,19 +164,22 @@ func ParseClaudeUsage(body []byte) *OpenAIUsage {
 		return nil
 	}
 	var u struct {
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		InputTokens              int                  `json:"input_tokens"`
+		OutputTokens             int                  `json:"output_tokens"`
+		CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
+		CacheCreation            *claudeCacheCreation `json:"cache_creation"`
 	}
 	if err := json.Unmarshal(raw.Usage, &u); err != nil {
 		return nil
 	}
-	return NormalizeClaudeUsage(&OpenAIUsage{
+	usage := NormalizeClaudeUsage(&OpenAIUsage{
 		PromptTokens:             u.InputTokens,
 		CompletionTokens:         u.OutputTokens,
 		CachedTokens:             CachedTokensFromJSON(raw.Usage),
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
 	})
+	u.CacheCreation.apply(usage)
+	return usage
 }
 
 // ParseResponseUsage extracts usage from an OpenAI or Claude response body.
@@ -182,6 +200,53 @@ func ParseResponseUsage(body []byte) *OpenAIUsage {
 	usage.CachedTokens = CachedTokensFromJSON(raw.Usage)
 	usage.PromptCacheIncluded = true
 	return &usage
+}
+
+// AccumulateClaudeStreamUsage parses usage from Claude SSE chunks (message_start, message_delta).
+// It returns a NEW OpenAIUsage on a recognised event (a copy of curr with the
+// event's fields applied), and curr unchanged otherwise. The new pointer is what
+// lets callers tell "this chunk changed the usage" apart from a no-op by identity.
+func AccumulateClaudeStreamUsage(curr *OpenAIUsage, chunk []byte) *OpenAIUsage {
+	var raw struct {
+		Type    string `json:"type"`
+		Message *struct {
+			Usage *struct {
+				InputTokens              int                  `json:"input_tokens"`
+				CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int                  `json:"cache_read_input_tokens"`
+				CacheCreation            *claudeCacheCreation `json:"cache_creation"`
+			} `json:"usage"`
+		} `json:"message"`
+		Usage *struct {
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(chunk, &raw) != nil {
+		return curr
+	}
+	if raw.Type != "message_start" && raw.Type != "message_delta" {
+		return curr
+	}
+	next := OpenAIUsage{PromptCacheIncluded: true}
+	if curr != nil {
+		next = *curr
+		next.PromptCacheIncluded = true
+	}
+	switch raw.Type {
+	case "message_start":
+		if raw.Message != nil && raw.Message.Usage != nil {
+			u := raw.Message.Usage
+			next.CachedTokens = u.CacheReadInputTokens
+			next.CacheCreationInputTokens = u.CacheCreationInputTokens
+			next.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+			u.CacheCreation.apply(&next)
+		}
+	case "message_delta":
+		if raw.Usage != nil {
+			next.CompletionTokens = raw.Usage.OutputTokens
+		}
+	}
+	return &next
 }
 
 // ParseOllamaUsage extracts usage from an Ollama native response body, whose
@@ -332,6 +397,128 @@ func flushDeferredTerminal(sessionKey string) []byte {
 	return buf.Bytes()
 }
 
+// flushDSML appends any DeepSeek DSML tool calls accumulated in the stream's
+// content buffer as Claude tool_use blocks, and streams the cleaned prose as a
+// text block. Called once per stream: at the finish chunk and, if the finish
+// never arrived, from EnsureStreamClosed. Idempotent via DSMLBuffered.
+func flushDSML(state *StreamState, results *[]map[string]any) {
+	if !state.DSMLBuffered {
+		// Stream ended while DSMLBuffer held a deferred split-tag probe
+		// (trailing "<", "<|", "<|DSML", ...) that never completed into a
+		// DSML tag: emit the held-back bytes as plain text instead of
+		// dropping them at stream termination.
+		if state.DSMLBuffer != "" {
+			streamText(state, results, state.DSMLBuffer)
+			state.DSMLBuffer = ""
+		}
+		return
+	}
+	cleaned, calls := ExtractDSMLToolCalls(state.DSMLBuffer, nil)
+
+	if cleaned != "" {
+		if !state.TextBlockStarted {
+			state.TextBlockIndex = state.NextBlockIndex
+			state.NextBlockIndex++
+			state.TextBlockStarted = true
+			state.TextBlockClosed = false
+			*results = append(*results, map[string]any{
+				"type":          "content_block_start",
+				"index":         state.TextBlockIndex,
+				"content_block": map[string]any{"type": "text", "text": ""},
+			})
+		}
+		*results = append(*results, map[string]any{
+			"type":  "content_block_delta",
+			"index": state.TextBlockIndex,
+			"delta": map[string]any{"type": "text_delta", "text": cleaned},
+		})
+		state.TextBlockClosed = true
+		*results = append(*results, map[string]any{
+			"type":  "content_block_stop",
+			"index": state.TextBlockIndex,
+		})
+		state.TextBlockStarted = false
+	}
+
+	for _, call := range calls {
+		toolBlockIndex := state.NextBlockIndex
+		state.NextBlockIndex++
+		id := call.ID
+		if id == "" {
+			id = fmt.Sprintf("dsml-%d", toolBlockIndex)
+		}
+		stopThinkingBlock(state, results)
+		stopTextBlock(state, results)
+		*results = append(*results, map[string]any{
+			"type":  "content_block_start",
+			"index": toolBlockIndex,
+			"content_block": map[string]any{
+				"type":  "tool_use",
+				"id":    id,
+				"name":  call.Name,
+				"input": map[string]any{},
+			},
+		})
+		if call.Arguments != "" {
+			*results = append(*results, map[string]any{
+				"type":  "content_block_delta",
+				"index": toolBlockIndex,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": call.Arguments,
+				},
+			})
+		}
+		*results = append(*results, map[string]any{
+			"type":  "content_block_stop",
+			"index": toolBlockIndex,
+		})
+	}
+	state.DSMLBuffered = false
+}
+
+// streamText appends text_delta events for text, creating a text content block
+// on first use and stopping any in-progress thinking block first.
+func streamText(state *StreamState, results *[]map[string]any, text string) {
+	if text == "" {
+		return
+	}
+	stopThinkingBlock(state, results)
+	if !state.TextBlockStarted {
+		state.TextBlockIndex = state.NextBlockIndex
+		state.NextBlockIndex++
+		state.TextBlockStarted = true
+		state.TextBlockClosed = false
+		*results = append(*results, map[string]any{
+			"type":          "content_block_start",
+			"index":         state.TextBlockIndex,
+			"content_block": map[string]any{"type": "text", "text": ""},
+		})
+	}
+	*results = append(*results, map[string]any{
+		"type":  "content_block_delta",
+		"index": state.TextBlockIndex,
+		"delta": map[string]any{"type": "text_delta", "text": text},
+	})
+}
+
+// dsmlStreamSplit splits buf into (safe-to-stream text, tail to hold back).
+// It holds back a trailing '<' that could begin a DSML tag in the next chunk
+// (split-tag boundary), since the tag is not decidable until the following
+// bytes arrive. Everything before the held-back tail cannot be the start of a
+// DSML tag and is safe to stream immediately.
+func dsmlStreamSplit(buf string) (stream, hold string) {
+	lt := strings.LastIndexByte(buf, '<')
+	if lt < 0 {
+		return buf, ""
+	}
+	tail := buf[lt:]
+	if dsmlTagPrefix(tail) {
+		return buf[:lt], tail
+	}
+	return buf, ""
+}
+
 // IsClaudeMessageBody reports whether the body is already an Anthropic
 // Messages response (`type:"message"`, `role:"assistant"`). A Chat Completions
 // body never carries that pair — its discriminator is `object:"chat.completion"`
@@ -394,6 +581,9 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 	// Reasoning
 	reasoning := msg.ReasoningContent
 	if reasoning == "" {
+		reasoning = msg.ReasonResult
+	}
+	if reasoning == "" {
 		reasoning = msg.Reasoning
 	}
 	if reasoning != "" {
@@ -403,12 +593,23 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		})
 	}
 
-	// Text content
-	if msg.Content != "" {
-		contentBlocks = append(contentBlocks, map[string]any{
-			"type": "text",
-			"text": msg.Content,
-		})
+	// DSML tool calls parsed from inline content (DeepSeek-family upstreams
+	// emit <|DSML| invoke ...> blocks instead of structured tool_calls).
+	var dsmlToolCalls []DSMLToolRequest
+
+	// Text content — strip DeepSeek DSML tool invocation blocks out of it so
+	// clients never see raw markup, and promote any invokes to tool_use blocks.
+	textContent := msg.Content
+	if textContent != "" {
+		cleaned, dsmlCalls := extractDSMLFromContent(textContent, nil)
+		if cleaned != "" {
+			contentBlocks = append(contentBlocks, map[string]any{
+				"type": "text",
+				"text": cleaned,
+			})
+		}
+		msg.Content = cleaned
+		dsmlToolCalls = append(dsmlToolCalls, dsmlCalls...)
 	}
 
 	// Tool calls — don't fallback to ID when Function.Name is empty (see decolua/9router#2077, #3685)
@@ -430,8 +631,25 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		}
 		contentBlocks = append(contentBlocks, map[string]any{
 			"type":  "tool_use",
-			"id":    tc.ID,
+			"id":    SanitizeClaudeToolID(tc.ID),
 			"name":  toolName,
+			"input": input,
+		})
+	}
+
+	// DSML tool calls parsed from inline content (DeepSeek-family upstreams emit
+	// <|DSML| invoke ...> blocks instead of structured tool_calls).
+	for _, call := range dsmlToolCalls {
+		var input jsontext.Value
+		if call.Arguments != "" {
+			input = SafeToolCallInput(call.Arguments)
+		} else {
+			input = jsontext.Value("{}")
+		}
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":  "tool_use",
+			"id":    call.ID,
+			"name":  call.Name,
 			"input": input,
 		})
 	}
@@ -712,31 +930,41 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 		})
 	}
 
-	// 3. Content
-	if delta.Content != "" {
-		stopThinkingBlock(state, &results)
-		if !state.TextBlockStarted {
-			state.TextBlockIndex = state.NextBlockIndex
-			state.NextBlockIndex++
-			state.TextBlockStarted = true
-			state.TextBlockClosed = false
-			results = append(results, map[string]any{
-				"type":  "content_block_start",
-				"index": state.TextBlockIndex,
-				"content_block": map[string]any{
-					"type": "text",
-					"text": "",
-				},
-			})
+	// 3. Content — buffer once a DeepSeek DSML marker appears so raw markup is
+	// never streamed to the client; cleaned text and DSML tool calls are emitted
+	// at finish instead.
+	//
+	// To avoid O(N^2) buffer scans on non-DSML streams, text is streamed as it
+	// arrives. Only a trailing '<' that might begin a DSML tag (split across
+	// chunk boundaries) is held back until the next chunk decides. Once a DSML
+	// open tag is confirmed, the remainder is buffered and cleaned at finish.
+	// Text already streamed is never re-emitted, so there is no duplicated
+	// prose.
+	contentText := deltaContentString(delta.Content)
+	if contentText != "" {
+		if state.DSMLBuffered {
+			// Already in DSML mode: hold everything for finish-time cleanup.
+			state.DSMLBuffer += contentText
+		} else {
+			combined := state.DSMLBuffer + contentText
+			if loc := dsmlAnyOpen.FindStringIndex(combined); loc != nil {
+				// A DSML open tag starts at loc[0]. Stream the prose before it,
+				// then hold the tag and everything after for finish-time cleanup.
+				if loc[0] > 0 {
+					streamText(state, &results, combined[:loc[0]])
+				}
+				state.DSMLBuffer = combined[loc[0]:]
+				state.DSMLBuffered = true
+			} else {
+				// No DSML tag yet. Stream everything except a trailing '<' that
+				// could begin a DSML tag in the next chunk (split boundary).
+				stream, hold := dsmlStreamSplit(combined)
+				if stream != "" {
+					streamText(state, &results, stream)
+				}
+				state.DSMLBuffer = hold
+			}
 		}
-		results = append(results, map[string]any{
-			"type":  "content_block_delta",
-			"index": state.TextBlockIndex,
-			"delta": map[string]any{
-				"type": "text_delta",
-				"text": delta.Content,
-			},
-		})
 	}
 
 	// 4. Tool calls
@@ -763,7 +991,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 				toolBlockIndex := state.NextBlockIndex
 				state.NextBlockIndex++
 				state.ToolCalls[idx] = ToolCallState{
-					ID:         tc.ID,
+					ID:         SanitizeClaudeToolID(tc.ID),
 					Name:       toolName,
 					BlockIndex: toolBlockIndex,
 				}
@@ -772,7 +1000,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 					"index": toolBlockIndex,
 					"content_block": map[string]any{
 						"type":  "tool_use",
-						"id":    tc.ID,
+						"id":    SanitizeClaudeToolID(tc.ID),
 						"name":  toolName,
 						"input": map[string]any{},
 					},
@@ -788,8 +1016,12 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	if choice.FinishReason != nil {
 		stopThinkingBlock(state, &results)
 		stopTextBlock(state, &results)
+		flushDSML(state, &results)
 		for idx, toolInfo := range state.ToolCalls {
 			buffered := state.ToolArgBuffers[idx]
+			if buffered == "" {
+				log.Debug("translator", "tool call carries no arguments", "tool", toolInfo.Name, "id", toolInfo.ID)
+			}
 			sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
 			results = append(results, map[string]any{
 				"type":  "content_block_delta",
@@ -875,10 +1107,14 @@ func EnsureStreamClosed(sessionKey string) []byte {
 	}
 
 	stopThinkingBlock(state, &results)
+	flushDSML(state, &results)
 	stopTextBlock(state, &results)
 
 	for idx, toolInfo := range state.ToolCalls {
 		buffered := state.ToolArgBuffers[idx]
+		if buffered == "" {
+			log.Debug("translator", "tool call carries no arguments", "tool", toolInfo.Name, "id", toolInfo.ID)
+		}
 		sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
 		results = append(results, map[string]any{
 			"type":  "content_block_delta",
@@ -914,4 +1150,65 @@ func UnwrapClineEnvelope(body []byte) []byte {
 		return []byte(env.Data)
 	}
 	return body
+}
+
+// extractContentParts splits a content value (string or array of parts) into
+// visible text and reasoning/thinking text. Mistral streams delta.content as an
+// array mixing thinking and text parts.
+func extractContentParts(content any) (string, string) {
+	var textParts, thinkParts []string
+	switch v := content.(type) {
+	case nil:
+		return "", ""
+	case string:
+		return v, ""
+	case []any:
+		for _, item := range v {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(string)
+			switch typ {
+			case "thinking":
+				thinkParts = append(thinkParts, extractThinkingText(m))
+			case "text":
+				if t, ok := m["text"].(string); ok {
+					textParts = append(textParts, t)
+				}
+			}
+		}
+	}
+	return strings.Join(textParts, ""), strings.Join(thinkParts, "")
+}
+
+func extractThinkingText(part map[string]any) string {
+	if s, ok := part["thinking"].(string); ok {
+		return s
+	}
+	if arr, ok := part["thinking"].([]any); ok {
+		var b strings.Builder
+		for _, it := range arr {
+			switch v := it.(type) {
+			case string:
+				b.WriteString(v)
+			case map[string]any:
+				if t, ok := v["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String()
+	}
+	if t, ok := part["text"].(string); ok {
+		return t
+	}
+	return ""
+}
+
+// deltaContentString returns the visible text of a delta content value, which may
+// be a string or an array of content parts (Mistral).
+func deltaContentString(content any) string {
+	text, _ := extractContentParts(content)
+	return text
 }

@@ -21,8 +21,8 @@ func TestCodexRegistryDropsGpt55AndImageAndAutoPingAreGpt56(t *testing.T) {
 		}
 	}
 
-	if !strings.HasPrefix(CodexImagesMainModel, "gpt-5.6-") {
-		t.Errorf("CodexImagesMainModel = %q, want a gpt-5.6-family model", CodexImagesMainModel)
+	if !strings.HasPrefix(CodexImagesMainModel, "gpt-5.6-") && !strings.HasPrefix(CodexImagesMainModel, "gpt-6-") {
+		t.Errorf("CodexImagesMainModel = %q, want a gpt-5.6- or gpt-6-family model", CodexImagesMainModel)
 	}
 
 	if !strings.HasPrefix(CodexAutoPingModel, "gpt-5.6-") {

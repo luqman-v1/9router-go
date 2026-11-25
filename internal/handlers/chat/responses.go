@@ -44,6 +44,7 @@ func newResponsesBridge(ctx context.Context, hw *internalproxy.HeartbeatWriter, 
 		translator.RequestedModelFromContext(ctx),
 		translator.CustomToolNamesFrom(ctx),
 		func(frame []byte) error {
+			frame = SanitizeResponsesNullUsage(frame)
 			if metrics != nil {
 				if metrics.TTFT == 0 {
 					metrics.TTFT = time.Since(start).Milliseconds()
@@ -70,6 +71,7 @@ func newResponsesBridge(ctx context.Context, hw *internalproxy.HeartbeatWriter, 
 // that has to know it and threading a new bool through every request struct
 // would touch five call sites for a single flag.
 func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
+	w = newResponsesSanitizingWriter(w)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Error("chat", "read body failed", "error", err)
@@ -199,6 +201,8 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 // translation when the source format already equals the target format.
 func (h *ChatHandler) newResponsesContext(r *http.Request, requestedModel string, modelInfo *ModelInfo, body *[]byte) context.Context {
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = executor.WithCodexLiteHeader(ctx, r.Header.Get(executor.CodexResponsesLiteHeader))
+	ctx = handlerutil.WithClientAnthropicVersion(ctx, r.Header.Get("anthropic-version"))
 	// Provider-scope limit state, installed where the request's context is built
 	// so every candidate this request tries shares one memory of which providers
 	// were full (docs/provider-limits-plan.md D7).
@@ -271,10 +275,192 @@ func (h *ChatHandler) handleResponsesSingleModel(ctx context.Context, w http.Res
 				}
 			}
 		}
+		// Forward only Retry-After, for the same reason /v1/chat/completions
+		// does: it is the one header a caller needs to know when to come back
+		// after a temporary condition. Copying ue.Header wholesale would carry
+		// the failed upstream's framing headers (Content-Length,
+		// Transfer-Encoding) and make the reply advertise a body length that
+		// does not match what is written.
+		if ra := ue.Header.Get("Retry-After"); ra != "" {
+			cw.Header().Set("Retry-After", ra)
+		}
 		cw.Header().Set("Content-Type", "application/json")
 		cw.WriteHeader(ue.StatusCode)
 		cw.Write(ue.Body)
 		return
 	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
+}
+
+// usageTokenFields lists the known token counter field names on Responses API usage objects.
+var usageTokenFields = []string{
+	"total_tokens",
+	"input_tokens",
+	"output_tokens",
+	"prompt_tokens",
+	"completion_tokens",
+	"cached_tokens",
+	"cache_read_input_tokens",
+	"reasoning_tokens",
+}
+
+// SanitizeResponsesNullUsage ensures token count fields in Responses usage objects
+// (e.g. total_tokens, input_tokens, output_tokens) are never emitted as JSON null.
+// When a usage object is present, null token count fields are sanitized to integer 0
+// so typed clients (such as Codex CLI, Rust / typed SDKs) do not fail deserialization.
+func SanitizeResponsesNullUsage(payload []byte) []byte {
+	if len(payload) == 0 || !bytes.Contains(payload, []byte(`"usage"`)) || !bytes.Contains(payload, []byte("null")) {
+		return payload
+	}
+
+	// If payload contains SSE framing ("data:"), sanitize data lines.
+	if bytes.Contains(payload, []byte("data:")) {
+		return sanitizeResponsesSSE(payload)
+	}
+
+	// Otherwise, check for direct JSON object payload.
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) > 0 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}' {
+		return sanitizeResponsesJSON(payload)
+	}
+
+	return payload
+}
+
+// sanitizeResponsesJSON unmarshals a JSON object, sanitizes null token fields in any usage map,
+// and returns the re-serialized JSON (or the original bytes if unchanged/unparsable).
+func sanitizeResponsesJSON(raw []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	if !sanitizeUsageInMap(m) {
+		return raw
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// sanitizeResponsesSSE processes SSE frames line by line, sanitizing data lines that contain usage.
+func sanitizeResponsesSSE(data []byte) []byte {
+	var out bytes.Buffer
+	rest := data
+	changedAny := false
+	for len(rest) > 0 {
+		idx := bytes.IndexByte(rest, '\n')
+		var line []byte
+		if idx >= 0 {
+			line = rest[:idx+1]
+			rest = rest[idx+1:]
+		} else {
+			line = rest
+			rest = nil
+		}
+
+		trimmedLine := bytes.TrimLeft(line, " \t")
+		if bytes.HasPrefix(trimmedLine, []byte("data:")) {
+			payload := bytes.TrimSpace(trimmedLine[len("data:"):])
+			if len(payload) > 0 && payload[0] == '{' && bytes.Contains(payload, []byte(`"usage"`)) && bytes.Contains(payload, []byte("null")) {
+				sanitized := sanitizeResponsesJSON(payload)
+				if !bytes.Equal(sanitized, payload) {
+					changedAny = true
+					lineEnding := "\n"
+					if bytes.HasSuffix(line, []byte("\r\n")) {
+						lineEnding = "\r\n"
+					}
+					out.WriteString("data: ")
+					out.Write(sanitized)
+					out.WriteString(lineEnding)
+					continue
+				}
+			}
+		}
+		out.Write(line)
+	}
+	if !changedAny {
+		return data
+	}
+	return out.Bytes()
+}
+
+// sanitizeUsageInMap checks both top-level "usage" and nested "response" -> "usage".
+func sanitizeUsageInMap(m map[string]any) bool {
+	changed := false
+	if u, ok := m["usage"].(map[string]any); ok && u != nil {
+		if sanitizeUsageObject(u) {
+			changed = true
+		}
+	}
+	if resp, ok := m["response"].(map[string]any); ok && resp != nil {
+		if u, ok := resp["usage"].(map[string]any); ok && u != nil {
+			if sanitizeUsageObject(u) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// sanitizeUsageObject replaces any null values in token counter fields with integer 0.
+func sanitizeUsageObject(usage map[string]any) bool {
+	changed := false
+	for _, f := range usageTokenFields {
+		if v, exists := usage[f]; exists && v == nil {
+			usage[f] = 0
+			changed = true
+		}
+	}
+	for k, v := range usage {
+		if v == nil && strings.HasSuffix(k, "_tokens") {
+			usage[k] = 0
+			changed = true
+		}
+	}
+	for _, detailKey := range []string{
+		"input_tokens_details",
+		"output_tokens_details",
+		"prompt_tokens_details",
+		"completion_tokens_details",
+	} {
+		if detailMap, ok := usage[detailKey].(map[string]any); ok && detailMap != nil {
+			for subK, subV := range detailMap {
+				if subV == nil && (strings.HasSuffix(subK, "_tokens") || subK == "cache_read_input_tokens") {
+					detailMap[subK] = 0
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// responsesSanitizingWriter wraps http.ResponseWriter to sanitize null token counts on response.completed events.
+type responsesSanitizingWriter struct {
+	http.ResponseWriter
+}
+
+func newResponsesSanitizingWriter(w http.ResponseWriter) *responsesSanitizingWriter {
+	return &responsesSanitizingWriter{ResponseWriter: w}
+}
+
+func (rw *responsesSanitizingWriter) Write(b []byte) (int, error) {
+	sanitized := SanitizeResponsesNullUsage(b)
+	n, err := rw.ResponseWriter.Write(sanitized)
+	if err != nil {
+		return n, err
+	}
+	return len(b), nil
+}
+
+func (rw *responsesSanitizingWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responsesSanitizingWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }

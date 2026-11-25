@@ -12,6 +12,7 @@ func RegisterAll() {
 	Register("agnes", func() Executor { return ForwardOpenAI })
 	Register("deepseek", func() Executor { return ForwardOpenAI })
 	Register("sumopod", func() Executor { return ForwardOpenAI })
+	Register("deeprelay", func() Executor { return ForwardOpenAI })
 	Register("groq", func() Executor { return ForwardOpenAI })
 	Register("nvidia", func() Executor { return ForwardNvidia })
 	Register("openrouter", func() Executor { return ForwardOpenAI })
@@ -21,7 +22,7 @@ func RegisterAll() {
 	Register("opencode", func() Executor { return ForwardOpencode })
 	Register("gemini", func() Executor { return ForwardOpenAI })
 	Register("github", func() Executor { return ForwardGithub })
-	Register("mistral", func() Executor { return ForwardOpenAI })
+	Register("mistral", func() Executor { return ForwardMistral })
 	Register("perplexity", func() Executor { return ForwardOpenAI })
 	Register("xai", func() Executor { return ForwardOpenAI })
 	Register("cohere", func() Executor { return ForwardOpenAI })
@@ -85,6 +86,9 @@ func RegisterAll() {
 	Register("bedrock-xai", func() Executor { return ForwardBedrock })
 	Register("azure", func() Executor { return ForwardAzure })
 	Register("commandcode", func() Executor { return ForwardCommandcode })
+	// The documented Provider API surface: three lanes on one bearer, the lane
+	// chosen per model from the live catalogue's supported_endpoints.
+	Register("commandcode-goat", func() Executor { return ForwardCommandcodeGoat })
 	Register("qoder", func() Executor { return ForwardQoder })
 	Register("qoder-cn", func() Executor { return ForwardQoder })
 	Register("alims-intl", func() Executor { return ForwardOpenAI })
@@ -93,7 +97,26 @@ func RegisterAll() {
 	Register("bazaarlink", func() Executor { return ForwardOpenAI })
 	Register("bluesminds", func() Executor { return ForwardOpenAI })
 	Register("devin-cli", func() Executor { return ForwardOpenAI })
+	// agy-acp drives the official agy CLI over Agent Client Protocol (stdio
+	// JSON-RPC). It is distinct from the HTTP antigravity provider.
+	Register("agy-acp", func() Executor { return ForwardAGYACP })
+	// Vertex AI: the registry entries carried no executor, so every request
+	// POSTed an OpenAI body at aiplatform.googleapis.com, which serves neither
+	// lane. Both provider ids share one implementation — the difference is the
+	// URL shape, decided inside from the provider id.
+	Register("vertex", func() Executor { return ForwardVertex })
+	Register("vertex-partner", func() Executor { return ForwardVertex })
+	// Perplexity Web is not OpenAI-compatible in either direction: the request
+	// is a query_str envelope and the answer is Perplexity's own event stream,
+	// so the passthrough cannot serve it.
+	Register("perplexity-web", func() Executor { return ForwardPerplexityWeb })
 	Register("freebuff", func() Executor { return ForwardFreebuff })
+	// free-pi cannot ride the shared passthrough: it must set two per-account
+	// headers (x-session-id, x-client-version) that the registry's static map
+	// cannot carry, and it must inspect the upstream status so a 409
+	// concurrent_session stays a 409 instead of being written out as a 200
+	// carrying an error body.
+	Register("free-pi", func() Executor { return ForwardFreePi })
 	Register("kilo-gateway", func() Executor { return ForwardOpenAI })
 	Register("llm7", func() Executor { return ForwardOpenAI })
 	Register("morph", func() Executor { return ForwardOpenAI })
@@ -108,5 +131,9 @@ func RegisterAll() {
 	Register("minimax-code-global", func() Executor { return ForwardMinimaxCode })
 	Register("daoxe", func() Executor { return ForwardOpenAI })
 	Register("nan", func() Executor { return ForwardOpenAI })
+	// Open Design Cloud: dual-plane (runtime key at amr-link.open-design.ai/v1,
+	// control key at amr-api.open-design.ai). Its own executor so 401/403/429
+	// reach the client as real statuses instead of being written as 200.
+	Register("opendesign", func() Executor { return ForwardOpenDesign })
 	Register("openadapter", func() Executor { return ForwardOpenAI })
 }

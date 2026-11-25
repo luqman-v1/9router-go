@@ -110,7 +110,7 @@ func TestDoRequestStrictProxyRefusesWhenProxyIsUnreachable(t *testing.T) {
 	upstream, directHits := okUpstream(t)
 	deadPort := closedProxyPort(t)
 
-	client := ForbidDirectReplay(poolClient("http://"+deadPort))
+	client := ForbidDirectReplay(poolClient("http://" + deadPort))
 	if _, err := DoRequest(context.Background(), client, http.MethodPost, upstream.URL, nil, []byte(`{}`)); err == nil {
 		t.Fatal("an unreachable strict proxy must fail the request")
 	}
@@ -189,5 +189,21 @@ func TestForbidDirectReplayLeavesLaxClientsAlone(t *testing.T) {
 	}
 	if _, ok := lax.Transport.(*http.Transport); !ok {
 		t.Errorf("the lax client transport type = %T, want the pooled *http.Transport", lax.Transport)
+	}
+}
+
+func TestProxyURLForTarget_UnwrapsStrictAndFallbackWrappers(t *testing.T) {
+	const socks = "socks5://user:pass@127.0.0.1:1080"
+	target, err := url.Parse("https://opencode.ai")
+	if err != nil {
+		t.Fatalf("parse target: %v", err)
+	}
+
+	strict := ForbidDirectReplay(poolClient(socks))
+	if got := ProxyURLForTarget(strict, target); got != socks {
+		t.Errorf("ProxyURLForTarget(strict) = %q, want %q", got, socks)
+	}
+	if !proxiesViaAssignment(strict) {
+		t.Error("strict-wrapped pool client must still report proxiesViaAssignment = true")
 	}
 }

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -13,6 +14,7 @@ import (
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/thinking"
 )
 
 // ModelInfoObject represents a model entry in the /v1/models response. The
@@ -32,9 +34,15 @@ type ModelInfoObject struct {
 	// the client would read as a real limit. Upstream emits them on combo
 	// entries too (comboSeatLimits in src/app/api/v1/models/route.js), taking
 	// the smallest window in the combo's seat tree.
-	ContextLength       *int                       `json:"context_length,omitempty"`
-	MaxCompletionTokens *int                       `json:"max_completion_tokens,omitempty"`
-	Pricing             *pricing.OpenRouterPricing `json:"pricing,omitempty"`
+	ContextLength       *int `json:"context_length,omitempty"`
+	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	// ThinkingLevels is the selectable reasoning-level set the dashboard
+	// picker shows ("none,low,…"), emitted so clients can build an effort
+	// selector from the gateway instead of a per-model table. Omitted when the
+	// model has no reasoning. Upstream 7abc190d added the same field to
+	// buildModelsList (getThinkingLevels → model.thinking_levels).
+	ThinkingLevels []string                   `json:"thinking_levels,omitempty"`
+	Pricing        *pricing.OpenRouterPricing `json:"pricing,omitempty"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -222,19 +230,41 @@ func (h *ChatHandler) disabledModelIndex() map[string]map[string]bool {
 		if perr := json.Unmarshal([]byte(raw), &ids); perr != nil {
 			continue
 		}
-		set := make(map[string]bool, len(ids))
+		set := make(map[string]bool, len(ids)*2)
+		canon := providers.ResolveAlias(prov)
+		alias := providers.GetProviderAlias(prov)
 		for _, id := range ids {
 			if id = strings.TrimSpace(id); id != "" {
 				set[id] = true
+				// Also index stripped variant if stored with provider prefix:
+				// e.g. "nvidia/parakeet-ctc-1.1b-asr" -> "parakeet-ctc-1.1b-asr"
+				if stripped := strings.TrimPrefix(id, prov+"/"); stripped != id && stripped != "" {
+					set[stripped] = true
+				}
+				if canon != "" && canon != prov {
+					if stripped := strings.TrimPrefix(id, canon+"/"); stripped != id && stripped != "" {
+						set[stripped] = true
+					}
+				}
+				if alias != "" && alias != prov {
+					if stripped := strings.TrimPrefix(id, alias+"/"); stripped != id && stripped != "" {
+						set[stripped] = true
+					}
+				}
 			}
 		}
 		if len(set) == 0 {
 			continue
 		}
 		disabled[prov] = set
-		if canon := providers.ResolveAlias(prov); canon != "" {
+		if canon != "" {
 			if _, ok := disabled[canon]; !ok {
 				disabled[canon] = set
+			}
+		}
+		if alias != "" {
+			if _, ok := disabled[alias]; !ok {
+				disabled[alias] = set
 			}
 		}
 	}
@@ -416,7 +446,22 @@ func (h *ChatHandler) buildModelsListForMode(
 	seen := make(map[string]bool)
 	disabled := h.disabledModelIndex()
 	isDisabled := func(provider, modelID string) bool {
-		return disabled[provider][modelID]
+		set := disabled[provider]
+		if set == nil {
+			return false
+		}
+		if set[modelID] {
+			return true
+		}
+		if set[provider+"/"+modelID] {
+			return true
+		}
+		if slash := strings.IndexByte(modelID, '/'); slash != -1 {
+			if set[modelID[slash+1:]] {
+				return true
+			}
+		}
+		return false
 	}
 	filterConnected := mode == modeListConnected && usable != nil
 
@@ -495,6 +540,41 @@ func (h *ChatHandler) buildModelsListForMode(
 	aliases := h.modelAliasTargets()
 	nodePrefixes := h.providerNodePrefixMap()
 
+	// Upstream injects a fake "noauth" connection for every noAuth provider
+	// that has no active connection row, in every mode (route.js:379-386:
+	// "Include no-auth free providers (e.g. opencode) so their models are
+	// exposed in /v1/models"). The per-provider loop then publishes that
+	// provider's static catalog (+ custom models) exactly like a connected
+	// one, so `oc/muse-spark-…` is listed whether or not the operator created
+	// a connection. Without this, modeListAll and modeListConnected answered
+	// with zero noAuth entries the moment any other connection existed.
+	//
+	// Sorted ids: the registry map iterates in random order and the response
+	// must be byte-stable across calls (TestHandleModels_StableKeyOrder).
+	noAuthIDs := make([]string, 0, 8)
+	for id, cfg := range providers.KnownProviders {
+		if cfg.NoAuth && !cfg.Hidden {
+			noAuthIDs = append(noAuthIDs, id)
+		}
+	}
+	slices.Sort(noAuthIDs)
+	for _, id := range noAuthIDs {
+		if _, ok := firstPerProvider[id]; ok {
+			continue
+		}
+		// The static dump published the alias spelling (e.g. "oc"); publish
+		// the same one here so ids stay consistent across modes.
+		alias := providers.GetProviderAlias(id)
+		if alias == "" || alias == id {
+			alias = id
+		}
+		if _, ok := firstPerProvider[alias]; ok {
+			continue
+		}
+		firstPerProvider[alias] = nil
+		order = append(order, alias)
+	}
+
 	for _, provID := range order {
 		conn := firstPerProvider[provID]
 		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, nodePrefixes, isDisabled)
@@ -528,6 +608,15 @@ func (h *ChatHandler) appendConnectionModels(
 ) []ModelInfoObject {
 	connData := parseConnectionModelData(conn)
 
+	// A Mistral connection can opt into the reference gateway's Vibe wire
+	// contract with providerSpecificData.usageLane = "vibe". Keep the parse
+	// local to this connection: the ordinary Mistral API lane is untouched.
+	var sharedData shared.ConnectionData
+	if conn != nil && conn.Data != "" {
+		_ = json.Unmarshal([]byte(conn.Data), &sharedData)
+	}
+	vibeMistral := providerID == "mistral" && providers.IsMistralVibeConnection(sharedData.ProviderSpecificData)
+
 	staticAlias := providers.GetProviderAlias(providerID)
 	if staticAlias == "" {
 		staticAlias = providerID
@@ -550,14 +639,30 @@ func (h *ChatHandler) appendConnectionModels(
 	}
 
 	ids := connData.EnabledModels()
-	// Upstream: a live catalog replaces the static one only when the operator
-	// has not pinned enabledModels on the connection.
-	liveByID := make(map[string]LiveModel)
-	if len(ids) == 0 {
-		var sharedData shared.ConnectionData
-		if conn.Data != "" {
-			_ = json.Unmarshal([]byte(conn.Data), &sharedData)
+	hasExplicitEnabledModels := len(ids) > 0
+	var pinnedSet map[string]bool
+	if hasExplicitEnabledModels {
+		pinnedSet = make(map[string]bool, len(ids)*4)
+		for _, raw := range ids {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				continue
+			}
+			pinnedSet[trimmed] = true
+			bare := stripModelPrefix(trimmed, outputAlias, staticAlias, providerID)
+			pinnedSet[bare] = true
+			pinnedSet[outputAlias+"/"+bare] = true
+			pinnedSet[staticAlias+"/"+bare] = true
+			pinnedSet[providerID+"/"+bare] = true
 		}
+	}
+
+	// Upstream: a live catalog replaces the static one only when the operator
+	// has not pinned enabledModels on the connection. A nil conn is the
+	// noAuth fake connection (upstream's {id: "noauth"} placeholder): it has
+	// no data to parse and no credentials, so it goes straight to static.
+	liveByID := make(map[string]LiveModel)
+	if len(ids) == 0 && conn != nil {
 		for _, live := range h.resolveLiveCatalog(ctx, conn, &sharedData, providerID) {
 			liveByID[live.ID] = live
 			ids = append(ids, live.ID)
@@ -567,6 +672,48 @@ func (h *ChatHandler) appendConnectionModels(
 		ids = providers.GetProviderModels(staticAlias)
 		if len(ids) == 0 {
 			ids = providers.GetProviderModels(outputAlias)
+		}
+	}
+
+	if vibeMistral && !hasExplicitEnabledModels {
+		// The reference gateway publishes chat models only, plus a clone of
+		// each target under its gateway-only alias. Upstream aliases that
+		// carry the same name are dropped before the clones are added.
+		chatIDs := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if providers.IsMistralVibeAlias(id) {
+				continue
+			}
+			if live, ok := liveByID[id]; ok && live.CompletionChat != nil && !*live.CompletionChat {
+				delete(liveByID, id)
+				continue
+			}
+			chatIDs = append(chatIDs, id)
+		}
+		ids = chatIDs
+		if len(ids) == 0 {
+			// No live feed (or no chat models in it): use the tested model
+			// set from the reference gateway's README.
+			ids = append(ids, providers.MistralVibeCanonicalModels...)
+		}
+		for _, alias := range providers.MistralVibeAliases {
+			targetPresent := false
+			for _, id := range ids {
+				if id == alias.Target {
+					targetPresent = true
+					break
+				}
+			}
+			if !targetPresent {
+				continue
+			}
+			ids = append(ids, alias.Alias)
+			if live, ok := liveByID[alias.Target]; ok {
+				clone := live
+				clone.ID = alias.Alias
+				clone.Name = alias.Alias
+				liveByID[alias.Alias] = clone
+			}
 		}
 	}
 
@@ -600,6 +747,15 @@ func (h *ChatHandler) appendConnectionModels(
 			if !isLLMCustomModel(cm.Type) {
 				continue
 			}
+			// When connection explicitly pins enabledModels, custom models outside
+			// the pin must not bypass the whitelist.
+			if hasExplicitEnabledModels {
+				cmID := strings.TrimSpace(cm.ID)
+				bare := stripModelPrefix(cmID, outputAlias, staticAlias, providerID)
+				if !pinnedSet[cmID] && !pinnedSet[bare] && !pinnedSet[key+"/"+bare] {
+					continue
+				}
+			}
 			// Upstream resolves custom-model capabilities from the saved caps,
 			// so publish them before the capability lookup below.
 			h.registerCustomModelCaps(outputAlias, key, cm)
@@ -613,12 +769,19 @@ func (h *ChatHandler) appendConnectionModels(
 		if strings.HasPrefix(target, outputAlias+"/") ||
 			strings.HasPrefix(target, staticAlias+"/") ||
 			strings.HasPrefix(target, providerID+"/") {
+			if hasExplicitEnabledModels {
+				targetTrimmed := strings.TrimSpace(target)
+				bare := stripModelPrefix(targetTrimmed, outputAlias, staticAlias, providerID)
+				if !pinnedSet[targetTrimmed] && !pinnedSet[bare] {
+					continue
+				}
+			}
 			add(target, false)
 		}
 	}
 
 	for _, modelID := range merged {
-		if isDisabled(outputAlias, modelID) || isDisabled(staticAlias, modelID) {
+		if isDisabled(outputAlias, modelID) || isDisabled(staticAlias, modelID) || isDisabled(providerID, modelID) {
 			continue
 		}
 		// Upstream resolves kind from the custom row's own type, then the
@@ -695,6 +858,7 @@ func (h *ChatHandler) appendConnectionModels(
 			Capabilities:        &caps,
 			ContextLength:       optionalTokenLimit(ctxLen),
 			MaxCompletionTokens: optionalTokenLimit(maxOut),
+			ThinkingLevels:      providers.GetThinkingLevels(providerID, modelID),
 			Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 		})
 	}
@@ -781,6 +945,7 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 		Capabilities:        &caps,
 		ContextLength:       optionalTokenLimit(ctxLen),
 		MaxCompletionTokens: optionalTokenLimit(maxOut),
+		ThinkingLevels:      providers.GetThinkingLevels(alias, modelID),
 		Pricing:             pricing.BuildOpenRouterPricing(alias, modelID),
 	})
 }
@@ -854,6 +1019,7 @@ func (h *ChatHandler) appendLooseCustomModels(
 				Capabilities:        &caps,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				ThinkingLevels:      providers.GetThinkingLevels(prefix, cm.ID),
 				Pricing:             pricing.BuildOpenRouterPricing(prefix, cm.ID),
 			})
 		}
@@ -1030,25 +1196,57 @@ func (h *ChatHandler) comboSeatCapabilities(seat string, connMap ...map[string]*
 		modelID = seat[slash+1:]
 		providerID = providers.ResolveAlias(prefix)
 	}
+	// Strip a trailing thinking suffix like "(max)" before the capability
+	// lookup: the tables are keyed by the bare model id, and a suffixed seat
+	// would resolve to the floor capability instead of the model's own block.
+	modelID = thinking.StripSuffix(modelID)
 	return providers.GetCapabilitiesDetailForModel(providerID, modelID)
 }
 
-// comboSeatLimits walks a combo's whole seat tree and returns the smallest
-// context window and the smallest max output any seat in it can serve. A combo
-// can hand the request to any seat, so the only limit it can promise is its
-// narrowest one; upstream takes the same minimum (Math.min over seats), while
-// aggregateComboCapabilities keeps the widest maxOutput for its capabilities
-// block.
+// comboSeatLimits walks a combo's whole seat tree and returns the context
+// window and max output the combo advertises. "min" (the default, the unset
+// mode) narrows to the smallest seat window so the combo only promises what
+// every seat agrees on; "max" advertises the widest seat window so a fallback
+// chain that fails past a small-window seat can still advertise its full
+// window; "custom" advertises the operator-declared ContextWindow when set,
+// otherwise falling back to min.
 //
-// A seat that is itself a combo name contributes its own leaves' minimum, and
-// cycles are cut: a name already on the walk contributes nothing, which is
-// what bounds a self-referencing combo (upstream's `visiting` set).
-func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
+// A seat that is itself a combo name contributes its own leaves' result, and
+// cycles are cut: a name already on the walk contributes nothing, which bounds
+// a self-referencing combo (upstream's `visiting` set).
+func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string, settings *db.SettingsData, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
 	visiting := make(map[string]bool, 4)
 	visiting[comboName] = true
-	return h.minComboSeatLimits(index, index[comboName], visiting, connMap...)
+	window, maxOut := h.minComboSeatLimits(index, index[comboName], visiting, connMap...)
+	cs := comboStrategyFor(settings, comboName)
+	switch cs.ContextWindowMode {
+	case db.ComboWindowModeMax:
+		return h.maxComboSeatLimits(index, comboName, visiting, connMap...)
+	case db.ComboWindowModeCustom:
+		if cs.ContextWindow > 0 {
+			return cs.ContextWindow, maxOut
+		}
+		return window, maxOut
+	default:
+		return window, maxOut
+	}
 }
 
+// comboStrategyFor returns the stored strategy row for a combo, or the zero
+// value when settings were not loaded or the combo has no row. The zero row's
+// unset ContextWindowMode is "min", so callers get the default mode.
+func comboStrategyFor(settings *db.SettingsData, comboName string) db.ComboStrategy {
+	if settings == nil || comboName == "" {
+		return db.ComboStrategy{}
+	}
+	return settings.ComboStrategies[comboName]
+}
+
+// minComboSeatLimits walks one level of a combo's seat list and folds every
+// seat's result with foldTokenMinimum, so the combo advertises only what its
+// narrowest seat can serve. A seat that is itself a combo name contributes its
+// own leaves' minimum, and cycles are cut: a name already on the walk
+// contributes nothing.
 func (h *ChatHandler) minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
 	var cm map[string]*ModelInfo
 	if len(connMap) > 0 {
@@ -1075,6 +1273,36 @@ func (h *ChatHandler) minComboSeatLimits(index comboIndex, seats []string, visit
 	return contextWindow, maxOutput
 }
 
+// maxComboSeatLimits folds every seat with foldTokenMaximum, so a fallback
+// chain advertises its widest window: a seat the chain can fail past still
+// counts toward what a long-prompt turn could run on.
+func (h *ChatHandler) maxComboSeatLimits(index comboIndex, comboName string, visiting map[string]bool, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
+	var cm map[string]*ModelInfo
+	if len(connMap) > 0 {
+		cm = connMap[0]
+	}
+	seats := index[comboName]
+	for _, seat := range seats {
+		if !strings.Contains(seat, "/") {
+			_, ok := index[seat]
+			if !ok || visiting[seat] {
+				continue
+			}
+			visiting[seat] = true
+			nestedWindow, nestedMax := h.maxComboSeatLimits(index, seat, visiting, cm)
+			delete(visiting, seat)
+			contextWindow, maxOutput = foldTokenMaximum(contextWindow, maxOutput, nestedWindow, nestedMax)
+			continue
+		}
+		if isNonLLMComboSeat(seat) {
+			continue
+		}
+		caps := h.comboSeatCapabilities(seat, cm)
+		contextWindow, maxOutput = foldTokenMaximum(contextWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
+	}
+	return contextWindow, maxOutput
+}
+
 // foldTokenMinimum keeps the smallest positive value seen for each limit. Zero
 // means "unknown", so it never becomes the minimum and never suppresses a
 // value another seat does know.
@@ -1088,6 +1316,18 @@ func foldTokenMinimum(currentWindow, currentMax, candidateWindow, candidateMax i
 	return currentWindow, currentMax
 }
 
+// foldTokenMaximum keeps the largest positive value seen for each limit. Zero
+// means "unknown" and never wins.
+func foldTokenMaximum(currentWindow, currentMax, candidateWindow, candidateMax int) (int, int) {
+	if candidateWindow > 0 && (currentWindow == 0 || candidateWindow > currentWindow) {
+		currentWindow = candidateWindow
+	}
+	if candidateMax > 0 && (currentMax == 0 || candidateMax > currentMax) {
+		currentMax = candidateMax
+	}
+	return currentWindow, currentMax
+}
+
 // appendCombos lists combo names with the union of their leaf capabilities,
 // matching upstream aggregateComboCapabilities, plus the combo-wide token
 // limits upstream comboSeatLimits derives.
@@ -1095,9 +1335,12 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 	if h.Repo == nil {
 		return data
 	}
+	// One settings read for the whole page: the per-combo window mode lives in
+	// comboStrategies, and reading it per combo is an N+1 on the ledger.
+	settings, _ := h.Repo.GetSettings()
 	var connMap map[string]*ModelInfo
 	if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
-		connMap = make(map[string]*ModelInfo, len(conns)*2)
+		connMap = make(map[string]*ModelInfo, len(conns)*4)
 		for _, conn := range conns {
 			if conn == nil || conn.Provider == "" {
 				continue
@@ -1106,6 +1349,9 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 			connMap[conn.ID] = info
 			if conn.Name != nil && *conn.Name != "" {
 				connMap[*conn.Name] = info
+				normName := strings.ToLower(strings.ReplaceAll(*conn.Name, " ", "-"))
+				connMap[normName] = info
+				connMap[strings.ToLower(*conn.Name)] = info
 			}
 		}
 	}
@@ -1141,7 +1387,7 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 		// seat can serve the request, so the window is the smallest one in the
 		// tree). A combo with no LLM seat at all publishes neither key rather
 		// than a guess.
-		contextWindow, maxOutput := h.comboSeatLimits(index, combo.Name, connMap)
+		contextWindow, maxOutput := h.comboSeatLimits(index, combo.Name, settings, connMap)
 		entry.ContextLength = optionalTokenLimit(contextWindow)
 		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
 

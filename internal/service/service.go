@@ -1,7 +1,7 @@
 // Package service installs the gateway as an autostart service so it comes
 // back after a reboot: a systemd user unit on systemd Linux, a launchd agent
 // on macOS, an OpenRC/runit service where those inits run, a cron @reboot
-// entry everywhere else, and a scheduled task on Windows.
+// entry everywhere else, and a scheduled task or per-user Run key on Windows.
 package service
 
 import (
@@ -27,6 +27,7 @@ const (
 	BackendRunit       Backend = "runit"
 	BackendCron        Backend = "cron"
 	BackendWindowsTask Backend = "windows-task"
+	BackendWindowsRun  Backend = "windows-run"
 	BackendOverrideEnv         = "9ROUTER_SERVICE_BACKEND"
 )
 
@@ -100,7 +101,12 @@ func Install(extraArgs []string) (Info, error) {
 	case BackendCron:
 		return installCron(exe, extraArgs)
 	case BackendWindowsTask:
-		return installWindowsTask(exe, extraArgs)
+		if forcedBackend() == BackendWindowsTask {
+			return installWindowsTask(exe, extraArgs)
+		}
+		return installWindowsAuto(exe, extraArgs)
+	case BackendWindowsRun:
+		return installWindowsRun(exe, extraArgs)
 	default:
 		return Info{}, fmt.Errorf("service.Install: no supported autostart backend found on %s", goos)
 	}
@@ -128,6 +134,9 @@ func Uninstall() ([]Info, error) {
 	if info, ok := uninstallWindowsTask(); ok {
 		removed = append(removed, info)
 	}
+	if info, ok := uninstallWindowsRun(); ok {
+		removed = append(removed, info)
+	}
 	if len(removed) == 0 {
 		return nil, ErrNotInstalled
 	}
@@ -143,6 +152,7 @@ func Status() (Info, bool) {
 		statusRunit,
 		statusCron,
 		statusWindowsTask,
+		statusWindowsRun,
 	} {
 		if info, ok := probe(); ok {
 			return info, true
@@ -151,23 +161,33 @@ func Status() (Info, bool) {
 	return Info{}, false
 }
 
+func forcedBackend() Backend {
+	forced := strings.TrimSpace(os.Getenv(BackendOverrideEnv))
+	if forced == "" {
+		return ""
+	}
+	switch Backend(forced) {
+	case BackendSystemdUser, BackendLaunchd, BackendOpenRC, BackendRunit, BackendCron, BackendWindowsTask, BackendWindowsRun:
+		return Backend(forced)
+	case "systemd", "system", "systemd-system":
+		// This package only manages the unprivileged per-user unit, so
+		// every systemd alias (including the retired "systemd-system")
+		// resolves to it. There is no root-owned scope to opt into.
+		return BackendSystemdUser
+	}
+	return ""
+}
+
 // Detect picks the backend Install will use on this machine. The
 // 9ROUTER_SERVICE_BACKEND env var forces one (systemd, launchd, openrc,
-// runit, cron) for machines with several inits or for testing. The override is
-// read before the OS short-circuits so it is authoritative on every platform:
-// a pinned backend must win even on Windows, where the schtasks check would
-// otherwise return before the env var is ever consulted.
+// runit, cron, windows-task, windows-run) for machines with several inits or for
+// testing. The override is read before the OS short-circuits so it is
+// authoritative on every platform: a pinned backend must win even on Windows,
+// where the schtasks check would otherwise return before the env var is ever
+// consulted.
 func Detect() Backend {
-	if forced := strings.TrimSpace(os.Getenv(BackendOverrideEnv)); forced != "" {
-		switch Backend(forced) {
-		case BackendSystemdUser, BackendLaunchd, BackendOpenRC, BackendRunit, BackendCron:
-			return Backend(forced)
-		case "systemd", "system", "systemd-system":
-			// This package only manages the unprivileged per-user unit, so
-			// every systemd alias (including the retired "systemd-system")
-			// resolves to it. There is no root-owned scope to opt into.
-			return BackendSystemdUser
-		}
+	if forced := forcedBackend(); forced != "" {
+		return forced
 	}
 	if goos == "windows" {
 		if lookPath("schtasks.exe") != "" {
@@ -230,11 +250,23 @@ func hasCron() bool {
 // It is a var so tests can observe and stub supervisor calls without touching
 // the real init system.
 var run = func(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("service: %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// appendSubcommand places forwarded global flags before the subcommand so
+// urfave/cli parses them (e.g. `--rtk=true start` or `--rtk=true serve`)
+// instead of rejecting them after the subcommand.
+func appendSubcommand(args []string, sub string) []string {
+	out := make([]string, 0, len(args)+1)
+	out = append(out, args...)
+	out = append(out, sub)
+	return out
 }
 
 // commandLine joins the executable and args for display and for unit files

@@ -38,6 +38,26 @@ curl http://localhost:20130/health
 ./9router-go version
 ```
 
+## Release assets
+
+Every release publishes one binary per target, plus the checksums:
+
+| Asset | Platform |
+|---|---|
+| `9router-go-linux-amd64` | Linux x86-64 |
+| `9router-go-linux-amd64-noavx` | Linux x86-64, baseline CPU (no AVX) |
+| `9router-go-linux-arm64` | Linux ARM64 |
+| `9router-go-darwin-amd64` | macOS Intel |
+| `9router-go-darwin-arm64` | macOS Apple silicon |
+| `9router-go-windows-amd64.exe` | Windows x86-64 |
+| `9router-go-tray-windows-amd64.exe` | Windows tray companion |
+| `9router-go-android-arm64` | Android ARM64 — the gateway the Android app replaces in place, verified against `SHA256SUMS.txt` |
+| `SHA256SUMS.txt` | Checksums for every asset above |
+
+The Android asset is not an APK: the Android app downloads it, verifies it,
+writes it to `<DATA_DIR>/bin/lib9router.so`, and the next gateway start runs
+it — the app updates its gateway without installing a new APK.
+
 Override only when you need something different (`PORT`, `DATA_DIR`/`DB_PATH` — there are no `--port` flags):
 
 ```bash

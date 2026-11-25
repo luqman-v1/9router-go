@@ -151,22 +151,21 @@ func (a ompAdapter) Plan(opts Options) ([]FilePlan, error) {
 		`, apiKey: ` + yamlFlowScalar(opts.APIKey) +
 		`, api: openai-completions, authHeader: true, disableStrictTools: true, ` +
 		`discovery: {type: proxy}`
-	// oh-my-pi reads per-model capacity from the provider's models list, the
-	// same schema pi uses; a discovered model carries no window, and without
-	// one its context percentage is empty and auto-compact never fires. The
-	// entry is written only when the gateway resolved something, so an
-	// unknown model leaves the config exactly as before.
-	if limits, ok := opts.ModelLimits[opts.Model]; ok && (limits.ContextWindow > 0 || limits.MaxOutput > 0) {
-		entry := `{id: ` + yamlFlowScalar(opts.Model) + `, name: ` + yamlFlowScalar(opts.Model)
-		if limits.ContextWindow > 0 {
-			entry += `, contextWindow: ` + strconv.Itoa(limits.ContextWindow)
-		}
-		if limits.MaxOutput > 0 {
-			entry += `, maxTokens: ` + strconv.Itoa(limits.MaxOutput)
-		}
-		entry += `}`
-		obj += `, models: [` + entry + `]`
-	}
+	// oh-my-pi decides compaction from the per-model context window in the
+	// provider's models list, the same schema pi uses. A discovered model
+	// that omits this carries no window, so its context percentage is empty
+	// and auto-compact never fires. Like crush and pi, OMP therefore writes
+	// the model entry for every connect, with pi's sane defaults filling
+	// whatever the gateway could not resolve. A wrong guess is still better
+	// here than no window at all: the user sees the meter and the boundary
+	// on which compaction fires.
+	window, maxTokens := piLimitsFor(opts)
+	entry := `{id: ` + yamlFlowScalar(opts.Model) +
+		`, name: ` + yamlFlowScalar(opts.Model) +
+		`, contextWindow: ` + strconv.Itoa(window) +
+		`, maxTokens: ` + strconv.Itoa(maxTokens) +
+		`}`
+	obj += `, models: [` + entry + `]`
 	obj += `}`
 	return []FilePlan{{File: paths.Files[0], Edits: []Edit{{
 		KeyPath: []string{"providers", providerTableKey}, ValueJSON: obj, CreateIfMissing: true,

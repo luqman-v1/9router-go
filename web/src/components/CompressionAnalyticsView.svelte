@@ -646,7 +646,7 @@
       Upstream Usage Receipts Telemetry
     </h3>
 
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-4 pt-2">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-4 pt-2">
       <div class="p-3 rounded-xl bg-surface-2/60 border border-border-subtle">
         <div class="text-[11px] font-medium text-text-muted uppercase">Prompt Tokens</div>
         <div class="text-lg font-bold text-text-main mt-1 font-mono">

@@ -1,0 +1,7 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/auth-flow.ts checkToken -> GET /me",
+  "_note": "Used at login time to validate a stored JWT and to read back the server-recorded consent version. 401 means the JWT is dead and the user must re-authenticate; there is no refresh path.",
+  "ok": true,
+  "consent_version": "4",
+  "_alt_401": { "status": 401, "body": { "error": "unauthorized" } }
+}

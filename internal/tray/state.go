@@ -115,7 +115,10 @@ func (s Snapshot) Title() string {
 	case StateStopped:
 		return "9Router Go (Stopped)"
 	case StatePortConflict:
-		return fmt.Sprintf("9Router Go (Port %d in use by foreign process (PID %d))", s.Port, s.PID)
+		if s.PID > 0 {
+			return fmt.Sprintf("9Router Go (Port %d in use by foreign process (PID %d))", s.Port, s.PID)
+		}
+		return fmt.Sprintf("9Router Go (Port %d in use)", s.Port)
 	default:
 		return "9Router Go (Unknown)"
 	}

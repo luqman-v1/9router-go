@@ -21,11 +21,7 @@ func opencodeSessionHint(req *Request, free bool) string {
 	if !free || req.SessionID != "" {
 		return req.SessionID
 	}
-	key := "opencode:default"
-	if req.ConnectionID != "" {
-		key = "opencode:conn:" + req.ConnectionID
-	}
-	return proxy.StableOpenCodeSessionID(key)
+	return proxy.StableOpenCodeSessionID(opencodeStableSessionKey(req, free))
 }
 
 // opencodeStableSessionKey reports the stable-session key a free-lane request
@@ -33,14 +29,35 @@ func opencodeSessionHint(req *Request, free bool) string {
 // that the upstream session is the router's to rotate when its budget is
 // spent. The free flag must be the same one passed to opencodeSessionHint: a
 // keyed lane's quota is accounted per key, so its session is never rotated.
+//
+// When a request routes through an assigned proxy, the proxy URL scopes the key
+// so each egress IP keeps its own independent session rather than sharing one
+// session ID across hundreds of distinct proxy IPs.
 func opencodeStableSessionKey(req *Request, free bool) string {
 	if !free || req.SessionID != "" {
 		return ""
 	}
+	key := "opencode:default"
 	if req.ConnectionID != "" {
-		return "opencode:conn:" + req.ConnectionID
+		key = "opencode:conn:" + req.ConnectionID
 	}
-	return "opencode:default"
+	if proxyURL := opencodeProxyFrom(req.Client); proxyURL != "" {
+		key += ":proxy:" + proxyURL
+	}
+	return key
+}
+
+// opencodeSessionRotation returns the spent-session rotation hook when the
+// stable session has already served prior requests. When a session was freshly
+// minted for this attempt (zero prior turns), a 429 FreeUsageLimitError is an
+// egress-IP refusal rather than a spent session, so skipping the second
+// round-trip lets the proxy-pool walk advance immediately.
+func opencodeSessionRotation(req *Request, free bool, failed string, install func(session string)) func() {
+	stableKey := opencodeStableSessionKey(req, free)
+	if stableKey == "" || !proxy.StableOpenCodeSessionEstablished(stableKey, failed) {
+		return nil
+	}
+	return rotateOpencodeStableSession(stableKey, failed, install)
 }
 
 // rotateOpencodeStableSession builds the rotation hook forwardOpenCodeRotating
@@ -60,4 +77,20 @@ func rotateOpencodeStableSession(stableKey, failed string, install func(session 
 			install(fresh)
 		}
 	}
+}
+
+// forgetOpencodeStableSession drops the stable session a failed request traveled
+// on, so the next request mints a fresh one. Upstream spends or flags a session
+// id after enough traffic, and every later request that reused it failed the
+// same way until restart (#5559).
+//
+// Called by forwardOpenCodeRotating for a 403 or a non-overload 429: those are
+// verdicts on the session, not on the request shape. A nil key (a client-supplied
+// session, or a keyed lane) yields a nil hook — neither is ours to drop.
+func forgetOpencodeStableSession(req *Request, free bool, failed string) func() {
+	stableKey := opencodeStableSessionKey(req, free)
+	if stableKey == "" {
+		return nil
+	}
+	return func() { proxy.ExpireStableOpenCodeSession(stableKey, failed) }
 }

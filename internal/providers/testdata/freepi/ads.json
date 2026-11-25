@@ -1,0 +1,45 @@
+{
+  "_source": "hungkevin/free-pi-cli-proxy server.mjs:288-400 (fetchAdNext / fireGravityImpression / postImpression)",
+  "_note": "The ad gate. Upstream checks IMPRESSION RECORDS, not merely that a Gravity session exists (server.mjs:294). GET /ads/next returns 204 when there is no ad to serve, which is normal and not an error.",
+  "ads_next": {
+    "ad_id": "ad_01J9Q2M4X8",
+    "click_token": "ct_01J9Q2M4X8Z7Y6",
+    "imp_url": "https://track.trygravity.ai/imp/01J9Q2M4X8.gif",
+    "creative": {
+      "title": "Ship faster with Acme",
+      "body": "The observability platform for teams that deploy daily.",
+      "cta": "Start free",
+      "image_url": "https://cdn.trygravity.ai/creatives/01J9Q2M4X8.png"
+    },
+    "click_url": "https://track.trygravity.ai/click/01J9Q2M4X8",
+    "source": "gravity"
+  },
+  "ads_next_empty_status": 204,
+  "impression": {
+    "_endpoint": "POST /ads/impression",
+    "_body": { "ad_id": "ad_01J9Q2M4X8", "click_token": "ct_01J9Q2M4X8Z7Y6", "imp_fired": true }
+  },
+  "_impression_policy": "imp_fired:true is sent ONLY after the creative was actually painted in the dashboard. hungkevin's proxy fires this on a 10-minute timer with nothing displayed; we do not, because an impression nobody saw is a false report to the advertiser whose spend funds the inference.",
+  "_gravity_context": {
+    "_header": "x-gravity-context",
+    "_encoding": "base64url(JSON)",
+    "value": {
+      "sessionId": "gv_sess_01J9Q2M4X8",
+      "user": {
+        "userId": "sha256-hex of the JWT sub claim",
+        "gruid": "visitor id",
+        "grclid": "click id",
+        "graid": "ad id"
+      }
+    }
+  },
+  "_imp_url_allowlist": {
+    "_why": "imp_url is attacker-influenceable and we fetch it server-side; restrict the host before any request.",
+    "hosts": ["trygravity.ai", "trygravity.com"],
+    "_source": "server.mjs:350 regex /(^|\\.)trygravity\\.(ai|com)$/"
+  },
+  "ads_gate_error": {
+    "status": 403,
+    "message": "Ads aren't showing for this account."
+  }
+}

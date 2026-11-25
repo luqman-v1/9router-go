@@ -13,6 +13,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/dbtest"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 	"os"
 )
@@ -450,6 +451,66 @@ func TestHandleMessages_RequireClaudeToolType(t *testing.T) {
 	}
 	if ct0["type"] != nil {
 		t.Errorf("expected claude tool type to remain absent/nil, got: %v", ct0["type"])
+	}
+}
+
+func TestHandleMessages_AnthropicVersionPassthrough(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var receivedVersion string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedVersion = r.Header.Get("anthropic-version")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer upstream.Close()
+
+	claudeData, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-ant-test-key",
+		"baseUrl": upstream.URL,
+	})
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-claude', 'claude', 'apikey', 'Mock Claude', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(claudeData))
+	if err != nil {
+		t.Fatalf("failed to insert mock claude connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	tests := []struct {
+		name          string
+		clientVersion string
+		wantVersion   string
+	}{
+		{name: "caller pins a version, it is forwarded", clientVersion: "2024-11-05", wantVersion: "2024-11-05"},
+		{name: "caller sends none, registry default wins", clientVersion: "", wantVersion: "2023-06-01"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receivedVersion = ""
+			body := `{"model":"claude/claude-3-7-sonnet","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`
+			req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			if tt.clientVersion != "" {
+				req.Header.Set("anthropic-version", tt.clientVersion)
+			}
+			rec := httptest.NewRecorder()
+			handler.HandleMessages(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK, got %d", rec.Code)
+			}
+			if receivedVersion == "" {
+				t.Fatalf("upstream never received the request")
+			}
+			if receivedVersion != tt.wantVersion {
+				t.Errorf("anthropic-version = %q, want %q", receivedVersion, tt.wantVersion)
+			}
+		})
 	}
 }
 
@@ -1402,13 +1463,24 @@ func TestAccountFallback_NonRetryableError(t *testing.T) {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
 
-	// Verify no lock was created for 500 error
+	// Blockers #3: a gateway fault (500-504) now records a transient cooldown
+	// badge and locks the model so the account is not re-dialled immediately.
 	locked, err := repo.IsConnectionModelLocked("conn-500", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
-	if locked {
-		t.Error("expected no model lock for non-retryable 500 error")
+	if !locked {
+		t.Error("expected a model lock for gateway fault 500 (cooldown)")
+	}
+	dep, err := repo.GetModelDeprecation("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("GetModelDeprecation failed: %v", err)
+	}
+	if dep.Status != providers.DeprecationCooldown {
+		t.Errorf("deprecation status = %q, want %q (gateway fault earns a cooldown)", dep.Status, providers.DeprecationCooldown)
+	}
+	if dep.CooldownUntil == "" {
+		t.Error("cooldown badge must stamp CooldownUntil")
 	}
 }
 

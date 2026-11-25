@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -85,12 +86,56 @@ func TestRecordAttemptFromContext(t *testing.T) {
 	if got[3].Error != "" {
 		t.Fatalf("expected no error text for nil error, got %q", got[3].Error)
 	}
+	maxLen := maxPersistedErrorLen + len("...[truncated]")
 	for i := 0; i < 3; i++ {
 		if got[i].Error == "" {
 			t.Fatalf("expected error text for attempt %d", i)
 		}
-		if len([]rune(got[i].Error)) > 160 {
-			t.Fatalf("error text too long for attempt %d: %d", i, len([]rune(got[i].Error)))
+		if len(got[i].Error) > maxLen {
+			t.Fatalf("error text too long for attempt %d: %d", i, len(got[i].Error))
 		}
+	}
+}
+
+func TestRecordAttemptFromContext_KeepsUnrecognisedUpstreamBody(t *testing.T) {
+	r := NewFallbackAttemptRecorder()
+	ctx := WithFallbackAttemptRecorder(context.Background(), r)
+
+	// Cloudflare answers an unsupported tool round-trip with a JSON error
+	// shape extractErrorText does not recognise. Before the length bump the
+	// wrapper prefix consumed all 160 runes and the body was lost entirely.
+	body := []byte(`{"success":false,"errors":[{"code":7003,"message":"cf tool round-trip rejected"}]}`)
+	RecordAttemptFromContext(ctx, "cf", "a", "cloudflare-ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast", 0,
+		&upstreamError{StatusCode: 400, Body: body}, 1)
+
+	got := r.Snapshot()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 attempt, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Error, "cf tool round-trip rejected") {
+		t.Fatalf("upstream body missing from recorded error: %q", got[0].Error)
+	}
+	if got[0].StatusCode != 400 {
+		t.Fatalf("expected status 400, got %d", got[0].StatusCode)
+	}
+}
+
+func TestRecordAttemptFromContext_TruncatesLongUpstreamBody(t *testing.T) {
+	r := NewFallbackAttemptRecorder()
+	ctx := WithFallbackAttemptRecorder(context.Background(), r)
+
+	long := strings.Repeat("x", maxPersistedErrorLen+100)
+	RecordAttemptFromContext(ctx, "cf", "a", "p", "m", 0,
+		&upstreamError{StatusCode: 400, Body: []byte(long)}, 1)
+
+	got := r.Snapshot()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 attempt, got %d", len(got))
+	}
+	if !strings.HasSuffix(got[0].Error, "...[truncated]") {
+		t.Fatalf("expected truncation suffix, got %q", got[0].Error)
+	}
+	if len(got[0].Error) > maxPersistedErrorLen+len("...[truncated]") {
+		t.Fatalf("error text too long: %d", len(got[0].Error))
 	}
 }

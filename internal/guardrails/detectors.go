@@ -55,6 +55,15 @@ var piiDetectors = []detector{
 		name: "iban", re: ibanRe, entity: "IBAN", severity: SeverityHigh,
 		validate: validIBAN,
 	},
+	{
+		// PEM private key. The body between the BEGIN and END delimiters is
+		// base64 (plus RFC 1421 header lines like Proc-Type/DEK-Info) and never
+		// carries a '-' run, so the character class below stops at the first
+		// '-' — it cannot cross a repeated BEGIN header. That keeps scanning
+		// linear O(N) even when hostile text repeats BEGIN markers without an
+		// END marker (ReDoS guard, OmniRoute #19954 / issue #1280).
+		name: "private_key", re: privateKeyRe, entity: "PRIVATE_KEY", severity: SeverityHigh,
+	},
 }
 
 // injectionDetectors catch attempts to override the system prompt or exfiltrate
@@ -82,6 +91,14 @@ var (
 	cardRe = regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`)
 	// IBAN: 2 country letters, 2 check digits, then alphanumerics.
 	ibanRe = regexp.MustCompile(`\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`)
+
+	// PEM private key (PKCS#1, PKCS#8, EC, encrypted).
+	// The body class admits '-' because encrypted PKCS#1 carries
+	// "DEK-Info: AES-128-CBC,<hex>" headers, and terminates on the
+	// '-----END' delimiter, so a match cannot bridge repeated BEGIN
+	// headers. RE2 scans this in O(N) regardless.
+	// OmniRoute #19954 / issue #1282 / issue #1280.
+	privateKeyRe = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----[A-Za-z0-9+/=\s:,-]+-----END [A-Z0-9 ]+PRIVATE KEY-----`)
 
 	// "ignore all previous instructions" and every phrasing around it.
 	ignorePreviousRe = regexp.MustCompile(`(?i)\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}\b(?:previous|prior|earlier|above|preceding|all)\b[^.\n]{0,40}\b(?:instruction|instructions|prompt|prompts|rule|rules|direction|directions|context)\b`)

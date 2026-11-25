@@ -49,8 +49,32 @@ func TestOpenAIToGemini_HttpImageUrl_FileData(t *testing.T) {
 	if parts[1].FileData.FileUri != "https://example.com/photo.jpg" {
 		t.Errorf("expected fileUri https://example.com/photo.jpg, got %s", parts[1].FileData.FileUri)
 	}
-	if parts[1].FileData.MimeType != "image/*" {
-		t.Errorf("expected mimeType image/*, got %s", parts[1].FileData.MimeType)
+	if parts[1].FileData.MimeType != "image/jpeg" {
+		t.Errorf("expected mimeType image/jpeg, got %s", parts[1].FileData.MimeType)
+	}
+}
+
+func TestOpenAIToGemini_RemoteImageMimeType(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"jpeg with query string", "https://example.com/photo.jpg?x=1", "image/jpeg"},
+		{"webp", "https://example.com/a.webp", "image/webp"},
+		{"gif", "http://example.com/a.gif", "image/gif"},
+		{"bmp", "https://example.com/a.bmp", "image/bmp"},
+		{"unknown extension falls back to default", "https://example.com/a.tiff", "image/png"},
+		{"no extension falls back to default", "https://example.com/photo", "image/png"},
+		{"uppercase extension", "https://example.com/A.JPG", "image/jpeg"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remoteImageMimeType(tt.url); got != tt.want {
+				t.Errorf("remoteImageMimeType(%q) = %s, want %s", tt.url, got, tt.want)
+			}
+		})
 	}
 }
 

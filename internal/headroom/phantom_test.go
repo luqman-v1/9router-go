@@ -118,7 +118,7 @@ func TestCompress_ByteFloorCases(t *testing.T) {
 				t.Fatalf("marshaled newBody len = %d, want %d", len(newBody), tt.expectedOutLen)
 			}
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			resBody, compressed, err := client.Compress(context.Background(), body, "gpt-4o", 1000)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -164,7 +164,7 @@ func TestCompress_RejectsBarelySmallerMessages(t *testing.T) {
 	}
 	body, _ := json.Marshal(bodyMap)
 
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	_, compressed, err := client.Compress(context.Background(), body, "gpt-4o", 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

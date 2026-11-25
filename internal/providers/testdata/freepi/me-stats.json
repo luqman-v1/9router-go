@@ -1,0 +1,20 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/usage-tool.ts formatStats (MeStatsResponse); observed fields",
+  "_note": "GET https://api.freepi.ai/me/stats with the Bearer JWT. Names are snake_case on the wire. Several fields are optional and were added later, so a reader must tolerate their absence rather than assume the full set.",
+  "tier": "free",
+  "spent_usd_today": 0.0123,
+  "cap_usd_today": 0.5,
+  "prompt_tokens_today": 41234,
+  "completion_tokens_today": 8192,
+  "lifetime": {
+    "prompt_tokens": 990234,
+    "completion_tokens": 148920
+  },
+  "_optional": {
+    "credit_credits": 120,
+    "remaining_credits_today": 380,
+    "allowance_credits": 400,
+    "refill_at": "2026-11-09T00:00:00.000Z",
+    "lane": "fallback"
+  }
+}

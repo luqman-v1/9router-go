@@ -98,6 +98,44 @@ func TestOpenCodeCanonicalSession(t *testing.T) {
 	}
 }
 
+// TestTranslateOpenCodeSessionID_StableAndSalted pins the properties the
+// derivation has to keep: one downstream conversation maps to one upstream
+// session (so its quota budget is reused), a process restart mints a different
+// one (so it does not inherit a burned budget), and a canonical id is never
+// rewritten.
+//
+// It deliberately does NOT assert that the encoded time half decodes to a
+// recent instant. The 12-hex prefix reserves 12 bits for the counter, leaving
+// 36 bits of milliseconds, and 2^36 ms tops out in 1972 — so no id in this
+// layout can carry a modern timestamp, including the one the official CLI
+// mints from time.Now() via the same descendingTimeHex. Asserting recency here
+// would pin a property the format cannot express.
+func TestTranslateOpenCodeSessionID_StableAndSalted(t *testing.T) {
+	const downstream = "uuid-stability-check"
+
+	first := proxy.TranslateOpenCodeSessionID(downstream, "")
+	second := proxy.TranslateOpenCodeSessionID(downstream, "")
+	if first != second {
+		t.Errorf("derivation is not stable within a process: %q != %q", first, second)
+	}
+	if !proxy.IsCanonicalOpenCodeSession(first) {
+		t.Errorf("derived id %q is not canonical (gate would refuse it)", first)
+	}
+
+	// Canonical ids are forwarded verbatim and must never be re-encoded.
+	canonical := "ses_f52b0d414ffeObbCKcHUQYZR2I"
+	if got := proxy.TranslateOpenCodeSessionID(canonical, ""); got != canonical {
+		t.Errorf("canonical id was rewritten: %q -> %q", canonical, got)
+	}
+
+	// Distinct downstream sessions must not collide onto one upstream session:
+	// the free tier accounts quota per session, so a collision would make two
+	// conversations share one budget.
+	if other := proxy.TranslateOpenCodeSessionID("uuid-other-conversation", ""); other == first {
+		t.Errorf("distinct downstream sessions collided on %q", first)
+	}
+}
+
 func TestBuildOpenCodeHeaders_TraceHeaders(t *testing.T) {
 	headers := proxy.BuildOpenCodeHeaders(nil, "my-session-123", true)
 

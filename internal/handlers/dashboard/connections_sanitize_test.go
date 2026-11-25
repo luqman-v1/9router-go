@@ -60,3 +60,26 @@ func TestSanitizeProviderConnection_LastErrorAttribution(t *testing.T) {
 		})
 	}
 }
+
+// The Codex edit form seeds its per-account model allowlist from the sanitized
+// row. If the allowlist is dropped here the boxes reopen unchecked even though
+// the pin was saved.
+func TestSanitizeProviderConnection_KeepsEnabledModels(t *testing.T) {
+	conn := &models.ProviderConnection{
+		ID:       "codex-1",
+		Provider: "codex",
+		AuthType: "oauth",
+		IsActive: 1,
+		Data:     `{"providerSpecificData":{"enabledModels":["gpt-6-luna[1m]"],"authMethod":"oauth"}}`,
+	}
+	sanitized := sanitizeProviderConnection(conn)
+
+	psd, ok := sanitized["providerSpecificData"].(map[string]any)
+	if !ok {
+		t.Fatalf("providerSpecificData missing from sanitized row: %v", sanitized)
+	}
+	modelsOut, ok := psd["enabledModels"].([]any)
+	if !ok || len(modelsOut) != 1 || modelsOut[0] != "gpt-6-luna[1m]" {
+		t.Fatalf("enabledModels = %v, want [gpt-6-luna[1m]]", psd["enabledModels"])
+	}
+}

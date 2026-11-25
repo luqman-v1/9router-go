@@ -94,6 +94,7 @@ var (
 type opencodeStableEntry struct {
 	id       string
 	lastUsed time.Time
+	uses     int
 }
 
 // StableOpenCodeSessionID returns one long-lived canonical session per key,
@@ -117,11 +118,12 @@ func StableOpenCodeSessionID(key string) string {
 	defer opencodeStableMu.Unlock()
 	if entry, ok := opencodeStableSessions[key]; ok && now.Sub(entry.lastUsed) < opencodeStableSessionTTL {
 		entry.lastUsed = now
+		entry.uses++
 		opencodeStableSessions[key] = entry
 		return entry.id
 	}
 	id := GenerateOpenCodeSessionID()
-	opencodeStableSessions[key] = opencodeStableEntry{id: id, lastUsed: now}
+	opencodeStableSessions[key] = opencodeStableEntry{id: id, lastUsed: now, uses: 1}
 	opencodeStableOrder = append(opencodeStableOrder, key)
 	for len(opencodeStableOrder) > opencodeStableSessionLimit {
 		oldest := opencodeStableOrder[0]
@@ -152,6 +154,20 @@ func ExpireStableOpenCodeSession(key, id string) bool {
 	return true
 }
 
+// StableOpenCodeSessionEstablished reports whether key currently holds id and
+// has already been reused across more than one request. A brand-new session
+// (uses == 1) has zero prior turns, so a 429 on its first request is an
+// egress-IP verdict rather than a spent session budget.
+func StableOpenCodeSessionEstablished(key, id string) bool {
+	if key == "" || id == "" {
+		return false
+	}
+	opencodeStableMu.Lock()
+	defer opencodeStableMu.Unlock()
+	entry, ok := opencodeStableSessions[key]
+	return ok && entry.id == id && entry.uses > 1
+}
+
 // descendingTimeHex renders the 12-hex session prefix: the low 48 bits of
 // ~(timeMs * 0x1000 + counter), exactly like the upstream CLI.
 func descendingTimeHex(timeMs, counter uint64) string {
@@ -175,12 +191,37 @@ func GenerateOpenCodeRequestID() string {
 	return "msg_" + hex.EncodeToString(timeBytes[:]) + unstableRandomBase62(14)
 }
 
+// opencodeBootNonce salts every derived session with a per-process random
+// value, so a gateway restart mints fresh upstream sessions instead of
+// resuming the risk buckets a previous process burned.
+//
+// It is a var so tests can pin it. A restart changing it is the intent, not a
+// side effect: the free tier accounts its quota per upstream session, and a
+// process that starts over should not inherit the previous one's spent budget.
+var opencodeBootNonce = func() [16]byte {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	return nonce
+}()
+
 // TranslateOpenCodeSessionID deterministically maps a downstream session id
 // onto one the upstream free tier accepts. A canonical id — ses_ shape plus
 // the descending time encoding the gate decodes — is forwarded verbatim;
 // anything else (a UUID, another gateway's session, a ses_ id carrying foreign
 // hex) is re-encoded into the descending layout with counter 1, so one
 // downstream conversation still maps to one stable upstream session.
+//
+// The time half is digest-derived, not wall-clock. That is deliberate and
+// matches GenerateOpenCodeSessionID's shape rather than contradicting it: the
+// 12-hex prefix carries 36 bits of milliseconds after the 12 counter bits are
+// reserved, and 2^36 ms tops out in 1972 — so no id in this layout, including
+// the one the official CLI mints from time.Now(), encodes a modern instant.
+// The gate decodes the layout (descending, counter 1–63) but cannot be reading
+// recency off a field that cannot express it. What the derivation must keep is
+// therefore determinism per conversation, which it does.
+//
+// opencodeBootNonce salts it so a restart derives different ids for the same
+// downstream session instead of resuming a burned quota bucket.
 func TranslateOpenCodeSessionID(sessionID, clientTool string) string {
 	trimmed := strings.TrimSpace(sessionID)
 	if IsCanonicalOpenCodeSession(trimmed) {
@@ -192,6 +233,7 @@ func TranslateOpenCodeSessionID(sessionID, clientTool string) string {
 	}
 	h := sha256.New()
 	h.Write([]byte("opencode\x00" + tool + "\x00" + trimmed))
+	h.Write(opencodeBootNonce[:])
 	digest := h.Sum(nil)
 	// Keep the deterministic time component but pin the low 12 counter bits
 	// to the small value accepted by the OpenCode v2 free-tier gate.

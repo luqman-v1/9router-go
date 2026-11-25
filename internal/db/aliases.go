@@ -80,6 +80,12 @@ type CustomModel struct {
 	Caps          map[string]bool `json:"caps"`
 	ContextWindow int             `json:"contextWindow,omitempty"`
 	MaxOutput     int             `json:"maxOutput,omitempty"`
+	// ExtraBody is merged into every outbound request for this model (see
+	// chat.applyCustomExtraBody). Validated on save by ParseExtraBody.
+	ExtraBody jsontext.Value `json:"extraBody,omitempty"`
+	// UpstreamModelID overrides the model id forwarded to the provider on
+	// media/System One lanes. Empty means "use the catalog mapping".
+	UpstreamModelID string `json:"upstreamModelId,omitempty"`
 }
 
 // UnmarshalJSON reads a customModels row without letting one unusable `caps`
@@ -99,13 +105,15 @@ type CustomModel struct {
 // The row itself — ids, name, declared limits — always survives.
 func (cm *CustomModel) UnmarshalJSON(data []byte) error {
 	type row struct {
-		ProviderAlias string         `json:"providerAlias"`
-		ID            string         `json:"id"`
-		Type          string         `json:"type"`
-		Name          string         `json:"name"`
-		Caps          jsontext.Value `json:"caps"`
-		ContextWindow int            `json:"contextWindow,omitempty"`
-		MaxOutput     int            `json:"maxOutput,omitempty"`
+		ProviderAlias   string         `json:"providerAlias"`
+		ID              string         `json:"id"`
+		Type            string         `json:"type"`
+		Name            string         `json:"name"`
+		Caps            jsontext.Value `json:"caps"`
+		ContextWindow   int            `json:"contextWindow,omitempty"`
+		MaxOutput       int            `json:"maxOutput,omitempty"`
+		ExtraBody       jsontext.Value `json:"extraBody,omitempty"`
+		UpstreamModelID string         `json:"upstreamModelId,omitempty"`
 	}
 	var r row
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -117,6 +125,8 @@ func (cm *CustomModel) UnmarshalJSON(data []byte) error {
 	cm.Name = r.Name
 	cm.ContextWindow = r.ContextWindow
 	cm.MaxOutput = r.MaxOutput
+	cm.ExtraBody = r.ExtraBody
+	cm.UpstreamModelID = r.UpstreamModelID
 	cm.Caps = nil
 	if len(r.Caps) == 0 || string(r.Caps) == "null" {
 		return nil

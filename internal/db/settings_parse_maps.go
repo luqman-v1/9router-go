@@ -32,6 +32,15 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 			StickyLimit: sticky,
 			JudgeModel:  handlerutil.GetString(vm, "judgeModel"),
 		}
+		if weightsRaw, ok := vm["weights"].(map[string]any); ok {
+			weights := make(map[string]int, len(weightsRaw))
+			for mk, mv := range weightsRaw {
+				if n, ok := mv.(float64); ok && n >= 0 && n <= 1000 {
+					weights[mk] = int(n)
+				}
+			}
+			entry.Weights = weights
+		}
 		if timeout, ok := vm["firstTokenTimeoutMs"].(float64); ok && timeout > 0 && timeout <= float64((1<<63-1)/1000000) && timeout == float64(int64(timeout)) {
 			entry.FirstTokenTimeoutMs = int(timeout)
 		}
@@ -78,6 +87,12 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 		}
 		if bw, ok := vm["budgetWindowMs"].(float64); ok && bw > 0 && bw <= float64((1<<63-1)/1000000) && bw == float64(int64(bw)) {
 			entry.BudgetWindowMs = int(bw)
+		}
+		if mode, ok := vm["contextWindowMode"].(string); ok && (mode == ComboWindowModeMin || mode == ComboWindowModeMax || mode == ComboWindowModeCustom) {
+			entry.ContextWindowMode = mode
+		}
+		if cw, ok := vm["contextWindow"].(float64); ok && cw > 0 && cw == float64(int64(cw)) {
+			entry.ContextWindow = int(cw)
 		}
 		s.ComboStrategies[k] = entry
 	}

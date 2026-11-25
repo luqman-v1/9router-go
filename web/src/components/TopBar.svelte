@@ -16,6 +16,7 @@
     onMenuClick,
     onLogout,
     onOpenSearch,
+    requireLogin = false,
   }: {
     activeTab?: ActiveTab
     pageTitle?: string
@@ -25,6 +26,7 @@
     onMenuClick?: () => void
     onLogout?: () => void
     onOpenSearch?: () => void
+    requireLogin?: boolean
   } = $props()
 
   // The group invite rotates. Everything user-facing points at the redirect
@@ -36,6 +38,8 @@
   let isDark = $state(true)
   let isDonateOpen = $state(false)
   let isChangelogOpen = $state(false)
+  let isLogoutNoticeOpen = $state(false)
+  let logoutNoticeButton: HTMLButtonElement | undefined = $state()
   let canInstall = $state(false)
 
   $effect(() => {
@@ -43,6 +47,12 @@
       canInstall = available
     })
   })
+  // Move focus into the dialog so keyboard and screen-reader users land on the
+  // explanation rather than the menu trigger that opened it.
+  $effect(() => {
+    if (isLogoutNoticeOpen) logoutNoticeButton?.focus()
+  })
+
   $effect(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('9router-theme') || localStorage.getItem('theme')
@@ -70,6 +80,13 @@
   }
 
   async function handleLogout() {
+    // With Require login off there is no server session to end: the login view
+    // would see requireLogin=false and bounce straight back here. Say so where
+    // the click happened instead of looking like a failed logout (issue #1218).
+    if (!requireLogin) {
+      isLogoutNoticeOpen = true
+      return
+    }
     try {
       await api.logout()
     } catch {}
@@ -241,13 +258,13 @@
           <button
             type="button"
             onclick={onBackToProviders}
-            class="text-text-muted hover:text-primary transition-colors cursor-pointer text-sm font-normal"
+            class="hidden sm:block text-text-muted hover:text-primary transition-colors cursor-pointer text-sm font-normal"
           >
             Providers
           </button>
         </div>
         <div class="flex items-center gap-2 min-w-0">
-          <span class="material-symbols-outlined text-text-muted text-base">chevron_right</span>
+          <span class="hidden sm:inline material-symbols-outlined text-text-muted text-base">chevron_right</span>
           <div class="flex items-center gap-2 min-w-0">
             <ProviderIcon id={selectedProvider.id} size="sm" />
             <h1 class="text-base lg:text-2xl font-semibold text-text-main tracking-tight truncate">
@@ -258,7 +275,7 @@
       </div>
     {:else}
       <div class="flex items-center gap-2.5 min-w-0">
-        <span class="material-symbols-outlined text-primary text-xl lg:text-2xl flex-shrink-0">
+        <span class="hidden sm:block material-symbols-outlined text-primary text-xl lg:text-2xl flex-shrink-0">
           {currentMeta.icon}
         </span>
         <div class="min-w-0">
@@ -323,7 +340,13 @@
 <!-- Escape closes the modal from anywhere on the page. The handler used to sit
      on the backdrop, which never receives focus, so it never fired; a
      <svelte:window> binding is the only place it actually runs. -->
-<svelte:window onkeydown={(e) => e.key === 'Escape' && (isDonateOpen = false)} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key !== 'Escape') return
+    isDonateOpen = false
+    isLogoutNoticeOpen = false
+  }}
+/>
 
 <!-- Donate Modal -->
 {#if isDonateOpen}
@@ -424,6 +447,59 @@
           class="px-4 py-2 text-sm rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium transition-colors cursor-pointer"
         >
           Close
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Logout with login disabled: there is no session to end. -->
+{#if isLogoutNoticeOpen}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      class="absolute inset-0 bg-black/40 backdrop-blur-sm"
+      onclick={() => (isLogoutNoticeOpen = false)}
+      role="button"
+      tabindex="-1"
+      aria-label="Close background"
+    ></div>
+
+    <div
+      class="relative w-full max-w-md bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 flex flex-col gap-4 z-10 animate-in fade-in zoom-in-95"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="logout-notice-title"
+      aria-describedby="logout-notice-body"
+    >
+      <div class="flex items-center justify-between">
+        <h2 id="logout-notice-title" class="text-base font-semibold text-text-main flex items-center gap-2">
+          <span class="material-symbols-outlined text-amber-500">lock_open</span>
+          Login is not required
+        </h2>
+        <button
+          type="button"
+          onclick={() => (isLogoutNoticeOpen = false)}
+          class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
+          aria-label="Close"
+        >
+          <span class="material-symbols-outlined text-[20px]">close</span>
+        </button>
+      </div>
+
+      <p id="logout-notice-body" class="text-sm text-text-muted leading-relaxed">
+        This dashboard is accessible without an account or session. Logout is unavailable while
+        <span class="font-semibold text-text-main">Require login</span> is turned off. You can enable
+        password protection in <span class="font-semibold text-text-main">Profile → Security &amp; Password</span>.
+      </p>
+
+      <div class="flex justify-end pt-1">
+        <button
+          bind:this={logoutNoticeButton}
+          type="button"
+          onclick={() => (isLogoutNoticeOpen = false)}
+          class="px-4 py-2 text-sm rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-medium transition-colors cursor-pointer"
+        >
+          Got it
         </button>
       </div>
     </div>

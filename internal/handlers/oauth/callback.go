@@ -2,7 +2,127 @@ package oauth
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"9router/proxy/internal/handlerutil"
 )
+
+const (
+	callbackRelayTTL         = 5 * time.Minute
+	callbackRelayMaxEntries  = 64
+	callbackRelayMaxValueLen = 4096
+)
+
+type callbackRelayEntry struct {
+	raw       string
+	errorCode string
+	errorDesc string
+	at        time.Time
+}
+
+// callbackRelay bridges browser OAuth redirects (/callback on localhost) to
+// cross-origin dashboard tabs (e.g. http://127.0.0.1:<port>/dashboard) where
+// localStorage, BroadcastChannel, and COOP-severed window.opener cannot reach.
+type callbackRelay struct {
+	mu      sync.Mutex
+	entries map[string]callbackRelayEntry
+}
+
+func newCallbackRelay() *callbackRelay {
+	return &callbackRelay{entries: make(map[string]callbackRelayEntry)}
+}
+
+var defaultCallbackRelay = newCallbackRelay()
+
+func (r *callbackRelay) pruneLocked(now time.Time) {
+	for k, e := range r.entries {
+		if now.Sub(e.at) > callbackRelayTTL {
+			delete(r.entries, k)
+		}
+	}
+}
+
+func (r *callbackRelay) evictOldestLocked() {
+	var oldestKey string
+	var oldestAt time.Time
+	for k, e := range r.entries {
+		if oldestKey == "" || e.at.Before(oldestAt) {
+			oldestKey = k
+			oldestAt = e.at
+		}
+	}
+	if oldestKey != "" {
+		delete(r.entries, oldestKey)
+	}
+}
+
+func (r *callbackRelay) record(state, raw, errCode, errDesc string) {
+	if state == "" || (raw == "" && errCode == "") {
+		return
+	}
+	if len(state) > callbackRelayMaxValueLen || len(raw) > callbackRelayMaxValueLen || len(errCode) > callbackRelayMaxValueLen || len(errDesc) > callbackRelayMaxValueLen {
+		return
+	}
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneLocked(now)
+	if _, exists := r.entries[state]; !exists && len(r.entries) >= callbackRelayMaxEntries {
+		r.evictOldestLocked()
+	}
+	r.entries[state] = callbackRelayEntry{
+		raw:       raw,
+		errorCode: errCode,
+		errorDesc: errDesc,
+		at:        now,
+	}
+}
+
+func (r *callbackRelay) take(state string) (callbackRelayEntry, bool) {
+	if state == "" {
+		return callbackRelayEntry{}, false
+	}
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneLocked(now)
+	entry, ok := r.entries[state]
+	if !ok {
+		return callbackRelayEntry{}, false
+	}
+	delete(r.entries, state)
+	return entry, true
+}
+
+// extractCallbackRaw mirrors web/src/lib/oauth-handoff.ts:parseCallbackURL
+// so single-code redirects return the bare token while multi-param bundles
+// preserve the full query string for per-provider parsers.
+func extractCallbackRaw(q url.Values, rawQuery string) string {
+	code := firstNonEmpty(q.Get("code"), q.Get("access_token"), q.Get("token"), q.Get("refreshToken"), q.Get("refresh_token"))
+	extra := 0
+	for k, vals := range q {
+		val := firstNonEmpty(vals...)
+		if val == "" {
+			continue
+		}
+		switch k {
+		case "state":
+		case "code", "access_token", "token", "refreshToken", "refresh_token":
+			if val != code {
+				extra++
+			}
+		default:
+			extra++
+		}
+	}
+	if code != "" && extra == 0 {
+		return code
+	}
+	return strings.TrimLeft(rawQuery, "?#&")
+}
 
 // callbackPage is a self-contained OAuth landing page. Providers redirect the
 // user's browser here (e.g. /callback?code=... or /callback#access_token=...)
@@ -73,6 +193,8 @@ ol li{margin:4px 0}
       if(window.opener){
         var callbackData={code:code,state:state,error:err||"",errorDescription:errDesc||""};
         var origins=[location.origin,"http://localhost:1455"];
+        var peerHost=location.hostname==="localhost"?"127.0.0.1":(location.hostname==="127.0.0.1"?"localhost":"");
+        if(peerHost){origins.push(location.protocol+"//"+peerHost+(location.port?":"+location.port:""))}
         origins.forEach(function(origin){
           try{window.opener.postMessage({type:"oauth_callback",data:callbackData},origin)}catch(e){}
         });
@@ -137,6 +259,19 @@ func (h *OAuthHandler) HandleCallbackPage(w http.ResponseWriter, r *http.Request
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.Method == http.MethodGet {
+		q := r.URL.Query()
+		state := q.Get("state")
+		errCode := firstNonEmpty(q.Get("error"), q.Get("error_code"), q.Get("errorCode"))
+		errDesc := firstNonEmpty(q.Get("error_description"), q.Get("error_desc"), q.Get("message"))
+		var raw string
+		if errCode == "" {
+			raw = extractCallbackRaw(q, r.URL.RawQuery)
+		}
+		if state != "" && (errCode != "" || raw != "") {
+			h.callbackStore().record(state, raw, errCode, errDesc)
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
@@ -145,4 +280,29 @@ func (h *OAuthHandler) HandleCallbackPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_, _ = w.Write([]byte(callbackPage))
+}
+
+// HandleCallbackResult pops a server-recorded /callback payload for an OAuth
+// state so cross-origin dashboard tabs (e.g. 127.0.0.1 vs localhost) still
+// receive loopback callbacks even when storage and window.opener are isolated.
+// GET /api/oauth/callback-result?state=...
+func (h *OAuthHandler) HandleCallbackResult(w http.ResponseWriter, r *http.Request) {
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if state == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing state")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	entry, ok := h.callbackStore().take(state)
+	if !ok {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"found": false})
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"found":     true,
+		"state":     state,
+		"raw":       entry.raw,
+		"error":     entry.errorCode,
+		"errorDesc": entry.errorDesc,
+	})
 }

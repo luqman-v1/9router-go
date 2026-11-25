@@ -13,6 +13,7 @@
     type Settings
   } from '../../api/client'
   import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
+  import ClaudeCacheTtl from '../quota/ClaudeCacheTtl.svelte'
   import {
     clearCallback,
     CODEX_REDIRECT_URI,
@@ -30,6 +31,8 @@
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
   import { copyToClipboard } from '../../lib/clipboard'
   import { parseModelIds } from '../../lib/bulk-models'
+  import { inferModelKind, customModelKeyFor } from '../../lib/modelKindInference'
+  import type { CustomModelType } from './modelTypeOptions'
   import {
     importCustomModelsBestEffort,
     notifyCustomModelsChanged,
@@ -45,12 +48,14 @@
     buildAvailableModels,
     fetchProviderModelsData,
     fetchSuggestedModels,
-    getIconPath,
     isChatModel,
+    isConnectionError,
+    providerDisplayPrefix,
     type CustomModelData,
     type ModelItem,
     type SuggestedModel
   } from './types'
+  import { isBannedConnection, appealUrl } from '../../lib/ban'
   import { proxyBadgeInfo } from './proxyBadge'
   import {
     formatCheckAllSummary,
@@ -81,6 +86,7 @@
   } from './connectionProbe'
   import EditConnectionModal, { type ConnectionUpdate } from './EditConnectionModal.svelte'
   import AddConnectionModal from './AddConnectionModal.svelte'
+  import { buildEditedRow, pruneDisabledAfterDelete } from '../../lib/customModelEdit'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
   import { nodeLimitsDraftOf, nodeLimitsSummary, nodeLimitsUsageSummary } from '../../lib/node-limits'
   import type { ProviderNodeLimitsPatch } from '../../api/client'
@@ -88,11 +94,19 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { PauseCircle } from 'lucide-svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
+  import FreePiConnectModal from './FreePiConnectModal.svelte'
+  import FreePiAdBanner from './FreePiAdBanner.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import ExportKeysModal from './ExportKeysModal.svelte'
   import ShareProviderModal from './ShareProviderModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
+  import FreebuffAdBanner from './FreebuffAdBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'
+  import {
+    computeProviderThinkingOptions,
+    formatThinkingOptionLabel,
+    resolveProviderThinkingSuffix,
+  } from './providerThinking'
 
   interface Props {
     providerId: string
@@ -173,7 +187,52 @@
   // is NOT equivalent — kiro/gemini-cli are free with noAuth:false and still
   // need their Connect/OAuth + API Key buttons.
   let isNoAuth = $derived(selectedCatalogItem?.noAuth === true)
-  let hasRiskNotice = $derived(providerId === 'antigravity' || Boolean(selectedCatalogItem?.notice?.text?.includes('RISK_NOTICE')))
+
+  // Filtered connections for this provider, sorted by priority ASC
+  let providerConnections = $derived(
+    connections
+      .filter((c) => c.provider === providerId)
+      .sort((a, b) => (a.priority ?? 999999) - (b.priority ?? 999999))
+  )
+  let isProviderAllDisabled = $derived(
+    providerConnections.length > 0 && providerConnections.every((c) => c.isActive === 0)
+  )
+  let isProviderActive = $derived(providerConnections.some((c) => c.isActive === 1))
+
+  // Connection tab partition: every connection appears in exactly one tab.
+  let connTab = $state<'active' | 'error' | 'banned'>('active')
+  let bannedConnections = $derived(providerConnections.filter(isBannedConnection))
+  let errorConnections = $derived(
+    providerConnections.filter((c) => !isBannedConnection(c) && isConnectionError(c))
+  )
+  let activeConnections = $derived(
+    providerConnections.filter((c) => !isBannedConnection(c) && !isConnectionError(c))
+  )
+  let tabConnections = $derived(
+    connTab === 'banned'
+      ? bannedConnections
+      : connTab === 'error'
+        ? errorConnections
+        : activeConnections
+  )
+  let tabCounts = $derived({
+    active: activeConnections.length,
+    error: errorConnections.length,
+    banned: bannedConnections.length,
+  })
+  function tabMatches(c: ProviderConnection): boolean {
+    if (connTab === 'banned') return isBannedConnection(c)
+    if (connTab === 'error') return !isBannedConnection(c) && isConnectionError(c)
+    return !isBannedConnection(c) && !isConnectionError(c)
+  }
+
+  // Risk notice is driven by the connection's auth type (OAuth / subscription
+  // providers) and the upstream registry notice text — never by a hardcoded
+  // provider id such as `antigravity`.
+  let hasRiskNotice = $derived(
+    providerConnections.some((c) => c.authType === 'oauth') ||
+    Boolean(selectedCatalogItem?.notice?.text?.includes('RISK_NOTICE'))
+  )
 
   // MiniMax Code lease auth: the connection borrows the desktop app's sign-in
   // over its local broker, so there is no browser login and no stored refresh
@@ -209,16 +268,9 @@
     selectedNode?.id || selectedCatalogItem?.alias || PROVIDER_ID_TO_ALIAS[providerId] || providerId
   )
 
-  // Filtered connections for this provider, sorted by priority ASC
-  let providerConnections = $derived(
-    connections
-      .filter((c) => c.provider === providerId)
-      .sort((a, b) => (a.priority ?? 999999) - (b.priority ?? 999999))
-  )
-  let isProviderAllDisabled = $derived(
-    providerConnections.length > 0 && providerConnections.every((c) => c.isActive === 0)
-  )
-  let isProviderActive = $derived(providerConnections.some((c) => c.isActive === 1))
+  function openAppeal(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 
   async function handleToggleProvider(targetActive: boolean) {
     try {
@@ -259,12 +311,23 @@
   // filter change; it is cleared on provider switch with the rest of the
   // model state (see the reset block below).
   let compatibleRows = $derived.by(() => {
-    const rows: Array<{ id: string; source: 'custom' | 'legacyAlias'; alias?: string; addedAt?: number }> = []
+    const rows: Array<{
+      id: string
+      source: 'custom' | 'legacyAlias'
+      alias?: string
+      addedAt?: number
+      kind?: string
+    }> = []
     const seen = new Set<string>()
     for (const cm of customModels) {
       if (!cm.id || cm.providerAlias !== storageAlias) continue
-      if ((cm.type || 'llm') !== 'llm') continue
-      const full = `${storageAlias}/${cm.id}`
+      // Every custom row on this node is listed, whatever its kind. This list is
+      // the only place a compatible node's custom models can be seen, tested or
+      // deleted, so filtering out the non-LLM ones made an imported TTS or video
+      // model unreachable: correctly absent from /v1/models, and equally absent
+      // from the one screen that could remove it. The row carries its kind so
+      // delete addresses the right key.
+      const full = `${displayAlias()}/${cm.id}`
       if (seen.has(full)) continue
       seen.add(full)
       // The kv store carries no per-row timestamp, so the add date is the
@@ -272,7 +335,12 @@
       // insertion order, and the newest write is last. A later row with the
       // same key keeps its original position (the upsert does not move it),
       // which is what "when was this first registered" means.
-      rows.push({ id: cm.id, source: 'custom', addedAt: customModels.length - customModels.indexOf(cm) })
+      rows.push({
+        id: cm.id,
+        source: 'custom',
+        addedAt: customModels.length - customModels.indexOf(cm),
+        kind: cm.type || 'llm',
+      })
     }
     const prefix = `${storageAlias}/`
     for (const [alias, full] of Object.entries(modelAliases || {})) {
@@ -412,25 +480,21 @@
   // the catalog ships as a static bundle, but caps depend on the provider
   // registry, the capability tables and the synced models.dev catalog.
   let modelCaps = $state<Record<string, ModelCaps>>({})
-  // Union of the thinking levels this provider's models accept, with the
-  // explicit "auto" reset first — upstream providerThinkingLevels
-  // (dashboard/providers/[id]/page.js:186). null hides the picker entirely for a
-  // provider whose models have no reasoning.
-  let providerThinkingLevels = $derived.by(() => {
-    const levels = new Set<string>()
-    for (const m of allAvailableModels) {
-      for (const l of modelCaps[m.id]?.thinkingLevels ?? []) {
-        if (l !== 'none') levels.add(l)
-      }
-    }
-    return levels.size ? ['auto', ...levels] : null
-  })
+  // Options for the per-provider "Thinking:" picker: compatible nodes always
+  // offer auto/off/on even with no model capability metadata, and built-in
+  // providers include "off" whenever at least one model can disable thinking.
+  let providerThinkingLevels = $derived.by(() =>
+    computeProviderThinkingOptions({
+      modelThinkingLevels: toolbarRows.map((r) => r.thinkingLevels),
+      isCompatibleNode,
+      currentMode: thinkingLevel,
+    }),
+  )
   // A picked level only applies to a model that actually supports it, so the
-  // displayed id and the copied id never carry a level the provider rejects.
+  // displayed id and the copied id never carry a level the provider rejects
+  // or a switch mode like auto/off/on.
   function resolveThinkingSuffix(modelId: string): string | null {
-    if (!thinkingLevel || thinkingLevel === 'auto') return null
-    const levels = modelCaps[modelId]?.thinkingLevels
-    return levels && levels.includes(thinkingLevel) ? thinkingLevel : null
+    return resolveProviderThinkingSuffix(thinkingLevel, modelCaps[modelId]?.thinkingLevels)
   }
   // Compatible nodes (upstream CompatibleModelsSection): rows = custom models
   // + legacy aliases, both keyed by the node row id; display = node prefix.
@@ -527,6 +591,7 @@
   let kiroCliProxyJson = $state('')
   let kiroSocialAuthUrl = $state('')
   let kiroSocialCallback = $state('')
+  let kiroSocialCodeVerifier = $state('')
   // OAuth auto-handoff: callback tab writes to storage + BroadcastChannel,
   // this modal restores the pending session and auto-submits.
   let autoSubmitted = $state(false)
@@ -538,7 +603,7 @@
     return dashboardCallbackURL(dashboardOrigin())
   }
 
-  function antigravityCallback(): string {
+  function loopbackCallback(): string {
     if (typeof window === 'undefined') return 'http://localhost:8080/callback'
     return oauthLoopbackCallbackURL(window.location.port, window.location.protocol === 'https:')
   }
@@ -615,18 +680,56 @@
   $effect(() => {
     if (!showOAuthModal || typeof window === 'undefined') return
     autoSubmitted = false
+    let cancelled = false
+    let serverPollInFlight = false
     consumeOAuthCallback()
+
+    async function pollServerCallback() {
+      if (cancelled || serverPollInFlight || autoSubmitted || isConnecting || !showOAuthModal || providerId === 'codex') {
+        return
+      }
+      let pending
+      try {
+        pending = matchPending(loadPendings(window.localStorage), providerId, '')
+      } catch {
+        return
+      }
+      if (!pending?.state) return
+      serverPollInFlight = true
+      try {
+        const res = await api.getOAuthCallbackResult(pending.state)
+        if (!cancelled && res.found && (res.raw || res.error)) {
+          try {
+            writeCallback(window.localStorage, {
+              state: res.state || pending.state,
+              raw: res.raw || '',
+              error: res.error || '',
+              errorDesc: res.errorDesc || '',
+            })
+          } catch {
+            /* storage blocked */
+          }
+          consumeOAuthCallback()
+        }
+      } catch {
+        /* retry on next poll */
+      } finally {
+        serverPollInFlight = false
+      }
+    }
+
     const onStorage = (e: StorageEvent) => {
       if (e.key === OAUTH_CALLBACK_KEY || e.key === null) consumeOAuthCallback()
     }
     window.addEventListener('storage', onStorage)
     const onWindowMessage = (e: MessageEvent) => {
-      const trustedOrigin = e.origin === window.location.origin || e.origin === new URL(antigravityCallback()).origin
+      const trustedOrigin = e.origin === window.location.origin || e.origin === new URL(loopbackCallback()).origin
       if (!trustedOrigin) return
       if (e.data?.type === 'oauth_callback' && e.data?.data) {
         const data = e.data.data as {
           code?: string
           token?: string
+          raw?: string
           state?: string
           error?: string
           errorDescription?: string
@@ -635,7 +738,7 @@
           oauthError = `Login failed: ${data.error}${data.errorDescription ? ` — ${data.errorDescription}` : ''}`
           return
         }
-        const raw = data.code || data.token || ''
+        const raw = data.code || data.token || data.raw || ''
         if (raw) {
           try {
             writeCallback(window.localStorage, { state: data.state || '', raw, error: '', errorDesc: '' })
@@ -672,8 +775,11 @@
     } catch {
       /* BroadcastChannel unavailable — poll covers it */
     }
-    const timer = setInterval(consumeOAuthCallback, 1500)
+    const timer = setInterval(() => {
+      if (!consumeOAuthCallback()) void pollServerCallback()
+    }, 1500)
     return () => {
+      cancelled = true
       window.removeEventListener('storage', onStorage)
       window.removeEventListener('message', onWindowMessage)
       try {
@@ -705,7 +811,7 @@
     const q = proxyPoolSearch.trim().toLowerCase()
     if (!q) return proxyPools
     return proxyPools.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.proxyUrl.toLowerCase().includes(q)
+      (p) => p.name.toLowerCase().includes(q) || (p.proxyUrl ?? '').toLowerCase().includes(q)
     )
   })
 
@@ -716,6 +822,7 @@
   let showAddKeyModal = $state(false)
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
+  let editingModel = $state<CustomModelData | null>(null)
   let showEditNodeModal = $state(false)
   let showExportKeysModal = $state(false)
   let showShareProviderModal = $state(false)
@@ -735,6 +842,13 @@
     return out
   })
   let showHeaderOverrides = $state(false)
+  let showFreePiConnect = $state(false)
+  let isFreePi = $derived(providerId === 'free-pi' || storageAlias === 'fp' || storageAlias === 'free-pi')
+  let freePiConn = $derived(
+    providerConnections.find((c) => c.isActive === 1) ?? providerConnections[0] ?? null
+  )
+  let freePiResetBusy = $state(false)
+  let freePiResetResult = $state<string>('')
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
     providerId === 'freebuff' || storageAlias === 'fb' || storageAlias === 'freebuff'
@@ -758,7 +872,6 @@
     }
     return providerConnections.find((c) => c.isActive === 1) ?? providerConnections[0]
   })
-  let freebuffConnection = $derived(targetFreebuffConn)
   let freebuffSession = $state<FreebuffSessionStatusResponse | null>(null)
   let isLoadingSession = $state(false)
   let isAuthorizingFreebuff = $state(false)
@@ -766,7 +879,7 @@
   let currentFreebuffInit = $state<{
     fingerprintId: string
     fingerprintHash: string
-    expiresAt: number
+    expiresAt: string | number
     loginUrl: string
   } | null>(null)
 
@@ -889,10 +1002,11 @@
 
   // Load models, settings, proxy pools
   async function loadData() {
+    const pid = providerId
     try {
       const [modelsData, settingsData, poolsData, aliasesData, capsData] = await Promise.all([
         fetchProviderModelsData(providerId, storageAlias),
-        api.getSettings().catch(() => ({})),
+        api.getSettings().catch((): Settings => ({})),
         api.getProxyPools().catch(() => []),
         api.getModelAliases().catch(() => ({ aliases: {} })),
         // The caps endpoint answers for compatible nodes too: a node with
@@ -911,6 +1025,7 @@
           ? api.getModelCaps(providerId).catch(() => ({ caps: {} as Record<string, ModelCaps> }))
           : Promise.resolve({ caps: {} as Record<string, ModelCaps> }),
       ])
+      if (pid !== providerId) return
       const capsById = capsData?.caps || {}
       // Same guard as the call above: an alias equal to the id would spend a
       // second round trip on a map we already have.
@@ -919,6 +1034,7 @@
         const aliasCaps = await api
           .getModelCaps(storageAlias)
           .catch(() => ({ caps: {} as Record<string, ModelCaps> }))
+        if (pid !== providerId) return
         const aliasMap = aliasCaps?.caps || {}
         for (const [id, entry] of Object.entries(aliasMap)) {
           if (!capsMerged[id]) capsMerged[id] = entry
@@ -1119,6 +1235,7 @@
         if (lastLoadedProviderId !== pid) {
           lastLoadedProviderId = pid
           suggestedModels = []
+          thinkingLevel = 'auto'
         }
         loadData()
       })
@@ -1164,19 +1281,24 @@
   }
 
   async function handleThinkingChange(event: Event) {
-    const val = (event.target as HTMLSelectElement).value
+    const select = event.target as HTMLSelectElement
+    const prevLevel = thinkingLevel
+    const val = select.value
     thinkingLevel = val
+    const prevSettings = (settings as any)?.providerThinking
     try {
-      const current = (settings as any)?.providerThinking || {}
+      const current = prevSettings || {}
       const updated = { ...current }
       if (val && val !== 'auto') {
         updated[providerId] = { mode: val }
       } else {
         delete updated[providerId]
       }
-      if (settings) (settings as any).providerThinking = updated
       await api.updateSettings({ providerThinking: updated })
+      if (settings) (settings as any).providerThinking = updated
     } catch (err) {
+      thinkingLevel = prevLevel
+      if (settings) (settings as any).providerThinking = prevSettings
       console.error('Error saving provider thinking:', err)
     }
   }
@@ -1514,12 +1636,13 @@
   }
   // Add Connection Button flow
   async function handleAddConnectionClick() {
-    if (providerId === 'antigravity') {
-      const confirmed = typeof window !== 'undefined' && localStorage.getItem('ag_risk_confirmed') === 'true'
+    if (providerId === 'antigravity' || providerId === 'agy-acp') {
+      const riskKey = providerId === 'agy-acp' ? 'agcpy_risk_confirmed' : 'ag_risk_confirmed'
+      const confirmed = typeof window !== 'undefined' && localStorage.getItem(riskKey) === 'true'
       if (!confirmed) {
         showRiskNoticeModal = true
       } else {
-        openAntigravityOAuth()
+        openGoogleConsumerOAuth()
       }
     } else if (providerId === 'freebuff') {
       startFreebuffFlow()
@@ -1531,6 +1654,8 @@
       openAuthCodeOAuth()
     } else if (isCustomOAuth) {
       openCustomOAuth()
+    } else if (providerId === 'free-pi') {
+      showFreePiConnect = true
     } else if (providerId === 'kiro') {
       openKiroOAuth()
     } else if (isDeviceOAuth) {
@@ -1553,19 +1678,30 @@
 
   function confirmRiskAndProceed() {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('ag_risk_confirmed', 'true')
+      localStorage.setItem(providerId === 'agy-acp' ? 'agcpy_risk_confirmed' : 'ag_risk_confirmed', 'true')
     }
     showRiskNoticeModal = false
-    openAntigravityOAuth()
+    openGoogleConsumerOAuth()
   }
 
-  async function openAntigravityOAuth() {
+  // antigravity and agy-acp share the Google consumer OAuth client; each
+  // exchanges into its own provider's connection rows.
+  async function openGoogleConsumerOAuth() {
     oauthError = null
     callbackInput = ''
     copiedAuthUrl = false
     try {
-      const redirectUri = antigravityCallback()
-      const res = await api.getAntigravityAuthorizeUrl(redirectUri)
+      const redirectUri = loopbackCallback()
+      // Behind a reverse proxy the dashboard origin carries no listener port,
+      // so the browser would send the code to localhost:80/443 where nothing
+      // listens. Ask the gateway to pin the loopback redirect to its own port;
+      // its /callback page records the code and the modal polls it back
+      // cross-origin through /api/oauth/callback-result.
+      const behindProxy = !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+      const res =
+        providerId === 'agy-acp'
+          ? await api.getAGYACPAuthorizeUrl(redirectUri, behindProxy)
+          : await api.getAntigravityAuthorizeUrl(redirectUri, behindProxy)
       oauthAuthUrl = res.authUrl || res.url || res.redirectUrl
       if (res.state) {
         rememberPending({
@@ -1589,7 +1725,14 @@
     try {
       // Codex cannot use the dashboard callback: OpenAI only accepts the
       // redirect URI registered for the Codex CLI client.
-      const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
+      // Claude's public client only registers loopback callbacks, so a custom
+      // domain /callback is refused ("Redirect URI ... is not supported").
+      const cb =
+        providerId === 'codex'
+          ? CODEX_REDIRECT_URI
+          : providerId === 'claude'
+            ? loopbackCallback()
+            : dashboardCallback()
       const res = await api.pkceAuthorize(
         providerId,
         providerId === 'gitlab'
@@ -1684,6 +1827,7 @@
     showOAuthModal = false
     stopDevicePoll()
     stopCodexPoll()
+    kiroSocialCodeVerifier = ''
     if (providerId === 'codex') {
       void api.codexStopProxy().catch(() => {})
     }
@@ -1743,6 +1887,7 @@
     kiroRefreshToken = ''
     kiroCliProxyJson = ''
     kiroSocialAuthUrl = ''
+    kiroSocialCodeVerifier = ''
     kiroSocialCallback = ''
   }
 
@@ -1861,11 +2006,13 @@
   async function startKiroSocial(provider: 'google' | 'github') {
     oauthError = null
     kiroSocialAuthUrl = ''
+    kiroSocialCodeVerifier = ''
     kiroSocialCallback = ''
     isConnecting = true
     try {
       const res = await api.kiroSocialAuthorize(provider)
       kiroSocialAuthUrl = res.authUrl || res.url || ''
+      kiroSocialCodeVerifier = res.codeVerifier || ''
       if (typeof window !== 'undefined' && kiroSocialAuthUrl) {
         window.open(kiroSocialAuthUrl, '_blank', 'width=600,height=700')
       }
@@ -1903,7 +2050,7 @@
     oauthError = null
     isConnecting = true
     try {
-      await api.kiroSocialExchange(code)
+      await api.kiroSocialExchange(code, kiroSocialCodeVerifier, kiroMethod === 'social-github' ? 'github' : 'google')
       showOAuthModal = false
       resetKiroMethod()
       onRefresh()
@@ -1916,6 +2063,22 @@
 
 
   let isPollingDevice = $state(false)
+
+  async function clearFreePiSession() {
+    if (!freePiConn || freePiResetBusy) return
+    freePiResetBusy = true
+    freePiResetResult = ''
+    try {
+      const res = await api.freePiResetSession(freePiConn.id)
+      freePiResetResult = res.released
+        ? 'Cleared your other sessions — you can start a new one now.'
+        : 'No other session was running.'
+    } catch (err) {
+      freePiResetResult = err instanceof Error ? err.message : String(err)
+    } finally {
+      freePiResetBusy = false
+    }
+  }
 
   async function openDeviceOAuth() {
     oauthError = null
@@ -2302,7 +2465,7 @@
         }
         return
       }
-      if (providerId !== 'antigravity') {
+      if (providerId !== 'antigravity' && providerId !== 'agy-acp') {
         if (raw.includes('code=') || raw.includes('http')) {
           oauthError = `Direct OAuth login is not supported for ${providerName}. Paste an access token / refresh token instead.`
           return
@@ -2326,8 +2489,11 @@
       } catch {
         pending = null
       }
-      const exchangeRedirectUri = redirectUri || pending?.redirectUri || antigravityCallback()
-      const res = await api.antigravityExchange(code, exchangeRedirectUri, pending?.state)
+      const exchangeRedirectUri = redirectUri || pending?.redirectUri || loopbackCallback()
+      const res =
+        providerId === 'agy-acp'
+          ? await api.agyACPExchange(code, exchangeRedirectUri, pending?.state)
+          : await api.antigravityExchange(code, exchangeRedirectUri, pending?.state)
       if (res?.success === false || (res as { error?: string })?.error) {
         oauthError = (res as { error?: string })?.error || 'Authorization failed'
       } else {
@@ -2344,7 +2510,7 @@
   // Model actions
   function copyModelId(modelId: string) {
     const level = resolveThinkingSuffix(modelId)
-    const full = `${storageAlias}/${modelId}${level ? `(${level})` : ''}`
+    const full = `${displayAlias()}/${modelId}${level ? `(${level})` : ''}`
     copyToClipboard(full)
     copiedModelId = modelId
     setTimeout(() => (copiedModelId = null), 2000)
@@ -2392,6 +2558,20 @@
     }
   }
 
+  // The delete endpoint parks the id in disabledModels; drop it so a deleted
+  // custom model does not show under "Disabled models".
+  async function pruneDeletedFromDisabled(deletedIds: string[]) {
+    const fresh = await fetchProviderModelsData(providerId, storageAlias)
+    customModels = fresh.customModels
+    const kept = pruneDisabledAfterDelete(
+      fresh.disabledModelIds,
+      deletedIds,
+      builtInModels.map((m) => m.id)
+    )
+    disabledModelIds = kept
+    if (kept.length !== fresh.disabledModelIds.length) await api.saveDisabledModels(storageAlias, kept)
+  }
+
   async function handleEnableModel(modelId: string) {
     const updated = disabledModelIds.filter((id) => id !== modelId)
     disabledModelIds = updated
@@ -2427,22 +2607,40 @@
     modelId: string,
     caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean },
     limits?: { contextWindow?: number; maxOutput?: number },
+    modelType?: CustomModelType,
+    extraBody?: Record<string, unknown>,
   ) {
+    // The modal picks the kind; the id is only consulted for a caller that adds
+    // a model without going through it.
+    const kind = modelType ?? inferModelKind(modelId)
     try {
-      await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
+      if (editingModel) {
+        const stored = editingModel
+        await api.saveCustomModel(
+          customModelKeyFor(storageAlias, stored.id, stored.type),
+          buildEditedRow(stored, {
+            caps: { vision: false, reasoning: false, jailbreak: false, ...caps },
+            contextWindow: limits?.contextWindow ?? 0,
+            maxOutput: limits?.maxOutput ?? 0,
+            extraBody,
+          }),
+        )
+      } else await api.saveCustomModel(customModelKeyFor(storageAlias, modelId, kind), {
         id: modelId,
         providerAlias: storageAlias,
-        type: 'llm',
-        ...(caps ? { caps } : {}),
+        type: kind,
+        ...(kind !== 'llm' ? {} : caps ? { caps } : {}),
         ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
         ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
+        ...(extraBody ? { extraBody } : {}),
       })
       showAddCustomModelModal = false
+      editingModel = null
       const modelsData = await fetchProviderModelsData(providerId, storageAlias)
       customModels = modelsData.customModels
       notifyCustomModelsChanged()
     } catch (err) {
-      alert(`Failed to add custom model: ${err instanceof Error ? err.message : String(err)}`)
+      alert(`Failed to save custom model: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -2540,8 +2738,17 @@
   }
 
   // Compatible nodes: upstream CompatibleModelsSection handlers.
+  //
+  // The prefix a model id is published under, not the provider's internal id.
+  // Upstream (providers/[id]/page.js:217) resolves it as
+  // `isCompatible ? (providerNode?.prefix || providerId) : providerAlias`,
+  // where providerAlias is the registry alias ("oc" for opencode). Returning
+  // the raw id here published "opencode/nemotron-3-ultra-free" where the
+  // gateway serves "oc/nemotron-3-ultra-free", so the copy button handed out
+  // an id the router does not resolve. The published prefix is what
+  // /v1/models serves, so it is what a copied id has to be.
   function displayAlias(): string {
-    return selectedNode?.prefix || providerId
+    return providerDisplayPrefix(providerId, selectedNode, selectedCatalogItem?.modelPrefix)
   }
 
   async function refreshCompatibleModels() {
@@ -2577,7 +2784,7 @@
       // the response says which lines landed instead of leaving it to the refresh.
       const out = await api.saveCustomModelsBulk({
         providerAlias: storageAlias,
-        models: plan.ids.map((id) => ({ id, type: 'llm' })),
+        models: plan.ids.map((id) => ({ id, type: inferModelKind(id) })),
       })
       newCompatibleModel = ''
       await refreshCompatibleModels()
@@ -2603,10 +2810,10 @@
     }
     isAddingCompatibleModel = true
     try {
-      await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId), {
         id: modelId,
         providerAlias: storageAlias,
-        type: 'llm',
+        type: inferModelKind(modelId),
       })
       newCompatibleModel = ''
       await refreshCompatibleModels()
@@ -2621,10 +2828,10 @@
     }
   }
 
-  async function handleDeleteCompatibleModel(row: { id: string; source: string; alias?: string }) {
+  async function handleDeleteCompatibleModel(row: { id: string; source: string; alias?: string; kind?: string }) {
     try {
       if (row.source === 'custom') {
-        await api.deleteCustomModel(`${storageAlias}|${row.id}|llm`)
+        await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, row.kind))
       } else if (row.source === 'legacyAlias' && row.alias) {
         await api.deleteModelAlias(row.alias)
       }
@@ -2697,7 +2904,10 @@
   async function handleTestAllCompatibleModels() {
     if (compatibleTestAllRunning) return
     const pid = providerId
-    const ids = compatibleRows.map((r) => r.id)
+    // A probe is a chat request, so only chat rows are probed: a TTS or video
+    // model answers one with an error, and reporting that as a dead model would
+    // be a false failure for a model that works on its own lane.
+    const ids = compatibleRows.filter((r) => isChatModel({ type: r.kind })).map((r) => r.id)
     if (ids.length === 0) return
     compatibleTestAllRunning = true
     compatibleTestResults = {}
@@ -2719,7 +2929,8 @@
   let compatibleTestSummary = $derived(formatCheckAllSummary(compatibleTestResults))
 
   function copyCompatibleModel(modelId: string) {
-    copyToClipboard(`${displayAlias()}/${modelId}`)
+    const level = resolveThinkingSuffix(modelId)
+    copyToClipboard(`${displayAlias()}/${modelId}${level ? `(${level})` : ''}`)
     copiedModelId = modelId
     setTimeout(() => (copiedModelId = null), 2000)
   }
@@ -2760,8 +2971,8 @@
         if (freeOnly && !isFreeTierModelId(modelId)) continue
         pending.push({
           id: modelId,
-          key: `${storageAlias}|${modelId}|llm`,
-          value: { id: modelId, providerAlias: storageAlias, type: 'llm' },
+          key: customModelKeyFor(storageAlias, modelId),
+          value: { id: modelId, providerAlias: storageAlias, type: inferModelKind(modelId) },
         })
       }
       const outcome = await importCustomModelsBestEffort(pending, api.saveCustomModel)
@@ -2826,22 +3037,32 @@
             : undefined
         // An endpoint that reports its own limits is the authoritative source;
         // saving them means /v1/models keeps publishing them after the row
-        // outlives this import.
+        // outlives this import. OpenRouter-style feeds spell them snake_case
+        // (context_length / max_completion_tokens); normalized catalogues
+        // (nous, qoder, zed) spell them camelCase (contextLength /
+        // maxOutputTokens) — reading only the first shape dropped the 1M
+        // window nous/qwen4-max declares and published the 131k name guess.
         const declaredCtxLen =
-          typeof m === 'object' && m !== null && 'context_length' in m
-            ? Number(m.context_length) || 0
+          typeof m === 'object' && m !== null
+            ? Number(
+                ('context_length' in m ? m.context_length : undefined) ??
+                  ('contextLength' in m ? m.contextLength : undefined),
+              ) || 0
             : 0
         const declaredMaxOut =
-          typeof m === 'object' && m !== null && 'max_completion_tokens' in m
-            ? Number(m.max_completion_tokens) || 0
+          typeof m === 'object' && m !== null
+            ? Number(
+                ('max_completion_tokens' in m ? m.max_completion_tokens : undefined) ??
+                  ('maxOutputTokens' in m ? m.maxOutputTokens : undefined),
+              ) || 0
             : 0
         pending.push({
           id: modelId,
-          key: `${storageAlias}|${modelId}|llm`,
+          key: customModelKeyFor(storageAlias, modelId),
           value: {
             id: modelId,
             providerAlias: storageAlias,
-            type: 'llm',
+            type: inferModelKind(modelId),
             ...(caps ? { caps } : {}),
             ...(declaredCtxLen > 0 ? { contextWindow: declaredCtxLen } : {}),
             ...(declaredMaxOut > 0 ? { maxOutput: declaredMaxOut } : {}),
@@ -2934,7 +3155,7 @@
   let canListLiveModels = $derived(
     providerId.startsWith('openai-compatible-') ||
       isCompatibleNode ||
-      ['antigravity', 'gemini-cli', 'cline', 'clinepass', 'qoder', 'qoder-cn', 'zed'].includes(providerId) ||
+      ['antigravity', 'gemini-cli', 'cline', 'clinepass', 'qoder', 'qoder-cn', 'zed', 'claude', 'anthropic'].includes(providerId) ||
       ModelsListURLs.has(providerId)
   )
 
@@ -2978,10 +3199,10 @@
 
   async function handleAddLatestModel(id: string, name?: string) {
     try {
-      await api.saveCustomModel(`${storageAlias}|${id}|llm`, {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, id), {
         id,
         providerAlias: storageAlias,
-        type: 'llm',
+        type: inferModelKind(id),
         ...(name ? { name } : {}),
       })
       latestModels = latestModels.filter((m) => m.id !== id)
@@ -3213,6 +3434,7 @@
     if (!confirm(parts.join(' '))) return
 
     let deleted = 0
+    const deletedIds: string[] = []
     let disabledOnly = 0
     const failures: string[] = []
     for (const row of rows) {
@@ -3221,22 +3443,26 @@
           await handleDisableModel(row.id)
           disabledOnly++
         } else if (row.source === 'legacyAlias') {
-          const alias = compatibleRows.find((r) => r.id === row.id)?.alias
-          if (alias) await api.deleteModelAlias(alias)
-          else await api.deleteCustomModel(`${storageAlias}|${row.id}|llm`)
+          const match = compatibleRows.find((r) => r.id === row.id)
+          if (match?.alias) await api.deleteModelAlias(match.alias)
+          else await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, match?.kind))
           deleted++
+          deletedIds.push(row.id)
         } else {
-          await api.deleteCustomModel(`${storageAlias}|${row.id}|llm`)
+          const stored =
+            compatibleRows.find((r) => r.id === row.id)?.kind ??
+            providerCustomModels.find((m) => m.id === row.id)?.type
+          await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, stored))
           deleted++
+          deletedIds.push(row.id)
         }
       } catch (err) {
         failures.push(`${row.id}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
     if (pid !== providerId) return
-    const modelsData = await fetchProviderModelsData(providerId, storageAlias)
-    customModels = modelsData.customModels
-    disabledModelIds = modelsData.disabledModelIds
+    await pruneDeletedFromDisabled(deletedIds).catch((err) => console.error('prune disabled failed:', err))
+    if (pid !== providerId) return
     notifyCustomModelsChanged()
     selectedModelIds = new Set()
     const summary = [`${deleted} deleted`]
@@ -3252,9 +3478,8 @@
     if (custom) {
       if (!confirm(`Delete custom model "${modelId}"?`)) return
       try {
-        await api.deleteCustomModel(`${storageAlias}|${modelId}|llm`)
-        const modelsData = await fetchProviderModelsData(providerId, storageAlias)
-        customModels = modelsData.customModels
+        await api.deleteCustomModel(customModelKeyFor(storageAlias, modelId, custom.type))
+        await pruneDeletedFromDisabled([modelId])
         notifyCustomModelsChanged()
       } catch (err) {
         alert(`Failed to delete model: ${err instanceof Error ? err.message : String(err)}`)
@@ -3382,6 +3607,11 @@
       {/if}
     </div>
   </div>
+
+  <!-- Claude prompt-cache window: a billing knob that belongs on the provider page. -->
+  {#if providerId === 'claude'}
+    <ClaudeCacheTtl />
+  {/if}
 
   <!-- 1. Risk Notice (for OAuth / subscription providers) -->
   {#if hasRiskNotice}
@@ -3707,8 +3937,50 @@
       </div>
     {/if}
 
+    <!-- Connection tabs: Active / Error / Banned. Every connection belongs to
+         exactly one tab; banned connections are excluded from Error. -->
+    <div class="flex gap-1 border border-border rounded-lg bg-surface px-1 py-1 sm:px-2">
+      <button
+        type="button"
+        onclick={() => (connTab = 'active')}
+        class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors {connTab === 'active'
+          ? 'bg-primary text-white shadow-[var(--shadow-warm)]'
+          : tabCounts.active === 0
+            ? 'text-text-muted/40 pointer-events-none'
+            : 'text-text-main hover:text-text-main hover:bg-surface-2'}"
+        disabled={tabCounts.active === 0}
+      >
+        Active <span class="ml-1">{tabCounts.active}</span>
+      </button>
+      <button
+        type="button"
+        onclick={() => (connTab = 'error')}
+        class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors {connTab === 'error'
+          ? 'bg-red-500/10 text-red-600 dark:text-red-400 shadow-[var(--shadow-warm)]'
+          : tabCounts.error === 0
+            ? 'text-text-muted/40 pointer-events-none'
+            : 'text-text-main hover:text-text-main hover:bg-surface-2'}"
+        disabled={tabCounts.error === 0}
+      >
+        Error <span class="ml-1">{tabCounts.error}</span>
+      </button>
+      <button
+        type="button"
+        onclick={() => (connTab = 'banned')}
+        class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors {connTab === 'banned'
+          ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400 shadow-[var(--shadow-warm)]'
+          : tabCounts.banned === 0
+            ? 'text-text-muted/40 pointer-events-none'
+            : 'text-text-main hover:text-text-main hover:bg-surface-2'}"
+        disabled={tabCounts.banned === 0}
+      >
+        <span class="material-symbols-outlined text-[14px] mr-1">block</span>
+        Banned <span class="ml-1">{tabCounts.banned}</span>
+      </button>
+    </div>
+
     <!-- Connections List -->
-      {#if providerConnections.length === 0}
+      {#if tabConnections.length === 0}
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex items-center gap-3">
           <div class="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
@@ -3734,7 +4006,7 @@
             <span class="material-symbols-outlined text-[18px]">vpn_key</span>
             {isAuthorizingFreebuff ? 'Polling Authorization...' : 'Authorize Freebuff CLI'}
           </button>
-        {:else if providerId === 'antigravity'}
+        {:else if providerId === 'antigravity' || providerId === 'agy-acp'}
           <button
             type="button"
             onclick={handleAddConnectionClick}
@@ -3786,7 +4058,7 @@
            click-away backdrop over the whole viewport, which otherwise swallows
            the first click on any priority chevron. -->
       <div class="relative z-50 flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03] max-h-[500px] overflow-y-auto pr-1">
-        {#each providerConnections as conn, idx (conn.id)}
+        {#each tabConnections as conn, idx (conn.id)}
           {@const isFirst = idx === 0}
           {@const isLast = idx === providerConnections.length - 1}
           {@const isSelected = selectedConnIds.includes(conn.id)}
@@ -3802,6 +4074,7 @@
                connection's persisted testStatus; the markup below only renders
                the verdict it returns. -->
           {@const connBadge = badgeFor(status, conn.testStatus, lastErr)}
+          {#if tabMatches(conn)}
           <div class="flex min-w-0 items-stretch">
             <!-- Multi-select checkbox -->
             <div class="flex shrink-0 items-center pl-1 sm:pl-2">
@@ -3849,9 +4122,22 @@
 
                   <!-- Title & badges -->
                   <div class="flex-1 min-w-0">
-                    <p class="text-sm font-medium truncate">
-                      {formatEmailLabel(conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot'), $emailPrivacy)}
-                    </p>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <p class="text-sm font-medium truncate">
+                        {formatEmailLabel(conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot'), $emailPrivacy)}
+                      </p>
+                      {#if providerId === 'mistral'}
+                        {#if specificData?.usageLane === 'vibe' || (conn.name && conn.name.toLowerCase().includes('vibe'))}
+                          <span class="inline-flex items-center gap-1 rounded font-semibold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 px-1.5 py-0.5 text-[10px]">
+                            VIBE CODE
+                          </span>
+                        {:else if specificData?.usageLane === 'api' || (conn.name && conn.name.toLowerCase().includes('api'))}
+                          <span class="inline-flex items-center gap-1 rounded font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 px-1.5 py-0.5 text-[10px]">
+                            API PAYG
+                          </span>
+                        {/if}
+                      {/if}
+                    </div>
                     <!-- Secondary label: upstream ConnectionRow shows the email
                          under a name, or the displayName when the stored name is
                          the email (which is what the Qoder device flow writes). -->
@@ -4132,6 +4418,14 @@
                       {/if}
                       <MenuItem label="Edit" icon="edit" onSelect={() => openEditConnection(conn)} />
 
+                      {#if appealUrl(conn)}
+                        <MenuItem
+                          label="Submit Appeal"
+                          icon="open_in_new"
+                          onSelect={() => openAppeal(appealUrl(conn)!)}
+                        />
+                      {/if}
+
                       <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
                       <MenuItem label="Delete" icon="delete" danger onSelect={() => handleDeleteConnection(conn)} />
@@ -4157,6 +4451,7 @@
               </div>
             </div>
           </div>
+        {/if}
         {/each}
       </div>
     {/if}
@@ -4259,6 +4554,24 @@
   {#if isCompatibleNode}
   <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
     <div class="flex flex-col gap-4">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex flex-wrap items-center gap-3">
+          <h2 class="text-lg font-semibold">Available Models</h2>
+          {#if providerThinkingLevels}
+            <select
+              aria-label="Provider thinking mode"
+              title="Sets per-provider thinking override for requests routed to this provider"
+              value={thinkingLevel}
+              onchange={handleThinkingChange}
+              class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer"
+            >
+              {#each providerThinkingLevels as opt (opt)}
+                <option value={opt}>Thinking: {formatThinkingOptionLabel(opt)}</option>
+              {/each}
+            </select>
+          {/if}
+        </div>
+      </div>
       <p class="text-sm text-text-muted">
         Add {isAnthropicCompatibleNode ? 'Anthropic' : 'OpenAI'}-compatible models manually or import them from the /models endpoint.
       </p>
@@ -4390,6 +4703,8 @@
       {#if compatibleRows.length > 0}
         <div class="flex flex-col gap-3">
           {#each filteredRows as row (row.id)}
+            {@const level = resolveThinkingSuffix(row.id)}
+            {@const fullModelId = `${displayAlias()}/${row.id}${level ? `(${level})` : ''}`}
             {@const tStatus = compatibleTestResults[row.id]}
             {@const tError = compatibleTestErrors[row.id]}
             {@const isTestingRow = compatibleTesting[row.id]}
@@ -4410,7 +4725,7 @@
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate">{row.id}</p>
                 <div class="flex items-center gap-1 mt-1 flex-wrap">
-                  <code class="max-w-[72vw] truncate text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded sm:max-w-[360px]">{displayAlias()}/{row.id}</code>
+                  <code class="max-w-[72vw] truncate text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded sm:max-w-[360px]">{fullModelId}</code>
                   <!-- Capability icons, mirroring the registered grid's row:
                        the same model id can be imported into a compatible
                        node, and a row that shows nothing there reads as a
@@ -4534,13 +4849,14 @@
         {/if}
         {#if providerThinkingLevels}
         <select
-          title="Appends (level) suffix to copied model names"
+          aria-label="Provider thinking mode"
+          title="Sets per-provider thinking override (and appends (level) suffix to copied model names when supported)"
           value={thinkingLevel}
           onchange={handleThinkingChange}
-          class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none cursor-pointer"
+          class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer"
         >
           {#each providerThinkingLevels as opt (opt)}
-            <option value={opt}>Thinking: {opt.charAt(0).toUpperCase() + opt.slice(1)}</option>
+            <option value={opt}>Thinking: {formatThinkingOptionLabel(opt)}</option>
           {/each}
         </select>
         {/if}
@@ -4586,14 +4902,33 @@
         </button>
       </div>
     {/if}
+    {#if isFreePi && freePiConn}
+      <div class="mb-4">
+        <FreePiAdBanner connectionId={freePiConn.id} />
+        <div class="flex flex-wrap items-center gap-2 rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2">
+          <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">layers_clear</span>
+          <span class="text-[11px] text-text-muted">Clear this account's other sessions if a stale one blocks a request.</span>
+          <button type="button" onclick={clearFreePiSession} disabled={freePiResetBusy}
+            class="ml-auto shrink-0 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium text-text-main hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50">
+            {freePiResetBusy ? 'Clearing…' : 'Clear session'}
+          </button>
+        </div>
+        {#if freePiResetResult}
+          <p class="mt-1 text-[11px] text-text-muted">{freePiResetResult}</p>
+        {/if}
+      </div>
+    {/if}
     {#if isFreebuff}
       <div class="mb-4">
+        {#if targetFreebuffConn}
+          <FreebuffAdBanner connectionId={targetFreebuffConn.id} />
+        {/if}
         <FreebuffSessionBanner
           session={freebuffSession}
           isLoading={isLoadingSession}
           expiresInMin={sessionExpiresInMin}
           onRefresh={loadFreebuffSession}
-          models={visibleModels.map((m) => ({ id: m.id, name: m.name }))}
+          models={visibleModels.map((m) => ({ id: m.id, name: m.name ?? m.id }))}
           onSwitch={switchFreebuffModel}
           connections={providerConnections.map((c) => {
             const specific = c.providerSpecificData as Record<string, any> | undefined
@@ -4637,7 +4972,7 @@
     <div class="flex flex-wrap gap-3">
       {#each gridModels as model (model.id)}
         {@const level = resolveThinkingSuffix(model.id)}
-        {@const fullModelId = `${storageAlias}/${model.id}${level ? `(${level})` : ''}`}
+        {@const fullModelId = `${displayAlias()}/${model.id}${level ? `(${level})` : ''}`}
         {@const rowCaps = modelCaps[model.id] ?? model.caps}
         {@const testStatus = modelTestStatuses[model.id]}
         {@const isTestingThis = testStatus === 'testing'}
@@ -4761,12 +5096,25 @@
               </span>
             </div>
 
+            {#if model.isCustom}
+              <button
+                type="button"
+                onclick={() => {
+                  editingModel = providerCustomModels.find((c) => c.id === model.id) ?? null
+                  showAddCustomModelModal = !!editingModel
+                }}
+                class="shrink-0 rounded p-0.5 text-text-muted hover:bg-sidebar hover:text-primary cursor-pointer"
+                title="Edit model"
+              >
+                <span class="material-symbols-outlined text-sm">edit</span>
+              </button>
+            {/if}
             <!-- Disable button -->
             <button
               type="button"
-              onclick={() => handleDisableModel(model.id)}
+              onclick={() => (model.isCustom ? handleDeleteModel(model.id) : handleDisableModel(model.id))}
               class="ml-auto rounded p-0.5 text-text-muted opacity-100 transition-opacity hover:bg-red-500/10 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
-              title="Disable this model"
+              title={model.isCustom ? 'Delete this custom model' : 'Disable this model'}
             >
               <span class="material-symbols-outlined text-sm">close</span>
             </button>
@@ -4790,14 +5138,17 @@
       <!-- Add Model button inside the same flex-wrap -->
       <button
         type="button"
-        onclick={() => (showAddCustomModelModal = true)}
+        onclick={() => {
+          editingModel = null
+          showAddCustomModelModal = true
+        }}
         class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto cursor-pointer"
       >
         <span class="material-symbols-outlined text-sm">add</span>
         Add Model
       </button>
 
-      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn' || providerId === 'commandcode' || providerId === 'vercel-ai-gateway' || providerId === 'chutes' || providerId === 'nvidia' || providerId === 'ollama' || providerId === 'openrouter') && providerConnections.some((c) => c.isActive !== 0)}
+      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn' || providerId === 'commandcode' || providerId === 'commandcode-goat' || providerId === 'vercel-ai-gateway' || providerId === 'chutes' || providerId === 'nvidia' || providerId === 'ollama' || providerId === 'openrouter') && providerConnections.some((c) => c.isActive !== 0)}
         <button
           type="button"
           onclick={handleImportLiveCatalogModels}
@@ -4876,7 +5227,7 @@
           <div class="flex flex-col gap-1.5">
             {#each latestModels as m (m.id)}
               <div class="flex items-center gap-2">
-                <code class="flex-1 truncate text-xs font-mono bg-sidebar px-1.5 py-1 rounded">{m.id}</code>
+                <code class="flex-1 min-w-0 break-all sm:truncate text-xs font-mono bg-sidebar px-1.5 py-1 rounded">{m.id}</code>
                 <button
                   type="button"
                   onclick={() => handleAddLatestModel(m.id, m.name)}
@@ -5101,7 +5452,7 @@
           {/if}
           <input bind:value={kiroSocialCallback} placeholder="kiro://kiro.kiroAgent/authenticate-success?code=…" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
           <div class="flex gap-2">
-            <button type="button" onclick={() => { kiroMethod = null; kiroSocialAuthUrl = '' }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
+            <button type="button" onclick={() => { kiroMethod = null; kiroSocialAuthUrl = ''; kiroSocialCodeVerifier = '' }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
             <button type="button" onclick={submitKiroSocialCallback} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Exchanging…' : 'Exchange code'}</button>
           </div>
         </div>
@@ -5388,7 +5739,7 @@
                   <span class="text-[10px] text-text-muted">(inactive)</span>
                 {/if}
               </div>
-              <div class="text-[11px] text-text-muted truncate">{pool.proxyUrl}</div>
+              <div class="text-[11px] text-text-muted break-all sm:truncate">{pool.proxyUrl}</div>
             </div>
           </button>
         {:else}
@@ -5431,7 +5782,11 @@
 <AddCustomModelModal
   isOpen={showAddCustomModelModal}
   providerAlias={storageAlias}
-  onClose={() => (showAddCustomModelModal = false)}
+  editing={editingModel}
+  onClose={() => {
+    showAddCustomModelModal = false
+    editingModel = null
+  }}
   onSave={submitAddCustomModel}
   onBulkSaved={handleBulkModelsSaved}
 />
@@ -5442,6 +5797,12 @@
   isOpen={showHeaderOverrides}
   providerId={providerId}
   onClose={() => (showHeaderOverrides = false)}
+/>
+
+<FreePiConnectModal
+  isOpen={showFreePiConnect}
+  onClose={() => (showFreePiConnect = false)}
+  onConnected={onRefresh}
 />
 
 <!-- 5b. Edit Compatible Node Modal (upstream EditCompatibleNodeModal parity) -->

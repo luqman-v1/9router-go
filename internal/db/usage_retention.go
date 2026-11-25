@@ -116,8 +116,8 @@ func (r *Repo) pruneRequestDetailsByAge(ctx context.Context, retention time.Dura
 			return fmt.Errorf("prune requestDetails by age: %w", err)
 		}
 		res, err := r.db.ExecContext(ctx,
-			`DELETE FROM requestDetails WHERE rowid IN (
-				SELECT rowid FROM requestDetails WHERE timestamp < ? LIMIT ?
+			`DELETE FROM requestDetails WHERE id IN (
+				SELECT id FROM requestDetails WHERE timestamp < ? LIMIT ?
 			)`, cutoff, retentionChunkSize)
 		if err != nil {
 			return fmt.Errorf("delete stale requestDetails: %w", err)
@@ -158,8 +158,8 @@ func (r *Repo) pruneRequestDetailsBySize(ctx context.Context, maxRows int, resul
 		}
 		limit := min(retentionChunkSize, overflow-removed)
 		res, err := r.db.ExecContext(ctx,
-			`DELETE FROM requestDetails WHERE rowid IN (
-				SELECT rowid FROM requestDetails ORDER BY timestamp ASC LIMIT ?
+			`DELETE FROM requestDetails WHERE id IN (
+				SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?
 			)`, limit)
 		if err != nil {
 			return fmt.Errorf("delete excess requestDetails: %w", err)
@@ -203,19 +203,23 @@ func (r *Repo) GetDatabaseStats(ctx context.Context) (DatabaseStats, error) {
 		return stats, fmt.Errorf("repo or db is nil")
 	}
 
-	var pageCount, pageSize, freelistCount int64
-	if err := r.db.QueryRowContext(ctx, "PRAGMA page_count;").Scan(&pageCount); err != nil {
-		return stats, fmt.Errorf("read page_count: %w", err)
+	// Size stats are SQLite-specific (page/file metrics). Postgres exposes
+	// size via pg_database_size; until that path exists, skip the sizing block
+	// and report only row counts.
+	if engineOf(r.db) == EngineSQLite {
+		var pageCount, pageSize, freelistCount int64
+		if err := r.db.QueryRowContext(ctx, "PRAGMA page_count;").Scan(&pageCount); err != nil {
+			return stats, fmt.Errorf("read page_count: %w", err)
+		}
+		if err := r.db.QueryRowContext(ctx, "PRAGMA page_size;").Scan(&pageSize); err != nil {
+			return stats, fmt.Errorf("read page_size: %w", err)
+		}
+		if err := r.db.QueryRowContext(ctx, "PRAGMA freelist_count;").Scan(&freelistCount); err != nil {
+			return stats, fmt.Errorf("read freelist_count: %w", err)
+		}
+		stats.DatabaseSizeBytes = pageCount * pageSize
+		stats.ReclaimableBytes = freelistCount * pageSize
 	}
-	if err := r.db.QueryRowContext(ctx, "PRAGMA page_size;").Scan(&pageSize); err != nil {
-		return stats, fmt.Errorf("read page_size: %w", err)
-	}
-	if err := r.db.QueryRowContext(ctx, "PRAGMA freelist_count;").Scan(&freelistCount); err != nil {
-		return stats, fmt.Errorf("read freelist_count: %w", err)
-	}
-
-	stats.DatabaseSizeBytes = pageCount * pageSize
-	stats.ReclaimableBytes = freelistCount * pageSize
 
 	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM requestDetails;").Scan(&stats.RequestDetailsCount); err != nil {
 		return stats, fmt.Errorf("count requestDetails: %w", err)
@@ -233,7 +237,8 @@ func (r *Repo) GetDatabaseStats(ctx context.Context) (DatabaseStats, error) {
 }
 
 // VacuumDatabase executes SQLite VACUUM with a bounded timeout to reclaim free
-// pages and return allocated storage to the operating system.
+// pages and return allocated storage to the operating system. On Postgres the
+// equivalent is VACUUM (no timeout wrapper needed), so dispatch by engine.
 func (r *Repo) VacuumDatabase(ctx context.Context) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("repo or db is nil")

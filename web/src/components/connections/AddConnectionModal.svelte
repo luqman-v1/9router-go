@@ -4,6 +4,7 @@
   // Priority + Proxy Pool, provider-specific sub-forms (Azure, Cloudflare
   // Workers AI, Ollama host, Region) and Save/Cancel footer.
   import Button from '../../lib/ui/Button.svelte'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
   import { api, type CreateConnectionPayload, type ProxyPool } from '../../api/client'
   import { PROVIDER_CATALOG } from '../../lib/providers'
   import { planBulkAdd } from '../../lib/bulk-add'
@@ -62,6 +63,8 @@
   // provider take the wrong probe path. Both submit paths read this one value.
   let connectionAuthType = $derived(isCompatible ? 'compatible' : isCookie ? 'cookie' : 'apikey')
   let isOllamaLocal = $derived(providerId === 'ollama-local')
+  let isMistral = $derived(providerId === 'mistral')
+  let formMistralUsageType = $state<'vibe' | 'api'>('vibe')
   let isXaiApiKey = $derived(providerId === 'xai' && !isCookie)
   let isAzure = $derived(providerId === 'azure')
   let isCloudflareAi = $derived(providerId === 'cloudflare-ai')
@@ -69,23 +72,31 @@
   // silently left every later AWS entry with no way to enter a profile at all.
   let usesAwsCredentialForm = $derived(catalogItem?.credentialForm === 'aws')
   let providerRegions = $derived(catalogItem?.regions || null)
+  // opendesign pairs a runtime key with a separate account sign-in (control key)
+  // for the Design Plan allowance; the control key is sealed into providerSpecificData.
+  let isOpenDesign = $derived(providerId === 'opendesign')
+  let formOpenDesignControlKey = $state('')
 
   // DeepSeek's credential is a userToken, not a cookie, so it gets its own
   // label — the field holds a token and calling it a cookie would send the
   // operator to the wrong place in DevTools.
   let isDeepSeekWeb = $derived(providerId === 'deepseek-web')
   let credentialLabel = $derived(
-    isDeepSeekWeb
-      ? 'User Token'
-      : isCookie
-        ? 'Cookie Value'
-        : providerId === 'qoder'
-          ? 'Personal Access Token (PAT)'
-          : 'API Key'
+    isMistral && formMistralUsageType === 'vibe'
+      ? 'Vibe API Key'
+      : isDeepSeekWeb
+        ? 'User Token'
+        : isCookie
+          ? 'Cookie Value'
+          : providerId === 'qoder'
+            ? 'Personal Access Token (PAT)'
+            : 'API Key'
   )
   let credentialPlaceholder = $derived(
-    isDeepSeekWeb
-      ? 'the userToken from chat.deepseek.com localStorage'
+    isMistral && formMistralUsageType === 'vibe'
+      ? 'API Key from chat.mistral.ai/code/extensions'
+      : isDeepSeekWeb
+        ? 'the userToken from chat.deepseek.com localStorage'
       : isCookie
         ? providerId === 'grok-web'
           ? 'sso=xxxxx... or just the raw value'
@@ -160,19 +171,18 @@
     }
   })
 
-  // Upstream Modal parity: Escape closes, overlay click closes (see markup below).
+  // Upstream Modal parity: Escape closes, overlay click closes (see markup
+  // below). Escape goes through the shared stack, so a dialog opened over this
+  // one is dismissed first.
   $effect(() => {
-    if (!isOpen || typeof window === 'undefined') return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    if (!isOpen) return
+    return pushEscapeHandler(onClose)
   })
 
   function resetForm() {
     mode = 'single'
-    formName = ''
+    formMistralUsageType = 'vibe'
+    formName = isMistral ? 'Mistral Vibe' : ''
     formApiKey = ''
     formDefaultModel = ''
     formPriority = 1
@@ -191,6 +201,9 @@
   }
 
   function buildProviderSpecificData(): Record<string, unknown> | undefined {
+    if (isMistral) {
+      return { usageLane: formMistralUsageType }
+    }
     if (isOllamaLocal && formOllamaHostUrl.trim()) {
       return { baseUrl: formOllamaHostUrl.trim() }
     }
@@ -222,6 +235,12 @@
       // The site's own session cookie. It is a credential: the WAF reads it,
       // and the server seals it with the rest.
       return { deepSeekCookie: formDeepSeekCookie.trim() }
+    }
+    if (isOpenDesign && formOpenDesignControlKey.trim()) {
+      // Dual-key auth: the runtime key lives in apiKey; the account sign-in
+      // control key (vela_ctrl_…) goes into providerSpecificData so the usage
+      // plane can read the Design Plan allowance without touching model traffic.
+      return { controlKey: formOpenDesignControlKey.trim() }
     }
     return undefined
   }
@@ -541,6 +560,49 @@
           </div>
         {:else}
           <form onsubmit={handleSubmit} class="flex flex-col gap-4">
+            {#if isMistral}
+              <div class="flex flex-col gap-1.5">
+                <span class={labelCls}>Usage Lane / Key Type</span>
+                <div class="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    class="flex flex-col items-start p-2.5 rounded-lg border text-left transition-all {formMistralUsageType === 'vibe' ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'border-accent/20 bg-surface-2 hover:bg-surface-3'}"
+                    onclick={() => {
+                      formMistralUsageType = 'vibe'
+                      if (!formName || formName === 'Mistral API') formName = 'Mistral Vibe'
+                    }}
+                  >
+                    <div class="flex items-center gap-1.5 font-medium text-xs text-text-main">
+                      <span class="size-2 rounded-full bg-purple-500"></span>
+                      Vibe API Key
+                    </div>
+                    <span class="text-[11px] text-text-muted mt-0.5">$300/mo quota (Vibe Code)</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="flex flex-col items-start p-2.5 rounded-lg border text-left transition-all {formMistralUsageType === 'api' ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'border-accent/20 bg-surface-2 hover:bg-surface-3'}"
+                    onclick={() => {
+                      formMistralUsageType = 'api'
+                      if (!formName || formName === 'Mistral Vibe') formName = 'Mistral API'
+                    }}
+                  >
+                    <div class="flex items-center gap-1.5 font-medium text-xs text-text-main">
+                      <span class="size-2 rounded-full bg-blue-500"></span>
+                      Standard API Key
+                    </div>
+                    <span class="text-[11px] text-text-muted mt-0.5">Pay-as-you-go per token (PAYG)</span>
+                  </button>
+                </div>
+                <div class="text-xs text-text-muted mt-0.5">
+                  {#if formMistralUsageType === 'vibe'}
+                    💡 Get key at: <a href="https://chat.mistral.ai/code/extensions" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline">chat.mistral.ai/code/extensions</a> (Advanced section)
+                  {:else}
+                    💡 Get key at: <a href="https://console.mistral.ai/api-keys" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline">console.mistral.ai/api-keys</a>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+
             <div>
               <label for="connName" class={labelCls}>
                 Name <span class="text-red-500">*</span>
@@ -838,6 +900,24 @@
                 <p class="text-xs text-text-muted mt-1">
                   The WAF reads this cookie, so a request without it is a request the site does not
                   recognise. It is sealed with the rest of the credential.
+                </p>
+              </div>
+            {/if}
+            {#if isOpenDesign}
+              <div>
+                <label for="connOpenDesignControlKey" class={labelCls}>
+                  Control key <span class="text-text-muted text-xs font-normal">(vela_ctrl_…)</span>
+                </label>
+                <input
+                  id="connOpenDesignControlKey"
+                  type="text"
+                  bind:value={formOpenDesignControlKey}
+                  placeholder="vela_ctrl_live_…"
+                  class="{inputCls} font-mono"
+                />
+                <p class="text-xs text-text-muted mt-1">
+                  Account sign-in key for the Design Plan allowance read. It never touches model
+                  traffic; it is stored in provider-specific data only.
                 </p>
               </div>
             {/if}

@@ -1,6 +1,8 @@
 package providers
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -142,5 +144,75 @@ func TestOAuthConnectionData_IsExpired(t *testing.T) {
 				t.Errorf("IsExpired() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRefreshToken_EnforcesClientTimeout(t *testing.T) {
+	origClient := oauthRefreshClient
+	oauthRefreshClient = &http.Client{Timeout: 50 * time.Millisecond}
+	t.Cleanup(func() { oauthRefreshClient = origClient })
+
+	unblock := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-unblock:
+		}
+	}))
+	t.Cleanup(func() {
+		close(unblock)
+		server.Close()
+	})
+
+	_, err := RefreshToken(OAuthClientConfig{ClientID: "cid", TokenURL: server.URL}, "rt")
+	if err == nil {
+		t.Fatal("expected timeout error from RefreshToken")
+	}
+	var refreshErr *OAuthRefreshError
+	if errors.As(err, &refreshErr) {
+		t.Fatalf("expected transport timeout error, got *OAuthRefreshError: %v", err)
+	}
+}
+
+func TestRefreshTokenWithContext_HonorsCancel(t *testing.T) {
+	unblock := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-unblock:
+		}
+	}))
+	t.Cleanup(func() {
+		close(unblock)
+		server.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+
+	_, err := RefreshTokenWithContext(ctx, OAuthClientConfig{ClientID: "cid", TokenURL: server.URL}, "rt")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestRefreshToken_LimitsResponseBody(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 2<<20)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	_, err := RefreshToken(OAuthClientConfig{ClientID: "cid", TokenURL: server.URL}, "rt")
+	var refreshErr *OAuthRefreshError
+	if !errors.As(err, &refreshErr) {
+		t.Fatalf("expected *OAuthRefreshError, got %v", err)
+	}
+	if refreshErr.Status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", refreshErr.Status)
+	}
+	if len(refreshErr.Body) != 200 {
+		t.Fatalf("body length = %d, want 200", len(refreshErr.Body))
 	}
 }

@@ -47,7 +47,7 @@ type RecentRequest struct {
 	// LatencyMs is how long the request took, recorded for completed requests
 	// only: a refused member has a rejection time, not a latency, and the map
 	// must not present one as the other.
-	LatencyMs int64 `json:"latencyMs,omitempty"`
+	LatencyMs   int64  `json:"latencyMs,omitempty"`
 	LoopWarning string `json:"loopWarning,omitempty"`
 }
 

@@ -365,3 +365,63 @@ func TestStripCodexStoredItemReferences_PreserveLitePrefix(t *testing.T) {
 		t.Errorf("expected msg_dev1 to be stripped on classic model, got %v", devItemClassic["id"])
 	}
 }
+
+// A function_call_output whose function_call is not in the body is rejected by
+// the Codex backend with 502 "No tool call found for function call output with
+// call_id x", losing the whole turn. Clients replay a history trimmed from the
+// front, so an orphaned result is ordinary and must be dropped rather than sent.
+func TestBuildResponsesBody_DropsOrphanedToolOutput(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-6.2-astra",
+		"messages": [
+			{"role": "user", "content": "go on"},
+			{"role": "tool", "tool_call_id": "gone-1", "content": "stale output"}
+		]
+	}`)
+
+	out, _, err := buildResponsesBody(raw)
+	if err != nil {
+		t.Fatalf("buildResponsesBody: %v", err)
+	}
+	parsed := decodeBody(t, out)
+	items, _ := parsed["input"].([]any)
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok && m["type"] == "function_call_output" {
+			t.Errorf("orphaned tool output reached the upstream: %v", m)
+		}
+	}
+}
+
+// The paired case must keep working: a result whose call IS present survives
+// with the same call_id.
+func TestBuildResponsesBody_KeepsPairedToolOutput(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-6.2-astra",
+		"messages": [
+			{"role": "user", "content": "go"},
+			{"role": "assistant", "content": null, "tool_calls": [
+				{"id": "call_ok", "type": "function", "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}}]},
+			{"role": "tool", "tool_call_id": "call_ok", "content": "NEEDLE-OUTPUT"}
+		]
+	}`)
+
+	out, _, err := buildResponsesBody(raw)
+	if err != nil {
+		t.Fatalf("buildResponsesBody: %v", err)
+	}
+	parsed := decodeBody(t, out)
+	items, _ := parsed["input"].([]any)
+	found := false
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok || m["type"] != "function_call_output" {
+			continue
+		}
+		if m["call_id"] == "call_ok" && m["output"] == "NEEDLE-OUTPUT" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("paired tool output was dropped: %v", items)
+	}
+}

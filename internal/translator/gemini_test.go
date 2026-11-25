@@ -633,7 +633,7 @@ func TestHardenAntigravityRequest_GuardsThinkingBudget(t *testing.T) {
 		}
 	}`)
 
-	hardened := hardenAntigravityRequest(reqBody)
+	hardened := hardenAntigravityRequest(reqBody, "gemini-3-flash")
 	var m map[string]any
 	if err := json.Unmarshal(hardened, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -728,4 +728,84 @@ func TestTranslateOpenAIToGemini_ToolCallIDDropsThoughtSigSuffix(t *testing.T) {
 			}
 		}
 	}
+}
+func TestTranslateGeminiChunkToOpenAI_DefersRoleAssistant(t *testing.T) {
+	t.Run("empty prefill does not emit role assistant", func(t *testing.T) {
+		state := &GeminiStreamState{}
+		chunk := []byte(`{"candidates": [{"content": {"role": "model", "parts": []}}]}`)
+		out, err := TranslateGeminiChunkToOpenAI(chunk, state)
+		if err != nil {
+			t.Fatalf("TranslateGeminiChunkToOpenAI failed: %v", err)
+		}
+		if out == nil {
+			t.Fatal("expected non-nil output (message start)")
+		}
+		if strings.Contains(string(out), `"role":"assistant"`) {
+			t.Errorf("role assistant must be deferred on empty prefill chunk, got: %s", out)
+		}
+	})
+
+	t.Run("role assistant merges into first real content delta once", func(t *testing.T) {
+		state := &GeminiStreamState{}
+		// Chunk 1: empty prefill — role deferred
+		chunk1 := []byte(`{"candidates": [{"content": {"parts": []}}]}`)
+		if out, err := TranslateGeminiChunkToOpenAI(chunk1, state); err != nil {
+			t.Fatalf("chunk1: %v", err)
+		} else if strings.Contains(string(out), `"role":"assistant"`) {
+			t.Errorf("chunk1 must not emit role assistant, got: %s", out)
+		}
+		// Chunk 2: real text — role assistant appears here, merged with content
+		chunk2 := []byte(`{"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}`)
+		out, err := TranslateGeminiChunkToOpenAI(chunk2, state)
+		if err != nil {
+			t.Fatalf("chunk2: %v", err)
+		}
+		chunks := decodeOpenAISSE(t, out)
+		var found bool
+		for _, c := range chunks {
+			choices, _ := c["choices"].([]any)
+			if len(choices) == 0 {
+				continue
+			}
+			choice, _ := choices[0].(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			if role, _ := delta["role"].(string); role == "assistant" {
+				if content, _ := delta["content"].(string); content != "hi" {
+					t.Errorf("role assistant should carry content, got delta %v", delta)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected role assistant merged into first content chunk, got: %s", out)
+		}
+	})
+
+	t.Run("premature EOF emits role assistant on terminal finish", func(t *testing.T) {
+		state := &GeminiStreamState{}
+		// No content ever arrives; the stream ends with finishReason STOP only.
+		chunk3 := []byte(`{"candidates": [{"finishReason": "STOP"}]}`)
+		out, err := TranslateGeminiChunkToOpenAI(chunk3, state)
+		if err != nil {
+			t.Fatalf("terminal chunk: %v", err)
+		}
+		chunks := decodeOpenAISSE(t, out)
+		var terminal map[string]any
+		for _, c := range chunks {
+			choice, _ := c["choices"].([]any)
+			if len(choice) > 0 {
+				terminal = choice[0].(map[string]any)
+			}
+		}
+		if terminal == nil {
+			t.Fatalf("no choice chunk found in output: %s", out)
+		}
+		delta, _ := terminal["delta"].(map[string]any)
+		if role, _ := delta["role"].(string); role != "assistant" {
+			t.Errorf("terminal chunk must carry role assistant on premature EOF, got delta %v", delta)
+		}
+		if fr, _ := terminal["finish_reason"].(string); fr != "stop" {
+			t.Errorf("expected finish_reason stop, got %q", fr)
+		}
+	})
 }

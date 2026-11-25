@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/combos/smart"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -68,12 +69,13 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 	defer r.Body.Close()
 
 	var req struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		Kind       string `json:"kind"`
-		Models     any    `json:"models"`
-		Strategy   string `json:"strategy"`
-		MatchRules any    `json:"matchRules"`
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		Kind         string `json:"kind"`
+		Models       any    `json:"models"`
+		Strategy     string `json:"strategy"`
+		MatchRules   any    `json:"matchRules"`
+		CustomPrompt string `json:"customPrompt"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -118,7 +120,7 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 	if h.guardNameCollision(w, nsCombo, req.Name) {
 		return
 	}
-	if err := h.Repo.CreateCombo(req.ID, req.Name, req.Kind, modelsJSON, req.Strategy); err != nil {
+	if err := h.Repo.CreateCombo(req.ID, req.Name, req.Kind, modelsJSON, req.Strategy, req.CustomPrompt); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -152,11 +154,12 @@ func (h *DashboardHandler) HandleUpdateCombo(w http.ResponseWriter, r *http.Requ
 	defer r.Body.Close()
 
 	var req struct {
-		Name       string `json:"name"`
-		Kind       string `json:"kind"`
-		Models     any    `json:"models"`
-		Strategy   string `json:"strategy"`
-		MatchRules any    `json:"matchRules"`
+		Name         string `json:"name"`
+		Kind         string `json:"kind"`
+		Models       any    `json:"models"`
+		Strategy     string `json:"strategy"`
+		MatchRules   any    `json:"matchRules"`
+		CustomPrompt string `json:"customPrompt"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -253,7 +256,7 @@ func (h *DashboardHandler) HandleUpdateCombo(w http.ResponseWriter, r *http.Requ
 	if name != existing.Name && h.guardNameCollision(w, nsCombo, name) {
 		return
 	}
-	if err := h.Repo.UpdateCombo(id, name, kind, modelsJSON, strategy); err != nil {
+	if err := h.Repo.UpdateCombo(id, name, kind, modelsJSON, strategy, req.CustomPrompt); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -312,11 +315,11 @@ func (h *DashboardHandler) HandleAutoFreeCombo(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if existing == nil {
-		if err := h.Repo.CreateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "fallback"); err != nil {
+		if err := h.Repo.CreateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "fallback", ""); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-	} else if err := h.Repo.UpdateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "fallback"); err != nil {
+	} else if err := h.Repo.UpdateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "fallback", ""); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -372,10 +375,13 @@ func comboModels(v any) ([]string, error) {
 			return nil, nil
 		}
 		var arr []string
-		if err := json.Unmarshal([]byte(m), &arr); err != nil {
-			return nil, fmt.Errorf("combo models not a JSON array: %w", err)
+		if err := json.Unmarshal([]byte(m), &arr); err == nil {
+			return arr, nil
 		}
-		return arr, nil
+		if names, err := db.ParseComboModelNames(m); err == nil {
+			return names, nil
+		}
+		return nil, fmt.Errorf("combo models not a JSON array")
 	case []string:
 		return m, nil
 	default:
@@ -384,10 +390,13 @@ func comboModels(v any) ([]string, error) {
 			return nil, fmt.Errorf("combo models invalid: %w", err)
 		}
 		var arr []string
-		if err := json.Unmarshal(b, &arr); err != nil {
-			return nil, fmt.Errorf("combo models not a JSON array: %w", err)
+		if err := json.Unmarshal(b, &arr); err == nil {
+			return arr, nil
 		}
-		return arr, nil
+		if names, err := db.ParseComboModelNames(string(b)); err == nil {
+			return names, nil
+		}
+		return nil, fmt.Errorf("combo models not a JSON array")
 	}
 }
 
@@ -461,6 +470,9 @@ func comboModelID(entry any) (string, bool) {
 		model, mok := e["model"].(string)
 		if pok && mok && strings.TrimSpace(provider) != "" && strings.TrimSpace(model) != "" {
 			return provider + "/" + model, true
+		}
+		if mok && strings.Contains(model, "/") && strings.TrimSpace(model) != "" {
+			return strings.TrimSpace(model), true
 		}
 	}
 	return "", false

@@ -12,16 +12,21 @@ Whenever you implement features, fix bugs, add providers, update routing logic, 
 - **Local Clone Path**: `/Users/luqmannul.hakim/htdocs/9router`
 
 ### Parity Protocol
-1. **Always Inspect Local Upstream First**:
+1. **Merged-Only Upstream Mandate (Strictly No Speculative Ports)**:
+   - **Port ONLY what is already merged** into upstream's default branch (`main`/`master`) or published in an upstream release tag.
+   - **STRICTLY FORBIDDEN**: Never port from open pull requests, draft PRs, speculative feature proposals, or unverified discussion issues (e.g. open feature threads or experimental detection-evasion ideas).
+   - **Why**: Unmerged upstream PRs and open proposals are unproven in production, frequently rejected upstream, or carry speculative headers/payloads that trigger provider WAF bans (such as GCP 403 on Antigravity or ad-gate lockouts on Free-Pi).
+   - If an issue or contributor requests a feature citing an open upstream PR/issue, refuse or defer it until upstream formally merges, tests, and verifies the change in production.
+2. **Always Inspect Local Upstream First**:
    - Before writing or modifying logic, inspect the corresponding code in `/Users/luqmannul.hakim/htdocs/9router`.
-   - Check upstream git history, PRs, issues, and vitest unit tests in `/Users/luqmannul.hakim/htdocs/9router/tests/` to understand edge cases, headers, and protocol nuances.
-2. **Behavioral Compatibility (100% Contract Match)**:
+   - Check upstream git history, PRs, issues, and vitest unit tests in `/Users/luqmannul.hakim/htdocs/9router/tests/` to understand edge cases, headers, and protocol nuances. Confirm that the reference commit is genuinely part of upstream `main` history (`git -C /Users/luqmannul.hakim/htdocs/9router branch --contains <commit>`).
+3. **Behavioral Compatibility (100% Contract Match)**:
    - Request and response schemas for `/v1/*` (Chat Completions, Messages, Embeddings, Audio, Models).
    - Dashboard endpoints `/api/*` (Connections, Combos, ProxyPools, Settings, ProviderNodes, Usage, Auth).
    - Combo expansion, model fallback, account rotation, and strike-breaker quota handling.
    - SQLite database compatibility (`~/.9router/db/data.sqlite`).
-3. **Changelog Tracking**:
-   - When porting features or fixes, reference the upstream commit/issue/PR in
+4. **Changelog Tracking**:
+   - When porting features or fixes, reference the upstream merged commit/PR in
      your `.changes/<pr-number>-<slug>.md` fragment (e.g. `upstream
      decolua/9router#4197 parity`). **Never write it into `CHANGELOG.md`** — see
      §7.6 for the rule and the reason behind it.
@@ -40,6 +45,81 @@ Some feature issues in this repo are not parity requests against `decolua/9route
 4. **OmniRoute is secondary**. Where it conflicts with `decolua/9router`, the §1 parity rules win; record the deliberate divergence in your `.changes/` fragment (§7.6), never in `CHANGELOG.md`.
 5. **Provider IDs are not portable verbatim.** OmniRoute has its own catalog. Map to `9router-go` provider IDs and obey §3 (strict provider isolation — no cross-provider aliasing or model hijacking).
 6. **Preserve upstream error semantics.** OmniRoute surfaces typed error classes with explicit status codes (e.g. `409 no_credit`); port that distinction rather than collapsing every upstream failure into one generic error.
+
+### Secondary Reference: 9router-pro (source of operator-facing features)
+
+Some feature issues here are sourced from **9Router Pro**, a community edition of
+the same upstream gateway. Cite it by file path or by its release tag.
+
+- **Reference Repository**: `https://github.com/giienew/9router-pro` — a fork of
+  `decolua/9router` published as `v<upstream>-pro.<n>` tags. It is a *sibling*
+  edition, not this repo's upstream: its dashboard is still React/Next.js, and
+  its `open-sse/` tree is the vendored upstream one.
+- **Scope of the authorisation, deliberately narrow.** Pro is a legitimate
+  reference for **operator-facing behaviour** — a policy, a guard rail, a
+  per-entity control an operator can see and change. It is **not** a reference
+  for wire-protocol parity (§1 still governs `/v1/*` and `/api/*` contracts), and
+  it is not authority to port its UI. Only the behaviour is ported; the
+  dashboard here stays the Svelte 5 one this project already has.
+- **Numbers are not self-justifying.** A Pro default (a cooldown, a threshold, a
+  cycle count) must be stated in the `.changes/` fragment as coming from Pro,
+  with the tag it came from, and the fragment must not imply upstream parity for
+  it. If a merged `decolua/9router` commit carries the same behaviour, cite that
+  instead — Pro is the fallback when upstream has none.
+
+**9router-pro Porting Protocol**
+1. **Read the cited source, never from memory.** Clone or fetch the tag named in
+   the issue (`git clone --depth 50 https://github.com/giienew/9router-pro`) and
+   read the actual file; a Pro changelog line is a summary, not a spec.
+2. **Port the behaviour, not the UI.** A Pro dashboard card becomes the
+   equivalent surface in `web/src/components/`, built from the design tokens in
+   §6.C — never a transliteration of its React component.
+3. **Keep provider isolation (§3).** Pro's catalog and its provider ids are its
+   own; map to this repo's ids and never cross-alias a model between providers.
+4. **A Pro-only feature is not upstream parity.** Say so in the fragment, and do
+   not list it on the parity page as an upstream match.
+5. **License check before porting.** Pro is MIT over `decolua/9router`'s MIT; keep
+   the upstream attribution that `README.md`'s Credits section carries.
+
+### Secondary Reference: magpie / magpie-community plugins (Qoder wire contract)
+
+For **Qoder (`qoder`, `qoder-cn`) work only**, `yetone/magpie` and its community
+plugin are a merged-only behavioral reference alongside `decolua/9router`:
+
+- **Core repository**: `https://github.com/yetone/magpie` (default branch `main`).
+  Its built-in Qoder sign-in/requests are retired; what remains is the account
+  migration (`internal/provider/migrate_qoder.go`) and the daily check-in caller
+  (`internal/provider/qoder_checkin.go`).
+- **Authoritative Qoder wire contract**:
+  `https://github.com/magpie-community/plugins/tree/main/packages/qoder` —
+  the `@magpie-community/opencode-qoder-auth` package (v0.2.71 at the reference
+  commit). `packages/qoder/index.mjs` is the request/SSE/queue/check-in
+  implementation; `packages/qoder/README.md` documents every URL, header, error
+  code, model-list rule and retry path. `packages/qoder/*.test.mjs` are the
+  upstream edge-case tests.
+- **Reference commits pinned by this repo**: magpie
+  `acc358f071bf64730eadc1704956f8686a9d7359`, plugins
+  `afe4c086436099db7fb53b7e80ab54d04b654015` (both on `main`, 2026-11-17).
+  Verify newer merges with `git log`/`git branch --contains` before porting.
+
+**magpie Qoder porting protocol**
+1. **Merged-only, same as §1.** Use only commits on the plugin's `main` branch
+   or a published npm release. Never port from an open PR or a discussion.
+2. **The plugin README + tests are the spec.** Read `packages/qoder/README.md`
+   and the relevant `*.test.mjs` first; do not guess Qoder's envelope, queue or
+   error codes from memory.
+3. **Port the contract, not the JavaScript.** Implement in idiomatic Go using
+   the streaming, pooling and typed-struct rules in §4. Do not transliterate
+   `index.mjs` into Go.
+4. **Strict provider isolation still applies.** Qoder and Qoder CN keep their
+   own hosts, credentials, models and account state; neither is ever aliased to
+   the other or to any sibling provider (§3). The ported check-in keeps both
+   sites separate (`internal/qodercheckin`).
+5. **§1 wins on conflict.** Where the plugin disagrees with `decolua/9router`,
+   keep the decolua behavior for the shared gateway contract and record the
+   deliberate divergence in the `.changes/` fragment (§7.6).
+6. **No new dependency.** The Qoder port uses only the standard library and
+   packages already in `go.mod` (§4.F).
 
 ---
 
@@ -101,6 +181,16 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
   - Never add artificial `else if (providerId === '...')` blocks in `ProviderDetailView.svelte` to inject models from one provider into another.
   - Buttons like `Import from /models` must only appear for providers that genuinely support dynamic catalog discovery upstream (`cline`, `clinepass`, `qoder`, `qoder-cn`).
 
+### E. Provider Add/Update: Capability & Context-Window Parity Gate (STRICTLY MANDATORY)
+Whenever you **add a provider, add/update a model, or touch routing limits**, you MUST verify the resolved capability and context window against upstream **before** declaring it done. A model that falls to the substring floor (`128000/4096`, `131072/8192`) while a real window exists upstream is a regression, even when every test passes. This rule exists because that exact class shipped `nous/qwen/qwen4-max` at 131k instead of 1M, and ~120 more entries sat on the floor until a full-catalog sweep found them.
+
+1. **Check the resolved value, not the table entry.** Call `providers.GetCapabilitiesDetailForModel(providerID, model)` (and `GetCapabilitiesForModel`) and confirm `ContextWindow`/`MaxOutput` match the source. The resolution precedence is: custom caps → `providerTokenLimits` → `providerCapabilities` → canonical static → `GetCatalogLimits` (models.dev) → pattern/exact caps → `GetModelTokenLimits` (substring) → floor. A row can exist in one table and still lose to an earlier, window-less entry — verify the *effective* result.
+2. **Source of truth for the window is the provider's own feed first.** Where the provider publishes `/v1/models` (or a `modelsFetcher`), that feed's `context_length`/`contextLength`/`limit.context` is authoritative; the live-feed resolver (`internal/handlers/chat/live_catalog_modelsfeed.go`) must read it. Static tables are the accurate *fallback* when the feed is unreachable — not the primary source. Cross-check models.dev per-gateway entries and the upstream merged tables (`open-sse/providers/capabilities.js`, `providerModels.js`) for the static fallback. **Custom nodes included:** an `openai-compatible-*`/`anthropic-compatible-*` connection fetches its *own* configured `baseUrl` feed (`fetchCompatibleNodeModels`, same parser), never the registry provider's catalog — the compatible dispatch case precedes the registry-feed case, and the node's stated limits outrank the static family guess.
+3. **Sync limits across every lane the provider serves.** A model reachable through free/paid/zen/go/reseller lanes (e.g. `opencode`/`opencode-zen`/`opencode-go`, `ag`/`antigravity`) must resolve the same window on each lane. Pin only `ContextWindow`/`MaxOutput` per lane; leave `Reasoning`/`ThinkingFormat` on the upstream-synced resolution so the `thinking_levels.json` fixture (1829 pairs) stays green. Do not force a window onto a deliberate divergence (grok probe, fable adaptive, gemini-web, EOL rows).
+4. **Full sweep, not spot checks.** For any data-correctness change to limits/capabilities, sweep the whole published catalog (`ProviderModels` × `GetCapabilitiesDetailForModel`), not just the provider you were asked about. Classify every floor hit: non-LLM (window N/A), router/web mode, floor-is-the-true-window, real bug with a source, or genuinely unpublished. Fix the ones with a source; never invent a number for the unpublished ones.
+5. **Pin it with a regression test.** Add the model to `internal/providers/catalog_sweep_test.go` (`TestCatalogSweepNoFloorWhereSourceExists`) or a focused table-driven test asserting the exact window. A capability/limit fix without a test that fails on the floor value is not done.
+6. **Catalog reader sanity.** If the model id carries a vendor namespace or `:suffix` (`hf:openai/gpt-oss-120b`, `meta-llama/...:free`), confirm `GetCatalogLimits` resolves it via `catalogBaseID` and that the provider has its models.dev alias in `ProviderAliases` (`together→togetherai`, `github→github-copilot`, `kilo-gateway→kilo`, `codex→openai`). A missing alias silently drops the whole provider's catalog to the floor.
+
 ---
 
 ## 4. Golang Engineering & Optimization Principles
@@ -145,12 +235,18 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
 - **Clean JSON Serialization**:
   - Use accurate struct tags (`json:"fieldName,omitempty"`). Omit zero-value fields when required by upstream provider specs.
 
-### D. Code Style, Modularity & Cognitive Complexity
+### D. Code Style, Modularity & Concise Go (`github.com/samber/lo`)
+- **Concise & Expressive Functional Patterns (`github.com/samber/lo`)**:
+  - Always prefer [`github.com/samber/lo`](https://github.com/samber/lo) to eliminate verbose, handwritten loop boilerplate and multi-line conditional assignments. `samber/lo` is already a direct dependency in `go.mod`.
+  - **Slices & Collections**: Use `lo.Map`, `lo.Filter`, `lo.FilterMap`, `lo.FlatMap`, `lo.Contains`, `lo.Find`, `lo.Uniq`, `lo.GroupBy`, and `lo.KeyBy` instead of manual accumulator loops (`var out []T; for ... if ... out = append(out, ...)`).
+  - **Ternary & Defaults**: Use `lo.Ternary(cond, a, b)` instead of multi-line `if/else` variable assignments. Use `lo.Coalesce(val, fallback)` instead of cascading `if val != ""` fallback chains.
+  - **Pointers & References**: Use `lo.ToPtr(v)` and `lo.FromPtr(p)` (or `lo.FromPtrOr(p, defaultVal)`) instead of declaring temporary variables just to take their address (`tmp := v; &tmp`).
+  - **Maps & Sets**: Use `lo.Keys(m)`, `lo.Values(m)`, `lo.PickBy(m, predicate)`, `lo.Invert(m)`, and `lo.Assign(m1, m2)` instead of manual iteration to extract keys or merge maps.
+  - **Batching & Partitioning**: Use `lo.Chunk(slice, size)` and `lo.PartitionBy(slice, predicate)` for cleanly chunking or splitting items.
 - **Cognitive Complexity**: Maintain SonarQube cognitive complexity $\le 15$ per function/method.
 - **Guard Clauses**: Keep the happy path left-aligned using early returns. Avoid nested `if/else` ladders (3+ levels forbidden). Decompose branching into focused private helper functions.
 - **File Size Discipline**: Target files $\le 300$ LoC (modularize files $>400$ LoC into focused files or subpackages).
 - **Dependency Injection**: Use Uber Fx (`go.uber.org/fx`) in `internal/app/` for clean wiring. Usecases and handlers must never perform defensive `nil` checks on injected dependencies—fail fast during startup container initialization.
-- **Functional Helpers**: Prefer [`github.com/samber/lo`](https://github.com/samber/lo) (`lo.Map`, `lo.Filter`, `lo.Contains`, `lo.Ternary`, `lo.ToPtr`) for clean slice operations instead of handwritten boilerplate loops.
 
 ### E. Error Handling
 - **Wrap Errors with `%w`**: Always provide caller context: `fmt.Errorf("receiver.MethodName: %w", err)` or `fmt.Errorf("op: %w", err)`.
@@ -188,6 +284,20 @@ The gateway is expected to serve from a **1 vCPU box with a small memory ceiling
 - **A change that measurably raises steady RSS or per-request CPU on that box is a regression**, even when every test passes and the wire contract is unchanged. Measure the real binary on a real request path before and after, and put the number in the PR.
 - **Bound everything that grows.** A cache needs a size or a TTL, per-connection state needs a lifetime, and a goroutine per request needs a reason to exist. An unbounded map keyed by a client-supplied value is a memory leak with a schedule.
 - **Take the smaller mechanism when both meet the requirement** — a slice over a map, a counter over a histogram, `json.RawMessage` over `map[string]any` on a hot path. When the heavier one is genuinely needed, say which requirement needs it.
+
+### H. Dual-Engine Database Compatibility (STRICTLY MANDATORY)
+
+SQLite is the zero-config default; PostgreSQL is an opt-in backend selected by
+a `postgres://` / `postgresql://` `DATABASE_URL` and driven through the same
+`database/sql` API. They are **one logical schema**, so every schema or query
+change must hold on both engines.
+
+- **A new table, column, index, or constraint must land on both engines in the same PR.** The SQLite declarations live in `coreSchema()` and `keiRouterTables` (`internal/db/schema.go`); the PG declarations live in `postgresTables` (`internal/db/schema_postgres.go`). Adding to only one side is a blocker, not a follow-up: the engine missing the table/column fails at runtime while the other passes CI. Prefer one canonical declaration rendered per engine; if a PR keeps two lists, it must add a parity test comparing table names and column names (case-insensitive) and failing on drift. `portable_sql_test.go` only rejects forbidden SQL constructs; it is **not** a parity gate.
+- **Type mapping is explicit and travels with the schema change**: `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGINT GENERATED ALWAYS AS IDENTITY`, 0/1 `INTEGER` flags → `BOOLEAN`, `BLOB` → `BYTEA`, timestamps stay `TEXT` in v1. A new type, generated column, or engine-specific constraint needs a declared mapping on both sides plus a note in the `.changes/` fragment (§7.6).
+- **Keep query text engine-neutral.** `?` placeholders are translated centrally by the pgx rebind connector; never hand-rebind at call sites. SQLite-only functions (`json_extract`, `json_set`, `json_valid`, `json()`, `json_array`, `datetime('now')`) need either a PG compatibility function with the **same name and semantics** or an explicit engine guard. `PRAGMA` and other maintenance statements cannot be shimmed — guard them with `engineOf(db)` / `CurrentEngine()` or use the PG equivalent (`ANALYZE`, `pg_total_relation_size`).
+- **A shim is done only when it is proven equal.** Add differential tests that run the exact production expressions on SQLite and PG16 and compare values, including JSON array paths (`$.a[0].b`), JSON `null` vs SQL `NULL`, type coercion, and reserved keywords. Quote reserved identifiers in `CREATE FUNCTION` (`"json_array"`); unquoted calls still resolve after that. Green SQLite-only CI is not evidence for the PG path.
+- **CI must exercise PG, not just build it.** Any PR touching `internal/db` or `internal/dbmigrate` must pass a PG16 smoke job: boot with `DATABASE_URL`, run schema bootstrap, execute the shim expressions used in production, and complete an export/import round-trip. The SQLite suite staying green does not satisfy this.
+- **Reviewers:** before approving, verify both schema lists, the parity test, and the PG smoke result. A missing side, a missing differential test, or a missing PG smoke job is a blocker.
 
 ---
 
@@ -258,6 +368,10 @@ Use `net/http/httptest` (`httptest.NewRecorder()`, `httptest.NewRequest()`, and 
    - Tag live/upstream-dependent network tests clearly (e.g. `live_e2e_test.go` or guard with env checks) so that standard unit tests pass completely offline.
 4. **Deterministic & Isolated**:
    - Tests must clean up temporary database files or use in-memory SQLite (`:memory:`) where applicable.
+5. **An existing assertion is a contract; rewriting it to match the new code is not verification.**
+   - When a PR removes or changes an assertion in an existing test, it is changing a contract the old test pinned. That is only acceptable when the PR **states which contract changed and why**, with a source of truth (an upstream merged commit, a cited issue, or a live reproduction that disproves the old expectation). A PR body that says "tests updated" is not a justification.
+   - A test that only asserts the *new* behaviour is a recording of the new behaviour, not proof that the old behaviour was correct. Keep a failing-on-base check for the regression whenever a prior contract is replaced: before the fix, the new assertion must fail; after it, it must pass. Show both in the PR.
+   - Deleting a test that asserted a still-valid contract is a regression hidden behind a green suite. Reviewers must ask why the old expectation was wrong, not accept "the behavior changed". `TestApplyOpenAIKeepsAuto` → `TestApplyOpenAIResolvesAutoToHigh` in PR #1106 is the acceptable shape: upstream PR #5603 was cited as the reason the literal `auto` was the bug.
 
 ### D. Feature Integration Tests (`internal/integration`, `integration` build tag)
 
@@ -477,13 +591,28 @@ The screen stays for as long as the boot requests take, and the boot requests ar
 
 ---
 
+### H. Live UI Regression Gate (`web/e2e/` — MANDATORY for behaviour changes)
+
+A change to what the dashboard **shows, copies, submits, or names** is not verified by a unit test, a screenshot of one state, or a green type-check. Those gates read source or assert a helper; they never render the component in a browser. The regression this rule exists for shipped in PR #1259 (`929acc66`): `copyModelId()` was switched to a helper that returned the raw provider id for every registered provider, so the button produced `opencode/<model>` where the gateway serves `oc/<model>`. `bun test src scripts` stayed green, the ratchet stayed green, the PR carried screenshots — of a *different* part of the same page. Only a live browser could have caught it.
+
+1. **Any PR that changes a user-visible string, a value handed to the clipboard, a form submission, or the rendering of a list item MUST add or update a test in `web/e2e/`** that drives the real gateway binary in Chromium (`startDashboard` in `web/e2e/harness.ts`) and asserts the observable result — the rendered text, the clipboard contents, the submitted request. A source-scanning unit test (`iconGlyphText.test.ts`, `providerDisplayPrefix.test.ts`) is a useful fast companion, never the gate itself.
+2. **Prove the test fails on the base.** Before the fix, revert only the line(s) under change in a scratch worktree, rebuild the bundle and binary, and run the new e2e test: it must fail. Then restore the fix and show it pass. Both results belong in the PR body. A newly added test that passes on base proves nothing about the change.
+3. **Screenshots must capture the element that changed**, not just the surrounding view. Capture before and after from the same route and viewport, element-scoped where possible (`Page.captureScreenshot` with a clip around the changed element), and attach both to the PR. A screenshot of a sibling component does not discharge this rule.
+4. **Keep the display value and the storage key separate.** Upstream holds them in two variables (`providerDisplayAlias` for what the operator sees and copies, `providerStorageAlias` for the key rows are saved under — `providers/[id]/page.js:194-219`). Conflating them is what made the copy button emit an unroutable id. When a PR touches either alias, the e2e test must assert the copied value resolves through the gateway's alias map, not just that it "looks right" on screen.
+5. **A changed unit test is a question, not an answer.** Reviewers must ask why an old expectation was removed before approving; see §5.C.5. Green CI after a test edit is not evidence that the behaviour stayed correct.
+
+Run the suite with `cd web && bun run e2e` (needs a built `9router-go` at the repo root). CI runs it in the `test` job on every PR.
+
+---
+
 ## 7. Upstream Sync Workflow (Step-by-Step)
 
 When tasked with syncing a feature, bugfix, or provider from upstream:
 
-1. **Investigate Upstream**:
+1. **Investigate Upstream (Merged Code Only)**:
+   - Verify that the commit or feature is **already merged into upstream's main branch** (`git -C /Users/luqmannul.hakim/htdocs/9router branch --contains <commit>`). Never sync from open PRs, draft PRs, or open proposal issues (§1).
    ```bash
-   # Check recent upstream commits, tags, or file changes
+   # Check recent upstream commits on main
    git -C /Users/luqmannul.hakim/htdocs/9router log -n 5 --oneline
    # Inspect specific upstream file or test
    cat /Users/luqmannul.hakim/htdocs/9router/open-sse/...
@@ -496,6 +625,10 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
    - Frontend: Convert React logic into Svelte 5 runes (`$state`, `$derived`, `$effect`, `bind:value`).
 4. **Implement & Test**:
    - Backend: Write code in `internal/...` and unit tests in `*_test.go` (table-driven tests using `testing.T`).
+   - **Provider/model add or update**: run the §3.E capability & context-window
+     parity gate — verify the resolved `ContextWindow`/`MaxOutput` against the
+     provider's feed / models.dev / upstream tables, sweep the catalog, and pin a
+     regression test. A floor value where a real window exists is not done.
    - Frontend: Write/update components in `web/src/`, verify `cd web && bun run build`, **and** run `make vet-svelte`.
      `tsc -b` cannot read `.svelte` files, so a Svelte script block calling a function it never imported compiles, lints and bundles clean, then throws a `ReferenceError` the first time a user clicks it (issue #130). `make vet-svelte` is the only gate that sees that class of bug.
 5. **Verify**:

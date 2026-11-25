@@ -416,3 +416,112 @@ func BenchmarkTruncateDetailTextNoCut(b *testing.B) {
 		}
 	}
 }
+
+// A Claude tool turn used to be logged as an empty message: extractContent read
+// only a block's "text" key, which a tool_use and a tool_result do not have.
+func TestExtractContentKeepsClaudeToolBlocks(t *testing.T) {
+	got := extractContent([]any{
+		map[string]any{"type": "tool_use", "id": "t1", "name": "Bash", "input": map[string]any{"command": "ls"}},
+		map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "NEEDLE-RESULT"},
+		map[string]any{"type": "thinking", "thinking": "NEEDLE-THOUGHT"},
+	})
+	for _, want := range []string{"tool_use Bash", "NEEDLE-RESULT", "NEEDLE-THOUGHT"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("logged content dropped %q: %q", want, got)
+		}
+	}
+}
+
+// A plain text block must still log as its own text, unchanged.
+func TestExtractContentKeepsPlainText(t *testing.T) {
+	if got := extractContent([]any{map[string]any{"type": "text", "text": "hello"}}); got != "hello" {
+		t.Errorf("plain text changed: %q", got)
+	}
+	if got := extractContent("already a string"); got != "already a string" {
+		t.Errorf("string content changed: %q", got)
+	}
+}
+
+// A thinking block whose payload is null or not a string must not panic the
+// request the log only describes.
+func TestExtractContentThinkingPayloadIsChecked(t *testing.T) {
+	cases := []any{
+		map[string]any{"type": "thinking"},
+		map[string]any{"type": "thinking", "thinking": nil},
+		map[string]any{"type": "thinking", "thinking": 42},
+		map[string]any{"type": "thinking", "thinking": map[string]any{"a": 1}},
+	}
+	for _, c := range cases {
+		if got := extractContent([]any{c}); got == "" {
+			t.Errorf("thinking block produced nothing: %v", c)
+		}
+	}
+}
+
+// A turn carrying many blocks must not scale the preview with the block count:
+// the shared budget is the cap the caller applies anyway.
+func TestExtractContentBudgetIsShared(t *testing.T) {
+	blocks := make([]any, 200)
+	for i := range blocks {
+		blocks[i] = map[string]any{"type": "text", "text": strings.Repeat("x", 500)}
+	}
+	if got := len(extractContent(blocks)); got > constants.MaxMessageContentLen+100 {
+		t.Errorf("preview grew with the block count: %d bytes", got)
+	}
+	// A single oversized block is bounded the same way.
+	one := extractContent([]any{map[string]any{"type": "text", "text": strings.Repeat("x", 100000)}})
+	if len(one) > constants.MaxMessageContentLen+100 {
+		t.Errorf("single oversized block not bounded: %d bytes", len(one))
+	}
+}
+
+// A tool payload is never serialised: the arguments already travel as
+// name#hash8, and marshalling arbitrary input would allocate in proportion to
+// a body the preview discards.
+func TestExtractContentDoesNotMarshalToolInput(t *testing.T) {
+	huge := map[string]any{"command": strings.Repeat("A", 100000)}
+	got := extractContent([]any{map[string]any{"type": "tool_use", "id": "t", "name": "Bash", "input": huge}})
+	if len(got) > 200 {
+		t.Errorf("tool input leaked into the preview: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "tool_use Bash") {
+		t.Errorf("tool name missing: %q", got)
+	}
+}
+
+// A tool result is logged from a string shape only. Anything else gets the
+// marker, so no recursion walks a payload the preview discards.
+func TestExtractContentDoesNotRecurseToolResult(t *testing.T) {
+	nested := []any{
+		map[string]any{"type": "text", "text": strings.Repeat("A", 200)},
+		map[string]any{"type": "text", "text": strings.Repeat("B", 200)},
+	}
+	got := extractContent([]any{map[string]any{"type": "tool_result", "tool_use_id": "t", "content": nested}})
+	if len(got) > 200 {
+		t.Errorf("nested tool result was traversed: %d bytes", len(got))
+	}
+	ok := extractContent([]any{map[string]any{"type": "tool_result", "tool_use_id": "t", "content": "NEEDLE-RESULT"}})
+	if !strings.Contains(ok, "NEEDLE-RESULT") {
+		t.Errorf("string tool result lost: %q", ok)
+	}
+}
+
+// The budget must hold when a nearly full preview is followed by a full-size
+// block: every append is cut before it copies.
+func TestExtractContentBudgetHoldsForLastBlock(t *testing.T) {
+	blocks := []any{
+		map[string]any{"type": "text", "text": strings.Repeat("A", constants.MaxMessageContentLen-10)},
+		map[string]any{"type": "text", "text": strings.Repeat("B", constants.MaxMessageContentLen)},
+	}
+	if got := len(extractContent(blocks)); got > constants.MaxMessageContentLen {
+		t.Errorf("budget exceeded: %d > %d", got, constants.MaxMessageContentLen)
+	}
+	// Same with a marker-heavy shape, whose brackets and prefixes also count.
+	tools := make([]any, 100)
+	for i := range tools {
+		tools[i] = map[string]any{"type": "tool_use", "name": strings.Repeat("n", 90)}
+	}
+	if got := len(extractContent(tools)); got > constants.MaxMessageContentLen+4 {
+		t.Errorf("budget exceeded by markers: %d", got)
+	}
+}

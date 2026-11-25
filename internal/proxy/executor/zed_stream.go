@@ -16,16 +16,17 @@ package executor
 import (
 	"bufio"
 	"bytes"
+	"encoding/json/jsontext"
 	"io"
+
+	json "encoding/json/v2"
 )
 
-// zedJSONLToSSE rewrites a JSON Lines stream as SSE.
-//
-// Every non-empty line becomes one "data: <line>\n\n" event. A line that is
-// already an SSE "data:" or "event:" line is passed through untouched, so a
-// server that switches to real SSE keeps working. A line that is neither is
-// dropped rather than forwarded: the translators parse the payload as JSON,
-// and a malformed line would abort the whole turn.
+// zedJSONLToSSE rewrites a JSON Lines stream as SSE. It also unwraps Zed's
+// own envelope: a line may be {"event":<provider chunk>} or
+// {"status":<status object>} (upstream unwrapZedLine). Status frames are not
+// provider events — a `failed` status becomes an OpenAI error chunk the
+// bridges can translate, and `stream_ended` / [DONE] terminate the stream.
 func zedJSONLToSSE(r io.Reader) io.Reader {
 	pr, pw := io.Pipe()
 	go func() {
@@ -34,31 +35,126 @@ func zedJSONLToSSE(r io.Reader) io.Reader {
 		scanner.Buffer(buf, 10*1024*1024) // tool calls and multimodal payloads run large
 		for scanner.Scan() {
 			// scanner.Bytes() returns a slice the scanner reuses on the next
-			// Scan, so the line is copied before anything is appended to it:
-			// writing into that buffer would corrupt the frame just sent.
+			// Scan, so the line is copied before anything is appended to it.
 			line := bytes.TrimSpace(bytes.Clone(scanner.Bytes()))
 			if len(line) == 0 {
 				continue
 			}
-			frame := make([]byte, 0, len(line)+8)
 			if bytes.HasPrefix(line, []byte("data:")) || bytes.HasPrefix(line, []byte("event:")) {
-				// Already SSE framing: keep the event, and terminate it.
-				frame = append(frame, line...)
-			} else {
-				if line[0] != '{' && line[0] != '[' {
-					continue
+				// Already SSE framing: keep the whole line verbatim and only add
+				// the blank-line terminator. Adding `data: ` again produces
+				// `data: data: {...}`, which no bridge can parse.
+				if !writeRawFrame(pw, line) {
+					return
 				}
-				frame = append(frame, "data: "...)
-				frame = append(frame, line...)
+				continue
 			}
-			frame = append(frame, '\n', '\n')
-			if _, err := pw.Write(frame); err != nil {
-				return
+			if line[0] != '{' && line[0] != '[' {
+				continue
 			}
+			if bytes.Equal(line, []byte("[DONE]")) {
+				writeSSEFrame(pw, []byte("[DONE]"))
+				continue
+			}
+			payload := zedUnwrapLine(line)
+			if payload == nil {
+				continue
+			}
+			writeSSEFrame(pw, payload)
 		}
 		_ = pw.CloseWithError(scanner.Err())
 	}()
 	return pr
+}
+
+func writeSSEFrame(w io.Writer, payload []byte) bool {
+	frame := make([]byte, 0, len(payload)+8)
+	frame = append(frame, "data: "...)
+	frame = append(frame, payload...)
+	frame = append(frame, '\n', '\n')
+	_, err := w.Write(frame)
+	return err == nil
+}
+
+func writeRawFrame(w io.Writer, line []byte) bool {
+	frame := make([]byte, 0, len(line)+2)
+	frame = append(frame, line...)
+	frame = append(frame, '\n', '\n')
+	_, err := w.Write(frame)
+	return err == nil
+}
+
+// zedUnwrapLine returns the JSON payload to forward for one upstream line.
+// Non-event/non-status lines pass through; a failed status becomes an OpenAI
+// chat chunk with the error text; a stream-ended status becomes [DONE].
+func zedUnwrapLine(line []byte) []byte {
+	var obj map[string]jsontext.Value
+	if err := json.Unmarshal(line, &obj); err != nil {
+		return line
+	}
+	if raw, ok := obj["event"]; ok {
+		return bytes.TrimSpace([]byte(raw))
+	}
+	statusRaw, ok := obj["status"]
+	if !ok {
+		return line
+	}
+	var status map[string]any
+	if err := json.Unmarshal([]byte(statusRaw), &status); err != nil {
+		// Upstream normalizeStatus accepts a bare string as {type: string}.
+		var kind string
+		if err := json.Unmarshal([]byte(statusRaw), &kind); err == nil {
+			if kind == "stream_ended" {
+				return []byte("[DONE]")
+			}
+			if kind == "failed" {
+				return []byte(`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"[Zed error] request failed"},"finish_reason":"stop"}]}`)
+			}
+		}
+		return nil
+	}
+	var kind string
+	if typed, ok := status["type"].(string); ok {
+		kind = typed
+	} else {
+		for k, v := range status {
+			if m, isMap := v.(map[string]any); isMap {
+				kind, status = k, m
+				break
+			}
+		}
+	}
+	if kind == "failed" || status["failed"] == true || status["failed"] == "true" {
+		message := firstZedStatusString(status, "message", "error", "code")
+		if message == "" {
+			message = "request failed"
+		}
+		chunk := map[string]any{
+			"object": "chat.completion.chunk",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"delta":         map[string]any{"content": "[Zed error] " + message},
+				"finish_reason": "stop",
+			}},
+		}
+		if out, err := json.Marshal(chunk); err == nil {
+			return out
+		}
+		return nil
+	}
+	if kind == "stream_ended" || status["stream_ended"] == true || status["stream_ended"] == "true" {
+		return []byte("[DONE]")
+	}
+	return nil
+}
+
+func firstZedStatusString(status map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, ok := status[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // zedLooksLikeJSONL reports whether a body is a JSON Lines stream rather than

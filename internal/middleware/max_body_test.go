@@ -178,3 +178,98 @@ func TestHumanBytes(t *testing.T) {
 		})
 	}
 }
+
+// TestJSONBodyLimitFromEnv pins MAX_JSON_BODY_SIZE_MB: unset keeps the 10MB
+// default, a valid value overrides it, and anything else is an error rather
+// than a silent fallback or an unbounded limit.
+func TestJSONBodyLimitFromEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    int64
+		wantErr bool
+	}{
+		{name: "unset keeps the default", value: "", want: DefaultMaxBodySize},
+		{name: "blank keeps the default", value: "  ", want: DefaultMaxBodySize},
+		{name: "32", value: "32", want: 32 << 20},
+		{name: "64", value: "64", want: 64 << 20},
+		{name: "128", value: "128", want: 128 << 20},
+		{name: "256 with surrounding space", value: " 256 ", want: 256 << 20},
+		{name: "ceiling", value: "1024", want: 1024 << 20},
+		{name: "zero would be unlimited-looking", value: "0", wantErr: true},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "above ceiling", value: "1025", wantErr: true},
+		{name: "overflows int64 once shifted", value: "9223372036854775807", wantErr: true},
+		{name: "overflows int64 parse", value: "99999999999999999999", wantErr: true},
+		{name: "fractional", value: "1.5", wantErr: true},
+		{name: "unit suffix", value: "32MB", wantErr: true},
+		{name: "garbage", value: "lots", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(MaxJSONBodySizeEnv, tt.value)
+			got, err := JSONBodyLimitFromEnv()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("JSONBodyLimitFromEnv() = %d, want an error", got)
+				}
+				if !strings.Contains(err.Error(), MaxJSONBodySizeEnv) {
+					t.Errorf("error %q does not name %s", err, MaxJSONBodySizeEnv)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("limit = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMaxBodyByPathWithoutContentLength proves the ceiling is enforced on the
+// bytes read, not on a declared Content-Length: a chunked body past the limit
+// is still a 413 naming the ceiling.
+func TestMaxBodyByPathWithoutContentLength(t *testing.T) {
+	const limit = 1 << 20
+	handler := MaxBodyByPath(limit, MediaBodyLimitRules())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			WriteBodyReadError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	// io.MultiReader hides the length, so the request carries no Content-Length.
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", io.MultiReader(bytes.NewReader(make([]byte, limit+1))))
+	req.ContentLength = -1
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), HumanBytes(limit)) {
+		t.Errorf("413 message %q does not name the %s ceiling", rec.Body.String(), HumanBytes(limit))
+	}
+}
+
+// TestMediaRulesWithRaisedJSONLimit pins the media lane once the JSON ceiling
+// is configured: below the media ceiling the media endpoints keep 128MB; above
+// it they follow the JSON ceiling, because a rule may only raise the default.
+func TestMediaRulesWithRaisedJSONLimit(t *testing.T) {
+	rules := MediaBodyLimitRules()
+	for _, tt := range []struct {
+		jsonLimit, want int64
+	}{
+		{jsonLimit: 32 << 20, want: MediaMaxBodySize},
+		{jsonLimit: MediaMaxBodySize, want: MediaMaxBodySize},
+		{jsonLimit: 256 << 20, want: 256 << 20},
+	} {
+		if got := BodyLimitForPath("/v1/audio/transcriptions", tt.jsonLimit, rules); got != tt.want {
+			t.Errorf("json=%d: media limit = %d, want %d", tt.jsonLimit, got, tt.want)
+		}
+		if got := BodyLimitForPath("/v1/responses", tt.jsonLimit, rules); got != tt.jsonLimit {
+			t.Errorf("json=%d: /v1/responses limit = %d, want %d", tt.jsonLimit, got, tt.jsonLimit)
+		}
+	}
+}

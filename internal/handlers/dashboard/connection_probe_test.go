@@ -654,3 +654,33 @@ func TestTestConnection_OpencodeQuotaLimit(t *testing.T) {
 		t.Errorf("expected error %q, got %q", errMsg, body["error"])
 	}
 }
+
+func TestProbeHTTPClient_Socks5Proxy(t *testing.T) {
+	h := &DashboardHandler{}
+	data := connectionProbeData{
+		ConnectionProxyEnabled: true,
+		ConnectionProxyURL:     "socks5h://192.168.22.206:1080",
+	}
+	client, proxyURL := h.probeHTTPClient(data, nil)
+	if proxyURL != "socks5h://192.168.22.206:1080" {
+		t.Errorf("proxyURL = %q, want socks5h://192.168.22.206:1080", proxyURL)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Fatal("expected tr.Proxy to be configured")
+	}
+	dummyReq, _ := http.NewRequest("GET", "https://api.openai.com", nil)
+	resolved, err := tr.Proxy(dummyReq)
+	if err != nil {
+		t.Fatalf("tr.Proxy error: %v", err)
+	}
+	if resolved == nil || resolved.String() != "socks5h://192.168.22.206:1080" {
+		t.Errorf("resolved = %v, want socks5h://192.168.22.206:1080", resolved)
+	}
+}

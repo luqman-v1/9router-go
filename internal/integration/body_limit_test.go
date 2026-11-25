@@ -3,11 +3,14 @@
 package integration
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"9router/proxy/internal/app"
 	"9router/proxy/internal/middleware"
 )
 
@@ -88,4 +91,74 @@ func TestBodyLimitIsPathAwareThroughTheRealRouter(t *testing.T) {
 			t.Errorf("limit = %d, want %d", got, mediaLimit)
 		}
 	})
+}
+
+// TestJSONBodyLimitIsConfigurableThroughTheRealRouter drives ProvideRouter with
+// MAX_JSON_BODY_SIZE_MB set: a /v1/responses body past the old 10MB default is
+// accepted, the configured ceiling still cuts with a 413 that names it (also
+// for a chunked body with no Content-Length), and the media lane keeps 128MB.
+func TestJSONBodyLimitIsConfigurableThroughTheRealRouter(t *testing.T) {
+	t.Setenv(middleware.MaxJSONBodySizeEnv, "32")
+	env := newEnv(t)
+	const jsonLimit = 32 << 20
+
+	t.Run("responses body past the old 10MB default is not refused", func(t *testing.T) {
+		res := env.Post(t, "/v1/responses", bodyOf(t, middleware.DefaultMaxBodySize+1))
+		if res.Status == http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = 413 for an 10MB+1 body with a 32MB ceiling (body: %s)", truncate(res.Body))
+		}
+	})
+
+	t.Run("responses body one byte over the configured ceiling is refused", func(t *testing.T) {
+		res := env.Post(t, "/v1/responses", bodyOf(t, jsonLimit+1))
+		if res.Status != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413 (body: %s)", res.Status, truncate(res.Body))
+		}
+		if !strings.Contains(string(res.Body), "32MB") {
+			t.Errorf("body %q does not name the 32MB ceiling", truncate(res.Body))
+		}
+	})
+
+	t.Run("chunked responses body without Content-Length is refused", func(t *testing.T) {
+		// io.MultiReader hides the length, so the client sends it chunked.
+		body := io.MultiReader(bytes.NewReader(bodyOf(t, jsonLimit+1)))
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, env.BaseURL+"/v1/responses", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+env.APIKey)
+		resp, err := env.client.Do(req)
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413 (body: %s)", resp.StatusCode, truncate(raw))
+		}
+		if !strings.Contains(string(raw), "32MB") {
+			t.Errorf("body %q does not name the 32MB ceiling", truncate(raw))
+		}
+	})
+
+	t.Run("media lane keeps its own ceiling", func(t *testing.T) {
+		res := env.Post(t, "/v1/videos/generations", bodyOf(t, jsonLimit+1))
+		if res.Status == http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = 413: media lane cut at the JSON ceiling (body: %s)", truncate(res.Body))
+		}
+	})
+}
+
+// TestInvalidJSONBodyLimitFailsTheRouter pins that a bad MAX_JSON_BODY_SIZE_MB
+// refuses to build the router instead of silently serving the default.
+func TestInvalidJSONBodyLimitFailsTheRouter(t *testing.T) {
+	for _, v := range []string{"0", "-5", "abc", "999999"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv(middleware.MaxJSONBodySizeEnv, v)
+			if _, _, err := app.ProvideRouter(nil, nil); err == nil {
+				t.Fatalf("ProvideRouter accepted %s=%q", middleware.MaxJSONBodySizeEnv, v)
+			}
+		})
+	}
 }

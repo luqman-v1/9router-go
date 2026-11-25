@@ -6,11 +6,13 @@
   // bulk turn off empty / on available, quota hide/show via settings,
   // and per-connection refresh/toggle/delete actions.
   import { onMount } from 'svelte'
+  import ClaudeCacheTtl from './quota/ClaudeCacheTtl.svelte'
   import {
     api,
     type CodexResetCredit,
     type ConnectionUsageResponse,
     type GLMResetCard,
+    type MiniMaxCheckinResult,
     type ProviderConnection,
   } from '../api/client'
   import {
@@ -50,6 +52,7 @@
     getConnectionsEmptyMessage,
     getConnectionsPaginationSummary,
     getHiddenQuotaRows,
+    groupConnectionsByProvider,
     getProviderOptions,
     getQuotaCache,
     getQuotaVisibilityKey,
@@ -98,9 +101,11 @@
   let quotaData = $state<Record<string, QuotaEntry>>({})
   let quotaLoading = $state<Record<string, boolean>>({})
   let quotaErrors = $state<Record<string, string>>({})
+  // MiniMax Code daily check-in: last outcome per account + per-row busy flag.
+  let minimaxCheckins = $state<Record<string, MiniMaxCheckinResult>>({})
+  let minimaxCheckinBusy = $state<Record<string, boolean>>({})
   let autoRefresh = $state(true)
   let hasHydratedAutoRefresh = $state(false)
-  let lastUpdated = $state<Date | null>(null)
   let refreshingAll = $state(false)
   let countdown = $state(60)
   let connectionsLoading = $state(true)
@@ -158,20 +163,21 @@
 
   // Quota visibility (hidden rows), persisted via /api/settings quotaVisibility
   let quotaVisibility = $state<QuotaVisibility>({})
-  let autoPingMaps = $state<{ claude: Record<string, boolean>; codex: Record<string, boolean> }>({
+  type AutoPingProvider = 'claude' | 'codex' | 'commandcode-goat'
+  type AutoPingScheduleEntry = AutoPingSchedule | { enabled: false } | unknown
+  let autoPingMaps = $state<Record<AutoPingProvider, Record<string, boolean>>>({
     claude: {},
     codex: {},
+    'commandcode-goat': {},
   })
   // The schedule half of the same settings key. It is kept apart from
   // autoPingMaps because the two are independent: the switch says "ping this
   // account when its window resets", the schedule says "ping it at 09:30 /
   // 14:30 / 19:30". Writing one must not delete the other.
-  let autoPingSchedules = $state<{
-    claude: Record<string, AutoPingSchedule | { enabled: false } | unknown>
-    codex: Record<string, AutoPingSchedule | { enabled: false } | unknown>
-  }>({
+  let autoPingSchedules = $state<Record<AutoPingProvider, Record<string, AutoPingScheduleEntry>>>({
     claude: {},
     codex: {},
+    'commandcode-goat': {},
   })
 
   // The connection whose auto-ping settings are being edited. Null closes the
@@ -259,7 +265,6 @@
       },
       onComplete: () => {
         if (quotaCycleController === controller) quotaCycleController = null
-        lastUpdated = new Date()
         refreshingAll = false
       },
     })
@@ -277,11 +282,21 @@
   const AUTO_PING_SETTINGS_KEYS: Record<string, string> = {
     claude: 'claudeAutoPing',
     codex: 'codexAutoPing',
+    'commandcode-goat': 'commandcode-goatAutoPing',
   }
 
   const AUTO_PING_TOOLTIPS: Record<string, string> = {
     claude: 'When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.',
     codex: 'Auto-starts the next 5h Codex window after reset by sending a tiny request. Consumes a small amount of quota.',
+    'commandcode-goat':
+      'Auto-starts the next 5h Command Code window after reset by sending a tiny request. Consumes a small amount of quota.',
+  }
+
+  // Auto-ping was oauth-only because claude and codex are. Command Code
+  // authenticates with a bearer key, so its row is eligible without oauth.
+  function supportsAutoPing(conn: ProviderConnection): boolean {
+    if (conn.provider === 'commandcode-goat') return true
+    return (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'
   }
 
   function kiroMethodLabel(conn: ProviderConnectionLike): string {
@@ -390,7 +405,9 @@
     resetCreditIdempotencyKey = newResetCreditIdempotencyKey()
     resetCreditLoading = true
     try {
-      const res = await api.listCodexResetCredits(conn.id)
+      const res = conn.provider === 'claude'
+        ? await api.listClaudeResetCredits(conn.id)
+        : await api.listCodexResetCredits(conn.id)
       if (res?.error) {
         resetCreditError = res.error
         resetCreditList = []
@@ -419,7 +436,9 @@
     resetCreditConsuming = true
     resetCreditError = ''
     try {
-      const res = await api.consumeCodexResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
+      const res = conn.provider === 'claude'
+        ? await api.consumeClaudeResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
+        : await api.consumeCodexResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
       if (res?.error) {
         resetCreditError = res.error
         return
@@ -524,9 +543,9 @@
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
 
-    const currentConnections = autoPingMaps[provider as 'claude' | 'codex'] || {}
+    const currentConnections = autoPingMaps[provider as AutoPingProvider] || {}
     const nextConnections = { ...currentConnections, [connId]: enabled }
-    const nextSchedules = autoPingSchedules[provider as 'claude' | 'codex'] || {}
+    const nextSchedules = autoPingSchedules[provider as AutoPingProvider] || {}
 
     autoPingMaps = {
       ...autoPingMaps,
@@ -561,7 +580,7 @@
     autoPingEditing = null
     if (!conn) return
 
-    const provider = conn.provider as 'claude' | 'codex'
+    const provider = conn.provider as AutoPingProvider
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
 
@@ -617,7 +636,7 @@
   }
 
   function isActiveConn(conn: ProviderConnection): boolean {
-    return conn.isActive === 1 || conn.isActive === true
+    return conn.isActive === 1
   }
 
   function getConnectionLabel(conn: ProviderConnectionLike): string | null {
@@ -696,7 +715,44 @@
 
   async function refreshProvider(connectionId: string, provider: string): Promise<void> {
     await fetchQuota(connectionId, provider, { force: true })
-    lastUpdated = new Date()
+  }
+
+  // MiniMax Code daily check-in (magpie's /checkin). The background loop claims
+  // every 30 minutes when enabled; this reads the last outcome and lets the
+  // operator claim one account right away.
+  async function loadMiniMaxCheckins(): Promise<void> {
+    try {
+      const res = await api.getMiniMaxCheckins()
+      minimaxCheckins = res.checkins || {}
+    } catch {
+      // The ledger is best-effort; a missing file just means no outcome yet.
+    }
+  }
+
+  async function checkInMiniMaxNow(conn: ProviderConnection): Promise<void> {
+    if (minimaxCheckinBusy[conn.id]) return
+    minimaxCheckinBusy = { ...minimaxCheckinBusy, [conn.id]: true }
+    try {
+      const result = await api.miniMaxCheckinNow(conn.id)
+      minimaxCheckins = { ...minimaxCheckins, [conn.id]: result }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      minimaxCheckins = {
+        ...minimaxCheckins,
+        [conn.id]: {
+          outcome: 'failed',
+          credit: 0,
+          streak: 0,
+          message,
+          provider: conn.provider,
+          account: conn.name || conn.email || conn.id,
+          accountId: conn.id,
+          checkedAt: new Date().toISOString(),
+        },
+      }
+    } finally {
+      minimaxCheckinBusy = { ...minimaxCheckinBusy, [conn.id]: false }
+    }
   }
 
   async function refreshAll(force = false): Promise<void> {
@@ -851,13 +907,31 @@
   // ─── Derived ───────────────────────────────────────────────────────────────
   let sortedConnections = $derived.by<ProviderConnection[]>(() =>
     sortVisibleConnections(
-      connections as ProviderConnectionLike[],
+      connections,
       quotaData,
       expiringFirst,
       providerFilter,
       quotaSortMode,
-    ) as ProviderConnection[],
+    ),
   )
+
+  // Group the sorted rows by provider so the tracker reads as collapsible
+  // sections instead of one long flat list. Until the operator toggles a
+  // section, the first provider opens and the rest start collapsed.
+  let groupedConnections = $derived(groupConnectionsByProvider(sortedConnections))
+  let collapsedProviders = $state<Record<string, boolean> | null>(null)
+  let groupCollapsed = $derived.by<Record<string, boolean>>(() => {
+    if (collapsedProviders !== null) return collapsedProviders
+    const initial: Record<string, boolean> = {}
+    groupedConnections.forEach((group, index) => {
+      initial[group.provider] = index !== 0
+    })
+    return initial
+  })
+  function toggleProviderGroup(provider: string): void {
+    const base = groupCollapsed
+    collapsedProviders = { ...base, [provider]: !base[provider] }
+  }
 
   let hasEligibleConnections = $derived(totals.eligibleConnections > 0)
   let hasVisibleConnections = $derived(sortedConnections.length > 0)
@@ -972,14 +1046,17 @@
         // two independent halves — the connections switch and the schedule map.
         const claudeConfig = raw?.claudeAutoPing as AutoPingSettings | undefined
         const codexConfig = raw?.codexAutoPing as AutoPingSettings | undefined
+        const commandCodeConfig = raw?.['commandcode-goatAutoPing'] as AutoPingSettings | undefined
 
         autoPingMaps = {
           claude: claudeConfig?.connections || {},
           codex: codexConfig?.connections || {},
+          'commandcode-goat': commandCodeConfig?.connections || {},
         }
         autoPingSchedules = {
           claude: claudeConfig?.schedules || {},
           codex: codexConfig?.schedules || {},
+          'commandcode-goat': commandCodeConfig?.schedules || {},
         }
       })
       .catch(() => {})
@@ -991,6 +1068,7 @@
       connectionsLoading = false
       initialLoadDone = true
       await fetchQuotasFor(visibleConnections, visibleConnections)
+      void loadMiniMaxCheckins()
     })()
 
     // Pause auto-refresh when tab hidden (Page Visibility API)
@@ -1081,7 +1159,7 @@
         <button
           type="button"
           onclick={() => (providerMenuOpen = !providerMenuOpen)}
-          class="flex h-8 items-center justify-between gap-1 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main transition-colors hover:bg-surface-3"
+          class="flex h-11 sm:h-8 items-center justify-between gap-1 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main transition-colors hover:bg-surface-3"
           aria-haspopup="menu"
           aria-expanded={providerMenuOpen}
           title="Filter quota providers"
@@ -1162,7 +1240,7 @@
       <select
         bind:value={accountFilter}
         onchange={handleAccountFilterChange}
-        class="h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
+        class="h-11 sm:h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
         aria-label="Filter accounts by status"
       >
         {#each ACCOUNT_FILTER_OPTIONS as option (option.value)}
@@ -1174,7 +1252,7 @@
       {#if providerFilter === 'codex'}
         <select
           bind:value={quotaSortMode}
-          class="h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
+          class="h-11 sm:h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
           aria-label="Sort Codex quotas by remaining"
         >
           {#each QUOTA_SORT_OPTIONS as option (option.value)}
@@ -1264,9 +1342,41 @@
       <p class="mx-auto mt-2 max-w-md text-sm text-text-muted">{emptyState.description}</p>
     </div>
   {:else}
-    <!-- Provider cards: 2 columns, compact -->
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-      {#each sortedConnections as conn (conn.id)}
+    <!-- Provider groups: collapsible sections, two columns per section -->
+    <div class="space-y-5">
+      {#each groupedConnections as group (group.provider)}
+        <section>
+          <button
+            type="button"
+            onclick={() => toggleProviderGroup(group.provider)}
+            aria-expanded={!groupCollapsed[group.provider]}
+            class="mb-3 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-left transition-colors hover:text-primary"
+          >
+            <span
+              class="material-symbols-outlined text-lg text-text-muted transition-transform {groupCollapsed[
+                group.provider
+              ]
+                ? ''
+                : 'rotate-90'}"
+            >
+              chevron_right
+            </span>
+            <img src={getIconPath(group.provider)} alt="" class="h-5 w-5 rounded" />
+            <span class="text-sm font-semibold text-text-main">{providerLabel(group.provider)}</span>
+            <span
+              class="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-muted"
+            >
+              {group.connections.length}
+            </span>
+          </button>
+          {#if !groupCollapsed[group.provider]}
+            {#if group.provider === 'claude'}
+              <div class="mb-3">
+                <ClaudeCacheTtl />
+              </div>
+            {/if}
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {#each group.connections as conn (conn.id)}
         {@const isActive = isActiveConn(conn)}
         {@const quota = quotaData[conn.id]}
         {@const isLoading = quotaLoading[conn.id]}
@@ -1336,7 +1446,7 @@
                           type="button"
                           onclick={() => copyArn(profileArn, conn.id)}
                           title={profileArn}
-                          class="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-[10px] text-text-muted transition-colors hover:text-primary cursor-pointer"
+                          class="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle px-2.5 py-2 sm:py-0.5 text-[10px] text-text-muted transition-colors hover:text-primary cursor-pointer"
                         >
                           <span class="material-symbols-outlined text-[12px]">
                             {copiedArnId === conn.id ? 'check' : 'content_copy'}
@@ -1349,18 +1459,18 @@
                 </div>
               </div>
 
-              <div class="flex shrink-0 items-center gap-1">
-                {#if conn.provider === 'codex'}
+              <div class="flex shrink-0 items-center gap-2 sm:gap-1">
+                {#if conn.provider === 'codex' || conn.provider === 'claude'}
                   {@const resetCreditCount = getCodexResetCreditCount(quota)}
                   <button
                     type="button"
                     disabled={isLoading || rowBusy || resetCreditConsuming}
                     onclick={() => openResetCredits(conn)}
-                    aria-label="Redeem a Codex reset credit"
+                    aria-label="Redeem a {conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credit"
                     title={resetCreditCount > 0
-                      ? `Redeem a Codex reset credit (${resetCreditCount} available)`
-                      : 'Check Codex reset credits'}
-                    class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCreditCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                      ? `Redeem a ${conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credit (${resetCreditCount} available)`
+                      : `Check ${conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credits`}
+                    class="flex h-11 sm:h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCreditCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
                     <span>{resetCreditCount}</span>
@@ -1378,24 +1488,57 @@
                     title={resetCardCount > 0
                       ? `Redeem a GLM reset card (${resetCardCount} available)`
                       : 'Check GLM reset cards'}
-                    class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCardCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                    class="flex h-11 sm:h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCardCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
                     <span>{resetCardCount}</span>
                   </button>
                 {/if}
 
-                {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
-                  {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
+                {#if (conn.provider === 'minimax-code' || conn.provider === 'minimax-code-global') && conn.authType === 'oauth'}
+                  {@const ci = minimaxCheckins[conn.id]}
+                  {@const ciBusy = minimaxCheckinBusy[conn.id] === true}
+                  {@const ciLabel = ci
+                    ? ci.outcome === 'claimed' || ci.outcome === 'done'
+                      ? `+${ci.credit}`
+                      : ci.outcome
+                    : 'Check in'}
+                  <button
+                    type="button"
+                    disabled={isLoading || rowBusy || ciBusy}
+                    onclick={() => checkInMiniMaxNow(conn)}
+                    aria-label="MiniMax Code daily check-in"
+                    title={ci
+                      ? `Daily check-in: ${ci.outcome}${ci.streak ? `, streak ${ci.streak}` : ''}${ci.message ? ` — ${ci.message}` : ''}`
+                      : "Claim today's MiniMax Code check-in"}
+                    class="flex h-11 sm:h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {ci && (ci.outcome === 'claimed' || ci.outcome === 'done')
+                      ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10'
+                      : ci && ci.outcome === 'failed'
+                        ? 'border-red-500/30 bg-red-500/5 text-red-600 dark:text-red-400'
+                        : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[15px] {ciBusy ? 'animate-spin' : ''}">
+                      {ciBusy ? 'progress_activity' : 'event_available'}
+                    </span>
+                    <span>{ciLabel}</span>
+                  </button>
+                {/if}
+
+                {#if supportsAutoPing(conn)}
+                  {@const autoPingProvider = conn.provider as AutoPingProvider}
+                  {@const isAutoPingActive = autoPingMaps[autoPingProvider]?.[conn.id] === true}
                   {@const hasSchedule =
-                    (autoPingSchedules[conn.provider]?.[conn.id] as { enabled?: boolean } | undefined)
-                      ?.enabled === true}
+                    (
+                      autoPingSchedules[autoPingProvider]?.[conn.id] as
+                        | { enabled?: boolean }
+                        | undefined
+                    )?.enabled === true}
                   <button
                     type="button"
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
                     title={AUTO_PING_TOOLTIPS[conn.provider]}
                     aria-label="Toggle auto-ping"
-                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
+                    class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[18px]">bolt</span>
                   </button>
@@ -1404,7 +1547,7 @@
                     onclick={() => (autoPingEditing = conn)}
                     title="Auto-ping schedule"
                     aria-label="Configure auto-ping schedule"
-                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
+                    class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
                       ? 'text-primary'
                       : 'text-text-muted'}"
                   >
@@ -1419,7 +1562,7 @@
                   disabled={isLoading || rowBusy}
                   aria-label="Refresh quota"
                   title="Refresh quota"
-                  class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:opacity-50 cursor-pointer"
+                  class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:opacity-50 cursor-pointer"
                 >
                   <span
                     class="material-symbols-outlined text-[18px] {isLoading
@@ -1435,7 +1578,7 @@
                   disabled={rowBusy}
                   aria-label="Edit connection"
                   title="Edit connection"
-                  class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-primary disabled:opacity-50 cursor-pointer"
+                  class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-primary disabled:opacity-50 cursor-pointer"
                 >
                   <span class="material-symbols-outlined text-[18px]">edit</span>
                 </button>
@@ -1447,7 +1590,7 @@
                   disabled={rowBusy}
                   aria-label="Delete connection"
                   title="Delete connection"
-                  class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50 cursor-pointer"
+                  class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50 cursor-pointer"
                 >
                   <span
                     class="material-symbols-outlined text-[18px] {deletingId === conn.id
@@ -1527,6 +1670,10 @@
             {/if}
           </div>
         </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
       {/each}
     </div>
 
@@ -1572,7 +1719,7 @@
             type="button"
             onclick={() => (page = 1)}
             disabled={pagination.page <= 1 || connectionsLoading || refreshingAll}
-            class="flex h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex h-11 sm:h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             First Page
           </button>
@@ -1581,7 +1728,7 @@
             onclick={() => (page = Math.max(1, page - 1))}
             disabled={pagination.page <= 1 || connectionsLoading || refreshingAll}
             aria-label="Previous accounts page"
-            class="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span class="material-symbols-outlined text-[16px]">chevron_left</span>
           </button>
@@ -1590,7 +1737,7 @@
             onclick={() => (page = Math.min(pagination.totalPages, page + 1))}
             disabled={pagination.page >= pagination.totalPages || connectionsLoading || refreshingAll}
             aria-label="Next accounts page"
-            class="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span class="material-symbols-outlined text-[16px]">chevron_right</span>
           </button>
@@ -1598,7 +1745,7 @@
             type="button"
             onclick={() => (page = pagination.totalPages)}
             disabled={pagination.page >= pagination.totalPages || connectionsLoading || refreshingAll}
-            class="flex h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex h-11 sm:h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Last Page
           </button>
@@ -1621,10 +1768,10 @@
 {#if autoPingEditing}
   <AutoPingScheduleModal
     open
-    connectionName={autoPingEditing.name}
-    reactive={autoPingMaps[autoPingEditing.provider as 'claude' | 'codex']?.[autoPingEditing.id] ===
+    connectionName={autoPingEditing.name ?? undefined}
+    reactive={autoPingMaps[autoPingEditing.provider as AutoPingProvider]?.[autoPingEditing.id] ===
       true}
-    schedule={(autoPingSchedules[autoPingEditing.provider as 'claude' | 'codex']?.[
+    schedule={(autoPingSchedules[autoPingEditing.provider as AutoPingProvider]?.[
       autoPingEditing.id
     ] as AutoPingSchedule | null) ?? null}
     timezone={localTimezone}
@@ -1642,7 +1789,7 @@
     ></div>
     <div class="relative w-full max-w-md bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] p-6">
       <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
-        <h2 class="text-lg font-semibold text-text-main">Redeem a reset credit</h2>
+        <h2 class="text-lg font-semibold text-text-main">Redeem a {resetCreditConn?.provider === 'claude' ? 'Claude' : 'Codex'} reset credit</h2>
         <button
           type="button"
           onclick={closeResetCredits}
@@ -1677,7 +1824,7 @@
         {/if}
       {:else}
       <p class="text-xs text-text-muted mb-4">
-        Redeeming a credit resets the Codex usage window immediately instead of waiting for the
+        Redeeming a credit resets the {resetCreditConn?.provider === 'claude' ? 'Claude' : 'Codex'} usage window immediately instead of waiting for the
         countdown to run out.
       </p>
 

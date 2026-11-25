@@ -4,12 +4,27 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"sync"
 )
 
 // FallbackTransport intercepts outbound HTTP requests and automatically retries
 // via a direct connection (Proxy: nil) if the environment proxy or local sandbox proxy
 // refuses the connection (CONNECT tunnel failed, 403 Forbidden, blocked-by-allowlist).
-var defaultDirectTransport = NewSafeTransport()
+//
+// Built lazily: constructing a safe transport at package-init time would fire
+// http.ProxyFromEnvironment's once-cache before main() ran viper's .env sync,
+// freezing an empty proxy view for the whole process.
+var (
+	defaultDirectTransportOnce sync.Once
+	defaultDirectTransport     http.RoundTripper
+)
+
+func defaultDirect() http.RoundTripper {
+	defaultDirectTransportOnce.Do(func() {
+		defaultDirectTransport = NewDirectSafeTransport()
+	})
+	return defaultDirectTransport
+}
 
 type FallbackTransport struct {
 	Base   http.RoundTripper
@@ -24,7 +39,7 @@ func (t *FallbackTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	direct := t.Direct
 	if direct == nil {
-		direct = defaultDirectTransport
+		direct = defaultDirect()
 	}
 
 	// Buffer body if present and not replayable
@@ -63,6 +78,6 @@ func NewFallbackTransport(base http.RoundTripper) http.RoundTripper {
 	}
 	return &FallbackTransport{
 		Base:   base,
-		Direct: defaultDirectTransport,
+		Direct: defaultDirect(),
 	}
 }

@@ -32,7 +32,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "test-api-key", nil)
+		client := NewClientWithEngine(ts.URL, "test-api-key", nil, EngineExternal)
 		origBody := []byte(`{
 			"model": "gpt-4o",
 			"messages": [
@@ -74,7 +74,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			origBody := []byte(`{
 				"model": "gpt-4o",
 				"messages": [
@@ -122,7 +122,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			origBody := []byte(`{
 				"messages": [
 					{"role": "user", "content": "question"},
@@ -155,7 +155,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			origBody := []byte(`{
 				"messages": [
 					{"role": "user", "content": "msg 1"},
@@ -200,7 +200,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			origBody := []byte(`{
 				"messages": [
 					{
@@ -245,7 +245,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "", nil)
+		client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 		origBody := []byte(`{
 			"messages": [
 				{"role": "user", "content": "original text"}
@@ -276,7 +276,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "", nil)
+		client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 		origBody := []byte(`{
 			"messages": [
 				{"role": "user", "content": "original text"}
@@ -308,7 +308,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "", nil)
+		client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 		origBody := []byte(`{
 			"messages": [
 				{"role": "user", "content": "original text"}
@@ -335,7 +335,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "", nil)
+		client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 		origBody := []byte(`{
 			"messages": [
 				{"role": "user", "content": "original query"}
@@ -367,7 +367,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "", nil)
+		client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 		origBody := []byte(`{
 			"messages": [
 				{"role": "user", "content": "original query"}
@@ -395,7 +395,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 		}))
 		defer ts.Close()
 
-		client := NewClient(ts.URL, "", nil)
+		client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 		origBody := []byte(`{
 			"messages": [
 				{"role": "user", "content": "original query"}
@@ -473,7 +473,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			resBody, compressed, err := client.Compress(context.Background(), origBody, "claude-3-7-sonnet", 1000)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -541,7 +541,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			resBody, compressed, err := client.Compress(context.Background(), origBody, "claude-3-7-sonnet", 1000)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -581,7 +581,7 @@ func TestHeadroomClient_CompressContract(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			resBody, compressed, err := client.Compress(context.Background(), origBody, "claude-3-7-sonnet", 1000)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -632,7 +632,7 @@ func TestCompress_SkipsErrorToolResult(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			ts, hits := tripwireServer(t)
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			got, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 			if err != nil {
 				t.Fatalf("guard must fail open, got err: %v", err)
@@ -661,7 +661,7 @@ func TestCompress_SkipsProtectedTool(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			ts, hits := tripwireServer(t)
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			_, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 			if err != nil {
 				t.Fatalf("guard must fail open, got err: %v", err)
@@ -683,7 +683,7 @@ func TestCompress_SkipsUnknownTool(t *testing.T) {
 		{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"some_mcp_tool","arguments":"{}"}}]},
 		{"role":"tool","tool_call_id":"c1","content":"https://example.test/whatever"}]}`
 	ts, hits := tripwireServer(t)
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	_, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 	if err != nil {
 		t.Fatalf("guard must fail open, got err: %v", err)
@@ -702,7 +702,7 @@ func TestCompress_SkipsUnknownToolWithNoName(t *testing.T) {
 	body := `{"model":"m","messages":[
 		{"role":"tool","tool_call_id":"dangling","content":"orphan"}]}`
 	ts, hits := tripwireServer(t)
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	_, compressed, _ := client.Compress(context.Background(), []byte(body), "m", 1000)
 	if compressed {
 		t.Fatalf("a tool result with no resolvable name must not be compressed")
@@ -720,7 +720,7 @@ func TestCompress_AllowsKnownCommandTool(t *testing.T) {
 		{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}}]},
 		{"role":"tool","tool_call_id":"c1","content":"a long log line that compresses"}]}`
 	ts, hits := tripwireServer(t)
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	_, _, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -741,7 +741,7 @@ func TestCompress_ProtectsToolNamesInAnyCase(t *testing.T) {
 				{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":%q,"arguments":"{}"}}]},
 				{"role":"tool","tool_call_id":"c1","content":"a long file body that compresses"}]}`, name)
 			ts, hits := tripwireServer(t)
-			client := NewClient(ts.URL, "", nil)
+			client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 			_, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 			if err != nil {
 				t.Fatalf("guard must fail open, got err: %v", err)
@@ -771,7 +771,7 @@ func TestCompress_RejectsEmptiedTextBlock(t *testing.T) {
 
 	body := `{"model":"m","messages":[
 		{"role":"user","content":[{"type":"text","text":"a paragraph that has real content"}]}]}`
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	got, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -799,7 +799,7 @@ func TestCompress_RejectsPhantomSaving(t *testing.T) {
 
 	body := `{"model":"m","messages":[
 		{"role":"user","content":"a paragraph that has real content and is not shorter at all"}]}`
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	_, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -822,7 +822,7 @@ func TestCompress_AcceptsRealSaving(t *testing.T) {
 
 	body := `{"model":"m","messages":[
 		{"role":"user","content":"a very long paragraph that the compressor can genuinely shorten by a lot"}]}`
-	client := NewClient(ts.URL, "", nil)
+	client := NewClientWithEngine(ts.URL, "", nil, EngineExternal)
 	got, compressed, err := client.Compress(context.Background(), []byte(body), "m", 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

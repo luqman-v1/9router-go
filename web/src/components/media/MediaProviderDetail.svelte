@@ -8,6 +8,7 @@
   import type { ProviderCatalogItem } from '../../lib/providers'
   import Badge from '../../lib/ui/Badge.svelte'
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
   import { type MediaKind, MEDIA_KIND_INFO } from './mediaTypes'
   import NoAuthProxyCard from './NoAuthProxyCard.svelte'
   import TtsExampleCard from './TtsExampleCard.svelte'
@@ -109,6 +110,11 @@
   // Connections state
   let providerConns = $derived(connections.filter((c) => c.provider === provider.id))
   let showAddConnModal = $state(false)
+  // Escape on the shared stack, so a dialog opened over this one closes first.
+  $effect(() => {
+    if (!showAddConnModal) return
+    return pushEscapeHandler(() => (showAddConnModal = false))
+  })
   let newConnKey = $state('')
   let newConnName = $state('')
   let newConnError = $state('')
@@ -120,12 +126,36 @@
   // Non-null while a reorder request is in flight.
   let reorderingConnId = $state<string | null>(null)
 
+  function isConnKindActive(conn: ProviderConnection): boolean {
+    if (conn.isActive !== 1) return false
+    if (conn.mediaEnabled === false || conn.isMediaActive === false) return false
+    const psd = (conn.providerSpecificData || {}) as Record<string, any>
+    if (psd.mediaEnabled === false || psd.isMediaActive === false) return false
+    const disabled = (Array.isArray(psd.disabledKinds) ? psd.disabledKinds : (conn.disabledKinds || [])) as string[]
+    return !disabled.includes(kind) && !disabled.includes('media')
+  }
+
   async function handleToggleConnActive(conn: ProviderConnection) {
+    if (conn.isActive !== 1) {
+      // Locked: connection was disabled globally on Providers page
+      return
+    }
+    const currentActive = isConnKindActive(conn)
+    const psd = (conn.providerSpecificData || {}) as Record<string, any>
+    const currentDisabled = (Array.isArray(psd.disabledKinds) ? [...psd.disabledKinds] : [...(conn.disabledKinds || [])]) as string[]
+    const nextDisabled = currentActive
+      ? Array.from(new Set([...currentDisabled, kind]))
+      : currentDisabled.filter((k) => k !== kind)
     try {
-      await api.updateConnection(conn.id, { isActive: conn.isActive === 1 ? 0 : 1 })
+      await api.updateConnection(conn.id, {
+        providerSpecificData: {
+          ...psd,
+          disabledKinds: nextDisabled
+        }
+      })
       onRefresh()
     } catch (e) {
-      console.error('Failed to toggle connection active', e)
+      console.error('Failed to toggle connection media active', e)
     }
   }
 
@@ -171,9 +201,8 @@
       await api.createConnection({
         provider: provider.id,
         authType: 'apikey',
-        key: newConnKey.trim(),
+        apiKey: newConnKey.trim(),
         name: newConnName.trim() || undefined,
-        isActive: 1
       })
       showAddConnModal = false
       newConnKey = ''
@@ -222,6 +251,7 @@
     return [...builtin, ...customKindModels.filter((m) => m.id && !seen.has(m.id))]
   })
   let selectedModelId = $state('')
+  let selectedModelObj = $derived(mediaModels.find((m: any) => m.id === selectedModelId) ?? null)
 
   // Custom media models — upstream SttExampleCard parity: (d.models || [])
   // filtered by kind + providerAlias (alias or id), reload on focus/changed.
@@ -374,8 +404,6 @@
   let exampleResponse = $state<string | null>(null)
   let exampleLatency = $state<number | null>(null)
 
-  const ttsVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer']
-
   $effect(() => {
     if (kind === 'video') {
       exampleInput = 'A serene lake at sunset'
@@ -442,6 +470,9 @@
       return `curl -X POST ${origin}/v1/audio/transcriptions \\\n  -H "Authorization: Bearer ${key}" \\\n  -F "file=@${exampleInput || 'audio.mp3'}" \\\n  -F "model=${qualifiedModel}" \\\n  -F "response_format=${sttResponseFormat}"`
     }
     if (kind === 'systemone') {
+      if ((selectedModelObj as any)?.payloadShape === 'fields') {
+        return `curl -X POST ${origin}/v1/systemone \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","state":"${exampleInput}","fields":{"probe":{"type":"text","instructions":"${exampleQuestion}"}}}'`
+      }
       return `curl -X POST ${origin}/v1/systemone \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","state":"${exampleInput}","questions":{"is_urgent":{"type":"noul","instructions":"${exampleQuestion}"}}}'`
     }
     if (kind === 'webSearch') {
@@ -502,7 +533,7 @@
         headers['x-provider-connection-id'] = selectedConnId
       }
 
-      let res: Response
+      let res: Response | undefined = undefined
       if (kind === 'video') {
         headers['Content-Type'] = 'application/json'
         res = await fetch('/v1/videos/generations', {
@@ -549,10 +580,13 @@
         })
       } else if (kind === 'systemone') {
         headers['Content-Type'] = 'application/json'
+        const systemoneBody = (selectedModelObj as any)?.payloadShape === 'fields'
+          ? { model: qualifiedModel, state: exampleInput, fields: { probe: { type: 'text', instructions: exampleQuestion } } }
+          : { model: qualifiedModel, state: exampleInput, questions: { is_urgent: { type: 'noul', instructions: exampleQuestion } } }
         res = await fetch('/v1/systemone', {
           method: 'POST',
           headers,
-          body: JSON.stringify({ model: qualifiedModel, state: exampleInput, questions: { is_urgent: { type: 'noul', instructions: exampleQuestion } } })
+          body: JSON.stringify(systemoneBody)
         })
       } else if (kind === 'webSearch') {
         headers['Content-Type'] = 'application/json'
@@ -586,6 +620,7 @@
         })
       }
 
+      if (!res) return
       exampleLatency = Math.round(performance.now() - start)
       const cType = res.headers.get('content-type') || ''
       if (cType.includes('application/json')) {
@@ -739,6 +774,8 @@
       {:else}
         <div class="flex flex-col gap-2">
           {#each providerConns as conn, idx (conn.id)}
+            {@const isLocked = conn.isActive !== 1}
+            {@const isKindActive = isConnKindActive(conn)}
             <div class="flex flex-col gap-2 p-3 rounded-lg border border-border bg-sidebar/50 sm:flex-row sm:items-center sm:justify-between">
               <div class="flex items-center gap-2 min-w-0">
                 <div class="flex flex-col items-center gap-0.5 shrink-0">
@@ -765,10 +802,12 @@
                 <span class="text-sm font-medium text-text-main truncate">{formatEmailLabel(conn.displayName || conn.name || conn.email || conn.id, $emailPrivacy)}</span>
                 <button
                   type="button"
+                  disabled={isLocked}
                   onclick={() => handleToggleConnActive(conn)}
-                  class="px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer transition-colors {conn.isActive === 1 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : 'bg-surface-2 text-text-muted border border-border'}"
+                  title={isLocked ? 'Disabled for all services on the Providers page' : isKindActive ? `Disable for ${kindTitle}` : `Enable for ${kindTitle}`}
+                  class="px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed {isLocked ? 'bg-surface-2 text-text-muted border border-border' : isKindActive ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : 'bg-surface-2 text-text-muted border border-border'}"
                 >
-                  {conn.isActive === 1 ? 'active' : 'disabled'}
+                  {isLocked ? 'locked' : isKindActive ? 'active' : 'disabled'}
                 </button>
                 <span class="text-xs text-text-muted font-mono">#{idx + 1}</span>
               </div>
@@ -1002,55 +1041,6 @@
             {/if}
           </div>
         </div>
-      {:else if kind === 'tts'}
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Voice</span>
-          <div class="w-full min-w-0 flex-1">
-            <select
-              bind:value={selectedVoice}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
-            >
-              {#each ttsVoices as v}
-                <option value={v}>{v.charAt(0).toUpperCase() + v.slice(1)}</option>
-              {/each}
-            </select>
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Input</span>
-          <div class="w-full min-w-0 flex-1 relative">
-            <input
-              bind:value={exampleInput}
-              class="w-full px-3 py-1.5 pr-7 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main font-mono"
-            />
-            {#if exampleInput}
-              <button
-                type="button"
-                onclick={() => (exampleInput = '')}
-                class="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-primary transition-colors cursor-pointer"
-              >
-                <span class="material-symbols-outlined text-[14px]">close</span>
-              </button>
-            {/if}
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Format</span>
-          <div class="w-full min-w-0 flex-1">
-            <select
-              bind:value={ttsResponseFormat}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
-            >
-              <option value="json">json (base64 preview)</option>
-              <option value="mp3">mp3 (direct audio)</option>
-              <option value="opus">opus</option>
-              <option value="aac">aac</option>
-              <option value="flac">flac</option>
-              <option value="wav">wav</option>
-              <option value="pcm">pcm</option>
-            </select>
-          </div>
-        </div>
       {:else if kind === 'embedding'}
         <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
           <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Input</span>
@@ -1068,32 +1058,6 @@
                 <span class="material-symbols-outlined text-[14px]">close</span>
               </button>
             {/if}
-          </div>
-        </div>
-      {:else if kind === 'stt'}
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Audio File</span>
-          <div class="w-full min-w-0 flex-1">
-            <input
-              type="text"
-              bind:value={exampleInput}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main font-mono"
-            />
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Response Format</span>
-          <div class="w-full min-w-0 flex-1">
-            <select
-              bind:value={sttResponseFormat}
-              class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
-            >
-              <option value="json">json</option>
-              <option value="text">text</option>
-              <option value="srt">srt</option>
-              <option value="verbose_json">verbose_json</option>
-              <option value="vtt">vtt</option>
-            </select>
           </div>
         </div>
       {:else if kind === 'systemone'}

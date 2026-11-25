@@ -266,3 +266,36 @@ func TestPruneStaleStates_PrunesPendingJSON(t *testing.T) {
 		t.Errorf("expected orphan pendingJSON to be pruned")
 	}
 }
+
+// TestParseClaudeUsage_CacheCreationSplit pins the per-window split Anthropic
+// reports beside the cache-write total: a body carrying cache_creation must
+// expose both windows, and one without it must leave both at zero rather than
+// inventing a 5m write.
+func TestParseClaudeUsage_CacheCreationSplit(t *testing.T) {
+	u := ParseClaudeUsage([]byte(`{"usage":{"input_tokens":10,"output_tokens":4,"cache_read_input_tokens":0,"cache_creation_input_tokens":900,"cache_creation":{"ephemeral_5m_input_tokens":400,"ephemeral_1h_input_tokens":500}}}`))
+	if u == nil {
+		t.Fatal("expected parsed usage")
+	}
+	if u.CacheCreationInputTokens != 900 || u.CacheCreation5mInputTokens != 400 || u.CacheCreation1hInputTokens != 500 {
+		t.Errorf("split: got %#v", u)
+	}
+
+	plain := ParseClaudeUsage([]byte(`{"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":900}}`))
+	if plain == nil || plain.CacheCreation5mInputTokens != 0 || plain.CacheCreation1hInputTokens != 0 {
+		t.Errorf("without cache_creation both windows must stay 0: got %#v", plain)
+	}
+}
+
+// TestAccumulateClaudeStreamUsage_CacheCreationSplit pins the streaming path:
+// message_start carries the split, and a later message_delta must not drop it.
+func TestAccumulateClaudeStreamUsage_CacheCreationSplit(t *testing.T) {
+	start := `{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":900,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":900}}}}`
+	u := AccumulateClaudeStreamUsage(nil, []byte(start))
+	if u == nil || u.CacheCreation1hInputTokens != 900 || u.CacheCreation5mInputTokens != 0 {
+		t.Fatalf("message_start split: got %#v", u)
+	}
+	u = AccumulateClaudeStreamUsage(u, []byte(`{"type":"message_delta","usage":{"output_tokens":12}}`))
+	if u == nil || u.CacheCreation1hInputTokens != 900 || u.CompletionTokens != 12 {
+		t.Errorf("message_delta dropped the split: got %#v", u)
+	}
+}

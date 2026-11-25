@@ -2,6 +2,7 @@ package translator
 
 import (
 	json "encoding/json/v2"
+	"strings"
 	"testing"
 )
 
@@ -208,4 +209,84 @@ func TestDedupeToolsDeepSeek_MalformedBodies(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCleanStrippedToolReferences(t *testing.T) {
+	t.Run("drops tool_reference and replaces with unavailable note when empty", func(t *testing.T) {
+		raw := []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "call_1",
+						"content": []any{
+							map[string]any{
+								"type":      "tool_reference",
+								"tool_name": "WebSearch",
+							},
+						},
+					},
+				},
+			},
+		}
+		stripped := map[string]bool{"WebSearch": true}
+		cleaned := CleanStrippedToolReferences(raw, stripped)
+		if cleaned != 1 {
+			t.Fatalf("cleaned = %d, want 1", cleaned)
+		}
+		msg := raw[0].(map[string]any)
+		content := msg["content"].([]any)[0].(map[string]any)["content"].([]any)
+		if len(content) != 1 {
+			t.Fatalf("content len = %d, want 1 text note", len(content))
+		}
+		textBlock := content[0].(map[string]any)
+		if textBlock["type"] != "text" || !strings.Contains(textBlock["text"].(string), "[Tool WebSearch is unavailable]") {
+			t.Errorf("unexpected text block: %v", textBlock)
+		}
+	})
+
+	t.Run("keeps other content when tool_reference is removed", func(t *testing.T) {
+		raw := []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "call_2",
+						"content": []any{
+							map[string]any{
+								"type": "text",
+								"text": "results from search",
+							},
+							map[string]any{
+								"type":      "tool_reference",
+								"tool_name": "WebSearch",
+							},
+							map[string]any{
+								"type":      "tool_reference",
+								"tool_name": "Read",
+							},
+						},
+					},
+				},
+			},
+		}
+		stripped := map[string]bool{"WebSearch": true}
+		cleaned := CleanStrippedToolReferences(raw, stripped)
+		if cleaned != 1 {
+			t.Fatalf("cleaned = %d, want 1", cleaned)
+		}
+		msg := raw[0].(map[string]any)
+		content := msg["content"].([]any)[0].(map[string]any)["content"].([]any)
+		if len(content) != 2 {
+			t.Fatalf("surviving content len = %d, want 2", len(content))
+		}
+		if content[0].(map[string]any)["type"] != "text" {
+			t.Errorf("content[0] = %v, want text", content[0])
+		}
+		if content[1].(map[string]any)["tool_name"] != "Read" {
+			t.Errorf("content[1] = %v, want Read tool_reference", content[1])
+		}
+	})
 }

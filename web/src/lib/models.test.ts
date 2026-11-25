@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { beforeAll, describe, expect, it } from 'bun:test'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS, PROVIDER_MODELS } from './models'
 import { PROVIDER_CATALOG, __setProviderCatalogForTest } from './providers'
 import { parseProviderRegistry } from './providers.registry-test'
@@ -6,9 +6,13 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 // The catalog is served by the Go registry, so the assertions run against that
 // file rather than a TypeScript copy.
-__setProviderCatalogForTest(
-  parseProviderRegistry(readFileSync(resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go'), 'utf8')),
+const registryItems = parseProviderRegistry(
+  readFileSync(resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go'), 'utf8'),
 )
+
+beforeAll(() => {
+  __setProviderCatalogForTest(registryItems)
+})
 
 // PROVIDER_MODELS is keyed by provider id, while PROVIDER_ID_TO_ALIAS holds the
 // short display prefix (uiAlias) used to render `cmc/<model>`. The two only
@@ -128,6 +132,24 @@ describe('keyless live catalogs', () => {
   it('keeps openrouter on the free-tier fetcher it already had', () => {
     const p = PROVIDER_CATALOG.find((e) => e.id === 'openrouter')
     expect(p?.modelsFetcher?.type).toBe('openrouter-free')
+  })
+})
+
+// Hydrogen variants must appear in the ag/antigravity catalog with their
+// expected upstreamModelId values, including the xhigh tier.
+describe('gemini-4-hydrogen variants', () => {
+  it('lists gemini-4-hydrogen-xhigh in the antigravity catalog', () => {
+    const models = getModelsByProviderId('antigravity')
+    const xhigh = models.find((m) => m.id === 'gemini-4-hydrogen-xhigh')
+    expect(xhigh, 'gemini-4-hydrogen-xhigh must be in antigravity catalog').toBeDefined()
+    expect(xhigh?.upstreamModelId).toBe('gemini-4-hydrogen-xhigh(xhigh)')
+  })
+
+  it('lists gemini-4-hydrogen-high in the antigravity catalog', () => {
+    const models = getModelsByProviderId('antigravity')
+    const high = models.find((m) => m.id === 'gemini-4-hydrogen-high')
+    expect(high, 'gemini-4-hydrogen-high must be in antigravity catalog').toBeDefined()
+    expect(high?.upstreamModelId).toBe('gemini-4-hydrogen-high(high)')
   })
 })
 

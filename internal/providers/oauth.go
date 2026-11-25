@@ -1,12 +1,14 @@
 package providers
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
@@ -39,6 +41,14 @@ type OAuthTokenResponse struct {
 // Client secrets should be set via environment variables.
 var KnownOAuthConfigs = map[string]OAuthClientConfig{
 	"antigravity": {
+		ClientID:     envOr("ANTIGRAVITY_OAUTH_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"),
+		ClientSecret: envOr("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "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"),
+		TokenURL:     "https://oauth2.googleapis.com/token",
+	},
+	// agy-acp signs in with the same Google OAuth client as antigravity: the
+	// agy CLI accepts those consumer tokens. Its own entry keeps refresh
+	// working for agy-acp connections without touching antigravity rows.
+	"agy-acp": {
 		ClientID:     envOr("ANTIGRAVITY_OAUTH_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"),
 		ClientSecret: envOr("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "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"),
 		TokenURL:     "https://oauth2.googleapis.com/token",
@@ -145,22 +155,41 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+const maxOAuthRefreshBodyBytes = 1 << 20
+
+var oauthRefreshClient = &http.Client{Timeout: 15 * time.Second}
+
 // RefreshToken performs an OAuth token refresh for the given provider configuration.
 // Returns the new access token and expires_in duration.
 func RefreshToken(cfg OAuthClientConfig, refreshToken string) (*OAuthTokenResponse, error) {
+	return RefreshTokenWithContext(context.Background(), cfg, refreshToken)
+}
+
+// RefreshTokenWithContext performs an OAuth token refresh bound to ctx.
+// Returns the new access token and expires_in duration.
+func RefreshTokenWithContext(ctx context.Context, cfg OAuthClientConfig, refreshToken string) (*OAuthTokenResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	values := url.Values{
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 	}
-	resp, err := http.PostForm(cfg.TokenURL, values)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL, strings.NewReader(values.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("OAuth refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := oauthRefreshClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("OAuth refresh POST: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRefreshBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read OAuth response: %w", err)
 	}

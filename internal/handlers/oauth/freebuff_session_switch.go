@@ -33,7 +33,7 @@ func fetchFreebuffUpstreamSession(ctx context.Context, token string) (*freebuffU
 		return nil, fmt.Errorf("create session request failed: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	req.Header.Set("User-Agent", "Freebuff-CLI/0.2.36")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := executor.DoFreebuffHTTP(ctx, nil, req)

@@ -7,11 +7,16 @@ since: 1.9.14
 
 # Advanced Features
 
-Three features in 9router-go came from other projects. Where that happened, the
+Four features in 9router-go came from other projects. Where that happened, the
 source is listed as a link at the end of each feature — you do not need to know
 where something came from to use it.
 
 Each feature below tells you **what it does** and **how to use it, step by step**.
+
+One of those sources is [9Router Pro](https://github.com/giienew/9router-pro), a
+community edition of [9Router](https://github.com/decolua/9router). Only the
+operator-facing feature was ported, never its UI, so the dashboard here stays the
+one this project already has.
 
 ---
 
@@ -70,6 +75,44 @@ If several rules could apply, the order is:
 
 An exact binding to an **empty** prompt stays in force — it does not fall through
 to a keyword match.
+
+### Per-key scope
+
+A client API key can carry its own binding, and the resolver prefers a
+key-scoped binding over the global one for the same model. Two keys using the
+same model can therefore run different presets — one key gets your careful
+instructions, another gets the aggressive one — without a second gateway. The
+dashboard exposes the per-key binding rows and a playground that re-runs
+resolution under one chosen key, so you can see the key's own override win
+before handing the key out.
+
+### Position and mode
+
+A preset carries two placement fields beyond the text:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `position` | `""` / `system` | Prepended as a system prompt |
+| | `append` | Placed after the original content |
+| `mode` | `""` | Sent as a system prompt |
+| | `chat` | A scripted trailing user turn, for endpoints with no system-prompt slot |
+
+### Syncing a preset library from GitHub
+
+A preset collection published as a repository can be followed instead of
+imported once. Each file becomes one preset per sync pass, and the pass is
+ETag-backed: bodies are stored with their ETag and re-checked with
+`If-None-Match`, so a pass that finds no change is answered from the cache and
+spends no upstream bandwidth or quota. A GitHub token (or a mirror via
+`GITHUB_API_MIRROR` / `GITHUB_RAW_MIRROR`) raises the ceiling from 60
+requests/hour anonymous to 5,000.
+
+### The injection tester
+
+Before spending tokens on a live call, the tester diffs the request body
+before and after injection, so the binding decision is visible for zero cost.
+An optional live call shows the reply, and every gate that was only assumed is
+checked live and reported — a wrong verdict is worse than none.
 
 ### Notes
 
@@ -290,3 +333,72 @@ thresholds, and the spending cutoff. That is out of date. All three exist, and a
 key past its budget with hard cutoff on is rejected with `402 budget_exhausted`.
 
 **Full guide:** [Governance](governance.html)
+
+---
+
+## Model Breakers — one bad model must not park the whole provider
+
+**Since:** v1.9.18 · **Source:** [giienew/9router-pro](https://github.com/giienew/9router-pro) (pro.28)
+
+Two other layers already watch provider health, and both answer the wrong
+question for this case. The provider-level circuit breaker opens the whole
+provider, so one model failing inside a healthy provider takes every sibling
+offline with it. The automatic [Model Health](usage-analytics.html) loop probes
+models on a schedule, so a model that began failing thirty seconds ago keeps
+receiving requests until the next pass.
+
+This layer watches live traffic, scoped to **one provider/model pair**.
+
+### What it does
+
+Five failures that are the model's own fault open a 60-second cooldown. Each
+further cooldown doubles the wait, capped at 10 minutes. A model that fails
+through three cooldown cycles stops serving entirely until you reset it.
+
+| State | Meaning | How it ends |
+|---|---|---|
+| Serving | The pair is admitted. It is listed only because it failed before and recovered. | — |
+| Cooling | Requests fail over instead of being dialled. | The timer elapses, then the next request is a fresh probe |
+| Disabled | Serves nothing. | Only a reset |
+
+### Only the model's own failures count
+
+This is the rule that keeps the layer from doing harm, and it is why a provider
+outage never appears here.
+
+| What happened | Charged to this breaker? | Whose job instead |
+|---|---|---|
+| The model is gone, or the prompt does not fit it | Yes | — |
+| The provider is down (5xx, transport error) | No | The provider circuit breaker |
+| One account is throttled (429, quota, auth) | No | Account rotation |
+| The request itself is malformed | No | Request validation |
+
+So a briefly-down provider never puts its whole model list into cooldown, and one
+throttled account never parks a model every other account serves fine.
+
+### How to use it
+
+1. Click **Model Breakers** in the sidebar.
+2. Held-back pairs are listed first: **Disabled**, then **Cooling**, then
+   everything healthy.
+3. A row shows the provider, the model, the state, the consecutive failure count,
+   how many cooldown cycles it has already served, and how long until the probe.
+4. **Filter model…** and **Provider…** narrow the list when a provider has many
+   models. **Refresh** re-reads it.
+5. To lift one pair, click **Reset** on its row. To lift everything at once —
+   the case after a provider-wide outage you have already fixed — use
+   **Reset all**.
+
+Resetting also drops the escalation, so the next cooldown starts at the base
+60 seconds again rather than the longer one the model had climbed to.
+
+### What you should know
+
+- **A disabled model has no timer.** Waiting does not fix it, which is why reset
+  is the only way back — it serves no traffic, so it can never record the success
+  that would reopen it on its own.
+- **Testing a model always works.** The dashboard's test button bypasses this
+  layer on purpose: it must tell you what the model does right now, not what the
+  breaker thinks of it.
+- **A refuse never cools a credential.** The model is never dialled, so a healthy
+  account is not taken out of rotation over a verdict about a model.

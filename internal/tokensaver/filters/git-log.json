@@ -5,13 +5,29 @@
   "category": "git",
   "priority": 70,
   "match": {
-    "outputTypes": ["git-log"],
-    "commands": ["^git\\s+log\\b"],
-    "patterns": ["^commit [0-9a-f]{7,40}", "^Author: "]
+    "outputTypes": [
+      "git-log"
+    ],
+    "commands": [
+      "^git\\s+log\\b"
+    ],
+    "patterns": [
+      "^commit [0-9a-f]{7,40}",
+      "^Author: "
+    ]
   },
   "rules": {
-    "includePatterns": ["^commit [0-9a-f]{7,40}", "^\\s{4}\\S"],
-    "dropPatterns": ["^Author: ", "^Date: ", "^\\s*$"],
+    "includePatterns": [
+      "^commit [0-9a-f]{7,40}",
+      "^\\s{4}\\S",
+      "^Author: ",
+      "^Date: "
+    ],
+    "dropPatterns": [
+      "^Author: ",
+      "^Date: ",
+      "^\\s*$"
+    ],
     "collapsePatterns": [],
     "deduplicate": false,
     "maxLines": 120,
@@ -19,7 +35,9 @@
     "tailLines": 20
   },
   "preserve": {
-    "errorPatterns": ["^commit "],
+    "errorPatterns": [
+      "^commit "
+    ],
     "summaryPatterns": []
   },
   "tests": [

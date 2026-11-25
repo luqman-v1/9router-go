@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	json "encoding/json/v2"
 
 	"9router/proxy/internal/providers"
 )
@@ -86,7 +90,7 @@ func TestForwardGemini_HeaderTimeout_ReturnsRetryable502(t *testing.T) {
 	// If translation fails the call returns before dialing, so pin the body to the
 	// OpenAI shape TranslateOpenAIToGeminiWithSession accepts.
 
-	_, err := ForwardGemini(context.Background(), client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium")
+	_, err := ForwardGemini(context.Background(), client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium", "")
 	if err == nil {
 		t.Fatal("ForwardGemini() error = nil, want retryable 502")
 	}
@@ -118,7 +122,7 @@ func TestForwardGemini_ClientCancelled_StaysTerminal(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
 	body := `{"model":"gemini-3.8-flash-medium","messages":[{"role":"user","content":"hi"}]}`
 
-	_, err := ForwardGemini(ctx, client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium")
+	_, err := ForwardGemini(ctx, client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium", "")
 	if err == nil {
 		t.Fatal("ForwardGemini() error = nil, want context error")
 	}
@@ -128,5 +132,198 @@ func TestForwardGemini_ClientCancelled_StaysTerminal(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("ForwardGemini() error = %v, want context.Canceled", err)
+	}
+}
+
+// TestForwardGemini_Bare429RetriesWithMovedSystemInstruction pins the 1-hop
+// fallback retry: when the Antigravity backend answers a bare 429
+// RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED / RATE_LIMIT_EXCEEDED / "Individual
+// quota reached" marker), ForwardGemini retries once with the
+// systemInstruction folded into contents[0]. If the retry also fails, the
+// original 429 is returned so the combo loop can rotate the connection
+// (local hardening).
+func TestForwardGemini_Bare429RetriesWithMovedSystemInstruction(t *testing.T) {
+	var hits atomic.Int64
+	var secondBody atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if n == 1 {
+			// First request: bare 429 RESOURCE_EXHAUSTED.
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}`)
+			return
+		}
+		// Second request (retry): save body for inspection, then succeed.
+		secondBody.Store(string(body))
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"hello"}]}`
+
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
+	if err != nil {
+		t.Fatalf("ForwardGemini() error = %v, want nil", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("ForwardGemini() status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 2 {
+		t.Errorf("ForwardGemini() made %d requests, want 2 (original + retry)", hits.Load())
+	}
+
+	// Verify the retry body has no system_instruction and the system prompt
+	// is in contents[0]. The retry body is wrapped in an Antigravity envelope
+	// ({project, model, request: {geminiRequest}}), so unwrap it first.
+	retryBody := secondBody.Load().(string)
+	var envelope struct {
+		Request jsontext.Value `json:"request"`
+	}
+	if jsonErr := json.Unmarshal([]byte(retryBody), &envelope); jsonErr != nil {
+		t.Fatalf("unmarshal retry envelope: %v", jsonErr)
+	}
+	if len(envelope.Request) == 0 {
+		t.Fatal("retry body has no request field (expected Antigravity envelope)")
+	}
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(envelope.Request), &m); jsonErr != nil {
+		t.Fatalf("unmarshal retry inner request: %v", jsonErr)
+	}
+	if si, ok := m["system_instruction"]; ok && si != nil {
+		if siMap, ok := si.(map[string]any); ok && len(siMap) > 0 {
+			t.Errorf("retry body still has system_instruction: %v", si)
+		}
+	}
+	contents, _ := m["contents"].([]any)
+	if len(contents) == 0 {
+		t.Fatal("retry body contents is empty")
+	}
+	first, _ := contents[0].(map[string]any)
+	if first == nil {
+		t.Fatal("retry body contents[0] is not an object")
+	}
+	if role, _ := first["role"].(string); role != "user" {
+		t.Errorf("retry body contents[0].role = %q, want user", role)
+	}
+	parts, _ := first["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatal("retry body contents[0].parts is empty")
+	}
+	firstPart, _ := parts[0].(map[string]any)
+	if firstPart == nil {
+		t.Fatal("retry body contents[0].parts[0] is not an object")
+	}
+	if text, _ := firstPart["text"].(string); !strings.Contains(text, "helpful assistant") {
+		t.Errorf("retry body contents[0].parts[0].text = %q, want it to contain the system prompt", text)
+	}
+}
+
+// TestForwardGemini_ExplicitQuota429DoesNotRetry pins the gate: a 429 with
+// QUOTA_EXHAUSTED details is a real quota error, not a content rejection,
+// so ForwardGemini must NOT retry with the moved systemInstruction
+// (local hardening).
+func TestForwardGemini_ExplicitQuota429DoesNotRetry(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"code":429,"message":"Quota exhausted","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}}`)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
+
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
+	}
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("ForwardGemini() error type = %T, want *UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("ForwardGemini() status = %d, want 429", ue.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("ForwardGemini() made %d requests, want 1 (no retry for explicit quota)", hits.Load())
+	}
+}
+
+// TestForwardGemini_Bare429RetryFails_ReturnsOriginal429 pins the fallback:
+// when the retry also fails, the original 429 is returned so the combo loop
+// can rotate the connection (local hardening).
+func TestForwardGemini_Bare429RetryFails_ReturnsOriginal429(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}`)
+			return
+		}
+		// Retry also fails with 429.
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}`)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
+
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
+	}
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("ForwardGemini() error type = %T, want *UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("ForwardGemini() status = %d, want 429 (original)", ue.StatusCode)
+	}
+	if hits.Load() != 2 {
+		t.Errorf("ForwardGemini() made %d requests, want 2 (original + retry)", hits.Load())
+	}
+}
+
+// TestForwardGemini_GeminiCLIDoesNotTriggerAntigravity429Retry verifies that
+// gemini-cli format connections skip the bare-429 retry path. The retry is
+// Antigravity-specific (WrapForAntigravity), so a gemini-cli connection must
+// return the 429 directly instead of attempting the moved-systemInstruction
+// retry.
+func TestForwardGemini_GeminiCLIDoesNotTriggerAntigravity429Retry(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}`)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/v1internal", Format: "gemini-cli"}
+	body := `{"model":"gemini-3-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`
+
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", "")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("ForwardGemini() error = nil, want UpstreamError")
+	}
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("ForwardGemini() error type = %T, want *UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("ForwardGemini() status = %d, want 429", ue.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("ForwardGemini() made %d requests, want 1 (no retry for gemini-cli)", hits.Load())
 	}
 }

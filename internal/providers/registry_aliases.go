@@ -8,6 +8,7 @@ package providers
 // This is the display/routing prefix used by /v1/models; ProviderAliasMap below
 // stays the alias -> canonical id table used when resolving incoming model ids.
 var RegistryAliases = map[string]string{
+	"agy-acp":           "agcpy",
 	"antigravity":       "ag",
 	"api-airforce":      "af",
 	"assemblyai":        "aai",
@@ -29,6 +30,7 @@ var RegistryAliases = map[string]string{
 	"codebuddy-intl":    "cbai",
 	"codex":             "cx",
 	"commandcode":       "cmc",
+	"commandcode-goat":  "cmc-goat",
 	"cursor":            "cu",
 	"deepgram":          "dg",
 	"deepseek":          "ds",
@@ -39,6 +41,7 @@ var RegistryAliases = map[string]string{
 	"fal-ai":            "fal",
 	"featherless":       "fl",
 	"fish-audio":        "fish",
+	"free-pi":           "fp",
 	"gemini-cli":        "gc",
 	"gemini-web":        "gweb",
 	"github":            "gh",
@@ -49,6 +52,7 @@ var RegistryAliases = map[string]string{
 	"hyperbolic":        "hyp",
 	"iflow":             "if",
 	"jina-ai":           "jina",
+	"kenari":            "ki",
 	"kilo-gateway":      "kgw",
 	"kilocode":          "kc",
 	"kiro":              "kr",
@@ -66,6 +70,7 @@ var RegistryAliases = map[string]string{
 	"opencode":            "oc",
 	"opencode-go":         "ocg",
 	"opencode-zen":        "ocz",
+	"opendesign":          "od",
 	"perplexity":          "pplx",
 	"perplexity-agent":    "pa",
 	"perplexity-web":      "pw",
@@ -75,6 +80,7 @@ var RegistryAliases = map[string]string{
 	"runwayml":            "runway",
 	"sambanova":           "samba",
 	"stability-ai":        "stability",
+	"synthetic":           "syn",
 	"tencent":             "hunyuan",
 	"tinyfish":            "tinyfish",
 	"v1m":                 "v1m",

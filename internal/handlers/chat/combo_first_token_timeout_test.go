@@ -44,7 +44,7 @@ func TestComboChat_FirstTokenTimeoutAdvancesToNextModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := database.CreateCombo("test-timeout-combo", "test-timeout-combo", "chat", `["provider1/m1", "provider2/m2"]`, "fallback"); err != nil {
+	if err := database.CreateCombo("test-timeout-combo", "test-timeout-combo", "chat", `["provider1/m1", "provider2/m2"]`, "fallback", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,7 +102,7 @@ func TestComboChat_FirstTokenTimeoutIgnoredOnLastMember(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := database.CreateCombo("test-single-combo", "test-single-combo", "chat", `["provider1/m1"]`, "fallback"); err != nil {
+	if err := database.CreateCombo("test-single-combo", "test-single-combo", "chat", `["provider1/m1"]`, "fallback", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,7 +164,7 @@ func TestComboChat_FirstTokenArrivesBeforeTimeoutLetsStreamComplete(t *testing.T
 		t.Fatal(err)
 	}
 
-	if err := database.CreateCombo("test-complete-combo", "test-complete-combo", "chat", `["provider1/m1", "provider2/m2"]`, "fallback"); err != nil {
+	if err := database.CreateCombo("test-complete-combo", "test-complete-combo", "chat", `["provider1/m1", "provider2/m2"]`, "fallback", ""); err != nil {
 		t.Fatal(err)
 	}
 

@@ -13,6 +13,8 @@ import (
 
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+
+	"github.com/google/uuid"
 )
 
 func TestFreebuff_EnsureMarker(t *testing.T) {
@@ -123,19 +125,25 @@ func TestFreebuff_EnsureEndTurnTool(t *testing.T) {
 func TestFreebuff_RootAgentIdForModel(t *testing.T) {
 	cases := map[string]string{
 		"deepseek/deepseek-v4-flash":      "base3-free-deepseek-flash",
+		"deepseek/deepseek-v4-pro":        "base3-free-deepseek",
+		"deepseek/deepseek-v4-flash-fast": "base3-fast",
+		"z-ai/glm-5.2":                    "base3-free-glm",
 		"z-ai/glm-5.3-flash":              "base3-free-glm-5-3-flash",
-		"openai/gpt-5.6-luna":             "base3-free-luna",
 		"mimo/mimo-v2.5":                  "base3-free-mimo",
+		"openai/gpt-5.6-luna":             "base3-free-luna",
+		"openai/gpt-6-luna":               "base3-free-luna-6",
+		"google/gemini-3.8-flash":         "base3-free-gemini-3-8-flash",
 		"upstage/solar-pro4":              "base3-free-solar-pro4",
+		"upstage/solar-mini4":             "base3-free-solar-mini4",
 		"meta/muse-spark-1.2-contributor": "base3-free-muse-spark",
-		"anthropic/claude-fable-5":        "base3-free-fable",
-		"unknown/random-model":            "base2-free",
+		"anthropic/claude-fable-5":        "base2-free-fable",
+		"unknown-model":                   "base3-free-deepseek-flash",
 	}
 
 	for m, expected := range cases {
 		got := rootAgentIdForModel(m)
 		if got != expected {
-			t.Errorf("rootAgentIdForModel(%q) = %q, want %q", m, got, expected)
+			t.Errorf("model %q: expected %q, got %q", m, expected, got)
 		}
 	}
 }
@@ -148,11 +156,17 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == freebuffSessionPath:
+		case r.URL.Path == freebuffAdmissionPath:
 			atomic.AddInt64(&sessionCalls, 1)
 			if r.Header.Get("Authorization") != "Bearer test-fb-token" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
+			}
+			if got := r.Header.Get("x-freebuff-wallet-spend-limit"); got != "session" {
+				t.Errorf("expected x-freebuff-wallet-spend-limit=session, got %q", got)
+			}
+			if got := r.Header.Get("x-freebuff-multi-session"); got != "1" {
+				t.Errorf("expected x-freebuff-multi-session=1, got %q", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.MarshalWrite(w, map[string]any{
@@ -195,6 +209,12 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 				}
 				if meta["freebuff_instance_id"] != "fb-inst-999" {
 					t.Errorf("expected freebuff_instance_id fb-inst-999, got %v", meta["freebuff_instance_id"])
+				}
+				if meta["surface"] != "cli" {
+					t.Errorf("expected surface cli, got %v", meta["surface"])
+				}
+				if meta["freebuff_multi_session"] != "1" {
+					t.Errorf("expected freebuff_multi_session 1, got %v", meta["freebuff_multi_session"])
 				}
 				// client_id cloaking: bare "9router-" branding must never leak
 				// upstream; default requests carry an unbranded random id.
@@ -292,7 +312,7 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == freebuffSessionPath:
+		case r.URL.Path == freebuffAdmissionPath:
 			_, _ = w.Write([]byte(`{"status":"active","instanceId":"fb-inst-999","expiresAt":"2030-01-01T00:00:00Z"}`))
 		case r.URL.Path == freebuffRunPath:
 			var req map[string]any
@@ -360,7 +380,7 @@ func TestForwardFreebuff_InvalidJSON(t *testing.T) {
 
 func TestFreebuff_RequestSession_ModelLocked_Recovery(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freebuffSessionPath {
+		if r.URL.Path != freebuffAdmissionPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -397,7 +417,7 @@ func TestFreebuff_RequestSession_ModelLocked_Recovery(t *testing.T) {
 
 func TestFreebuff_RequestSession_ModelLocked_ConflictError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freebuffSessionPath {
+		if r.URL.Path != freebuffAdmissionPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -458,7 +478,7 @@ func TestFreebuff_RequestSession_ModelLocked_ConflictError(t *testing.T) {
 
 func TestForwardFreebuff_ModelLocked_Writes409(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == freebuffSessionPath {
+		if r.URL.Path == freebuffAdmissionPath {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{
@@ -518,7 +538,7 @@ func TestForwardFreebuff_ModelLocked_Writes409(t *testing.T) {
 
 func TestFreebuff_RequestSession_EmptyInstanceID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freebuffSessionPath {
+		if r.URL.Path != freebuffAdmissionPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -544,5 +564,88 @@ func TestFreebuff_RequestSession_EmptyInstanceID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "freebuff session returned empty instanceId") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// The admission call must carry a CLI-minted instance id: the release binary
+// answers a multi-session POST without one with 400 "Desktop purchase
+// admission requires an instance id", and the purchase is bound to the id the
+// client sent.
+func TestFreebuff_AdmissionCarriesInstanceID(t *testing.T) {
+	var gotInstance, gotAttempt, gotModel, gotVersion string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != freebuffAdmissionPath || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		gotInstance = r.Header.Get(freebuffInstanceHeader)
+		gotAttempt = r.Header.Get(freebuffDesktopAttemptHeader)
+		gotModel = r.Header.Get("x-freebuff-model")
+		gotVersion = r.Header.Get(freebuffClientVersionHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"active","instanceId":"srv-1","expiresAt":"2099-01-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	token, model := "tok-admission", "m-admission"
+	clearFreebuffSession(token, model)
+	sess, err := requestFreebuffSession(context.Background(), srv.Client(), srv.URL, token, model, nil)
+	if err != nil {
+		t.Fatalf("admission failed: %v", err)
+	}
+	if sess == nil || sess.InstanceID != "srv-1" {
+		t.Fatalf("unexpected session: %+v", sess)
+	}
+	if !strings.HasPrefix(gotInstance, freebuffInstancePrefix) {
+		t.Fatalf("instance id = %q, want the %q prefix", gotInstance, freebuffInstancePrefix)
+	}
+	if _, err := uuid.Parse(strings.TrimPrefix(gotInstance, freebuffInstancePrefix)); err != nil {
+		t.Errorf("instance id %q does not carry a uuid: %v", gotInstance, err)
+	}
+	// The attempt header carries the bare uuid; the prefixed form is answered
+	// invalid_attempt_id upstream.
+	if gotAttempt != strings.TrimPrefix(gotInstance, freebuffInstancePrefix) {
+		t.Errorf("desktop attempt id = %q, want the bare uuid of %q", gotAttempt, gotInstance)
+	}
+	if gotModel != model {
+		t.Errorf("x-freebuff-model = %q, want %q", gotModel, model)
+	}
+	if gotVersion != freebuffCLIVersion {
+		t.Errorf("client version = %q, want %q", gotVersion, freebuffCLIVersion)
+	}
+}
+
+// Freebuff answers a non-official client with 403 third_party_client_warning
+// and records a strike against the account. The refusal is terminal: it must be
+// surfaced with the upstream's own wording, not passed on as a bare 403 that a
+// caller may treat as retryable.
+func TestFreebuff_ThirdPartyRefusalIsTerminal(t *testing.T) {
+	body := `{"error":"third_party_client_warning","message":"Freebuff free mode only works through the official Freebuff CLI.","strikes":1,"strikeLimit":5}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != freebuffAdmissionPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	token, model := "tok-third-party", "m-third-party"
+	clearFreebuffSession(token, model)
+	sess, err := requestFreebuffSession(context.Background(), srv.Client(), srv.URL, token, model, nil)
+	if sess != nil {
+		t.Fatalf("expected no session, got %+v", sess)
+	}
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected a 403 UpstreamError, got %v", err)
+	}
+	if !strings.Contains(string(ue.Body), "official Freebuff CLI") {
+		t.Errorf("refusal body lost the upstream explanation: %s", ue.Body)
+	}
+	if !strings.Contains(string(ue.Body), "strike 1") {
+		t.Errorf("refusal body does not report the strike: %s", ue.Body)
 	}
 }

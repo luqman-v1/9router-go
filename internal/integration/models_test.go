@@ -137,10 +137,10 @@ func TestModelsListComboPublishesSmallestSeatLimit(t *testing.T) {
 		t.Errorf("wide-combo owned_by = %q, want \"combo\"", wide.OwnedBy)
 	}
 	if wide.ContextLength == nil || *wide.ContextLength != 128000 {
-		t.Errorf("wide-combo context_length = %v, want 128000 (smallest window in the seat tree)", wide.ContextLength)
+		t.Errorf("wide-combo context_length = %d, want 128000 (smallest window in the seat tree)", lo.FromPtrOr(wide.ContextLength, 0))
 	}
 	if wide.MaxCompletionTokens == nil || *wide.MaxCompletionTokens != 8192 {
-		t.Errorf("wide-combo max_completion_tokens = %v, want 8192 (smallest output any seat accepts)", wide.MaxCompletionTokens)
+		t.Errorf("wide-combo max_completion_tokens = %d, want 8192 (smallest output any seat accepts)", lo.FromPtrOr(wide.MaxCompletionTokens, 0))
 	}
 }
 

@@ -32,6 +32,11 @@ import (
 const (
 	ClaudePingModel = "claude-haiku-4-5-20251001"
 	CodexPingModel  = "gpt-5.6-terra"
+	// CommandCodeGoatPingModel is the cheapest model the Command Code Provider
+	// API serves on its OpenAI lane. The ping only needs one token; a model on
+	// /chat/completions keeps the request on the lane the plain body below is
+	// shaped for, so no Claude-format conversion is needed.
+	CommandCodeGoatPingModel = "deepseek/deepseek-v4.1-flash"
 
 	// PingText is the prompt every ping sends. Upstream sends "hi" for both
 	// providers, and the Codex instructions line ("Reply with OK.") rides along
@@ -105,6 +110,8 @@ func PingModel(provider string) string {
 	switch provider {
 	case "codex":
 		return CodexPingModel
+	case "commandcode-goat":
+		return CommandCodeGoatPingModel
 	default:
 		return ClaudePingModel
 	}

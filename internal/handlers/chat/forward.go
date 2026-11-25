@@ -296,6 +296,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 		// opening a new tool-call index without an id aborts strict
 		// OpenAI-compatible clients mid-turn (upstream 95c9d03e).
 		toolFill := internalproxy.NewStreamToolCallIDFill()
+		var streamUsage *translator.OpenAIUsage
 		err := internalproxy.ScanStream(upstream, func(payload []byte) {
 			if patched, changed := toolFill.Fill(payload); changed {
 				payload = patched
@@ -311,8 +312,19 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 			if flusher != nil {
 				flusher.Flush()
 			}
-			if usage := translator.ParseResponseUsage(payload); usage != nil {
-				translator.SetUsage(ctx, usage)
+			// Only a chunk carrying the JSON `"usage"` key can yield usage:
+			// every parser below (ParseResponseUsage, ParseResponsesUsage,
+			// AccumulateClaudeStreamUsage) unmarshals a struct with a
+			// `json:"usage"` field. The guard skips two full unmarshals per
+			// content chunk — the vast majority of a stream — for the price
+			// of one substring search.
+			if bytes.Contains(payload, []byte(`"usage"`)) {
+				if usage := translator.ParseResponseUsage(payload); usage != nil {
+					translator.SetUsage(ctx, usage)
+				} else if acc := translator.AccumulateClaudeStreamUsage(streamUsage, payload); acc != nil {
+					streamUsage = acc
+					translator.SetUsage(ctx, streamUsage)
+				}
 			}
 		})
 		if err != nil {
@@ -564,7 +576,7 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 			return &internalproxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := internalproxy.EmptyUpstreamError(body); err != nil {
+	} else if err := internalproxy.EmptyUpstreamError(body); err != nil && !internalproxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 
@@ -588,6 +600,12 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 	// Claude write paths send. Only a body whose contents parse as JSON is
 	// unwrapped, and only for a request that asked for JSON.
 	body = jsonfence.ApplyContents(ctx, body)
+	// vLLM ends a turn that called tools (named tool_choice) with a plain
+	// finish_reason "stop"; agent loops read that as the final answer and
+	// stop. Normalize it to tool_calls here, before any client dialect is
+	// rendered, so the OpenAI, Responses-bridge and Claude-translation
+	// (stop_reason tool_use) paths all send the corrected reason.
+	body = translator.NormalizeToolCallFinish(body)
 
 	// A /v1/responses client on a Chat Completions upstream needs the answer in
 	// the Responses shape; translate marks a Claude client, which it is not.

@@ -104,12 +104,18 @@
   let isPruning = $state(false)
   let isPruningUsage = $state(false)
   let isVacuuming = $state(false)
+  let isRestarting = $state(false)
   // Global System Prompt State
   let enableSystemPrompt = $state(false)
   let systemPromptPrefix = $state('')
   let systemPromptSuffix = $state('')
   let appName = $state('')
   let appLogoUrl = $state('')
+  let appDescription = $state('')
+  let appTagline = $state('')
+  let loginLogo = $state('')
+  let trayAppName = $state('')
+  let trayIcon = $state('')
   let isUploadingLogo = $state(false)
   let logoUploadError = $state('')
   let logoFileInput = $state<HTMLInputElement | null>(null)
@@ -240,6 +246,8 @@
   let stickyRoundRobinLimit = $state(3)
   let comboStrategy = $state('first-model')
   let forceFallback = $state(false)
+  let qoderCheckin = $state(false)
+  let minimaxCheckin = $state(false)
 
   // Feature Visibility: ids of the sidebar entries this deployment hides. The
   // entry list itself lives in web/src/lib/nav.ts, shared with the sidebar.
@@ -274,6 +282,9 @@
   let passwordSuccessMessage = $state<string | null>(null)
   let passwordErrorMessage = $state<string | null>(null)
   let showPasswordFields = $state(false)
+  let showCurrPwd = $state(false)
+  let showNewPwd = $state(false)
+  let showConfirmPwd = $state(false)
 
   // SSO State
   let authMode = $state<'password' | 'oidc' | 'saml'>('password')
@@ -316,6 +327,8 @@
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
       if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
       if (typeof settings.forceFallback === 'boolean') forceFallback = settings.forceFallback
+      if (typeof settings.qoderCheckin === 'boolean') qoderCheckin = settings.qoderCheckin
+      if (typeof settings.minimaxCheckin === 'boolean') minimaxCheckin = settings.minimaxCheckin
 
       // Global system prompt
       enableSystemPrompt = !!settings.systemPromptEnabled
@@ -337,6 +350,16 @@
       // Feature Visibility
       hiddenNav = orderHiddenNav(settings.navVisibility)
       navOrder = normalizeNavOrder(settings.navVisibility)
+
+      // Whitelabel branding
+      if (typeof settings.appName === 'string') appName = settings.appName
+      if (typeof settings.appLogoUrl === 'string') appLogoUrl = settings.appLogoUrl
+      if (typeof settings.appDescription === 'string') appDescription = settings.appDescription
+      if (typeof settings.appTagline === 'string') appTagline = settings.appTagline
+      if (typeof settings.loginLogo === 'string') loginLogo = settings.loginLogo
+      if (typeof settings.trayAppName === 'string') trayAppName = settings.trayAppName
+      if (typeof settings.trayIcon === 'string') trayIcon = settings.trayIcon
+
       // Currency
       applyCurrency(settings.displayCurrency)
     }
@@ -361,6 +384,11 @@
         if (typeof s.systemPromptSuffix === 'string') systemPromptSuffix = s.systemPromptSuffix
         if (typeof s.appName === 'string') appName = s.appName
         if (typeof s.appLogoUrl === 'string') appLogoUrl = s.appLogoUrl
+        if (typeof s.appDescription === 'string') appDescription = s.appDescription
+        if (typeof s.appTagline === 'string') appTagline = s.appTagline
+        if (typeof s.loginLogo === 'string') loginLogo = s.loginLogo
+        if (typeof s.trayAppName === 'string') trayAppName = s.trayAppName
+        if (typeof s.trayIcon === 'string') trayIcon = s.trayIcon
 
         if (s.authMode === 'oidc' || s.authMode === 'saml') authMode = s.authMode
         if (s.oidcIssuerUrl) oidcIssuerUrl = String(s.oidcIssuerUrl)
@@ -529,11 +557,18 @@
         stickyRoundRobinLimit,
         comboStrategy,
         forceFallback,
+        qoderCheckin,
+        minimaxCheckin,
         systemPromptEnabled: enableSystemPrompt,
         systemPromptPrefix,
         systemPromptSuffix,
         appName: appName.trim(),
         appLogoUrl: appLogoUrl.trim(),
+        appDescription: appDescription.trim(),
+        appTagline: appTagline.trim(),
+        loginLogo: loginLogo.trim(),
+        trayAppName: trayAppName.trim(),
+        trayIcon: trayIcon.trim(),
         authMode,
         oidcIssuerUrl,
         oidcClientId,
@@ -760,6 +795,35 @@
     }
   }
 
+  async function handleRestartGateway() {
+    if (!confirm('Restart the gateway process? Every in-flight request is dropped.')) return
+    const answer = window.prompt('Type "RESTART" to confirm:')
+    if (answer !== 'RESTART') return
+    isRestarting = true
+    try {
+      await api.restartGateway()
+    } catch (err) {
+      isRestarting = false
+      alert(`Failed to restart: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    // The listener closes, then a replacement process takes the port. Give the
+    // drain a moment, then poll an authenticated endpoint: a 200 means the new
+    // process is serving, so reload instead of leaving a dead page.
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        await api.getDatabaseStats()
+        window.location.reload()
+        return
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
+    isRestarting = false
+    alert('The gateway did not answer after a restart. Check the process log.')
+  }
+
   function formatBytes(bytes?: number): string {
     if (!bytes || bytes <= 0) return '0 B'
     const units = ['B', 'KB', 'MB', 'GB']
@@ -884,20 +948,25 @@
           <Shield class="w-4 h-4 text-brand-500" />
           <h2 class="text-sm font-bold text-text-main">Security & Password</h2>
         </div>
-        <Toggle
-          checked={requireLogin}
-          size="sm"
-          label="Require login"
-          onChange={(val) => (requireLogin = val)}
-        />
       </div>
 
       <div class="space-y-3 text-xs">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="font-semibold text-text-main">Require Password on Localhost</p>
-            <p class="text-[11px] text-text-subtle">Default password is <code class="font-mono text-brand-500">123456</code></p>
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="font-semibold text-text-main">Require a password</p>
+            <p class="text-[11px] text-text-subtle">
+              Off means the dashboard opens without a login for anyone who can reach
+              this port — a deliberate choice for a box behind a firewall, never for an
+              exposed one. Unset password falls back to
+              <code class="font-mono text-brand-500">123456</code>.
+            </p>
           </div>
+          <Toggle
+            checked={requireLogin}
+            size="sm"
+            label="Require a password for the dashboard"
+            onChange={(val) => (requireLogin = val)}
+          />
         </div>
 
         <div class="space-y-1 pt-1">
@@ -940,38 +1009,77 @@
 
               <div class="space-y-1">
                 <label for="curr-pwd" class="block text-[11px] font-semibold text-text-muted">Current Password</label>
+                <div class="relative">
                 <input
                   id="curr-pwd"
-                  type="password"
+                  type={showCurrPwd ? "text" : "password"}
+
                   bind:value={currentPassword}
                   placeholder="123456"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />
+                <button
+                  type="button"
+                  onclick={() => (showCurrPwd = !showCurrPwd)}
+                  class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+                  aria-label={showCurrPwd ? "Hide password" : "Show password"}
+                >
+                  <span class="material-symbols-outlined text-[18px]">
+                    {showCurrPwd ? "visibility_off" : "visibility"}
+                  </span>
+                </button>
+              </div>
               </div>
 
               <div class="space-y-1">
                 <label for="new-pwd" class="block text-[11px] font-semibold text-text-muted">New Password</label>
+                <div class="relative">
                 <input
                   id="new-pwd"
-                  type="password"
+                  type={showNewPwd ? "text" : "password"}
+
                   bind:value={newPassword}
                   placeholder="At least 6 characters"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />
+                <button
+                  type="button"
+                  onclick={() => (showNewPwd = !showNewPwd)}
+                  class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+                  aria-label={showNewPwd ? "Hide password" : "Show password"}
+                >
+                  <span class="material-symbols-outlined text-[18px]">
+                    {showNewPwd ? "visibility_off" : "visibility"}
+                  </span>
+                </button>
+              </div>
               </div>
 
               <div class="space-y-1">
                 <label for="confirm-pwd" class="block text-[11px] font-semibold text-text-muted">Confirm New Password</label>
+                <div class="relative">
                 <input
                   id="confirm-pwd"
-                  type="password"
+                  type={showConfirmPwd ? "text" : "password"}
+
                   bind:value={confirmNewPassword}
                   placeholder="Re-enter new password"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />
+                <button
+                  type="button"
+                  onclick={() => (showConfirmPwd = !showConfirmPwd)}
+                  class="absolute inset-y-0 right-0 flex items-center pr-3 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+                  aria-label={showConfirmPwd ? "Hide password" : "Show password"}
+                >
+                  <span class="material-symbols-outlined text-[18px]">
+                    {showConfirmPwd ? "visibility_off" : "visibility"}
+                  </span>
+                </button>
+              </div>
               </div>
 
               <button
@@ -1097,6 +1205,9 @@
           >
             <option value="failover">Failover (Try next on error/rate-limit)</option>
             <option value="round-robin">Round Robin (Distribute requests across all connections)</option>
+            <option value="least-busy">
+              Least Busy (Send each request to the least-loaded connection)
+            </option>
             <option value="sticky-round-robin">Sticky Round-Robin (Keep active connection up to limit)</option>
           </select>
         </div>
@@ -1139,6 +1250,28 @@
         <p class="text-[11px] text-text-subtle">
           When every account is in cooldown, send the request through the account that
           frees up first instead of failing. Requests can still be rejected upstream.
+        </p>
+
+        <Toggle
+          checked={qoderCheckin}
+          size="sm"
+          label="Qoder daily credit check-in"
+          onChange={(v: boolean) => (qoderCheckin = v)}
+        />
+        <p class="text-[11px] text-text-subtle">
+          Claim Qoder and Qoder CN daily credits automatically every 30 minutes.
+          Last result per account is available at <code>GET /api/qoder/checkins</code>.
+        </p>
+
+        <Toggle
+          checked={minimaxCheckin}
+          size="sm"
+          label="MiniMax Code daily check-in"
+          onChange={(v: boolean) => (minimaxCheckin = v)}
+        />
+        <p class="text-[11px] text-text-subtle">
+          Claim MiniMax Code daily check-in credits automatically every 30 minutes.
+          Last result per account is available at <code>GET /api/minimax/checkins</code>.
         </p>
 
       </div>
@@ -1304,6 +1437,27 @@
       </div>
     </Card>
 
+    <!-- Gateway process -->
+    <Card id="gateway-process" padding="md" class="space-y-3">
+      <div class="flex items-center gap-2 pb-2 border-b border-border">
+        <RefreshCw class="w-4 h-4 text-brand-500" />
+        <h2 class="text-sm font-bold text-text-main">Gateway Process</h2>
+      </div>
+      <p class="text-xs text-text-muted leading-relaxed">
+        Restart the gateway binary in place. In-flight requests are dropped and the dashboard reconnects once the
+        replacement is listening. Docker containers exit and come back only when their restart policy allows it.
+      </p>
+      <button
+        type="button"
+        onclick={handleRestartGateway}
+        disabled={isRestarting}
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500/10 hover:bg-brand-500/20 border border-brand-500/30 text-xs text-brand-500 font-semibold transition cursor-pointer disabled:opacity-50"
+      >
+        <RefreshCw class="w-3.5 h-3.5 {isRestarting ? 'animate-spin' : ''}" />
+        <span>{isRestarting ? 'Restarting...' : 'Restart Gateway'}</span>
+      </button>
+    </Card>
+
     <!-- SECTION 6: Global System Prompt & Anti-Poisoning -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
@@ -1414,6 +1568,35 @@
           <span class="text-xs text-text-muted">Preview</span>
         </div>
       {/if}
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Application description</span>
+        <textarea
+          bind:value={appDescription}
+          placeholder="A short description shown in the dashboard footer."
+          rows="3"
+          class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500"
+        ></textarea>
+      </label>
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Tagline</span>
+        <Input bind:value={appTagline} placeholder="Your gateway, your rules" />
+        <span class="text-[11px] text-text-subtle">Shown on the login screen beneath the app name.</span>
+      </label>
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Login logo URL</span>
+        <Input bind:value={loginLogo} placeholder="https://example.com/login-logo.png" />
+        <span class="text-[11px] text-text-subtle">An HTTPS URL, or a local absolute path such as /login-logo.png</span>
+      </label>
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Tray app name</span>
+        <Input bind:value={trayAppName} placeholder="9router-go" />
+        <span class="text-[11px] text-text-subtle">Name shown in the system tray companion.</span>
+      </label>
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Tray icon URL</span>
+        <Input bind:value={trayIcon} placeholder="https://example.com/tray-icon.ico" />
+        <span class="text-[11px] text-text-subtle">An HTTPS URL for the tray companion icon (.ico, .png).</span>
+      </label>
     </Card>
     <!-- SECTION: Display. Unit abbreviation, the usage-detail default, an
          advanced-settings disclosure that unfolds the currency rates, the

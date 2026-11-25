@@ -322,3 +322,122 @@ func TestFormatMicros(t *testing.T) {
 		}
 	}
 }
+
+// TestAssess covers the operator-facing view of a budget: the same window
+// resolution and decision the request path uses, surfaced as a status, the
+// remaining headroom and the next roll. It is the mirror of TestCheck — Check
+// fails open on a read error, Assess reports it, because the dashboard must
+// not show a zero that reads as a fresh key when the spend could not be read.
+func TestAssess(t *testing.T) {
+	now := time.Date(2026, 11, 4, 14, 30, 0, 0, time.UTC)
+	const resetAt = "2026-12-01T00:00:00Z" // November 2026 monthly window rolls at December 1.
+
+	tests := []struct {
+		name   string
+		limits Limits
+		spend  Spend
+		err    error
+		want   Assessment
+	}{
+		{
+			name:   "unarmed limits measure nothing",
+			limits: Limits{AlertPct: 80},
+			want:   Assessment{Limits: Limits{AlertPct: 80}},
+		},
+		{
+			name:   "spend under the alert threshold is ok",
+			limits: Limits{LimitMicros: 1_000_000, LimitTokens: 1000, Period: PeriodMonthly, AlertPct: 80},
+			spend:  Spend{Micros: 400_000, Tokens: 500},
+			want: Assessment{
+				Limits:          Limits{LimitMicros: 1_000_000, LimitTokens: 1000, Period: PeriodMonthly, AlertPct: 80},
+				Spend:           Spend{Micros: 400_000, Tokens: 500},
+				RemainingMicros: 600_000,
+				RemainingTokens: 500,
+				Status:          StatusOK,
+				ResetAt:         resetAt,
+			},
+		},
+		{
+			name:   "spend past the alert threshold approaches",
+			limits: Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, AlertPct: 80},
+			spend:  Spend{Micros: 900_000},
+			want: Assessment{
+				Limits:          Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, AlertPct: 80},
+				Spend:           Spend{Micros: 900_000},
+				RemainingMicros: 100_000,
+				Status:          StatusApproaching,
+				ResetAt:         resetAt,
+			},
+		},
+		{
+			name:   "spend at the ceiling with a hard cutoff is exhausted",
+			limits: Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, AlertPct: 80, HardCutoff: true},
+			spend:  Spend{Micros: 2_000_000},
+			want: Assessment{
+				Limits:  Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, AlertPct: 80, HardCutoff: true},
+				Spend:   Spend{Micros: 2_000_000},
+				Status:  StatusExhausted,
+				ResetAt: resetAt,
+			},
+		},
+		{
+			name:   "spend at the ceiling without a hard cutoff approaches",
+			limits: Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, AlertPct: 80},
+			spend:  Spend{Micros: 1_000_000},
+			want: Assessment{
+				Limits:          Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, AlertPct: 80},
+				Spend:           Spend{Micros: 1_000_000},
+				RemainingMicros: 0,
+				Status:          StatusApproaching,
+				ResetAt:         resetAt,
+			},
+		},
+		{
+			name:   "total period never resets",
+			limits: Limits{LimitMicros: 1_000_000, Period: PeriodTotal, HardCutoff: true},
+			spend:  Spend{Micros: 500_000},
+			want: Assessment{
+				Limits:          Limits{LimitMicros: 1_000_000, Period: PeriodTotal, HardCutoff: true},
+				Spend:           Spend{Micros: 500_000},
+				RemainingMicros: 500_000,
+				Status:          StatusOK,
+			},
+		},
+		{
+			name:   "read failure propagates",
+			limits: Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, HardCutoff: true},
+			err:    errors.New("db down"),
+			want:   Assessment{Limits: Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, HardCutoff: true}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &stubReader{spend: tt.spend, err: tt.err}
+			// The unarmed case must not read: pass the stub and assert it was
+			// left alone, so a regression that adds a read for an unarmed key
+			// shows up here as a call counter mismatch rather than silently
+			// hitting the real reader.
+			got, err := Assess(context.Background(), r, "sk-test", tt.limits, now)
+			if tt.err != nil {
+				if err == nil || !errors.Is(err, tt.err) {
+					t.Fatalf("Assess err = %v, want %v", err, tt.err)
+				}
+			} else if err != nil {
+				t.Fatalf("Assess err = %v, want nil", err)
+			}
+			if tt.limits.Armed() && r.calls != 1 {
+				t.Errorf("reader called %d times, want 1 for an armed key", r.calls)
+			}
+			if !tt.limits.Armed() && r.calls != 0 {
+				t.Errorf("reader called %d times, want 0 for an unarmed key", r.calls)
+			}
+			if got.Limits != tt.want.Limits || got.Spend != tt.want.Spend ||
+				got.RemainingMicros != tt.want.RemainingMicros ||
+				got.RemainingTokens != tt.want.RemainingTokens ||
+				got.Status != tt.want.Status || got.ResetAt != tt.want.ResetAt {
+				t.Errorf("Assess() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

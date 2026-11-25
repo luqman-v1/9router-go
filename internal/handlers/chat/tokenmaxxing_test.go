@@ -199,7 +199,7 @@ func TestComboTokenmaxxing_DrivesWiringEndToEnd(t *testing.T) {
 	}
 
 	// Create combo with openai listed FIRST, but tokenmaxxing strategy
-	if err := repo.CreateCombo("tokenmaxxing-combo", "tokenmaxxing-combo", "chat", `["openai/gpt-4o", "deepseek/deepseek-chat"]`, "tokenmaxxing"); err != nil {
+	if err := repo.CreateCombo("tokenmaxxing-combo", "tokenmaxxing-combo", "chat", `["openai/gpt-4o", "deepseek/deepseek-chat"]`, "tokenmaxxing", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.SetComboStrategy("tokenmaxxing-combo", db.ComboStrategy{

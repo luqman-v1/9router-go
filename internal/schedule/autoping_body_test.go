@@ -75,3 +75,39 @@ func TestClaudePingBodyStaysPlain(t *testing.T) {
 		}
 	}
 }
+
+// TestCommandCodeGoatIsPingable pins the wiring that gives the Command Code
+// Provider API a 5h-window auto-ping: the provider is scheduled, its ping model
+// is a cheap OpenAI-lane model, and its body is the plain one — not the Codex
+// reasoning envelope.
+func TestCommandCodeGoatIsPingable(t *testing.T) {
+	found := false
+	for _, provider := range Providers {
+		if provider == "commandcode-goat" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Providers = %v, want commandcode-goat", Providers)
+	}
+	if got := PingModel("commandcode-goat"); got != CommandCodeGoatPingModel {
+		t.Errorf("PingModel(commandcode-goat) = %q, want %q", got, CommandCodeGoatPingModel)
+	}
+
+	body, err := buildPingBody("commandcode-goat", CommandCodeGoatPingModel)
+	if err != nil {
+		t.Fatalf("buildPingBody: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, body)
+	}
+	if raw["model"] != CommandCodeGoatPingModel {
+		t.Errorf("model = %v, want %q", raw["model"], CommandCodeGoatPingModel)
+	}
+	for _, field := range []string{"instructions", "reasoning"} {
+		if _, ok := raw[field]; ok {
+			t.Errorf("commandcode-goat ping carries %q; that field is Codex-only", field)
+		}
+	}
+}

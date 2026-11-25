@@ -124,6 +124,10 @@ func TestIsUsageEligibleConnection(t *testing.T) {
 		{"openai", "apikey", false},
 		{"deepseek", "apikey", true},
 		{"comfyui", "apikey", false},
+		{"minimax-code", "mcode-lease", true},
+		{"minimax-code-global", "mcode-lease", true},
+		{"minimax-code", "oauth", true},
+		{"minimax-code-global", "apikey", false},
 	}
 	for _, c := range cases {
 		conn := testUsageConn(c.provider, c.authType)

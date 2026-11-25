@@ -43,6 +43,13 @@ func (h *ChatHandler) antigravityConnData(connectionID string) *shared.Connectio
 	return &cd
 }
 
+// maxLongDecodeHops is the maximum number of continuation hops for long
+// decode responses (finishReason CONTINUATION with a continuationToken).
+// Hydrogen (Gemini 4) models can produce ~1M output tokens; each hop
+// continues from the last token until the response is complete or the
+// hop limit is reached.
+const maxLongDecodeHops = 16
+
 // forwardGeminiNativeRequest handles forwarding for gemini-native providers (antigravity).
 func (h *ChatHandler) forwardGeminiNativeRequest(
 	ctx context.Context,
@@ -57,6 +64,8 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	metrics *streamMetrics,
 	// httpClient is the connection's client, proxy pool included.
 	httpClient *http.Client,
+	// start is when the request reached the handler; see handleGeminiStream.
+	start time.Time,
 ) error {
 	// Extract model
 	var reqMeta struct {
@@ -122,8 +131,30 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics, httpClient, provider, false, false)
 	}
 
+	// Fallback session to connectionID when caller provides no session header
+	if handlerutil.GetSessionID(ctx) == "" && connectionID != "" {
+		ctx = handlerutil.WithSessionID(ctx, connectionID)
+	}
+
 	upstreamStarted := time.Now()
-	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName)
+
+	// Per-connection admission: concurrency bound, backoff, circuit breaker.
+	// A 403 TOS_VIOLATION bypasses both backoff and breaker (#996 regression
+	// pin) — RecordFailure returns early for it.
+	release, admErr := admitAntigravity(ctx, connectionID)
+	if admErr != nil {
+		return admErr
+	}
+	if release != nil {
+		defer release()
+	}
+
+	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName, func() string {
+		if key := requestKeyFromContext(ctx); key != nil {
+			return key.ID
+		}
+		return ""
+	}())
 	// The one number that separates "the model was thinking" from "the
 	// gateway was slow": everything this handler does before dialing is
 	// milliseconds, so a large value here is the upstream's first-token
@@ -132,6 +163,13 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		"ms", time.Since(upstreamStarted).Milliseconds(), "provider", provider, "model", modelName)
 	if err != nil {
 		if uErr, ok := err.(*proxy.UpstreamError); ok {
+			recordAntigravityOutcome(connectionID, uErr.StatusCode, uErr.Body)
+			if uErr.StatusCode == http.StatusNotFound {
+				// The account does not serve this model. Park it: the discovery
+				// roster cannot say so (it also omits models the account does
+				// serve), so a real 404 is the only evidence worth caching.
+				NoteAntigravityModelNotFound(connectionID, modelName)
+			}
 			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
 				if dur, ok := extractResetDuration(uErr.Body); ok {
 					BlockAntigravityModelUntil(connectionID, modelName, time.Now().UTC().Add(dur))
@@ -145,13 +183,28 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		}
 		return fmt.Errorf("ForwardGemini (%s/%s): %w", provider, modelName, err)
 	}
+	recordAntigravityOutcome(connectionID, resp.StatusCode, nil)
 
-	var bodyCloser io.Closer = resp.Body
-	defer func() {
-		if bodyCloser != nil {
-			bodyCloser.Close()
+	// Long-decode continuation hops: when the model is Hydrogen and the
+	// response carries a finishReason CONTINUATION with a continuationToken,
+	// chain requests to continue the decode until the response is complete
+	// or the hop limit is reached. The response body
+	// is consumed and a fresh one is obtained for each hop.
+	// Handle long-decode continuation hops
+	if isLongDecodeModel(modelName) && !isStream && projectID != "" {
+		contResp, contErr := h.followLongDecodeContinuation(ctx, httpClient, cfg, apiKey, body, modelName, projectID, resp, translateResponse, metrics)
+		// Guard both nil checks: contResp is nil on every error path, so a
+		// plain `defer contResp.Body.Close()` would panic exactly where
+		// bodyclose wants a Close — release the connection safely instead.
+		if contResp != nil && contResp.Body != nil {
+			defer func() { _ = contResp.Body.Close() }()
 		}
-	}()
+		if contErr != nil {
+			return contErr
+		}
+		resp = contResp
+	}
+	defer func() { _ = resp.Body.Close() }()
 
 	// Handle response — antigravity wraps non-streaming response in {"response": {...}}
 	// For streaming (SSE), the events are NOT wrapped — pipe directly.
@@ -177,8 +230,8 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 			firstEventTimeout = proxy.FlashFirstEventTimeout
 		}
 		stallReader := proxy.NewStallReaderWithFirstEvent(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), firstEventTimeout, provider)
-		bodyCloser = stallReader
-		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
+		defer func() { _ = stallReader.Close() }()
+		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics, start)
 	}
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
 }
@@ -424,6 +477,7 @@ func (h *ChatHandler) refreshOAuthLocked(connectionID, currentToken string) (oau
 	}
 	log.Info("oauth", "token refreshed", "provider", provider, "project", newPID)
 	h.clearOAuthAccountPark(connectionID)
+	closeAntigravityState(connectionID)
 	return oauthTokenResult{token: refreshResult.AccessToken, projectID: newPID}, nil
 }
 
@@ -563,14 +617,163 @@ func (h *ChatHandler) forceRefreshLocked(connectionID string) (oauthTokenResult,
 	return oauthTokenResult{token: tokenResp.AccessToken, projectID: pid}, nil
 }
 
+// isLongDecodeModel reports whether a model supports long-decode
+// continuation hops. Currently only Gemini 4 Hydrogen models have the
+// continuationToken mechanism.
+func isLongDecodeModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(modelName), "hydrogen")
+}
+
+// followLongDecodeContinuation follows finishReason=CONTINUATION responses by
+// chaining requests with continuationToken until the response is complete or
+// maxLongDecodeHops is reached. It returns the final *http.Response and an
+// error. On error the caller should return the error directly.
+func (h *ChatHandler) followLongDecodeContinuation(
+	ctx context.Context,
+	httpClient *http.Client,
+	cfg *providers.ProviderConfig,
+	apiKey string,
+	body []byte,
+	modelName string,
+	projectID string,
+	resp *http.Response,
+	translateResp bool,
+	metrics *streamMetrics,
+) (*http.Response, error) {
+	for hop := 0; hop < maxLongDecodeHops; hop++ {
+		// Read the response body.
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("long-decode: read response body: %w", readErr)
+		}
+
+		// Unwrap the Antigravity envelope if present.
+		inner := translator.UnwrapAntigravityResponse(raw)
+
+		// Check for finishReason CONTINUATION with a continuationToken.
+		var geminiResp struct {
+			Candidates []struct {
+				FinishReason string `json:"finishReason"`
+			} `json:"candidates"`
+			ContinuationToken string `json:"continuationToken"`
+		}
+		if jsonErr := json.Unmarshal(inner, &geminiResp); jsonErr != nil {
+			// Cannot parse: treat as complete, return the original body.
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		finished := false
+		for _, c := range geminiResp.Candidates {
+			if c.FinishReason != "" && c.FinishReason != "CONTINUATION" {
+				finished = true
+				break
+			}
+		}
+		if geminiResp.ContinuationToken == "" || finished {
+			// No continuation needed: return the response as-is.
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		log.Info("gemini", "long-decode continuation hop", "hop", hop+1, "model", modelName)
+
+		// Build the continuation request by injecting the continuationToken.
+		contReq, buildErr := buildContinuationRequest(body, geminiResp.ContinuationToken)
+		if buildErr != nil {
+			log.Warn("gemini", "long-decode: build continuation request failed", "error", buildErr)
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		// Forward the continuation request.
+		nextResp, fwdErr := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, contReq, false, projectID, modelName, func() string {
+			if key := requestKeyFromContext(ctx); key != nil {
+				return key.ID
+			}
+			return ""
+		}())
+		if fwdErr != nil {
+			log.Warn("gemini", "long-decode: forward continuation failed", "hop", hop+1, "error", fwdErr)
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+			}, nil
+		}
+
+		// Accumulate the response body for the next iteration.
+		resp = nextResp
+
+		// Check if this is the last hop.
+		if hop == maxLongDecodeHops-1 {
+			log.Info("gemini", "long-decode: reached max hops", "hops", maxLongDecodeHops, "model", modelName)
+		}
+	}
+
+	// We exited the loop without returning; read the final response and return it.
+	if resp != nil {
+		return resp, nil
+	}
+	return nil, fmt.Errorf("long-decode: no response after %d hops", maxLongDecodeHops)
+}
+
+// buildContinuationRequest injects the continuationToken into the request body
+// at the appropriate location. For Gemini native (non-Antigravity) requests
+// the token goes at the top level; for Antigravity requests it goes at
+// request.continuationToken.
+func buildContinuationRequest(body []byte, token string) (string, error) {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "", fmt.Errorf("parse request body: %w", err)
+	}
+
+	// Antigravity envelope: {project, model, request: {..., continuationToken}}
+	if _, hasRequest := m["request"]; hasRequest {
+		if reqMap, ok := m["request"].(map[string]any); ok {
+			reqMap["continuationToken"] = token
+			m["request"] = reqMap
+		}
+	} else {
+		// Plain Gemini request: continuationToken at top level.
+		m["continuationToken"] = token
+	}
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal continuation request: %w", err)
+	}
+	return string(out), nil
+}
+
 // handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
 // The stream drops the first SSE line (model metadata), then translates each content block SSE.
-func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
+//
+// start is when the request reached the handler, not when this function runs:
+// it is called after the upstream answered with headers, which on this lane can
+// be 30s later. Measuring TTFT from here reported single-digit milliseconds for
+// a request whose first byte took half a minute, and the client's tokens/s —
+// completion over (total - ttft) — came out an order of magnitude too low.
+func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics, start time.Time) error {
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
-	geminiState := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx)}
-	start := time.Now()
+	geminiState := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx), APIKeyId: func() string {
+		if k := requestKeyFromContext(ctx); k != nil {
+			return k.ID
+		}
+		return ""
+	}()}
 	// A /v1/responses client is one hop further out: Gemini events become
 	// OpenAI chunks here and those chunks become Responses events, so the
 	// bridge consumes this branch's output instead of the raw writer.

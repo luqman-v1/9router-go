@@ -10,7 +10,7 @@
 
   Optional overrides (set before piping, or pass when saved locally):
 
-    $env:VERSION = "v1.9.2"   # default: latest
+    $env:VERSION = "exp"     # newest experimental pre-release; default: latest
     $env:BINDIR  = "C:\Tools" # default: $env:LOCALAPPDATA\9router-go
 #>
 [CmdletBinding()]
@@ -38,6 +38,17 @@ if ($arch -ne 'AMD64') {
 $Asset = '9router-go-windows-amd64.exe'
 if ($Version -eq 'latest') {
   $Url = "https://github.com/$Repo/releases/latest/download/$Asset"
+} elseif ($Version -eq 'exp' -or $Version -eq 'experimental') {
+  # GitHub's releases/latest skips pre-releases. Resolve the newest one by
+  # publish date (the API orders by created_at, which can put a late-published
+  # old draft first).
+  Write-Info "resolving newest experimental pre-release ..."
+  $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100"
+  $exp = $releases | Where-Object { $_.prerelease } |
+    Sort-Object -Property published_at -Descending | Select-Object -First 1
+  if (-not $exp) { throw "No experimental pre-release found — see https://github.com/$Repo/releases" }
+  Write-Info "newest experimental release: $($exp.tag_name)"
+  $Url = "https://github.com/$Repo/releases/download/$($exp.tag_name)/$Asset"
 } else {
   $Url = "https://github.com/$Repo/releases/download/$Version/$Asset"
 }

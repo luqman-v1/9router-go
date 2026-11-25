@@ -215,9 +215,11 @@
     ? 'w-[56px]'
     : 'w-72'} flex-col overflow-hidden border-r border-border-subtle bg-sidebar backdrop-blur-xl transition-all duration-300 flex-shrink-0 select-none z-30"
 >
-  <!-- Window control / traffic lights -->
+  <!-- Window control / traffic lights. Decoration lifted from the macOS
+       desktop frame; on a phone the drawer has no window around it, so the
+       three dots read as broken UI. Mobile hides them. -->
   {#if !iconRail}
-    <div class="flex items-center gap-2 px-6 pt-5 pb-2 shrink-0">
+    <div class="hidden lg:flex items-center gap-2 px-6 pt-5 pb-2 shrink-0">
       <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
       <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
       <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
@@ -360,7 +362,7 @@
             type="button"
             onclick={() => toggleGroup(`group:${group.id}`)}
             aria-expanded={groupOpen}
-            class="w-full flex items-center gap-1.5 px-3 mb-2 text-text-muted/60 uppercase tracking-wider cursor-pointer"
+            class="w-full flex items-center gap-1.5 py-2.5 sm:py-0 px-3 mb-2 text-text-muted/60 uppercase tracking-wider cursor-pointer"
           >
             <span class="text-xs font-semibold">{group.label}</span>
             <span
@@ -386,7 +388,7 @@
               title={iconRail ? entry.label : undefined}
               class="w-full flex items-center {iconRail
                 ? 'justify-center'
-                : 'gap-3'} px-3 py-1.5 rounded-lg transition-all group cursor-pointer {accordionActive
+                : 'gap-3'} px-3 py-2.5 sm:py-1.5 rounded-lg transition-all group cursor-pointer {accordionActive
                 ? 'bg-primary/10 text-primary font-medium'
                 : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
             >
@@ -408,7 +410,7 @@
                   <a
                     href={TAB_ROUTES[child.id]}
                     onclick={(e) => handleNav(child.id, e)}
-                    class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {childActive
+                    class="flex items-center gap-3 px-3 py-2.5 sm:py-1.5 rounded-lg transition-all group cursor-pointer {childActive
                       ? 'bg-primary/10 text-primary font-medium'
                       : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
                   >
@@ -433,7 +435,7 @@
               title={iconRail ? entry.label : undefined}
               class="flex items-center {iconRail
                 ? 'justify-center'
-                : 'gap-3'} px-3 py-1.5 rounded-lg transition-all group cursor-pointer {active
+                : 'gap-3'} px-3 py-2.5 sm:py-1.5 rounded-lg transition-all group cursor-pointer {active
                 ? 'bg-primary/10 text-primary font-medium'
                 : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
             >

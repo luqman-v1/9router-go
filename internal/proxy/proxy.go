@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 
 	"9router/proxy/internal/log"
 )
@@ -27,6 +28,12 @@ type UpstreamError struct {
 	// where the response is still in hand, so this is the only chance to keep
 	// them.
 	Header http.Header
+	// Local marks a refusal this gateway produced itself, before the upstream
+	// was dialed (admission control: a full per-connection queue). Downstream
+	// failover must not cool an account over it — the credential was never
+	// exercised — and it must never be inferred from the body: an upstream that
+	// echoes a matching payload would otherwise dodge its own cooldown.
+	Local bool
 	// ReadErr records a failure to read the error body in full (a truncated or
 	// mis-declared response). The status and whatever bytes arrived are still
 	// valid and callers branch on the status, so a read failure must not erase
@@ -69,7 +76,10 @@ func (e *UpstreamError) Error() string {
 var ErrStrictProxyRequired = errors.New("proxy required but failed (strictProxy=true)")
 
 var directProxyClient = &http.Client{
-	Transport: NewSafeTransport(),
+	// Truly direct: this client exists to replay a failed proxied attempt from
+	// the host's own address, so it must never route through the ambient proxy
+	// NewSafeTransport would install.
+	Transport: NewDirectSafeTransport(),
 }
 
 // insecureClientCache memoises one InsecureSkipVerify client per proxy URL,
@@ -169,15 +179,95 @@ func newJSONRequest(ctx context.Context, method, url string, headers map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	// A streaming lane asks for an event stream. Pin identity so an edge or
+	// provider cannot answer with a buffered gzip stream that arrives as one
+	// burst instead of token by token. An explicit encoding always wins.
+	if req.Header.Get("Accept-Encoding") == "" && strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+		req.Header.Set("Accept-Encoding", "identity")
+	}
 	return req, nil
 }
 
+// idleConnClosedError is the wording net/http reports when the peer closed a
+// pooled connection under a request that was already being written — Go replays
+// that itself only for idempotent methods, and this router sends POSTs. The
+// sentinel is unexported, so its text is the only handle on it; no other error
+// carries that phrase.
+const idleConnClosedError = "http: server closed idle connection"
+
+// isDeadKeepAliveSocket reports whether err is a pooled connection the upstream
+// edge had already closed, with no response byte in hand. The nil resp is
+// load-bearing: once a header or a status arrived the request reached the
+// provider, and replaying it would run the request twice.
+//
+// The transport hands back the failure in one of two shapes: the stdlib's own
+// errServerClosedIdle for a socket closed while the request was in flight, or
+// the read error itself — io.EOF from a clean FIN, ECONNRESET ("connection reset
+// by peer") or EPIPE ("broken pipe") from an abrupt one. A transport wrapped
+// transportReadFromServerError is unwrapped by net/http before the caller sees
+// it, so the chain is walked rather than the outer text alone.
+//
+// ECONNRESET and EPIPE are classified with errors.Is against the syscall errno
+// rather than substring text (§4.E): an error chain can wrap them at any depth
+// (*net.OpError, *os.SyscallError, *url.Error), and a message that merely
+// mentions "broken pipe" from an unrelated cause must not be retried. The
+// unexported errServerClosedIdle sentinel has no exported handle, so its
+// wording is the only way to recognise it.
+func isDeadKeepAliveSocket(err error, resp *http.Response) bool {
+	if err == nil || resp != nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), idleConnClosedError)
+}
+
 // send performs one attempt through client, defaulting to the shared client.
+//
+// One attempt may land on an idle keep-alive socket the upstream edge already
+// reaped (a load balancer's idle timeout, a NAT reaping the mapping). Nothing
+// reached the provider, so the request is replayed exactly once on a fresh
+// socket — upstream decolua/9router@963787f73. Only a request whose body can be
+// rebuilt (req.GetBody, which http.NewRequestWithContext installs for every
+// request this file builds) is replayed: the first attempt consumed the bytes
+// and a truncated POST is worse than the failure it would replace. A replay that
+// still fails is reported verbatim, so the caller sees one error and not two.
+//
+// shortcut: an origin that closes every keep-alive socket it accepts makes each
+// request pay one extra dial. Upstream accepts that cost; track the retry in
+// metrics before adding a circuit breaker.
 func send(client *http.Client, req *http.Request) (*http.Response, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if !isDeadKeepAliveSocket(err, resp) {
+		return resp, err
+	}
+	if req.GetBody == nil || req.Context().Err() != nil {
+		return resp, err
+	}
+
+	body, bodyErr := req.GetBody()
+	if bodyErr != nil {
+		return nil, fmt.Errorf("rewind body for dead keep-alive retry: %w", bodyErr)
+	}
+	// Drop the rest of the idle set before redialing, so the retry dials a
+	// socket instead of racing another dead one out of the same pool.
+	client.CloseIdleConnections()
+	log.Warn("proxy", "keep-alive connection closed before the response, retrying on a fresh socket", "url", req.URL.String(), "error", err)
+
+	retryReq := req.Clone(req.Context())
+	retryReq.Body = body
+	resp, err = client.Do(retryReq)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request after dead keep-alive retry: %w", err)
+	}
+	return resp, nil
 }
 
 // replayDirect retries the request once through directProxyClient.
@@ -199,23 +289,50 @@ func replayInsecureTLS(ctx context.Context, proxyURL, method, url string, header
 	return send(InsecureClientFor(proxyURL), retryReq)
 }
 
-// proxyURLFor reports the proxy a client dials, or "" when it dials directly.
-func proxyURLFor(client *http.Client) string {
-	if client == nil {
+// unwrapHTTPTransport strips router transport wrappers (ForbidDirectReplay and
+// FallbackTransport) to recover the underlying *http.Transport. Without this,
+// a strict-proxy client's forbidDirectReplayTransport hid its Proxy func from
+// stealth TLS clients and insecure-TLS retries, causing strict pools to dial
+// direct instead of through the assigned proxy.
+func unwrapHTTPTransport(rt http.RoundTripper) *http.Transport {
+	for rt != nil {
+		switch t := rt.(type) {
+		case *http.Transport:
+			return t
+		case forbidDirectReplayTransport:
+			rt = t.base
+		case *FallbackTransport:
+			rt = t.Base
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// ProxyURLForTarget reports the proxy URL a client dials to reach target, or ""
+// when it dials directly. Unwraps router transport wrappers so strict-proxy and
+// fallback-wrapped clients preserve their assigned proxy across stealth stacks.
+func ProxyURLForTarget(client *http.Client, target *url.URL) string {
+	if client == nil || target == nil {
 		return ""
 	}
-	tr, ok := client.Transport.(*http.Transport)
-	if !ok || tr.Proxy == nil {
+	tr := unwrapHTTPTransport(client.Transport)
+	if tr == nil || tr.Proxy == nil {
 		return ""
 	}
-	// A fixed Proxy func is an *url.URL under the hood, so asking it about a
-	// throwaway URL reveals the destination without touching the network.
-	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "proxy-target.invalid"}}
-	u, err := tr.Proxy(req)
+	u, err := tr.Proxy(&http.Request{URL: target})
 	if err != nil || u == nil {
 		return ""
 	}
 	return u.String()
+}
+
+// proxyURLFor reports the proxy a client dials, or "" when it dials directly.
+func proxyURLFor(client *http.Client) string {
+	// A fixed Proxy func is an *url.URL under the hood, so asking it about a
+	// throwaway URL reveals the destination without touching the network.
+	return ProxyURLForTarget(client, &url.URL{Scheme: "https", Host: "proxy-target.invalid"})
 }
 
 // isCertificateFailure reports whether err is a TLS chain verification
@@ -301,6 +418,25 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 	})
 }
 
+// SendOnce sends one JSON request through client and returns whatever answer
+// arrives, whatever its status. Unlike DoRequest it never replays: no
+// transient-status retry, no direct replay after an apparent proxy failure (a
+// text/plain 403 from the endpoint itself looks like one), and no insecure-TLS
+// retry. It is for requests the router must not repeat on its own initiative,
+// such as a custom JSON business endpoint whose operation may already have
+// run. The caller owns resp.Body and decides which statuses are errors.
+func SendOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
+	req, err := newJSONRequest(ctx, method, url, headers, body)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := send(client, req)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request: %w", err)
+	}
+	return resp, nil
+}
+
 // doRequestOnce performs a single attempt.
 func doRequestOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := newJSONRequest(ctx, method, url, headers, body)
@@ -341,6 +477,7 @@ func doRequestOnce(ctx context.Context, client *http.Client, method, url string,
 	if err != nil {
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
+	UnwrapIdentityGzip(req, resp)
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		resp.Body.Close()

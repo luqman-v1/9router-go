@@ -58,35 +58,63 @@ func (r *Repo) additiveColumnsPresent() bool {
 		return false
 	}
 	r.budgetColsOnce.Do(func() {
-		rows, err := r.db.QueryContext(context.Background(), `PRAGMA table_info(apiKeys)`)
-		if err != nil {
-			return
-		}
-		defer func() { _ = rows.Close() }()
-		hasBudget, hasContextLimit := false, false
-		for rows.Next() {
-			var cid int
-			var name, ctype string
-			var notNull, pk int
-			var dflt sql.NullString
-			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-				return
-			}
-			switch name {
-			case "limitMicros":
-				hasBudget = true
-			case "contextLimit":
-				hasContextLimit = true
-			}
-		}
+		hasBudget, hasContextLimit := r.probeAdditiveColumns()
 		// A mid-iteration failure would otherwise leave the probe answering
 		// "no additive columns" for a database that has them, which silently
 		// degrades every key read to the legacy query.
-		if rows.Err() == nil {
-			r.budgetCols = hasBudget && hasContextLimit
-		}
+		r.budgetCols = hasBudget && hasContextLimit
 	})
 	return r.budgetCols
+}
+
+// probeAdditiveColumns checks whether limitMicros and contextLimit exist on
+// apiKeys, using the engine-appropriate introspection: PRAGMA table_info on
+// SQLite, information_schema on PostgreSQL.
+func (r *Repo) probeAdditiveColumns() (hasBudget, hasContextLimit bool) {
+	if engineOf(r.db) == EnginePostgres {
+		return r.probeAdditiveColumnsPG()
+	}
+	return r.probeAdditiveColumnsSQLite()
+}
+
+func (r *Repo) probeAdditiveColumnsSQLite() (hasBudget, hasContextLimit bool) {
+	rows, err := r.db.QueryContext(context.Background(), `PRAGMA table_info(apiKeys)`)
+	if err != nil {
+		return false, false
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, false
+		}
+		switch name {
+		case "limitMicros":
+			hasBudget = true
+		case "contextLimit":
+			hasContextLimit = true
+		}
+	}
+	if rows.Err() != nil {
+		return false, false
+	}
+	return hasBudget, hasContextLimit
+}
+
+func (r *Repo) probeAdditiveColumnsPG() (hasBudget, hasContextLimit bool) {
+	var count int
+	err := r.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(1) FROM information_schema.columns
+		 WHERE lower(table_name) = 'apikeys' AND lower(column_name) IN ('limitmicros', 'contextlimit')`,
+	).Scan(&count)
+	if err != nil {
+		return false, false
+	}
+	// count is 0, 1, or 2 — both present means budget and contextLimit both exist.
+	return count == 2, count == 2
 }
 
 // apiKeyColumnsFor returns the key read for the schema in hand: the full read
@@ -120,8 +148,9 @@ func apiKeyScan(k *models.APIKey, withAdditive bool) (dest []any, apply func()) 
 	// there is no NULL to preserve.
 	var limitMicros, limitTokens int64
 	var budgetPeriod string
+	var isActive any
 	var alertPct, hardCutoff int
-	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
+	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &isActive, &k.CreatedAt,
 		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout}
 	if withAdditive {
 		dest = append(dest, &contextLimit)
@@ -132,6 +161,16 @@ func apiKeyScan(k *models.APIKey, withAdditive bool) (dest []any, apply func()) 
 		dest = append(dest, &limitMicros, &limitTokens, &budgetPeriod, &alertPct, &hardCutoff)
 	}
 	apply = func() {
+		switch v := isActive.(type) {
+		case bool:
+			if v {
+				k.IsActive = 1
+			} else {
+				k.IsActive = 0
+			}
+		case int64:
+			k.IsActive = int(v)
+		}
 		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount,
 			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
 		if withAdditive {

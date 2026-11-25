@@ -10,6 +10,7 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/kiroidentity"
 )
 
 func setAuth(headers map[string]string, cfg *providers.ProviderConfig, apiKey string) {
@@ -151,20 +152,25 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 		last := idx == len(endpoints)-1
 		invocationID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), time.Now().UnixNano())
 		headers := map[string]string{
-			"X-Amz-Target":                    "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
 			"Amz-Sdk-Request":                 "attempt=1; max=3",
 			"Amz-Sdk-Invocation-Id":           invocationID,
 			"Accept":                          "application/vnd.amazon.eventstream",
-			"User-Agent":                      "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-			"X-Amz-User-Agent":                "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
 			"x-amzn-kiro-agent-mode":          "spec",
 			"x-amzn-codewhisperer-machine-id": "kiro-desktop",
 		}
+		if strings.Contains(endpoint, "://codewhisperer.") {
+			headers["X-Amz-Target"] = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+		}
+		ua, amzUA := kiroServiceUserAgent(psd, apiKey)
+		headers["User-Agent"] = ua
+		headers["X-Amz-User-Agent"] = amzUA
 		if apiKey != "" {
 			headers["x-amz-sso-bearer"] = apiKey
 		}
-		if profileArn, ok := psd["profileArn"].(string); ok && profileArn != "" {
-			headers["x-amzn-codewhisperer-profile-arn"] = profileArn
+		authMethod, _ := psd["authMethod"].(string)
+		rawProfileArn, _ := psd["profileArn"].(string)
+		if effectiveArn := providers.KiroEffectiveProfileARN(authMethod, strings.TrimSpace(rawProfileArn)); effectiveArn != "" {
+			headers["x-amzn-codewhisperer-profile-arn"] = effectiveArn
 		}
 		if tokenType := kiroTokenType(psd); tokenType != "" {
 			headers["TokenType"] = tokenType
@@ -192,6 +198,32 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 	return nil, lastErr
 }
 
+// Kiro SDK identity constants alias the shared kiroidentity package so every
+// Kiro HTTP call presents the same client-version floor. KiroIDEVersion stays
+// exported for existing callers and tests.
+const (
+	KiroRuntimeSDKVersion = kiroidentity.SDKVersion
+	KiroIDEVersion        = kiroidentity.IDEVersion
+	KiroAgentOS           = kiroidentity.AgentOS
+	KiroAgentOSVersion    = kiroidentity.AgentOSVersion
+	KiroNodeVersion       = kiroidentity.NodeVersion
+)
+
+func resolveKiroMachineID(psd map[string]any, accessToken string) string {
+	return resolveKiroMachineIDWithRefresh(psd, "", accessToken)
+}
+
+// resolveKiroMachineIDWithRefresh extends the legacy helper with the refresh
+// token seed (upstream precedence: clientId > refreshToken > profileArn >
+// apiKey > accessToken). Existing callers keep the original signature.
+func resolveKiroMachineIDWithRefresh(psd map[string]any, refreshToken, accessToken string) string {
+	return kiroidentity.MachineID(kiroidentity.Seed(psd, refreshToken, accessToken))
+}
+
+func kiroServiceUserAgent(psd map[string]any, accessToken string) (string, string) {
+	return kiroidentity.Headers(kiroidentity.Seed(psd, "", accessToken), "streaming")
+}
+
 // kiroTokenType mirrors upstream buildHeaders: API-key connections announce
 // TokenType=API_KEY, enterprise IdP tokens EXTERNAL_IDP, everything else sends
 // no TokenType at all.
@@ -215,9 +247,17 @@ func kiroEndpointFallbackStatus(status int) bool {
 		status == http.StatusNotFound
 }
 
+// kiroServiceRegions limits regionalization to regions that AWS service host
+// serves. The q.* set is shared with the live catalog so the two cannot drift.
+var kiroServiceRegions = map[string]map[string]bool{
+	"q":             providers.KiroQServiceRegions,
+	"runtime":       {"us-east-1": true, "eu-central-1": true},
+	"codewhisperer": {"us-east-1": true},
+}
+
 // kiroEndpoints returns the ordered gateway list: Amazon surfaces first (q.*
 // before the legacy codewhisperer host), then the Kiro IDE gateway, with the
-// AWS hosts regionalized to the account's own region.
+// AWS hosts regionalized to the account's own region if served.
 func kiroEndpoints(cfg *providers.ProviderConfig, psd map[string]any) []string {
 	region, _ := psd["region"].(string)
 	region = strings.TrimSpace(region)
@@ -225,7 +265,7 @@ func kiroEndpoints(cfg *providers.ProviderConfig, psd map[string]any) []string {
 		region = "us-east-1"
 	}
 	regionalize := func(endpoint string) string {
-		if region == "us-east-1" || !strings.Contains(endpoint, "amazonaws.com") {
+		if !strings.Contains(endpoint, "amazonaws.com") {
 			return endpoint
 		}
 		parts := strings.SplitN(endpoint, "://", 2)
@@ -237,14 +277,23 @@ func kiroEndpoints(cfg *providers.ProviderConfig, psd map[string]any) []string {
 		if len(service) != 2 {
 			return endpoint
 		}
-		localized := service[0] + "." + region + ".amazonaws.com"
+		svcName := service[0]
+		covered, ok := kiroServiceRegions[svcName]
+		if !ok || !covered[region] {
+			return endpoint
+		}
+		localized := svcName + "." + region + ".amazonaws.com"
 		if len(host) == 2 {
 			return parts[0] + "://" + localized + "/" + host[1]
 		}
 		return parts[0] + "://" + localized
 	}
 
-	q := "https://q." + region + ".amazonaws.com/generateAssistantResponse"
+	qRegion := "us-east-1"
+	if kiroServiceRegions["q"][region] {
+		qRegion = region
+	}
+	q := "https://q." + qRegion + ".amazonaws.com/generateAssistantResponse"
 	codewhisperer := regionalize("https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse")
 	kiroGateway := "https://runtime.us-east-1.kiro.dev/generateAssistantResponse"
 

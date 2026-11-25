@@ -3,7 +3,6 @@
   import { Loader2 } from 'lucide-svelte'
   import {
     api,
-    getStoredAPIKey,
     onUnauthorized,
     type APIKey,
     type Combo,
@@ -21,6 +20,7 @@
   import OAuthCallbackView from './components/connections/OAuthCallbackView.svelte'
   import EndpointView from './components/EndpointView.svelte'
   import LoginView from './components/LoginView.svelte'
+  import ModelBreakerView from './components/ModelBreakerView.svelte'
   import MediaKindView from './components/media/MediaKindView.svelte'
   import MediaProviderDetail from './components/media/MediaProviderDetail.svelte'
   import ProxyPoolsView from './components/ProxyPoolsView.svelte'
@@ -28,7 +28,6 @@
   import MediaWebView from './components/media/MediaWebView.svelte'
   import QuotaTrackerView from './components/QuotaTrackerView.svelte'
   import SkillsView from './components/SkillsView.svelte'
-  import SettingsView from './components/SettingsView.svelte'
   import SecurityPanel from './components/security/SecurityPanel.svelte'
   import PlansView from './components/plans/PlansView.svelte'
   import Sidebar from './components/Sidebar.svelte'
@@ -91,6 +90,9 @@
   })
 
   let isLoading = $state(true)
+  // True once loadProviderCatalog() populates PROVIDER_CATALOG, because that
+  // array is non-reactive and derived lookups would otherwise stick on empty.
+  let catalogLoaded = $state(false)
   let isAuthChecking = $state(true)
   let isAuthenticatedState = $state(false)
   // A share link waiting to be reviewed, and the import surface that fills it.
@@ -168,6 +170,7 @@
     // install would render an error where the login form belongs.
     try {
       await loadProviderCatalog()
+      catalogLoaded = true
     } catch (err) {
       console.error('provider catalog failed to load', err)
     }
@@ -177,7 +180,7 @@
         api.getProviderNodes().catch(() => []),
         api.getCombos().catch(() => []),
         api.getApiKeys().catch(() => []),
-        api.getSettings().catch(() => ({})),
+        api.getSettings().catch((): Settings => ({})),
       ])
       connections = connsRes
       providerNodes = nodesRes
@@ -331,7 +334,7 @@
     connections.filter((c) => c.isActive === 1 && !!c.lastError).length
   )
   let selectedMediaCatalogItem = $derived.by(() => {
-    if (!selectedMedia) return null
+    if (!catalogLoaded || !selectedMedia) return null
     return PROVIDER_CATALOG.find((p) => p.id === selectedMedia!.providerId) || null
   })
   let selectedProviderMeta = $derived.by(() => {
@@ -344,7 +347,9 @@
     }
     if (activeTab !== 'connections' || !selectedProviderId) return null
     const node = providerNodes.find((n) => n.id === selectedProviderId)
-    const cat = PROVIDER_CATALOG.find((p) => p.id === selectedProviderId)
+    const cat = catalogLoaded
+      ? PROVIDER_CATALOG.find((p) => p.id === selectedProviderId)
+      : undefined
     return {
       id: selectedProviderId,
       name: node?.name || cat?.name || selectedProviderId,
@@ -368,9 +373,11 @@
     'media-image': { title: 'Text to Image', description: 'Image generation and transformation models' },
     'media-tts': { title: 'Text to Speech', description: 'Voice synthesis and audio generation models' },
     'media-stt': { title: 'Speech to Text', description: 'Audio transcription and speech recognition models' },
+    'media-video': { title: 'Video', description: 'Manage your Video providers' },
     'media-systemone': { title: 'System One', description: 'Structured state evaluation models' },
     'media-web': { title: 'Web Fetch & Search', description: 'Configure web search and scrape tools' },
     'proxy-pools': { title: 'Proxy Pools', description: 'Manage your proxy pool configurations' },
+    'model-breakers': { title: 'Model Breakers', description: 'Per-model circuit breakers — see which model is being held back and lift it' },
     skills: { title: 'Agent Skills', description: 'Copy a link and paste to your AI to use 9router-go — no install needed' },
     'console-log': { title: 'Console Log', description: 'Live server console output' },
     terminal: { title: 'Console Log', description: 'Live server console output' },
@@ -381,12 +388,9 @@
     },
     plans: { title: 'Plans', description: 'Per-key quota plans and policy resolution' },
     jailbreak: { title: 'Persona', description: 'Per-model system-prompt injection and Gemini safety bypass' },
+    keys: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
   }
 
-  function handleOpenNewCombo() {
-    navigate('combos')
-    isCreateComboOpen = true
-  }
   let isUpdateModalOpen = $state(false)
   let systemUpdateInfo = $state<SystemVersionInfo | null>(null)
   let systemVersion = $state(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '')
@@ -531,9 +535,15 @@
           navigate('login')
         }}
         onOpenSearch={() => (isPaletteOpen = true)}
+        requireLogin={requireLogin}
       />
 
-      <main class="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10">
+      <!-- Canvas padding steps down on a phone: p-6/p-10 is a desktop
+           register, a 390px viewport gets half of it, and the bottom inset
+           keeps the iOS home indicator off the last control. -->
+      <main
+        class="flex-1 overflow-y-auto custom-scrollbar px-4 py-4 sm:p-6 lg:p-10 pb-safe"
+      >
         <div class="max-w-7xl mx-auto">
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">
@@ -739,6 +749,8 @@
               {/if}
             {:else if activeTab === 'proxy-pools'}
               <ProxyPoolsView />
+            {:else if activeTab === 'model-breakers'}
+              <ModelBreakerView />
             {:else if activeTab === 'skills'}
               <SkillsView />
             {:else if activeTab === 'console-log' || activeTab === 'terminal'}

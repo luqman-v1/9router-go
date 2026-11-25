@@ -1,8 +1,8 @@
 package executor
 
 import (
-	json "encoding/json/v2"
 	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"testing"
 )
 
@@ -128,9 +128,9 @@ func TestEnsureMessagesMaxTokens_ParallelToolCallsPolicy(t *testing.T) {
 			// tool_choice fragment left a bare comma in the literal, which the
 			// strict jsontext decoder rejects.
 			body := map[string]any{
-				"model":                "combo-wombo",
-				"messages":             []any{map[string]any{"role": "user", "content": "hi"}},
-				"tools":                jsontext.Value(tt.tools),
+				"model":               "combo-wombo",
+				"messages":            []any{map[string]any{"role": "user", "content": "hi"}},
+				"tools":               jsontext.Value(tt.tools),
 				"parallel_tool_calls": false,
 			}
 			if tt.toolChoice != "" {

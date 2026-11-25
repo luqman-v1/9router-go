@@ -64,6 +64,29 @@ func flattenToolHistory(msgs []any) []any {
 	return out
 }
 
+// stripToolsForNonToolModel drops tool definitions and converts tool turns to
+// prose. A tool-capable client can land on a provider/model that cannot emit
+// tool_calls (a combo fallback, for example); sending the raw tool history there
+// gets an HTTP 400 instead of an answer. The prose form keeps the retrieved
+// context in the prompt without advertising tools the model cannot call.
+func stripToolsForNonToolModel(body []byte) []byte {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return body
+	}
+	delete(obj, "tools")
+	delete(obj, "tool_choice")
+	delete(obj, "functions")
+	if msgs, ok := obj["messages"].([]any); ok && len(msgs) > 0 {
+		obj["messages"] = flattenToolHistory(msgs)
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // buildJudgePrompt builds the fusion judge system prompt from panel answers.
 // Sources are anonymized so the judge weighs substance, not model reputation.
 // Matches JS buildJudgePrompt in combo.js.
@@ -164,6 +187,7 @@ func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(c
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			connData = &ConnectionData{
 				APIKey:      cfg.DefaultAPIKey,
+				Provider:    modelInfo.Provider,
 				ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 			}
 		} else {
@@ -187,11 +211,15 @@ func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(c
 		}
 
 		rec := &responseBuffer{header: http.Header{}}
-		fwdErr := h.tryForwardWithConnection(forwardRequestParams{
+		fusionParams := forwardRequestParams{
 			Ctx: ctx, W: rec, Provider: modelInfo.Provider, Model: modelInfo.Model,
 			ConnectionID: connID, ConnData: connData, Body: upstreamJSON, Attempts: 1,
 			IsStream: false, TranslateResponse: false, Endpoint: "/v1/chat/completions",
-		})
+		}
+		fwdErr := h.tryForwardWithConnection(fusionParams)
+		if fwdErr != nil {
+			fwdErr = h.walkPoolOnFreeTierRefusalFor(fusionParams, connID, "", "", fwdErr)
+		}
 		if fwdErr != nil {
 			return &fusionResult{model: entry, err: fwdErr}
 		}

@@ -1,8 +1,8 @@
 package executor
 
 import (
-	json "encoding/json/v2"
 	"fmt"
+	"strings"
 )
 
 // Port of open-sse/executors/codex.js 7bf931781: hosted web search on a Lite
@@ -67,8 +67,7 @@ func codexToolKey(tool any) string {
 // tool was appended — either answer leaves the marker deleted, because it is
 // ours and the Codex backend would reject the unknown field.
 //
-// Only the Lite models resolve the marker: applyCodexModelShape is reached by
-// every Responses-shaped provider, and hosted search is a codex capability.
+// This runs only on the Codex execution path.
 func registerCodexHostedWebSearch(req map[string]any) bool {
 	flag, _ := req[codexAutoWebSearchFlag].(bool)
 	delete(req, codexAutoWebSearchFlag)
@@ -170,17 +169,114 @@ func dropCodexLitePrefix(input []any) []any {
 	return rest
 }
 
-// codexResponsesLiteBody reports whether a forwarded Codex body travels in the
-// Lite shape, so the caller can send the header that tells the backend to
-// serve it. Hosted search answers false: Lite cannot execute it.
-func codexResponsesLiteBody(body []byte) bool {
-	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
+// codexClaudeWebSearchTool is Claude Code's hosted web search tool name. The
+// Codex backend speaks native web_search, so this declaration has to be
+// translated before the body reaches it.
+const codexClaudeWebSearchTool = "web_search_20250305"
+
+// translateCodexClaudeWebSearch converts Claude Code's web_search_20250305
+// function tool declarations into Codex-native web_search tool declarations.
+// It reports whether any tool was translated.
+func translateCodexClaudeWebSearch(req map[string]any) bool {
+	tools, ok := responseInputItems(req["tools"])
+	if !ok || len(tools) == 0 {
 		return false
 	}
-	model, _ := req["model"].(string)
-	if !isCodexResponsesLiteModel(model) {
+	changed := false
+	for i, tool := range tools {
+		m, isMap := tool.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if t, _ := m["type"].(string); t != "function" {
+			continue
+		}
+		name, _ := m["name"].(string)
+		if name != codexClaudeWebSearchTool {
+			continue
+		}
+		tools[i] = map[string]any{"type": codexWebSearchToolType}
+		changed = true
+	}
+	if changed {
+		req["tools"] = tools
+	}
+	return changed
+}
+
+// translateCodexClaudeWebSearchChoice converts a forced tool choice that names
+// web_search_20250305 into Codex-native web_search choice. A plain string
+// choice ("required", "auto", "none") is left alone.
+func translateCodexClaudeWebSearchChoice(req map[string]any) bool {
+	tc, ok := req["tool_choice"]
+	if !ok {
 		return false
 	}
-	return !toolListWebSearch(req["tools"])
+	v, isMap := tc.(map[string]any)
+	if !isMap {
+		return false
+	}
+	if t, _ := v["type"].(string); t != "function" {
+		return false
+	}
+	fn, ok := v["function"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if name, _ := fn["name"].(string); name != codexClaudeWebSearchTool {
+		return false
+	}
+	req["tool_choice"] = map[string]any{"type": codexWebSearchToolType}
+	return true
+}
+
+// formatWebSearchResults renders one Codex web search call's results as text
+// with source citations, so a Claude Code client can read them as search
+// blocks.
+func formatWebSearchResults(results any) string {
+	items, ok := results.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, r := range items {
+		result, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		url, _ := result["url"].(string)
+		title, _ := result["title"].(string)
+		snippet, _ := result["snippet"].(string)
+		if title == "" && snippet == "" && url == "" {
+			continue
+		}
+		var b strings.Builder
+		if title != "" {
+			b.WriteString(title)
+		}
+		if url != "" {
+			if title != "" {
+				b.WriteString(" (")
+			} else if b.Len() > 0 {
+				b.WriteString(" ")
+			}
+			b.WriteString(url)
+			if title != "" {
+				b.WriteString(")")
+			}
+		}
+		if snippet != "" {
+			if b.Len() > 0 {
+				b.WriteString(": ")
+			}
+			b.WriteString(snippet)
+		}
+		if b.Len() > 0 {
+			parts = append(parts, b.String())
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n")
 }

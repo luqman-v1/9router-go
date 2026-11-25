@@ -8,12 +8,14 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/usagetracker"
 	"bytes"
 	"context"
 	"encoding/base64"
+	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,19 +41,19 @@ type MediaHandler struct {
 
 // NewMediaHandler creates a MediaHandler instance.
 func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.ChatHandler) *MediaHandler {
-	var transport http.RoundTripper
-	if origTransport, ok := http.DefaultTransport.(*http.Transport); ok {
-		t := origTransport.Clone()
-		t.ResponseHeaderTimeout = 2 * time.Minute
-		transport = proxy.NewFallbackTransport(t)
-	} else if fb, ok := http.DefaultTransport.(*proxy.FallbackTransport); ok {
-		transport = fb
-	} else {
-		transport = proxy.NewFallbackTransport(http.DefaultTransport)
-	}
+	// Base is the guarded transport, not a clone of http.DefaultTransport: that
+	// clone has no socket-level check at all, so the hostname pre-flight and the
+	// redirect policy were the entire SSRF surface, and a name that resolves
+	// public at check time and private at dial time walked straight through.
+	// The guarded dialer judges the address it is about to connect to and still
+	// honours ALLOW_PRIVATE_NETWORKING and the per-connection opt-in, so a LAN
+	// provider keeps working.
+	base := proxy.NewSafeTransport()
+	base.ResponseHeaderTimeout = 2 * time.Minute
+	transport := proxy.NewFallbackTransport(base)
 	return &MediaHandler{
 		Repo:       repo,
-		Client:     &http.Client{Transport: transport, Timeout: 0},
+		Client:     &http.Client{Transport: transport, Timeout: 0, CheckRedirect: checkRedirectPublic},
 		TokenSaver: ts,
 		ChatH:      chatH,
 	}
@@ -72,66 +75,171 @@ func mediaConnectionError(err error, provider string) string {
 	return fmt.Sprintf("no active connections for provider: %s", provider)
 }
 
-// HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
-func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+// kindFromEndpoint infers the media serviceKind from the API endpoint.
+func kindFromEndpoint(endpoint string) string {
+	switch {
+	case strings.HasPrefix(endpoint, "/v1/images/") || strings.HasPrefix(endpoint, "/images/"):
+		return "image"
+	case strings.HasPrefix(endpoint, "/v1/videos/") || strings.HasPrefix(endpoint, "/videos/"):
+		return "video"
+	case endpoint == "/v1/audio/speech" || endpoint == "/audio/speech":
+		return "tts"
+	case strings.HasPrefix(endpoint, "/v1/audio/") || strings.HasPrefix(endpoint, "/audio/"):
+		return "stt"
+	case endpoint == "/v1/embeddings" || endpoint == "/embeddings":
+		return "embedding"
+	case endpoint == "/v1/search" || endpoint == "/search":
+		return "webSearch"
+	case endpoint == "/v1/web/fetch" || endpoint == "/v1/scrape" || endpoint == "/scrape":
+		return "webFetch"
+	default:
+		return "media"
+	}
+}
+
+// IsConnectionMediaEligible checks if a connection is active and eligible for media routing.
+func IsConnectionMediaEligible(conn *models.ProviderConnection, serviceKind ...string) bool {
+	if conn == nil || conn.IsActive != 1 {
+		return false
+	}
+	return conn.IsMediaActive(serviceKind...)
+}
+
+// SelectMediaConnections returns all active connections for provider eligible for media routing.
+func (h *MediaHandler) SelectMediaConnections(provider string, serviceKind ...string) ([]*models.ProviderConnection, error) {
+	if h.Repo == nil {
+		return nil, nil
+	}
+	conns, err := h.Repo.GetProviderConnections(provider, true)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
-		return
+		return nil, err
 	}
-	defer r.Body.Close()
+	var eligible []*models.ProviderConnection
+	for _, c := range conns {
+		if IsConnectionMediaEligible(c, serviceKind...) {
+			eligible = append(eligible, c)
+		}
+	}
+	return eligible, nil
+}
 
-	var reqBody struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &reqBody); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	if reqBody.Model == "" {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
-		return
-	}
+type jsonMediaAttemptErr struct {
+	status    int
+	rawBody   []byte
+	jsonMsg   string
+	retryable bool
+}
 
-	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+func (e *jsonMediaAttemptErr) write(w http.ResponseWriter) {
+	if e.rawBody != nil {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(e.status)
+		_, _ = w.Write(e.rawBody)
 		return
 	}
-	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
+	handlerutil.WriteJSONError(w, e.status, e.jsonMsg)
+}
 
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
-		return
+func (h *MediaHandler) forwardJSONMediaLane(
+	w http.ResponseWriter,
+	r *http.Request,
+	rawBody []byte,
+	finalBody []byte,
+	modelInfo *chat.ModelInfo,
+	endpoint string,
+	applyCopilotToken bool,
+	buildURL func(string) string,
+) {
+	pinned := modelInfo.ConnectionID
+	if pinned == "" {
+		pinned = imagePinnedConnectionID(r)
 	}
+	usePinned := pinned != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr *jsonMediaAttemptErr
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, pinned, excludeIDs, modelInfo.Model)
+		if err != nil || conn == nil || connData == nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
+			return
+		}
+		if _, seen := tried[conn.ID]; seen {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(nil, modelInfo.Provider))
+			return
+		}
+		tried[conn.ID] = struct{}{}
 
+		attemptErr := h.tryJSONMediaLaneConn(w, r, rawBody, finalBody, modelInfo, endpoint, applyCopilotToken, buildURL, conn, connData)
+		if attemptErr == nil {
+			return
+		}
+		lastErr = attemptErr
+		if usePinned || !attemptErr.retryable || r.Context().Err() != nil {
+			lastErr.write(w)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func (h *MediaHandler) tryJSONMediaLaneConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	rawBody []byte,
+	finalBody []byte,
+	modelInfo *chat.ModelInfo,
+	endpoint string,
+	applyCopilotToken bool,
+	buildURL func(string) string,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) *jsonMediaAttemptErr {
 	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
+		return &jsonMediaAttemptErr{status: http.StatusInternalServerError, jsonMsg: err.Error(), retryable: false}
 	}
 
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-		return
+		return &jsonMediaAttemptErr{status: http.StatusUnauthorized, jsonMsg: "no API key found", retryable: true}
 	}
 
-	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
-	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
-
-	// Google Gemini embeddings forward dimensions as outputDimensionality (upstream #1366).
-	if providers.ResolveAlias(modelInfo.Provider) == "gemini" {
-		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
+	targetURL := buildURL(providerCfg.BaseURL)
+	// Cloudflare System One embeds the account and the (full) model id in the
+	// path, and forwards a short selector in the body (see finalBody above).
+	if strings.Contains(targetURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID"))
+		}
+		targetURL = strings.Replace(targetURL, "{accountId}", accountID, 1)
 	}
-
-	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
+	targetURL = strings.ReplaceAll(targetURL, "{model}", modelInfo.Model)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
-		return
+		return &jsonMediaAttemptErr{status: http.StatusInternalServerError, jsonMsg: fmt.Sprintf("create request: %v", err), retryable: false}
 	}
 
 	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
@@ -141,18 +249,18 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 			req.Header.Set(k, v)
 		}
 	}
-	// GitHub Copilot hands out a short-lived token alongside the OAuth
-	// credential, and the embeddings endpoint is authenticated by that token
-	// rather than by the stored one. It is set after the static-header loop
-	// because it replaces the Authorization header on purpose.
-	//
-	// The override is scoped to the GitHub provider: the token is a GitHub
-	// credential, and upstream sends it only from the GitHub embeddings
-	// adapter (open-sse/handlers/embeddingProviders/github.js). Without the
-	// scope check the token was applied to whichever upstream the connection
-	// pointed at, so a connection for any other provider that happened to
-	// carry the key had its own key replaced and leaked the GitHub credential.
-	if connData != nil && providers.ResolveAlias(modelInfo.Provider) == "github" {
+	if applyCopilotToken && providers.ResolveAlias(modelInfo.Provider) == "github" {
+		// GitHub Copilot hands out a short-lived token alongside the OAuth
+		// credential, and the embeddings endpoint is authenticated by that token
+		// rather than by the stored one. It is set after the static-header loop
+		// because it replaces the Authorization header on purpose.
+		//
+		// The override is scoped to the GitHub provider: the token is a GitHub
+		// credential, and upstream sends it only from the GitHub embeddings
+		// adapter (open-sse/handlers/embeddingProviders/github.js). Without the
+		// scope check the token was applied to whichever upstream the connection
+		// pointed at, so a connection for any other provider that happened to
+		// carry the key had its own key replaced and leaked the GitHub credential.
 		if copilotToken, ok := connData.ProviderSpecificData["copilotToken"].(string); ok && copilotToken != "" {
 			req.Header.Set("Authorization", "Bearer "+copilotToken)
 		}
@@ -163,51 +271,127 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	// lane used to skip it entirely and answer from the host's real IP.
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
+		return &jsonMediaAttemptErr{status: http.StatusBadGateway, jsonMsg: clientErr.Error(), retryable: true}
 	}
 
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
-		return
+		return &jsonMediaAttemptErr{
+			status:    http.StatusBadGateway,
+			jsonMsg:   fmt.Sprintf("upstream error: %v", err),
+			retryable: r.Context().Err() == nil,
+		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if errBody == nil {
+			errBody = []byte{}
+		}
+		snippet := string(errBody[:min(500, len(errBody))])
+		backoff := 0
+		if h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return &jsonMediaAttemptErr{
+			status:    resp.StatusCode,
+			rawBody:   errBody,
+			retryable: classification.ShouldFallback,
+		}
+	}
 
 	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 
-	if resp.StatusCode == http.StatusOK {
-		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		latencyMs := time.Since(start).Milliseconds()
-		logInfo := &shared.UsageLogInfo{
-			Provider:     modelInfo.Provider,
-			Model:        modelInfo.Model,
-			ConnectionID: conn.ID,
-			APIKey:       apiKey,
-			Endpoint:     "/embeddings",
+	if h.Repo != nil {
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
 		}
-		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
 	}
+	latencyMs := time.Since(start).Milliseconds()
+	logInfo := &shared.UsageLogInfo{
+		Provider:     modelInfo.Provider,
+		Model:        modelInfo.Model,
+		ConnectionID: conn.ID,
+		APIKey:       apiKey,
+		Endpoint:     endpoint,
+	}
+	h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, rawBody, nil)
+	return nil
 }
 
-// HandleRerank forwards /v1/rerank requests to upstream providers.
-//
-// Rerank is the same shape as embeddings — a model in, a JSON body out, no
-// streaming — so it follows the embeddings handler's structure exactly: resolve
-// the model, pick a connection, forward with the provider's auth and static
-// headers, and log the usage. The URL is derived from the provider's base the
-// same way buildEmbeddingsURL does, because a rerank lane lives on the same
-// OpenAI-compatible host as the embeddings one.
-func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
+// HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
+func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "embedding"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
 	defer func() { _ = r.Body.Close() }()
+
+	var reqBody struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if reqBody.Model == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
+		return
+	}
+
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
+	// Google Gemini embeddings forward dimensions as outputDimensionality (upstream #1366).
+	if providers.ResolveAlias(modelInfo.Provider) == "gemini" {
+		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
+	}
+	if isGitHubCopilotProvider(modelInfo.Provider) {
+		finalBody = wrapCopilotEmbeddingInput(finalBody)
+	}
+	// NVIDIA asymmetric embedding models require an input_type hint; symmetric
+	// ones (nvclip) and non-embedding models (parakeet-ctc-1.1b-asr) must not
+	// receive it. Gate on the exact registry set, not a suffix.
+	if providers.ResolveAlias(modelInfo.Provider) == "nvidia" && nvidiaAsymmetricEmbeddingModels[modelInfo.Model] {
+		finalBody = forwardNvidiaEmbeddingInputType(finalBody)
+	}
+
+	h.forwardJSONMediaLane(w, r, body, finalBody, modelInfo, "/embeddings", true, buildEmbeddingsURL)
+}
+
+// HandleRerank forwards /v1/rerank requests to upstream providers.
+//
+// Rerank is the same shape as embeddings — a model in, a JSON body out, no
+// streaming — so it shares forwardJSONMediaLane with HandleEmbeddings and derives
+// its /rerank endpoint via buildRerankURL.
+func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "embedding"))
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+
 	var reqBody struct {
 		Model string `json:"model"`
 	}
@@ -227,64 +411,9 @@ func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-		return
-	}
-	rerankURL := buildRerankURL(providerCfg.BaseURL)
+
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
-	req, err := http.NewRequestWithContext(r.Context(), "POST", rerankURL, strings.NewReader(string(finalBody)))
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
-		return
-	}
-	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	for k, v := range providerCfg.StaticHeaders {
-		if req.Header.Get(k) == "" {
-			req.Header.Set(k, v)
-		}
-	}
-	// The connection's own client, not h.Client: an assigned proxy pool is the
-	// operator's egress choice, and this lane must not bypass it.
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
-	}
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
-		latencyMs := time.Since(start).Milliseconds()
-		logInfo := &shared.UsageLogInfo{
-			Provider:     modelInfo.Provider,
-			Model:        modelInfo.Model,
-			ConnectionID: conn.ID,
-			APIKey:       apiKey,
-			Endpoint:     "/v1/rerank",
-		}
-		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
-	}
+	h.forwardJSONMediaLane(w, r, body, finalBody, modelInfo, "/v1/rerank", false, buildRerankURL)
 }
 
 // buildRerankURL derives the rerank lane from a provider's base URL. A base
@@ -301,6 +430,7 @@ func buildRerankURL(baseURL string) string {
 
 // HandleImages handles /v1/images/generations.
 func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "image"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -312,6 +442,7 @@ func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 
 // HandleAudioSpeech handles /v1/audio/speech.
 func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "tts"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -335,6 +466,7 @@ func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request)
 // Body: {"model":"<provider>/<model>","state":"...","questions":{...}}.
 // Target URL from ProviderConfig.SystemoneURL, else swap /chat/completions.
 func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "systemone"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -342,13 +474,42 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 	var reqBody struct {
-		Model string `json:"model"`
+		Model     string         `json:"model"`
+		State     any            `json:"state"`
+		Questions map[string]any `json:"questions"`
+		Fields    map[string]any `json:"fields"`
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil || reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
-	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+	provider := ""
+	modelID := reqBody.Model
+	if idx := strings.Index(reqBody.Model, "/"); idx >= 0 {
+		provider = reqBody.Model[:idx]
+		modelID = reqBody.Model[idx+1:]
+	}
+	shape := providers.GetProviderModelPayloadShape(provider, modelID)
+	switch shape {
+	case "fields":
+		if reqBody.Fields == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: fields")
+			return
+		}
+	case "questions":
+		if reqBody.Questions == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
+			return
+		}
+	default:
+		if reqBody.Questions == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: questions")
+			return
+		}
+	}
+	model := reqBody.Model
+	// fields-only payloads (extraction models) do not require questions.
+	if !h.ChatH.EnforceModelAccess(w, r, model) {
 		return
 	}
 	// SystemOne forwards on its own path rather than through
@@ -359,50 +520,121 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 	if _, refused := guardMediaInput(w, r.Header.Get("Content-Type"), body); refused {
 		return
 	}
-	h.forwardSystemoneRequest(w, r, body, reqBody.Model)
+	h.forwardSystemoneRequest(w, r, body, model)
 }
 
-// forwardSystemoneRequest resolves model, connection, config and forwards
-// the raw body to the provider systemone endpoint with auth + static headers.
+// forwardSystemoneRequest resolves model, rotates across candidate connections on
+// retryable failures, and forwards the body to the provider systemone endpoint.
 func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Request, body []byte, model string) {
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil || connData == nil {
-		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			apiKey := cfg.DefaultAPIKey
-			if apiKey == "" {
-				apiKey = "public"
+
+	preferredConnID := preferredMediaConnID(r, modelInfo)
+	usePinned := preferredConnID != ""
+	finalModel := ""
+	if h.Repo != nil {
+		if customs, err := h.Repo.GetCustomModels(); err == nil {
+			for _, cm := range customs {
+				if cm != nil && (cm.ProviderAlias == modelInfo.Provider || providers.ResolveAlias(cm.ProviderAlias) == providers.ResolveAlias(modelInfo.Provider)) && cm.ID == modelInfo.Model && cm.UpstreamModelID != "" {
+					finalModel = cm.UpstreamModelID
+					break
+				}
 			}
-			connData = &chat.ConnectionData{
-				APIKey:      apiKey,
-				ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
-			}
-		} else {
-			// The selector's own error says whether the provider is simply
-			// parked in cooldown and when it frees up. Substituting a generic
-			// "no active connections" here throws that away, and the
-			// dashboard's model sweep then cannot tell a cooldown from a
-			// broken account.
-			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
-			return
 		}
 	}
+	if finalModel == "" {
+		finalModel = providers.GetProviderModelUpstreamID(modelInfo.Provider, modelInfo.Model)
+	}
+	finalBody := handlerutil.UpdateModelInBody(body, finalModel)
+
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr *mediaForwardAttemptErr
+
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, excludeIDs, modelInfo.Model)
+		if err != nil || connData == nil {
+			if len(excludeIDs) == 0 {
+				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+					apiKey := cfg.DefaultAPIKey
+					if apiKey == "" {
+						apiKey = "public"
+					}
+					conn = nil
+					connData = &chat.ConnectionData{
+						APIKey:      apiKey,
+						ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
+					}
+				}
+			}
+			if connData == nil {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				// The selector's own error says whether the provider is simply
+				// parked in cooldown and when it frees up. Substituting a generic
+				// "no active connections" here throws that away, and the
+				// dashboard's model sweep then cannot tell a cooldown from a
+				// broken account.
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
+				return
+			}
+		}
+		if conn != nil {
+			if _, seen := tried[conn.ID]; seen {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(nil, modelInfo.Provider))
+				return
+			}
+			tried[conn.ID] = struct{}{}
+		}
+
+		attemptErr := h.trySystemoneConn(w, r, finalBody, modelInfo, conn, connData)
+		if attemptErr == nil {
+			return
+		}
+		lastErr = attemptErr
+		if conn == nil || usePinned || !attemptErr.retryable || r.Context().Err() != nil {
+			lastErr.write(w)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func (h *MediaHandler) trySystemoneConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	finalBody []byte,
+	modelInfo *chat.ModelInfo,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) *mediaForwardAttemptErr {
 	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: err.Error(), retryable: false}
 	}
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
 		if providerCfg != nil && providerCfg.DefaultAPIKey != "" {
 			apiKey = providerCfg.DefaultAPIKey
 		} else {
-			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-			return
+			return &mediaForwardAttemptErr{status: http.StatusUnauthorized, jsonMsg: "no API key found", retryable: conn != nil}
 		}
 	}
 	override := ""
@@ -425,11 +657,24 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 			targetURL = baseURL + "/systemone"
 		}
 	}
-	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
+	// Cloudflare System One embeds the account and the (full) model id in the
+	// path, and forwards a short selector in the body (see finalBody above).
+	if strings.Contains(targetURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID"))
+		}
+		targetURL = strings.Replace(targetURL, "{accountId}", accountID, 1)
+	}
+	targetURL = strings.ReplaceAll(targetURL, "{model}", modelInfo.Model)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to create request")
-		return
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: "failed to create request", retryable: false}
 	}
 	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
@@ -447,13 +692,14 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		mediaSessionKey := "media:" + modelInfo.Provider
 		if modelInfo.ConnectionID != "" {
 			mediaSessionKey += ":conn:" + modelInfo.ConnectionID
+		} else if conn != nil {
+			mediaSessionKey += ":conn:" + conn.ID
 		}
 		req.Header.Set("x-opencode-session", proxy.StableOpenCodeSessionID(mediaSessionKey))
 	}
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
-		return
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: clientErr.Error(), retryable: true}
 	}
 	resp, err := client.Do(req)
 	if err != nil && r.Context().Err() == nil {
@@ -468,7 +714,7 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 			resp2, err3 := directHTTPClient.Do(directReq)
 			if err3 == nil {
 				if resp != nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 				resp = resp2
 				err = nil
@@ -476,16 +722,76 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "upstream request failed: "+err.Error())
-		return
+		return &mediaForwardAttemptErr{
+			status:    http.StatusBadGateway,
+			jsonMsg:   "upstream request failed: " + err.Error(),
+			retryable: r.Context().Err() == nil,
+		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if errBody == nil {
+			errBody = []byte{}
+		}
+		backoff := 0
+		if conn != nil && h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		snippet := string(errBody[:min(500, len(errBody))])
+		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
+		if classification.ShouldFallback && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return &mediaForwardAttemptErr{
+			status:    resp.StatusCode,
+			headers:   resp.Header.Clone(),
+			rawBody:   errBody,
+			retryable: classification.ShouldFallback,
+		}
+	}
+
 	copyUpstreamHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-	if resp.StatusCode == http.StatusOK && conn != nil {
-		h.Repo.UpdateConnectionLastUsed(conn.ID)
+	const maxSystemoneBody = 16 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxSystemoneBody))
+	if err != nil {
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: err.Error(), retryable: r.Context().Err() == nil}
 	}
+	outBody := respBody
+	// Only attempt Cloudflare envelope unwrap when the body fit within the cap;
+	// an oversized/truncated body falls back to passthrough without unwrapping.
+	if len(respBody) < maxSystemoneBody && resp.StatusCode == http.StatusOK {
+		var env struct {
+			Result  jsonv1.RawMessage `json:"result"`
+			Answers jsonv1.RawMessage `json:"answers"`
+		}
+		if err := json.Unmarshal(respBody, &env); err == nil && len(env.Result) > 0 {
+			topHasAnswers := len(bytes.TrimSpace(env.Answers)) > 0 && string(bytes.TrimSpace(env.Answers)) != "null"
+			if !topHasAnswers {
+				var result struct {
+					Answers jsonv1.RawMessage `json:"answers"`
+				}
+				if err := json.Unmarshal(env.Result, &result); err == nil {
+					resHasAnswers := len(bytes.TrimSpace(result.Answers)) > 0 && string(bytes.TrimSpace(result.Answers)) != "null"
+					if resHasAnswers {
+						outBody = env.Result
+						w.Header().Set("Content-Length", strconv.Itoa(len(outBody)))
+					}
+				}
+			}
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(outBody)
+	if resp.StatusCode == http.StatusOK && conn != nil && h.Repo != nil {
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+		}
+	}
+	return nil
 }
 
 // isMiMoSpeech reports whether body.model resolves to the xiaomi-mimo provider.
@@ -549,21 +855,6 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-		return
-	}
 
 	modelID, voiceID := parseMiMoModelVoice(modelInfo.Model)
 
@@ -592,24 +883,100 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	preferredConnID := preferredMediaConnID(r, modelInfo)
+	usePinned := preferredConnID != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr *mediaForwardAttemptErr
+
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, excludeIDs, modelInfo.Model)
+		if err != nil || connData == nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
+			return
+		}
+		if conn != nil {
+			if _, seen := tried[conn.ID]; seen {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(nil, modelInfo.Provider))
+				return
+			}
+			tried[conn.ID] = struct{}{}
+		}
+
+		attemptErr := h.tryMiMoSpeechConn(w, r, payload, req.ResponseFmt, modelInfo, conn, connData)
+		if attemptErr == nil {
+			return
+		}
+		lastErr = attemptErr
+		if conn == nil || usePinned || !attemptErr.retryable || r.Context().Err() != nil {
+			lastErr.write(w)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func (h *MediaHandler) tryMiMoSpeechConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	payload []byte,
+	responseFmt string,
+	modelInfo *chat.ModelInfo,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) *mediaForwardAttemptErr {
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: err.Error(), retryable: false}
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		return &mediaForwardAttemptErr{status: http.StatusUnauthorized, jsonMsg: "no API key found", retryable: conn != nil}
+	}
+
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: clientErr.Error(), retryable: true}
+	}
+	if client == nil {
+		client = h.Client
+	}
+
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, providerCfg.BaseURL, bytes.NewReader(payload))
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
-		return
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: fmt.Sprintf("create request: %v", err), retryable: false}
 	}
 	upstreamReq.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	upstreamReq.Header.Set(constants.HeaderAuthorization, "Bearer "+apiKey)
 
-	resp, err := h.Client.Do(upstreamReq)
+	resp, err := client.Do(upstreamReq)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
-		return
+		return &mediaForwardAttemptErr{
+			status:    http.StatusBadGateway,
+			jsonMsg:   fmt.Sprintf("upstream error: %v", err),
+			retryable: r.Context().Err() == nil,
+		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
-		return
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: err.Error(), retryable: r.Context().Err() == nil}
 	}
 
 	var data struct {
@@ -636,8 +1003,17 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		case len(bytes.TrimSpace(respBody)) > 0:
 			msg = string(bytes.TrimSpace(respBody))
 		}
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, msg)
-		return
+		backoff := 0
+		if conn != nil && h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		snippet := string(respBody[:min(500, len(respBody))])
+		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, respBody)
+		if classification.ShouldFallback && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: msg, retryable: classification.ShouldFallback}
 	}
 
 	audio, format := "", "wav"
@@ -652,28 +1028,40 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		if data.Error != nil && data.Error.Message != "" {
 			msg = data.Error.Message
 		}
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, msg)
-		return
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: msg, retryable: false}
 	}
 
 	// response_format=json returns {audio, format}; default returns raw audio bytes.
-	if req.ResponseFmt == "json" {
+	if responseFmt == "json" {
+		if conn != nil && h.Repo != nil {
+			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+			if !handlerutil.IsProbeContext(r.Context()) {
+				_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			}
+		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]string{"audio": audio, "format": format})
-		return
+		return nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(audio)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "MiMo TTS returned invalid audio")
-		return
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: "MiMo TTS returned invalid audio", retryable: false}
+	}
+	if conn != nil && h.Repo != nil {
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+		}
 	}
 	w.Header().Set("Content-Type", "audio/"+format)
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+	return nil
 }
 
 // HandleAudioTranscriptions handles /v1/audio/transcriptions.
 func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "stt"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -685,6 +1073,7 @@ func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.
 
 // HandleVideoGenerations handles /v1/videos/generations.
 func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -696,6 +1085,7 @@ func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Req
 
 // HandleVideoEdits handles /v1/videos/edits.
 func (h *MediaHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -707,6 +1097,7 @@ func (h *MediaHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) 
 
 // HandleVideoExtensions handles /v1/videos/extensions.
 func (h *MediaHandler) HandleVideoExtensions(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -765,6 +1156,7 @@ func (h *MediaHandler) defaultWebFetchModel() string {
 
 // HandleSearch handles /v1/search.
 func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "webSearch"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -776,6 +1168,7 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 // HandleScrape handles /v1/scrape.
 func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "webFetch"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -787,6 +1180,7 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 
 // HandleWebFetch handles /v1/web/fetch.
 func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "webFetch"))
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -838,11 +1232,13 @@ func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 // own switch and is answered first, so both branches agree: a literal IP and a
 // name that resolves to the same address get the same verdict.
 //
-// This check is a refusal the caller can see, not the boundary itself: the
-// dialer's socket-level guard is what actually stops the connection, and it
-// also covers the rebind between this lookup and the dial. Checking here means
-// the common case answers 403 with a reason instead of surfacing as a transport
-// error from a provider several layers down.
+// This check is a refusal the caller can see, not the boundary itself: while
+// ALLOW_PRIVATE_NETWORKING=false the dialer's socket-level guard is what
+// actually stops the connection, and it also covers the rebind between this
+// lookup and the dial. With the default (on) that guard is skipped, so this
+// pre-flight is the only check. Checking here means the common case answers
+// 403 with a reason instead of surfacing as a transport error from a provider
+// several layers down.
 func targetPrivate(ctx context.Context, host string) bool {
 	if host == "" {
 		return true
@@ -867,7 +1263,94 @@ func targetPrivate(ctx context.Context, host string) bool {
 	return false
 }
 
+// maxRedirectHops restates net/http's default ceiling: CheckRedirect replaces
+// the stdlib policy, so a chain that would have been cut at ten hops would
+// otherwise loop until the request context died.
+const maxRedirectHops = 10
+
+// checkRedirectPublic is the CheckRedirect policy for every media client. A
+// public entry point must not be able to walk the gateway into a private
+// address with a 302: resolveSearchURL refuses a private search base URL before
+// the first request, but the host it dialled can answer with a redirect to
+// 127.0.0.1, 169.254.169.254 or an RFC1918 address, and with
+// ALLOW_PRIVATE_NETWORKING on (the default) the dialer's socket-level guard is
+// skipped, so this hop is the only refusal. Every hop is checked, not just the
+// first: a chain of public hosts ending in loopback is the same fetch.
+func checkRedirectPublic(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirectHops {
+		return fmt.Errorf("stopped after %d redirects", maxRedirectHops)
+	}
+	if err := handlerutil.AssertPublicURL(req.URL.String()); err != nil {
+		return fmt.Errorf("redirect refused: %s: %w", req.URL.Redacted(), err)
+	}
+	return nil
+}
+
+// guardMediaRedirects returns a copy of client that refuses a redirect hop
+// landing on an internal address. A copy, because the client the chat handler
+// hands out is shared by every lane, and one lane may not change the policy
+// the others dial with.
+func guardMediaRedirects(client *http.Client) *http.Client {
+	clone := *client
+	clone.CheckRedirect = checkRedirectPublic
+	return &clone
+}
+
+// resolveSearchURL picks the search endpoint a provider dials. The provider's
+// own configured base URL (registry default) is trusted as admin-controlled;
+// anything else — a per-connection override stored by the dashboard, or a
+// client-supplied baseUrl — is client-controlled and must be public http(s)
+// only, otherwise a custom SearXNG (or any web search) base URL is an SSRF
+// primitive: an attacker points it at 127.0.0.1:11434, 169.254.169.254 or a
+// LAN host and the gateway fetches it on their behalf.
+//
+// Matches upstream resolveBaseUrl / assertPublicUrl: invalid URL, non-http(s)
+// scheme, internal/private/loopback/link-local/metadata addresses are all
+// refused. The guard runs here so a rejected override answers with a clear
+// error instead of reaching the dialer (which under ALLOW_PRIVATE_NETWORKING=1
+// — the default — lets every address class through).
+func resolveSearchURL(cfg *providers.ProviderConfig, psd map[string]any, targetURL string) (string, error) {
+	override := psdStr(psd, "baseUrl")
+	if override != "" {
+		u, err := url.Parse(override)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return "", fmt.Errorf("invalid search base URL: %q", override)
+		}
+		if u.Hostname() == "" {
+			return "", fmt.Errorf("invalid search base URL: empty host")
+		}
+		if handlerutil.AssertPublicURL(override) != nil {
+			return "", fmt.Errorf("search base URL is not allowed: %q", override)
+		}
+		return strings.TrimRight(override, "/"), nil
+	}
+	if cfg.SearchURL != "" {
+		return cfg.SearchURL, nil
+	}
+	// No override and no configured search lane: keep the derived
+	// targetURL (baseURL + endpoint) so generic search providers still
+	// reach baseURL + /v1/search instead of an empty string.
+	return targetURL, nil
+}
+
+// psdStr reads a string field from provider-specific data, mirroring the
+// dashboard's copy so the media handler does not import the dashboard package.
+func psdStr(psd map[string]any, keys ...string) string {
+	if psd == nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := psd[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Request, body []byte, defaultModel, endpoint string) {
+	if handlerutil.GetServiceKind(r.Context()) == "" {
+		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), kindFromEndpoint(endpoint)))
+	}
 	model := defaultModel
 	var reqBody struct {
 		Model string `json:"model"`
@@ -981,12 +1464,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
-			// Cloudflare Flux-2 with a reference image: dedicated lane that
-			// downloads the reference image and posts to Cloudflare's
-			// /ai/run/<model> endpoint.
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
-				isCloudflareFlux2Model(subInfo) {
-				if err := h.forwardCloudflareFlux2Image(w, r, body, subInfo); err == nil {
+			// Cloudflare AI image models answer /ai/run/<model>, which the
+			// generic forwarder cannot reach — dedicated lane for all of them.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && isCloudflareImageModel(subInfo) {
+				if err := h.handleCloudflareImage(w, r, body, subInfo); err == nil {
 					return
 				} else {
 					lastErr = err.Error()
@@ -1042,12 +1524,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
-			// Cloudflare AI's flux-1-schnell schema rejects width/height (upstream #5373).
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
-				(providers.ResolveAlias(subInfo.Provider) == "cloudflare-ai" || providers.ResolveAlias(subInfo.Provider) == "cf") &&
-				isFluxSchnellModel(subInfo.Model) {
-				finalBody = stripDimensionsForFluxSchnell(finalBody)
+			if isVideoCreateEndpoint(endpoint) && isXAIVideoProvider(subInfo.Provider) {
+				finalBody = formatXAIVideoPayload(finalBody)
 			}
+			// Cloudflare AI's flux-1-schnell schema rejects width/height — handled
+			// by the cloudflare image lane, not here.
+
 			// The endpoint the caller used is a route on this gateway, not a
 			// path on the vendor's host: appending it to BaseURL built URLs the
 			// vendor never serves (tavily got api.tavily.com/search/v1/search,
@@ -1057,12 +1539,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			method := r.Method
 			switch endpoint {
 			case "/v1/search":
-				if providerCfg.SearchURL != "" {
-					targetURL = providerCfg.SearchURL
-					method = strings.ToUpper(providerCfg.SearchMethod)
-					if method == "" {
-						method = http.MethodPost
-					}
+				targetURL, err = resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
+				if err != nil {
+					lastErr = err.Error()
+					continue
+				}
+				method = strings.ToUpper(providerCfg.SearchMethod)
+				if method == "" {
+					method = http.MethodPost
 				}
 			case "/v1/web/fetch":
 				if providerCfg.FetchURL != "" {
@@ -1099,6 +1583,10 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				lastErr = clientErr.Error()
 				continue
 			}
+			// The client is the chat handler's shared one; guard its redirects
+			// so a combo search that answers 302 to a private address is
+			// refused rather than followed.
+			client = guardMediaRedirects(client)
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
@@ -1181,10 +1669,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Cloudflare Flux-2 with a reference image on the direct path: dedicated lane.
-	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
-		isCloudflareFlux2Model(modelInfo) && flux2ReferenceImage(body) {
-		if err := h.forwardCloudflareFlux2Image(w, r, body, modelInfo); err != nil {
+	// Cloudflare AI image models answer /ai/run/<model>, which the generic
+	// forwarder cannot reach — dedicated lane for all of them.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && isCloudflareImageModel(modelInfo) {
+		if err := h.handleCloudflareImage(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return
@@ -1285,87 +1774,164 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	preferredConnID := r.Header.Get("x-connection-id")
-	if preferredConnID == "" {
-		preferredConnID = r.Header.Get("x-provider-connection-id")
-	}
-	if preferredConnID == "" {
-		preferredConnID = modelInfo.ConnectionID
-	}
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, nil, modelInfo.Model)
-	if err != nil || connData == nil {
-		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			apiKey := cfg.DefaultAPIKey
-			if apiKey == "" {
-				apiKey = "public"
-			}
-			connData = &chat.ConnectionData{
-				APIKey:      apiKey,
-				ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
-			}
-		} else {
-			log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
-			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
-			return
-		}
-	}
+	preferredConnID := preferredMediaConnID(r, modelInfo)
 
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		log.Error("media", "get provider config failed", "endpoint", endpoint, "provider", modelInfo.Provider, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
-		if providerCfg != nil && providerCfg.DefaultAPIKey != "" {
-			apiKey = providerCfg.DefaultAPIKey
-		} else {
-			connIDStr := ""
-			if conn != nil {
-				connIDStr = conn.ID[:min(8, len(conn.ID))]
-			}
-			log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", connIDStr)
-			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-			return
-		}
-	}
-
-	finalBody := body
+	baseFinalBody := body
 	if !isMultipartRequest(r) {
-		finalBody = handlerutil.UpdateModelInBody(body, modelInfo.Model)
-		// Cloudflare AI's flux-1-schnell schema rejects width/height (upstream #5373).
-		if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
-			(providers.ResolveAlias(modelInfo.Provider) == "cloudflare-ai" || providers.ResolveAlias(modelInfo.Provider) == "cf") &&
-			isFluxSchnellModel(modelInfo.Model) {
-			finalBody = stripDimensionsForFluxSchnell(finalBody)
-		}
+		baseFinalBody = handlerutil.UpdateModelInBody(body, modelInfo.Model)
 	} else if model != "" && model != modelInfo.Model {
 		// Upstream parity (videoGeneration byte-exact multipart): never
 		// rewrite inside the binary payload — a byte.Replace could corrupt
 		// file bytes that happen to match. Rebuild only the model part.
 		if rebuilt, err := rewriteMultipartModelPart(body, r.Header.Get("Content-Type"), model, modelInfo.Model); err == nil {
-			finalBody = rebuilt
+			baseFinalBody = rebuilt
 		} else {
 			log.Warn("media", "multipart model rewrite skipped", "endpoint", endpoint, "error", err)
 		}
 	}
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+	if isVideoCreateEndpoint(endpoint) && isXAIVideoProvider(modelInfo.Provider) && !isMultipartRequest(r) {
+		baseFinalBody = formatXAIVideoPayload(baseFinalBody)
+	}
+
+	usePinned := preferredConnID != ""
+	excludeIDs := []string{}
+	tried := make(map[string]struct{})
+	var lastErr *mediaForwardAttemptErr
+
+	for {
+		if r.Context().Err() != nil {
+			if lastErr != nil {
+				lastErr.write(w)
+				return
+			}
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, r.Context().Err().Error())
+			return
+		}
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, excludeIDs, modelInfo.Model)
+		if err != nil || connData == nil {
+			if len(excludeIDs) == 0 {
+				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+					apiKey := cfg.DefaultAPIKey
+					if apiKey == "" {
+						apiKey = "public"
+					}
+					conn = nil
+					connData = &chat.ConnectionData{
+						APIKey:      apiKey,
+						ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
+					}
+				}
+			}
+			if connData == nil {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
+				return
+			}
+		}
+		if conn != nil {
+			if _, seen := tried[conn.ID]; seen {
+				if lastErr != nil {
+					lastErr.write(w)
+					return
+				}
+				handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(nil, modelInfo.Provider))
+				return
+			}
+			tried[conn.ID] = struct{}{}
+		}
+
+		attemptErr := h.tryMediaForwardConn(w, r, body, baseFinalBody, modelInfo, endpoint, conn, connData)
+		if attemptErr == nil {
+			return
+		}
+		lastErr = attemptErr
+		if conn == nil || usePinned || !attemptErr.retryable || r.Context().Err() != nil {
+			lastErr.write(w)
+			return
+		}
+		excludeIDs = append(excludeIDs, conn.ID)
+	}
+}
+
+func preferredMediaConnID(r *http.Request, modelInfo *chat.ModelInfo) string {
+	if id := r.Header.Get("x-connection-id"); id != "" {
+		return id
+	}
+	if id := r.Header.Get("x-provider-connection-id"); id != "" {
+		return id
+	}
+	return modelInfo.ConnectionID
+}
+
+type mediaForwardAttemptErr struct {
+	status    int
+	headers   http.Header
+	rawBody   []byte
+	jsonMsg   string
+	retryable bool
+}
+
+func (e *mediaForwardAttemptErr) write(w http.ResponseWriter) {
+	if e.rawBody != nil {
+		if e.headers != nil {
+			copyUpstreamHeaders(w.Header(), e.headers)
+		}
+		w.WriteHeader(e.status)
+		_, _ = w.Write(e.rawBody)
 		return
 	}
+	handlerutil.WriteJSONError(w, e.status, e.jsonMsg)
+}
+
+func (h *MediaHandler) tryMediaForwardConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	baseFinalBody []byte,
+	modelInfo *chat.ModelInfo,
+	endpoint string,
+	conn *models.ProviderConnection,
+	connData *chat.ConnectionData,
+) (attemptErr *mediaForwardAttemptErr) {
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		log.Error("media", "get provider config failed", "endpoint", endpoint, "provider", modelInfo.Provider, "error", err)
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: err.Error(), retryable: false}
+	}
+
+	connIDStr := ""
+	if conn != nil {
+		connIDStr = conn.ID[:min(8, len(conn.ID))]
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		if providerCfg != nil && providerCfg.DefaultAPIKey != "" {
+			apiKey = providerCfg.DefaultAPIKey
+		} else {
+			log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", connIDStr)
+			return &mediaForwardAttemptErr{status: http.StatusUnauthorized, jsonMsg: "no API key found", retryable: conn != nil}
+		}
+	}
+
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: clientErr.Error(), retryable: true}
+	}
+	// The client is the chat handler's shared one; the guard rides on a copy
+	// so a redirect on this fetch cannot walk into a private address.
+	client = guardMediaRedirects(client)
 
 	connID := ""
 	if conn != nil {
 		connID = conn.ID
 	}
-	var fwdErr error
 	usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, true, false)
 	defer func() {
-		hasErr := fwdErr != nil
-		usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, false, hasErr)
+		usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, false, attemptErr != nil)
 	}()
 
 	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
@@ -1421,14 +1987,33 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	method := r.Method
-	if endpoint == "/v1/search" && providerCfg.SearchURL != "" && !hasCustomBaseURL {
-		targetURL = providerCfg.SearchURL
+	if endpoint == "/v1/search" {
+		searchURL, err := resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
+		if err != nil {
+			return &mediaForwardAttemptErr{status: http.StatusBadRequest, jsonMsg: err.Error(), retryable: false}
+		}
+		targetURL = searchURL
 		if providerCfg.SearchMethod != "" {
 			method = strings.ToUpper(providerCfg.SearchMethod)
 		} else {
 			method = http.MethodPost
 		}
 	}
+
+	attemptBody := baseFinalBody
+	if endpoint == "/v1/search" && modelInfo.Provider == "keenable" {
+		// Keenable rejects unknown params (model, mode). Forward only query.
+		var sReq struct {
+			Query string `json:"query"`
+			Mode  string `json:"mode"`
+		}
+		if err := json.Unmarshal(body, &sReq); err == nil && sReq.Query != "" {
+			if b, err := json.Marshal(map[string]string{"query": sReq.Query}); err == nil {
+				attemptBody = b
+			}
+		}
+	}
+	var fetchFmt string
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
 		if providerCfg.FetchMethod != "" {
@@ -1436,37 +2021,95 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		} else {
 			method = "POST"
 		}
-		if modelInfo.Provider == "ollama" {
-			var tmp struct {
-				URL string `json:"url"`
-			}
-			if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
-				if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
-					finalBody = b
+		var fReq struct {
+			URL    string `json:"url"`
+			Format string `json:"format"`
+		}
+		_ = json.Unmarshal(body, &fReq)
+		fetchFmt = strings.ToLower(strings.TrimSpace(fReq.Format))
+		if fetchFmt == "" {
+			fetchFmt = "markdown"
+		}
+
+		switch modelInfo.Provider {
+		case "ollama":
+			if fReq.URL != "" {
+				if b, err := json.Marshal(map[string]string{"url": fReq.URL}); err == nil {
+					attemptBody = b
 				}
+			}
+		case "jina-reader", "jina":
+			if fetchFmt != "markdown" && fetchFmt != "text" && fetchFmt != "html" {
+				rawErr, _ := json.Marshal(map[string]any{
+					"error": fmt.Sprintf("Unsupported format for %s. Supported: markdown, text, html", modelInfo.Provider),
+				})
+				return &mediaForwardAttemptErr{
+					status:    http.StatusBadRequest,
+					headers:   http.Header{constants.HeaderContentType: {constants.ContentTypeJSON}},
+					rawBody:   rawErr,
+					retryable: false,
+				}
+			}
+			if fReq.URL != "" {
+				if b, err := json.Marshal(map[string]string{"url": fReq.URL}); err == nil {
+					attemptBody = b
+				}
+			}
+		case "tavily":
+			if fetchFmt != "markdown" && fetchFmt != "text" {
+				rawErr, _ := json.Marshal(map[string]any{
+					"error": "Unsupported format for tavily. Supported: markdown, text",
+				})
+				return &mediaForwardAttemptErr{
+					status:    http.StatusBadRequest,
+					headers:   http.Header{constants.HeaderContentType: {constants.ContentTypeJSON}},
+					rawBody:   rawErr,
+					retryable: false,
+				}
+			}
+			tBody := map[string]any{
+				"urls":          []string{fReq.URL},
+				"extract_depth": "basic",
+				"format":        fetchFmt,
+			}
+			if b, err := json.Marshal(tBody); err == nil {
+				attemptBody = b
+			}
+		case "keenable":
+			// Keenable fetch is GET /v1/fetch with url as a query parameter.
+			if method == http.MethodGet && fReq.URL != "" {
+				u, err := url.Parse(providerCfg.FetchURL)
+				if err == nil {
+					q := u.Query()
+					q.Set("url", fReq.URL)
+					if fReq.Format != "" {
+						q.Set("format", fReq.Format)
+					}
+					u.RawQuery = q.Encode()
+					targetURL = u.String()
+				}
+				attemptBody = nil
 			}
 		}
 	}
-	log.Info("media", "forwarding to targetURL", "targetURL", targetURL, "method", method, "model", modelInfo.Model)
-	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(finalBody))
+
+	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(attemptBody))
 	if err != nil {
 		log.Error("media", "create request failed", "endpoint", endpoint, "error", err)
-		return
+		return &mediaForwardAttemptErr{status: http.StatusInternalServerError, jsonMsg: "failed to create request", retryable: false}
 	}
 
-	for k, v := range r.Header {
-		req.Header[k] = v
-	}
+	req.Header = r.Header.Clone()
 	req.Header.Del("Host")
 	req.Header.Del("Content-Length")
 	for k, v := range providerCfg.StaticHeaders {
 		req.Header.Set(k, v)
 	}
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	connIDStr := ""
-	if conn != nil {
-		connIDStr = conn.ID[:min(8, len(conn.ID))]
+	if fetchFmt != "" && (modelInfo.Provider == "jina-reader" || modelInfo.Provider == "jina") {
+		req.Header.Set("x-respond-with", fetchFmt)
 	}
+	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+
 	// Log search query for observability (was "nebak" before)
 	if endpoint == "/v1/search" {
 		var qb struct {
@@ -1486,24 +2129,53 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	resp, err := doDirectOrClient(r.Context(), client, req)
 	if err != nil {
 		log.Error("media", "upstream request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, "upstream request failed")
-		return
+		return &mediaForwardAttemptErr{
+			status:    http.StatusBadGateway,
+			jsonMsg:   "upstream request failed",
+			retryable: r.Context().Err() == nil && !isVideoCreateEndpoint(endpoint),
+		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024))
-		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "status", resp.StatusCode, "body", string(errBody))
-		// Need to re-create body for copying
-		resp.Body = io.NopCloser(bytes.NewReader(errBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if errBody == nil {
+			errBody = []byte{}
+		}
+		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "status", resp.StatusCode, "body", string(errBody[:min(1024, len(errBody))]))
+		backoff := 0
+		if conn != nil && h.Repo != nil {
+			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+		}
+		snippet := string(errBody[:min(500, len(errBody))])
+		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
+		shouldRotate := classification.ShouldFallback
+		if isVideoCreateEndpoint(endpoint) && resp.StatusCode >= 500 {
+			shouldRotate = false
+		}
+		if shouldRotate && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
+			cooldownSec := max(classification.CooldownMs/1000, 1)
+			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+		}
+		return &mediaForwardAttemptErr{
+			status:    resp.StatusCode,
+			headers:   resp.Header.Clone(),
+			rawBody:   errBody,
+			retryable: shouldRotate,
+		}
 	}
 
 	copyUpstreamHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 
 	if resp.StatusCode == http.StatusOK && conn != nil {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		if h.Repo != nil {
+			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+			if !handlerutil.IsProbeContext(r.Context()) {
+				_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			}
+		}
 		latencyMs := time.Since(start).Milliseconds()
 		logInfo := &shared.UsageLogInfo{
 			Provider:     modelInfo.Provider,
@@ -1514,6 +2186,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
 	}
+	return nil
 }
 
 // rewriteMultipartModelPart rebuilds a multipart body with only the "model"
@@ -1643,191 +2316,118 @@ func forwardGeminiEmbeddingDimensions(body []byte) []byte {
 	return body
 }
 
-// isFluxSchnellModel reports whether model is Cloudflare's FLUX.1 Schnell, whose
-// closed image schema rejects width/height/size (upstream #5373). Match on the
-// full model id (@cf/black-forest-labs/flux-1-schnell) or the bare id
-// (flux-1-schnell), anchored at the end so flux-2-dev and flux-1-schnell-dev are
-// not mistaken for it.
-func isFluxSchnellModel(model string) bool {
-	return strings.HasSuffix(model, "flux-1-schnell")
+// isGitHubCopilotProvider reports whether the resolved provider is GitHub Copilot.
+func isGitHubCopilotProvider(provider string) bool {
+	return providers.ResolveAlias(provider) == "github"
 }
 
-// stripDimensionsForFluxSchnell removes width, height, and size from Cloudflare FLUX.1 Schnell
-// image generation requests because Cloudflare's schema for it is closed and rejects them (upstream #5373).
-func stripDimensionsForFluxSchnell(body []byte) []byte {
+// wrapCopilotEmbeddingInput wraps a bare "input" string into an array of
+// strings ([input]), which Copilot requires. It leaves an existing array
+// untouched and leaves bodies without "input" alone.
+func wrapCopilotEmbeddingInput(body []byte) []byte {
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
 		return body
 	}
-	delete(payload, "width")
-	delete(payload, "height")
-	delete(payload, "size")
-	if updated, err := json.Marshal(payload); err == nil {
-		return updated
+	input, ok := payload["input"]
+	if !ok {
+		return body
 	}
-	return body
+	if _, isArray := input.([]any); isArray {
+		return body
+	}
+	payload["input"] = []any{input}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
-// isCloudflareFlux2Model reports whether info is a Cloudflare Flux-2 model
-// (@cf/black-forest-labs/flux-2*) served through the cloudflare-ai/cf provider.
-// Flux-2 models accept an optional reference image, which is handled by the
-// dedicated flux-2 lane instead of the generic image forwarder.
-func isCloudflareFlux2Model(info *chat.ModelInfo) bool {
-	if info == nil {
-		return false
-	}
-	return strings.HasPrefix(info.Model, "@cf/black-forest-labs/flux-2") &&
-		(providers.ResolveAlias(info.Provider) == "cloudflare-ai" || providers.ResolveAlias(info.Provider) == "cf")
+// nvidiaAsymmetricEmbeddingModels lists NVIDIA embedding models that require an
+// input_type hint (asymmetric query/passage). Symmetric models (nvclip) and
+// non-embedding models (parakeet-ctc-1.1b-asr) are intentionally excluded.
+var nvidiaAsymmetricEmbeddingModels = map[string]bool{
+	"nvidia/nemotron-3.5-embed-8b":                   true,
+	"nemotron-3.5-embed-8b":                          true,
+	"nvidia/nemotron-3.5-embed-1b":                   true,
+	"nemotron-3.5-embed-1b":                          true,
+	"nvidia/nemotron-3-embed-1b":                     true,
+	"nemotron-3-embed-1b":                            true,
+	"nvidia/nv-embedqa-mistral-7b-v2":                true,
+	"nv-embedqa-mistral-7b-v2":                       true,
+	"nvidia/embed-qa-4":                              true,
+	"embed-qa-4":                                     true,
+	"nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1": true,
+	"llama-3.2-nemoretriever-1b-vlm-embed-v1":        true,
+	"nvidia/llama-3.2-nv-embedqa-1b-v1":              true,
+	"llama-3.2-nv-embedqa-1b-v1":                     true,
 }
 
-// flux2ReferenceImage reports whether body carries a reference image
-// (top-level "image" or first entry of "images") for a Flux-2 request.
-func flux2ReferenceImage(body []byte) bool {
-	var req struct {
-		Image  string   `json:"image"`
-		Images []string `json:"images"`
+// forwardNvidiaEmbeddingInputType injects input_type for NVIDIA's asymmetric
+// embedding models: preserve a client-supplied "query"/"passage", otherwise
+// default to "query" (upstream decolua/9router@a851a89c4).
+func forwardNvidiaEmbeddingInputType(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return false
+	raw, _ := payload["input_type"].(string)
+	val := strings.TrimSpace(strings.ToLower(raw))
+	if val != "query" && val != "passage" {
+		val = "query"
 	}
-	if strings.TrimSpace(req.Image) != "" {
-		return true
+	payload["input_type"] = val
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
 	}
-	return len(req.Images) > 0 && strings.TrimSpace(req.Images[0]) != ""
+	return out
 }
 
-// resolveImageInput downloads a reference image URL and returns it as a
-// base64-encoded string. It uses r.Context(), requires a 200 response, and
-// refuses private/resolved IPs via proxy.IsPrivateIP (SSRF protection).
-func (h *MediaHandler) resolveImageInput(ctx context.Context, imageURL string) (string, error) {
-	u, err := url.Parse(imageURL)
-	if err != nil {
-		return "", fmt.Errorf("parse image url: %w", err)
-	}
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	if ip == nil {
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-		if err != nil || len(ips) == 0 {
-			return "", fmt.Errorf("resolve image host %q: %w", host, err)
-		}
-		ip = ips[0]
-	}
-	if !proxy.IsPrivateNetworkingAllowed() && proxy.IsPrivateIP(ip) {
-		return "", fmt.Errorf("image host %q resolves to private IP %s", host, ip)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("create image request: %w", err)
-	}
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetch image: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("image fetch returned status %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return "", fmt.Errorf("read image: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(data), nil
+// isXAIVideoProvider reports whether the resolved provider is xAI or grok-cli.
+func isXAIVideoProvider(provider string) bool {
+	canon := providers.ResolveAlias(provider)
+	return canon == "xai" || canon == "grok-cli"
 }
 
-// forwardCloudflareFlux2Image handles Cloudflare Flux-2 image generation with a
-// reference image: it resolves the reference image (download + SSRF guard +
-// base64) and forwards to the Cloudflare AI /ai/run/<model> endpoint.
-func (h *MediaHandler) forwardCloudflareFlux2Image(w http.ResponseWriter, r *http.Request, body []byte, modelInfo *chat.ModelInfo) error {
-	var reqBody struct {
-		Prompt string   `json:"prompt"`
-		Image  string   `json:"image"`
-		Images []string `json:"images"`
-	}
-	if err := json.Unmarshal(body, &reqBody); err != nil {
-		return err
+// formatXAIVideoPayload ensures the start frame is formatted as { "url": ... }
+// for xAI video generation and edits, and forwards reference_images when present.
+// xAI API fails with HTTP 422 if image is a bare string.
+func formatXAIVideoPayload(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
 	}
 
-	reference := strings.TrimSpace(reqBody.Image)
-	if reference == "" && len(reqBody.Images) > 0 {
-		reference = strings.TrimSpace(reqBody.Images[0])
-	}
-	if reference != "" && (strings.HasPrefix(reference, "http://") || strings.HasPrefix(reference, "https://")) {
-		resolved, err := h.resolveImageInput(r.Context(), reference)
-		if err != nil {
-			return err
-		}
-		reference = resolved
-	}
-
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil || connData == nil {
-		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			apiKey := cfg.DefaultAPIKey
-			if apiKey == "" {
-				apiKey = "public"
-			}
-			connData = &chat.ConnectionData{
-				APIKey:      apiKey,
-				ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
-			}
-		} else {
-			log.Warn("media", "no connection", "endpoint", "flux-2", "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
-			return fmt.Errorf("%s", mediaConnectionError(err, modelInfo.Provider))
+	modified := false
+	if img, ok := payload["image"]; ok {
+		switch v := img.(type) {
+		case string:
+			payload["image"] = map[string]any{"url": v}
+			modified = true
+		case map[string]any:
+			// Already an object (e.g. {"url": ...} or {"file_id": ...}), keep untouched
+		default:
+			// If invalid type like number/boolean, delete it so xAI doesn't error on type
+			delete(payload, "image")
+			modified = true
 		}
 	}
 
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		return err
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" && providerCfg != nil && providerCfg.DefaultAPIKey != "" {
-		apiKey = providerCfg.DefaultAPIKey
-	}
-	if apiKey == "" {
-		return errors.New("no API key found")
-	}
-
-	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
-	if connData != nil && connData.BaseURL != "" {
-		baseURL = strings.TrimRight(connData.BaseURL, "/")
-	}
-	targetURL := baseURL + "/ai/run/" + modelInfo.Model
-
-	payload, err := json.Marshal(map[string]any{
-		"prompt": reqBody.Prompt,
-		"image":  reference,
-	})
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	for k, v := range providerCfg.StaticHeaders {
-		if req.Header.Get(k) == "" {
-			req.Header.Set(k, v)
+	if refImgs, ok := payload["reference_images"]; ok {
+		if _, isSlice := refImgs.([]any); !isSlice {
+			delete(payload, "reference_images")
+			modified = true
 		}
 	}
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		return clientErr
+
+	if !modified {
+		return body
 	}
-	resp, err := client.Do(req)
+	out, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("upstream error: %w", err)
+		return body
 	}
-	defer func() { _ = resp.Body.Close() }()
-	copyUpstreamHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-	if resp.StatusCode == http.StatusOK && conn != nil {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
-	}
-	return nil
+	return out
 }

@@ -1,15 +1,96 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig } from '../api/client'
+  import { api, type APIKey, type JailbreakDoc, type JailbreakImportEntry, type JailbreakImportResult, type JailbreakMatch, type JailbreakKeyword, type JailbreakModelConfig, type JailbreakSyncSource } from '../api/client'
   import { matchesAnyJailbreakKeyword } from '../lib/jailbreakKeywords'
+  import { buildFuzzyIndex, filterFuzzyIndexed, type FuzzyIndexEntry } from '../lib/fuzzyMatch'
   import { marked } from 'marked'
+  import { syncLabel, syncPassSummary, syncRelTime, syncSummaryText } from '../lib/presetSync'
   import KeywordRules from './KeywordRules.svelte'
   import Pagination from './Pagination.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Card from '../lib/ui/Card.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Toggle from '../lib/ui/Toggle.svelte'
+  import JailbreakPlayground from './jailbreak/JailbreakPlayground.svelte'
+import JailbreakKeyScope from './jailbreak/JailbreakKeyScope.svelte'
+import JailbreakTester from './jailbreak/JailbreakTester.svelte'
+  // Auto-sync state: the sources the library follows, plus the status line the
+  // "Sync now" button reports after one pass.
+  let syncSources = $state<JailbreakSyncSource[]>([])
+  let syncSaving = $state(false)
+  let syncRunning = $state(false)
+  let syncStatus = $state('')
+  let syncStatusIsError = $state(false)
+  let newSyncTarget = $state('')
+  let newSyncRef = $state('')
+
+  async function loadSyncSources() {
+    try {
+      const { sources } = await api.listJailbreakSyncSources()
+      syncSources = Array.isArray(sources) ? sources : []
+    } catch (e) {
+      // Surfaced on the card rather than swallowed: a failed read otherwise
+      // renders as "no sources", which is indistinguishable from enabled-but-empty.
+      syncSources = []
+      syncStatus = e instanceof Error ? e.message : String(e)
+      syncStatusIsError = true
+    }
+  }
+
+  function saveSyncSources(next: JailbreakSyncSource[]) {
+    const previous = syncSources
+    syncSources = next
+    syncSaving = true
+    api
+      .saveJailbreakSyncSources(next)
+      .then(({ sources }) => {
+        syncSources = Array.isArray(sources) ? sources : next
+      })
+      .catch((e) => {
+        syncSources = previous
+        syncStatus = e instanceof Error ? e.message : String(e)
+        syncStatusIsError = true
+      })
+      .finally(() => {
+        syncSaving = false
+      })
+  }
+
+  function toggleSyncSource(src: JailbreakSyncSource) {
+    saveSyncSources(syncSources.map((s) => (s.id === src.id ? { ...s, enabled: !s.enabled } : s)))
+  }
+
+  function removeSyncSource(id: string) {
+    saveSyncSources(syncSources.filter((s) => s.id !== id))
+  }
+
+  function addSyncSource() {
+    const target = newSyncTarget.trim()
+    if (!target) return
+    const id = `sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    saveSyncSources([...syncSources, { id, target, ref: newSyncRef.trim() || undefined, enabled: true }])
+    newSyncTarget = ''
+    newSyncRef = ''
+  }
+
+  async function runSyncNow() {
+    syncRunning = true
+    syncStatus = ''
+    syncStatusIsError = false
+    try {
+      const { outcomes } = await api.runJailbreakSync()
+      const summary = syncPassSummary(outcomes.map((o) => o.result))
+      syncStatus = summary ? `Sync complete: ${summary}` : 'Sync complete: nothing changed'
+      await loadSyncSources()
+    } catch (e) {
+      syncStatus = e instanceof Error ? e.message : String(e)
+      syncStatusIsError = true
+    } finally {
+      syncRunning = false
+    }
+  }
+
   // Preset library.
   let presets = $state<JailbreakDoc[]>([])
   let loading = $state(false)
@@ -47,6 +128,10 @@
 
   // Per-model / provider / combo bindings.
   let models = $state<Record<string, JailbreakModelConfig>>({})
+  // Client keys, for the per-key editor below. The playground fetches its
+  // own copy, but the editor needs the ids too and the two would otherwise
+  // race on first paint.
+  let apiKeys = $state<APIKey[]>([])
   let bindModelId = $state('')
   let bindPresetId = $state('')
   let bindError = $state('')
@@ -100,6 +185,12 @@
   // #6 Bulk arm: pick several ids from the live catalog, bind them at once.
   let bulkArmSearch = $state('')
   let bulkArmModels = $state<string[]>([])
+  // The catalog's comparison index, built once when the list loads. A
+  // keystroke filters through this instead of re-lowercasing and re-stripping
+  // every id on each pass (see buildFuzzyIndex), which is what keeps typing
+  // responsive over a catalog of ~2,000 ids on the 1-vCPU box the gateway runs
+  // on.
+  let bulkArmIndex = $state<FuzzyIndexEntry[]>([])
   let bulkArmModelsLoading = $state(false)
   let bulkArmPicked = $state<Set<string>>(new Set())
   let bulkArmPresetId = $state('')
@@ -171,16 +262,22 @@
   let bindingPage = $state(1)
   let bindingPageSize = $state(10)
   let bindingSearch = $state('')
+  // Prefix filter: model ids arrive as `provider/model`, so the provider is
+  // the leading segment. Picking one narrows the list to that provider without
+  // the operator typing (or knowing) the exact prefix string.
+  let bindingPrefix = $state('')
 
   onMount(load)
   async function load() {
     loading = true
     try {
-      const [presetList, modelMap, excludeList] = await Promise.all([
+      const [presetList, modelMap, excludeList, keyList] = await Promise.all([
         api.listJailbreakPresets(),
         api.listJailbreakModels(),
         api.getJailbreakExcludes(),
+        api.getApiKeys(),
       ])
+      apiKeys = Array.isArray(keyList) ? keyList : []
       presets = Array.isArray(presetList) ? presetList : []
       models = modelMap || {}
       globalExcludes = excludeList?.excludes || []
@@ -190,6 +287,10 @@
         const usageRes = await api.getJailbreakUsage()
         presetUsage = usageRes?.usage || {}
       } catch {}
+      // The auto-sync sources read on their own, not only after a pass: an empty
+      // card that filled in on the first "Sync now" read as a feature that had
+      // no sources, and the source that ships enabled by default stayed hidden.
+      await loadSyncSources()
     } catch (e) {
       importStatus = 'Load failed: ' + errorMessage(e)
     } finally {
@@ -352,6 +453,7 @@
     try {
       const res = await api.getJailbreakModelCatalog()
       bulkArmModels = Array.isArray(res.models) ? res.models : []
+      bulkArmIndex = buildFuzzyIndex(bulkArmModels)
     } catch (e) {
       bulkArmStatus = 'Failed to load models: ' + errorMessage(e)
     } finally {
@@ -470,8 +572,12 @@
       const re = new RegExp(q.slice(1), 'i')
       return bulkArmModels.filter((m) => re.test(m)).slice(0, 200)
     }
-    const lower = q.toLowerCase()
-    return bulkArmModels.filter((m) => m.toLowerCase().includes(lower)).slice(0, 200)
+    // Fuzzy for plain text only: an explicit regex stays authoritative, while a
+    // typed id tolerates a stray space or a one or two character slip instead of
+    // answering "no matches" and making the operator re-type. The index carries
+    // each id's comparison forms, so a keystroke costs one pass over the index
+    // rather than a lowercase and separator strip per id.
+    return filterFuzzyIndexed(q, bulkArmIndex, 200)
   })
   // Select every id the current filter matches — the regex/substring query is
   // the selector, so "arm everything matching /^deepseek/" is one click.
@@ -509,11 +615,34 @@
       bindModalOpen = false
     }
   }
+  // The distinct provider prefixes the armed bindings actually use, so the
+  // filter offers only prefixes that would match something.
+  let bindingPrefixOptions = $derived.by(() => {
+    const seen = new Set<string>()
+    for (const [id] of boundEntries) {
+      const slash = id.indexOf('/')
+      if (slash > 0) seen.add(id.slice(0, slash))
+    }
+    return [...seen].sort()
+  })
+  // Names whatever the two filters currently narrow to, so the empty state
+  // says which one (or both) excluded everything rather than blaming the query.
+  let filterDesc = $derived.by(() => {
+    const parts: string[] = []
+    if (bindingPrefix) parts.push(`prefix "${bindingPrefix}"`)
+    if (bindingSearch.trim()) parts.push(`"${bindingSearch.trim()}"`)
+    return parts.length ? ' ' + parts.join(' + ') : ''
+  })
   // Pagination + batch selection over the model-binding list.
   let filteredBindings = $derived.by(() => {
     const q = bindingSearch.trim().toLowerCase()
-    if (!q) return boundEntries
-    return boundEntries.filter(
+    let rows = boundEntries
+    if (bindingPrefix) {
+      const head = bindingPrefix + '/'
+      rows = rows.filter(([id]) => id === bindingPrefix || id.startsWith(head))
+    }
+    if (!q) return rows
+    return rows.filter(
       ([id, cfg]) =>
         id.toLowerCase().includes(q) ||
         presetLabel(cfg.presetId).toLowerCase().includes(q),
@@ -675,6 +804,7 @@
     const next = new Set(selectedPresetIds)
     if (allSelected) ids.forEach((id) => next.delete(id))
     else ids.forEach((id) => next.add(id))
+    selectedPresetIds = next
   }
   function clearPresetSelection() {
     selectedPresetIds = new Set()
@@ -1244,6 +1374,17 @@
            matches nothing, the field has to stay on screen or the operator
            cannot clear what they typed. -->
       <div class="flex flex-wrap items-center gap-2 pt-4">
+        <select
+          bind:value={bindingPrefix}
+          aria-label="Filter by provider prefix"
+          title="Narrow the list to one provider's model ids"
+          class="px-2 py-1.5 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-xs outline-none"
+        >
+          <option value="">All providers</option>
+          {#each bindingPrefixOptions as prefix (prefix)}
+            <option value={prefix}>{prefix} ({boundEntries.filter(([id]) => id === prefix || id.startsWith(prefix + '/')).length})</option>
+          {/each}
+        </select>
         <input
           type="text"
           bind:value={bindingSearch}
@@ -1264,7 +1405,7 @@
       </div>
       {#if filteredBindings.length === 0}
         <p class="text-xs text-text-subtle pt-3 border-t border-border-subtle">
-          No binding matches "{bindingSearch}".
+          No binding matches{filterDesc}
         </p>
       {:else}
       <!-- Two rows: the select-all checkboxes and the selected count stay on the
@@ -1409,6 +1550,126 @@
       />
     {/if}
       {/if}
+  </Card>
+
+  <!-- The per-key editor: without this the two new routes have no caller in
+       the UI, so an operator can arm a key-scoped binding only through the API.
+       It sits above the playground so the binding is written before it is
+       resolved, and it reuses the keys the playground fetches on its own. -->
+  <Card padding="md">
+    <JailbreakKeyScope keys={apiKeys} presets={presets} initialModelId={bindModelId} onchanged={load} />
+  </Card>
+
+  <!-- Resolves one id under both scopes so a key-scoped binding is seen
+       outranking the global one, instead of being trusted unread. -->
+  <Card padding="md">
+    <JailbreakPlayground presets={presets} />
+  </Card>
+
+  <!-- The injection tester. The playground above proves what the resolver
+       decided; this one shows what the decision does — the outbound body
+       diffed word by word at zero cost, and optionally the model's raw reply
+       under one or both scopes. -->
+  <Card padding="md">
+    <JailbreakTester />
+  </Card>
+
+  <!-- Auto-sync. The import card above answers "give me these prompts now";
+       this one follows a collection the way a subscription follows a feed,
+       re-reading it on boot and every hour after. Sources are the worker's own
+       state, so a paused source stays listed and is simply never fetched. -->
+  <Card padding="md">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-bold text-text-main">Auto-sync</h2>
+        <p class="text-xs text-text-subtle pt-1">
+          Repositories the preset library follows, re-read on boot and every hour.
+        </p>
+      </div>
+      <Button variant="outline" size="sm" icon="sync" disabled={syncSaving} onclick={runSyncNow}>
+        {syncRunning ? 'Syncing…' : 'Sync now'}
+      </Button>
+    </div>
+
+    <div class="space-y-2 pt-3">
+      {#each syncSources as src (src.id)}
+        <div class="flex flex-wrap items-center gap-3 rounded-[10px] border border-border-subtle bg-surface p-2.5">
+          <span
+            class="material-symbols-outlined text-[18px] {src.lastError
+              ? 'text-error'
+              : src.enabled
+                ? 'text-success'
+                : 'text-text-subtle'}"
+            >{src.lastError ? 'error' : src.enabled ? 'cloud_done' : 'pause_circle'}</span
+          >
+          <div class="min-w-0 flex-1 space-y-0.5">
+            <div class="text-xs font-semibold text-text-main truncate">{syncLabel(src)}</div>
+            <div class="text-[10px] text-text-subtle font-code truncate">
+              {src.target}{src.ref ? `@${src.ref}` : ''}
+            </div>
+            <div class="text-[10px] text-text-subtle">
+              {syncSummaryText(src)} <span class="text-text-subtle">· synced {syncRelTime(src.lastSyncAt)}</span>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={src.enabled ? 'pause' : 'play_arrow'}
+            disabled={syncSaving}
+            onclick={() => toggleSyncSource(src)}
+          >
+            {src.enabled ? 'Pause' : 'Resume'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="delete"
+            disabled={syncSaving}
+            onclick={() => removeSyncSource(src.id)}
+          >
+            Remove
+          </Button>
+        </div>
+      {:else}
+        <p class="text-xs text-text-subtle">
+          No sources yet. Follow a repository and it syncs on boot and every hour after.
+        </p>
+      {/each}
+    </div>
+
+    {#if syncStatus}
+      <p class="pt-2 text-xs {syncStatusIsError ? 'text-error' : 'text-success'}">{syncStatus}</p>
+    {/if}
+
+    <form
+      class="flex flex-wrap items-end gap-2 pt-3 border-t border-border-subtle"
+      onsubmit={(e) => {
+        e.preventDefault()
+        addSyncSource()
+      }}
+    >
+      <label class="flex-1 min-w-[200px] space-y-1">
+        <span class="text-xs text-text-muted">Repository or URL</span>
+        <input
+          type="text"
+          bind:value={newSyncTarget}
+          placeholder="decolua/9router or https://github.com/…/tree/main/prompts"
+          class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500"
+        />
+      </label>
+      <label class="w-32 space-y-1">
+        <span class="text-xs text-text-muted">Ref (optional)</span>
+        <input
+          type="text"
+          bind:value={newSyncRef}
+          placeholder="main"
+          class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500"
+        />
+      </label>
+      <Button type="submit" size="sm" icon="add" disabled={syncSaving || !newSyncTarget.trim()}>
+        Follow
+      </Button>
+    </form>
   </Card>
 </div>
 
@@ -1606,6 +1867,7 @@
         <span class="text-xs text-text-muted">Prompt</span>
         <textarea
           bind:value={presetForm.prompt}
+          aria-label="Preset prompt"
           rows="6"
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500 resize-y"
         ></textarea>
@@ -1967,8 +2229,11 @@
           class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-sm text-text-main font-code placeholder:text-text-subtle"
         />
         <p class="text-[11px] text-text-subtle">
-          Substring by default. Start with <span class="font-code text-text-muted">/</span> for an RE2 regex,
-          matched case-insensitively — e.g. <span class="font-code text-text-muted">/^deepseek</span> or
+          Fuzzy by default: spacing and a one or two character slip still match, so
+          <span class="font-code text-text-muted">deepseek chat</span> finds
+          <span class="font-code text-text-muted">deepseek/chat-v3</span>. Start with
+          <span class="font-code text-text-muted">/</span> for an exact RE2 regex, matched
+          case-insensitively — e.g. <span class="font-code text-text-muted">/^deepseek</span> or
           <span class="font-code text-text-muted">/(kimi|glm)-\d</span>.
         </p>
         {#if bulkArmRegexError}

@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/providers"
 )
@@ -148,5 +149,169 @@ func TestRecordModelDeprecationRejectsIncompleteRows(t *testing.T) {
 		if err := repo.RecordModelDeprecation(dep); err == nil {
 			t.Errorf("case %d: RecordModelDeprecation(%+v) = nil, want an error", i, dep)
 		}
+	}
+}
+
+// A transient cooldown must never overwrite a permanent "gone" record: a
+// 5-minute cool-down is not evidence that a model is dead for good.
+func TestRecordCooldownNeverOverwritesPermanent(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	// Seed a permanent deprecation first.
+	if err := repo.RecordModelDeprecation(providers.ModelDeprecation{
+		Provider: "deepseek", Model: "deepseek-chat",
+		Status: providers.DeprecationGone, Message: "retired upstream",
+	}); err != nil {
+		t.Fatalf("seed gone: %v", err)
+	}
+	// Now a live failure tries to file a cooldown for the same model.
+	if err := repo.RecordModelCooldown("deepseek", "deepseek-chat"); err != nil {
+		t.Fatalf("RecordModelCooldown: %v", err)
+	}
+	got, err := repo.GetModelDeprecation("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("GetModelDeprecation: %v", err)
+	}
+	if got.Status != providers.DeprecationGone {
+		t.Errorf("Status = %q, want %q (cooldown must not demote gone)", got.Status, providers.DeprecationGone)
+	}
+	if got.CooldownUntil != "" {
+		t.Errorf("CooldownUntil = %q, want empty (cooldown did not write)", got.CooldownUntil)
+	}
+}
+
+// A cooldown on a fresh model records cooldownUntil 5 minutes out.
+func TestRecordCooldownStampsWindow(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	// Captured before the write so the assertion below cannot be widened by
+	// the test's own clock reads.
+	before := time.Now().UTC()
+	if err := repo.RecordModelCooldown("deepseek", "deepseek-chat"); err != nil {
+		t.Fatalf("RecordModelCooldown: %v", err)
+	}
+	got, err := repo.GetModelDeprecation("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("GetModelDeprecation: %v", err)
+	}
+	if got.Status != providers.DeprecationCooldown {
+		t.Errorf("Status = %q, want %q", got.Status, providers.DeprecationCooldown)
+	}
+	if got.CooldownUntil == "" {
+		t.Error("CooldownUntil must be stamped on write")
+	}
+	until, err := time.Parse(time.RFC3339, got.CooldownUntil)
+	if err != nil {
+		t.Fatalf("CooldownUntil unparseable: %v", err)
+	}
+	// CooldownUntil is stamped with time.RFC3339, which truncates to whole
+	// seconds, while this window is measured from before the write. A
+	// one-second tolerance around a nanosecond-precision time.Now() taken
+	// *after* the call therefore fails whenever the write lands late in a
+	// second: truncation alone can contribute up to 999ms of skew, and the
+	// elapsed write time adds more. Bound the result against the interval the
+	// write could actually have used instead.
+	window := providers.ModelCooldownSec * time.Second
+	floor := before.Add(window).Truncate(time.Second)
+	if until.Before(floor) {
+		t.Errorf("CooldownUntil = %s, want no earlier than %s", until, floor)
+	}
+	if ceiling := time.Now().UTC().Add(window); until.After(ceiling) {
+		t.Errorf("CooldownUntil = %s, want no later than %s", until, ceiling)
+	}
+}
+
+// ClearModelDeprecation must not erase an active cooldown: a model cooling
+// down from a live failure keeps its badge until the window lapses.
+func TestClearDoesNotEraseActiveCooldown(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	if err := repo.RecordModelCooldown("deepseek", "deepseek-chat"); err != nil {
+		t.Fatalf("RecordModelCooldown: %v", err)
+	}
+	if err := repo.ClearModelDeprecation("deepseek", "deepseek-chat"); err != nil {
+		t.Fatalf("ClearModelDeprecation: %v", err)
+	}
+	// Still there: the cooldown is active.
+	if _, err := repo.GetModelDeprecation("deepseek", "deepseek-chat"); err != nil {
+		t.Errorf("active cooldown must survive ClearModelDeprecation, err = %v", err)
+	}
+}
+
+// ClearModelDeprecation clears a lapsed cooldown (window expired).
+func TestClearErasesLapsedCooldown(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	// Write a cooldown whose window is already in the past.
+	dep := providers.ModelDeprecation{
+		Provider:      "deepseek",
+		Model:         "deepseek-chat",
+		Status:        providers.DeprecationCooldown,
+		CooldownUntil: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	}
+	if err := repo.RecordModelDeprecation(dep); err != nil {
+		t.Fatalf("RecordModelDeprecation: %v", err)
+	}
+	if err := repo.ClearModelDeprecation("deepseek", "deepseek-chat"); err != nil {
+		t.Fatalf("ClearModelDeprecation: %v", err)
+	}
+	if _, err := repo.GetModelDeprecation("deepseek", "deepseek-chat"); !errors.Is(err, ErrModelNotDeprecated) {
+		t.Errorf("lapsed cooldown must be cleared, err = %v", err)
+	}
+}
+
+// RetainLiveModels must not clear cooldowns: a catalogue sync that re-lists
+// a model must not erase a cooldown the request path earned.
+func TestRetainLiveModelsSkipsCooldowns(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	for _, model := range []string{"listed-model"} {
+		if err := repo.RecordModelDeprecation(providers.ModelDeprecation{
+			Provider: "deepseek", Model: model, Status: providers.DeprecationGone,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", model, err)
+		}
+	}
+	// Seed cooled-model directly as an active cooldown (no prior record, so
+	// RecordModelDeprecation writes it rather than being blocked by the
+	// never-demote-gone rule).
+	dep := providers.ModelDeprecation{
+		Provider:      "deepseek",
+		Model:         "cooled-model",
+		Status:        providers.DeprecationCooldown,
+		CooldownUntil: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+	if err := repo.RecordModelDeprecation(dep); err != nil {
+		t.Fatalf("seed cooldown: %v", err)
+	}
+
+	live := map[string]bool{
+		providers.DeprecationKey("deepseek", "listed-model"): true,
+		providers.DeprecationKey("deepseek", "cooled-model"): true,
+	}
+	cleared, err := repo.RetainLiveModels("deepseek", live)
+	if err != nil {
+		t.Fatalf("RetainLiveModels: %v", err)
+	}
+	if cleared != 1 {
+		t.Errorf("cleared = %d, want 1 (only the gone record)", cleared)
+	}
+	// listed-model must lose its gone badge.
+	if _, err := repo.GetModelDeprecation("deepseek", "listed-model"); !errors.Is(err, ErrModelNotDeprecated) {
+		t.Error("a listed model must lose its gone badge")
+	}
+	// cooled-model must keep its cooldown badge.
+	if _, err := repo.GetModelDeprecation("deepseek", "cooled-model"); err != nil {
+		t.Errorf("a cooled model must keep its cooldown badge, err = %v", err)
 	}
 }

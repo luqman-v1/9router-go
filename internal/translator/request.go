@@ -3,6 +3,8 @@ package translator
 import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/thinking"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -25,6 +27,15 @@ func requiresMaxCompletionTokens(model string) bool {
 		return true
 	}
 	return false
+}
+
+// StripAnthropicBillingHeader removes a leading client-supplied Anthropic
+// billing header from system text. The header changes every Claude Code turn
+// (workload, subagent flag, client version), so leaving it in the joined
+// system prompt splits the cached prefix. Upstream strips it on every
+// openai-to-claude system block before joining (#5739).
+func StripAnthropicBillingHeader(text string) string {
+	return stripAnthropicBillingHeader(text)
 }
 
 func stripAnthropicBillingHeader(text string) string {
@@ -57,6 +68,82 @@ func parseSystemPrompt(systemRaw jsontext.Value) string {
 	return ""
 }
 
+func convertClaudeSystemPrompt(systemRaw jsontext.Value, preserveCacheControl bool) any {
+	if len(systemRaw) == 0 {
+		return ""
+	}
+
+	var sysStr string
+	if err := json.Unmarshal(systemRaw, &sysStr); err == nil {
+		text := stripAnthropicBillingHeader(sysStr)
+		return text
+	}
+
+	var sysBlocks []ClaudeSystemBlock
+	if err := json.Unmarshal(systemRaw, &sysBlocks); err != nil {
+		log.Warn("translator", "parse system prompt failed")
+		return ""
+	}
+
+	hasCache := false
+	if preserveCacheControl {
+		for _, block := range sysBlocks {
+			if len(block.CacheControl) > 0 {
+				hasCache = true
+				break
+			}
+		}
+	}
+
+	if !hasCache {
+		var parts []string
+		for _, block := range sysBlocks {
+			text := stripAnthropicBillingHeader(block.Text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	blocks := make([]OpenAIContentBlock, 0, len(sysBlocks))
+	for _, block := range sysBlocks {
+		text := stripAnthropicBillingHeader(block.Text)
+		if text == "" && len(block.CacheControl) == 0 {
+			continue
+		}
+		tb := OpenAIContentBlock{
+			Type: "text",
+			Text: text,
+		}
+		if preserveCacheControl && len(block.CacheControl) > 0 {
+			tb.CacheControl = block.CacheControl
+		}
+		blocks = append(blocks, tb)
+	}
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks
+}
+
+func isEmptySystemContent(v any) bool {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val) == ""
+	case []OpenAIContentBlock:
+		if len(val) == 0 {
+			return true
+		}
+		for _, b := range val {
+			if strings.TrimSpace(b.Text) != "" || len(b.CacheControl) > 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
 func systemReminderText(content string) string {
 	text := strings.TrimSpace(content)
 	if text == "" {
@@ -66,25 +153,23 @@ func systemReminderText(content string) string {
 }
 
 func collapseTextParts(parts []OpenAIContentBlock) any {
-	// Only flatten content when every part is text. Any non-text part
-	// (image_url, file, …) keeps the content as an array so vision models
-	// receive their image parts. For text-only parts, join into one string.
-	allText := true
+	// Only flatten content when every part is a plain text block with no
+	// cache_control marker. A non-text part (image_url, file, …) already keeps
+	// the content as an array so vision models receive their image parts; a
+	// marker-bearing part keeps the array for the same reason — flattening to a
+	// string would silently drop the breakpoint (upstream OmniRoute #19755
+	// parity).
 	texts := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if p.Type != "text" {
-			allText = false
-			break
+		if p.Type != "text" || len(p.CacheControl) > 0 {
+			return parts
 		}
 		texts = append(texts, p.Text)
 	}
-	if allText {
-		return strings.Join(texts, "\n")
-	}
-	return parts
+	return strings.Join(texts, "\n")
 }
 
-func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
+func convertClaudeMessage(msg ClaudeMessage, preserveCacheControl bool) ([]OpenAIMessage, error) {
 	if msg.Role == "system" {
 		var contentStr string
 		if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
@@ -146,10 +231,14 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	for _, block := range blocks {
 		switch block.Type {
 		case "text":
-			textParts = append(textParts, OpenAIContentBlock{
+			tb := OpenAIContentBlock{
 				Type: "text",
 				Text: block.Text,
-			})
+			}
+			if preserveCacheControl && len(block.CacheControl) > 0 {
+				tb.CacheControl = block.CacheControl
+			}
+			textParts = append(textParts, tb)
 		case "thinking":
 			if block.Thinking != "" {
 				reasoningContent += block.Thinking
@@ -182,6 +271,7 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		case "tool_result":
 			var resultContent string
 			var resultImages []OpenAIContentBlock
+			var resultCacheControl jsontext.Value
 			if err := json.Unmarshal(block.Content, &resultContent); err != nil {
 				var contentArr []ClaudeContentBlock
 				if err2 := json.Unmarshal(block.Content, &contentArr); err2 == nil {
@@ -189,6 +279,9 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					for _, c := range contentArr {
 						if c.Type == "text" {
 							parts = append(parts, c.Text)
+							if preserveCacheControl && len(c.CacheControl) > 0 {
+								resultCacheControl = c.CacheControl
+							}
 						} else if c.Type == "image" && c.Source != nil && c.Source.Type == "base64" {
 							mediaType := c.Source.MediaType
 							if mediaType == "" {
@@ -213,10 +306,14 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 				Content:    resultContent,
 			})
 			if len(resultImages) > 0 {
-				textParts = append(textParts, OpenAIContentBlock{
+				imgText := OpenAIContentBlock{
 					Type: "text",
 					Text: fmt.Sprintf("[Image from tool result %s]", block.ToolUseID),
-				})
+				}
+				if resultCacheControl != nil {
+					imgText.CacheControl = resultCacheControl
+				}
+				textParts = append(textParts, imgText)
 				textParts = append(textParts, resultImages...)
 			}
 		}
@@ -386,7 +483,23 @@ func claudeDisablesParallelToolUse(choiceRaw jsontext.Value) bool {
 }
 
 // TranslateClaudeToOpenAI converts a Claude request payload to an OpenAI request payload.
-func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
+//
+// targetProvider and targetModel name the upstream the payload is headed for.
+// When they name an OpenRouter model served by Anthropic (provider "openrouter"
+// and a wire model under the "anthropic/" prefix), the Claude cache_control
+// breakpoints survive the conversion so the request-side filter can keep them:
+// Anthropic's own API honours them, and stripping them cost every
+// Anthropic-backed OpenRouter model its prompt cache. Every other target drops
+// the markers, and the OpenAI filter strips them again from the request body
+// (upstream OmniRoute #19755 parity). Pass "" for either when the caller does
+// not know the target; the markers are then dropped.
+func TranslateClaudeToOpenAI(claudeBody []byte, targetProvider, targetModel string) ([]byte, error) {
+	// The passthrough lane drops argumentless tool calls in
+	// SanitizeClaudePassthrough; a converted lane needs the same rule before the
+	// history is reshaped, or the model keeps reading its own bare call.
+	claudeBody = DropArgumentlessToolCalls(claudeBody)
+	claudeBody = applyInlineToolEdits(claudeBody)
+
 	var creq ClaudeRequest
 	if err := json.Unmarshal(claudeBody, &creq); err != nil {
 		return nil, fmt.Errorf("unmarshal Claude request body: %w", err)
@@ -402,9 +515,10 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.MaxTokens = creq.MaxTokens
 	}
 	oreq.Stream = creq.Stream
+	preserveCacheControl := PreservesOpenRouterAnthropicCacheControl(targetProvider, targetModel)
 
-	sysContent := parseSystemPrompt(creq.System)
-	if sysContent != "" {
+	sysContent := convertClaudeSystemPrompt(creq.System, preserveCacheControl)
+	if !isEmptySystemContent(sysContent) {
 		oreq.Messages = append(oreq.Messages, OpenAIMessage{
 			Role:    "system",
 			Content: sysContent,
@@ -412,7 +526,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	}
 
 	for i, msg := range creq.Messages {
-		converted, err := convertClaudeMessage(msg)
+		converted, err := convertClaudeMessage(msg, preserveCacheControl)
 		if err != nil {
 			return nil, fmt.Errorf("convert msg[%d]: %w", i, err)
 		}
@@ -424,7 +538,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	if len(creq.Tools) > 0 {
 		var otools []OpenAITool
 		for _, tool := range creq.Tools {
-			otools = append(otools, OpenAITool{
+			ot := OpenAITool{
 				Type: "function",
 				Function: OpenAIFunction{
 					Name:        tool.Name,
@@ -432,7 +546,11 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 					Parameters:  tool.InputSchema,
 					Strict:      tool.Strict,
 				},
-			})
+			}
+			if preserveCacheControl && len(tool.CacheControl) > 0 {
+				ot.CacheControl = tool.CacheControl
+			}
+			otools = append(otools, ot)
 		}
 		oreq.Tools = otools
 	}
@@ -482,11 +600,88 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		}
 	}
 
+	if preserveCacheControl {
+		// Anthropic answers a request carrying more than four cache_control
+		// breakpoints with a 400, so keep at most the last four markers the
+		// client sent. The OpenAI filter preserves them from here, so a
+		// marker dropped now is one the upstream would otherwise reject.
+		capOpenAICacheControlBlocks(&oreq)
+	}
+
 	out, err := json.Marshal(oreq, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal OpenAI request: %w", err)
 	}
 	return out, nil
+}
+
+// PreservesOpenRouterAnthropicCacheControl reports whether a Claude→OpenAI
+// conversion must carry the Claude cache_control breakpoints through to the
+// request body. OpenRouter forwards the whole OpenAI body to the provider named
+// in the model id; a model under the "anthropic/" prefix is served by
+// Anthropic's own API, which honours the breakpoints a Claude Code caller
+// sent. Stripping them there cost every Anthropic-backed OpenRouter model its
+// prompt cache (upstream OmniRoute #19755 parity).
+func PreservesOpenRouterAnthropicCacheControl(provider, wireModel string) bool {
+	return provider == "openrouter" && strings.HasPrefix(strings.ToLower(wireModel), "anthropic/")
+}
+
+// capOpenAICacheControlBlocks enforces Anthropic's hard limit of four
+// cache_control breakpoints on a translated request, keeping the last markers
+// the client sent. The markers live on the OpenAI content blocks the filter
+// preserves; a request that carried more than four would otherwise be answered
+// with a 400.
+func capOpenAICacheControlBlocks(req *OpenAIRequest) {
+	// Gather every marker in document order so "last" means what it does to
+	// the client: tools first, then the messages in order.
+	markers := make([]jsontext.Value, 0, 4)
+	for i := range req.Tools {
+		if len(req.Tools[i].CacheControl) > 0 {
+			markers = append(markers, req.Tools[i].CacheControl)
+		}
+	}
+	for i := range req.Messages {
+		for _, block := range openAIMessageContentBlocks(&req.Messages[i]) {
+			if len(block.CacheControl) > 0 {
+				markers = append(markers, block.CacheControl)
+			}
+		}
+	}
+	if len(markers) <= cacheControlMarkerBudget {
+		return
+	}
+	// The tail of markers is what survives; drop the leading excess.
+	drop := len(markers) - cacheControlMarkerBudget
+	seen := 0
+	for i := range req.Tools {
+		if len(req.Tools[i].CacheControl) == 0 {
+			continue
+		}
+		if seen < drop {
+			req.Tools[i].CacheControl = nil
+		}
+		seen++
+	}
+	for i := range req.Messages {
+		blocks := openAIMessageContentBlocks(&req.Messages[i])
+		for j := range blocks {
+			if len(blocks[j].CacheControl) == 0 {
+				continue
+			}
+			if seen < drop {
+				blocks[j].CacheControl = nil
+			}
+			seen++
+		}
+	}
+}
+
+// openAIMessageContentBlocks returns the message's content as a block slice so
+// the caller can edit the blocks in place. A message whose content is a plain
+// string has no blocks.
+func openAIMessageContentBlocks(msg *OpenAIMessage) []OpenAIContentBlock {
+	blocks, _ := msg.Content.([]OpenAIContentBlock)
+	return blocks
 }
 
 // SanitizeClaudePassthrough drops foreign server_tool_use blocks that would poison Claude history.
@@ -506,6 +701,141 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 // client asked for and must survive untouched.
 var serverToolUseIDRegex = regexp.MustCompile(`^srvtoolu_[a-zA-Z0-9_]+$`)
 
+// claudeToolIDPattern is the Messages API's accepted tool id alphabet. Anthropic
+// answers 400 "tool_use.id: String should match pattern" for any id outside it.
+var claudeToolIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// SanitizeClaudeToolID rewrites an id to the Messages API alphabet.
+//
+// A tool call that came from another upstream — Codex, DeepSeek, Gemini, a
+// custom node — can carry '.', ':', '/' or spaces in its id. 9router used to
+// forward that id verbatim when translating the answer to Claude, the client
+// stored it in its transcript, and every later turn routed to Anthropic was
+// rejected with 400 until the turn aged out. The rewrite is deterministic
+// (sha256 of the original), so a tool_use and its tool_result still pair.
+func SanitizeClaudeToolID(id string) string {
+	if id == "" || claudeToolIDPattern.MatchString(id) {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "toolu_" + hex.EncodeToString(sum[:])[:24]
+}
+
+// sanitizeClaudeToolIDs rewrites foreign tool ids in a Claude message array and
+// reports whether anything changed.
+func sanitizeClaudeToolIDs(messages []any) bool {
+	changed := false
+	for _, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			bType, _ := block["type"].(string)
+			field := ""
+			switch bType {
+			case "tool_use", "server_tool_use":
+				field = "id"
+			case "tool_result", "web_search_tool_result":
+				field = "tool_use_id"
+			}
+			if field == "" {
+				continue
+			}
+			id, _ := block[field].(string)
+			if next := SanitizeClaudeToolID(id); next != id {
+				block[field] = next
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// dropForeignBlockKeys removes `caller` from content blocks Anthropic does not
+// accept it on. `caller` is agent attribution and only the tool_use block
+// defines it; on a text block (or a text nested in a tool_result) the API
+// answers "messages.<n>.content.<m>.text.caller: Extra inputs are not
+// permitted" and refuses the whole request, so the turn poisons every later
+// one. tool_use keeps it — the field is valid there.
+func dropForeignBlockKeys(messages []any) int {
+	removed := 0
+	for _, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		removed += scrubBlockCallers(msg["content"])
+	}
+	return removed
+}
+
+// scrubBlockCallers walks one message's content array, including the blocks
+// nested in a tool_result, and reports how many callers were removed.
+func scrubBlockCallers(content any) int {
+	blocks, ok := content.([]any)
+	if !ok {
+		return 0
+	}
+	removed := 0
+	for _, bRaw := range blocks {
+		block, ok := bRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if bType, _ := block["type"].(string); bType != "tool_use" {
+			if _, has := block["caller"]; has {
+				delete(block, "caller")
+				removed++
+			}
+		}
+		removed += scrubBlockCallers(block["content"])
+	}
+	return removed
+}
+
+// sanitizeDropSink, when non-nil, receives the drop line instead of log.Debug.
+// Tests set it to see what one body lost.
+var sanitizeDropSink func(string)
+
+// sanitizeDrops collects what one sanitize pass removed, as key:<name> /
+// block:<type> tokens, and reports them once. A nil collector discards.
+type sanitizeDrops struct {
+	seen  map[string]bool
+	items []string
+}
+
+func (d *sanitizeDrops) add(item string) {
+	if d == nil || d.seen[item] {
+		return
+	}
+	if d.seen == nil {
+		d.seen = map[string]bool{}
+	}
+	d.seen[item] = true
+	d.items = append(d.items, item)
+}
+
+func (d *sanitizeDrops) report() {
+	if d == nil || len(d.items) == 0 {
+		return
+	}
+	line := strings.Join(d.items, ",")
+	if sanitizeDropSink != nil {
+		sanitizeDropSink(line)
+		return
+	}
+	log.Debug("translator", "claude sanitize removed", "items", line)
+}
+
 func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -517,12 +847,35 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 	droppedIDs := make(map[string]bool)
 	changed := false
+	var drops sanitizeDrops
+
+	// A system turn is only valid at the head, or as the directive form (empty
+	// content plus output_config) which the API accepts anywhere. Clients and
+	// harnesses do inject reminders mid-history, and Anthropic then refuses the
+	// whole request — "role 'system' must precede an 'assistant' message" — so
+	// fold that text into the top-level system field instead.
+	if kept, moved := liftMidArraySystemTurns(req, messagesRaw); moved {
+		messagesRaw = kept
+		changed = true
+	}
+
+	// A tool call that carries no arguments is never answerable: the client
+	// rejects it for missing required fields and resends the whole history, so
+	// the model reads its own bare call and repeats it. Dropping it here — and
+	// the tool_result paired with it, which the second pass removes through
+	// droppedIDs — stops the pattern instead of feeding it back.
+	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed, &drops)
 
 	// First pass: drop foreign server_tool_use and collect their ids
 	// Wrap bare content block objects into single-element array (parity with decolua/9router v0.5.75 #8a81085)
 	for _, mRaw := range messagesRaw {
 		if msgMap, ok := mRaw.(map[string]any); ok {
 			normalizeMessageContent(msgMap)
+			for k := range foreignMessageKeys {
+				if _, ok := msgMap[k]; ok {
+					drops.add("key:" + k)
+				}
+			}
 			if dropForeignMessageKeys(msgMap) {
 				changed = true
 			}
@@ -553,6 +906,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 			if bType == "server_tool_use" {
 				id, _ := block["id"].(string)
 				if !serverToolUseIDRegex.MatchString(id) {
+					drops.add("block:server_tool_use")
 					droppedIDs[id] = true
 					changed = true
 					continue
@@ -562,6 +916,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 			// contentful rule decides whether the whole message survives below,
 			// so both read it from one place.
 			if (bType == "text" || bType == "thinking") && !isContentfulBlock(block) {
+				drops.add("block:" + bType)
 				changed = true
 				continue
 			}
@@ -573,41 +928,8 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 
 	// Second pass: drop tool_result referencing dropped server_tool_use ids
-	if len(droppedIDs) > 0 {
-		for _, mRaw := range messagesRaw {
-			msgMap, ok := mRaw.(map[string]any)
-			if !ok {
-				continue
-			}
-			contentRaw, ok := msgMap["content"]
-			if !ok {
-				continue
-			}
-			blocks, ok := contentRaw.([]any)
-			if !ok {
-				continue
-			}
-			var kept []any
-			for _, bRaw := range blocks {
-				block, ok := bRaw.(map[string]any)
-				if !ok {
-					kept = append(kept, bRaw)
-					continue
-				}
-				bType, _ := block["type"].(string)
-				if bType == "tool_result" || bType == "web_search_tool_result" {
-					toolUseID, _ := block["tool_use_id"].(string)
-					if droppedIDs[toolUseID] {
-						changed = true
-						continue
-					}
-				}
-				kept = append(kept, bRaw)
-			}
-			if len(kept) != len(blocks) {
-				msgMap["content"] = kept
-			}
-		}
+	if dropToolResultsForIDs(messagesRaw, droppedIDs, &drops) {
+		changed = true
 	}
 
 	// Third pass: drop messages whose content carries nothing Anthropic accepts
@@ -616,7 +938,10 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	// — see DropNonContentfulClaudeMessages for the emptiness rule and the
 	// trailing-turn repair (upstream #4316, ensureTrailingUserTurn
 	// open-sse/translator/formats/claude.js:345-349).
-	if filtered, dropped := DropNonContentfulClaudeMessages(messagesRaw, intentionalPrefill); dropped {
+	if filtered, removed, dropped := dropNonContentfulClaudeMessages(messagesRaw, intentionalPrefill); dropped {
+		for _, label := range removed {
+			drops.add(label)
+		}
 		messagesRaw = filtered
 		changed = true
 	}
@@ -641,9 +966,17 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 		}
 	}
 
+	if sanitizeClaudeToolIDs(messagesRaw) {
+		changed = true
+	}
+	if dropForeignBlockKeys(messagesRaw) > 0 {
+		drops.add("key:caller")
+		changed = true
+	}
 	if !changed {
 		return body
 	}
+	drops.report()
 	req["messages"] = messagesRaw
 
 	if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
@@ -675,6 +1008,13 @@ func dropClaudeIdentitySystemBlock(system any) any {
 	switch s := system.(type) {
 	case string:
 		if isClaudeIdentityBanner(s) {
+			// Cut the banner paragraph only. Returning "" here would also cut
+			// whatever was appended after it — a system turn lifted out of the
+			// middle of the history lands in this same string — and silently
+			// losing that reminder is the failure this lane exists to prevent.
+			if i := strings.Index(s, "\n"); i >= 0 {
+				return strings.TrimSpace(s[i+1:])
+			}
 			return ""
 		}
 		return system
@@ -776,25 +1116,31 @@ func LastCacheableToolIndex(tools []any) int {
 	return -1
 }
 
-// AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
-// Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
-// claudeMessageKeys are the only keys a Messages API message object accepts.
-// Anthropic answers anything else with
+// foreignMessageKeys are the message keys known not to belong to a Messages API
+// message object. Anthropic answers them with
 // "messages.<n>.<key>: Extra inputs are not permitted" and refuses the whole
-// request, so a foreign key that reaches history poisons every later turn.
-var claudeMessageKeys = map[string]struct{}{
-	"role":    {},
-	"content": {},
+// request, so one that reaches history poisons every later turn.
+//
+// This is a denylist on purpose: a key it does not name is forwarded. A newer
+// CLI adding a field must not have it deleted silently here.
+var foreignMessageKeys = map[string]struct{}{
+	"reasoning_content": {},
+	"output_config":     {},
+	"tool_calls":        {},
+	"function_call":     {},
+	"reasoning":         {},
 }
 
-// dropForeignMessageKeys removes keys Anthropic would reject from one message
-// and reports whether anything was dropped. The usual offender is
+// dropForeignMessageKeys removes the known-foreign keys from one message and
+// reports whether anything was dropped. The usual offender is
 // `reasoning_content`, which OpenAI-shaped clients echo back on assistant turns
-// and which passes through untouched when a combo mixes lanes.
+// and which passes through untouched when a combo mixes lanes. `output_config`
+// is another: it is a request-level field, and on a message the API answers
+// "messages.<n>.output_config: Extra inputs are not permitted".
 func dropForeignMessageKeys(msgMap map[string]any) bool {
 	dropped := false
-	for k := range msgMap {
-		if _, ok := claudeMessageKeys[k]; ok {
+	for k := range foreignMessageKeys {
+		if _, ok := msgMap[k]; !ok {
 			continue
 		}
 		delete(msgMap, k)
@@ -911,10 +1257,33 @@ func capCacheControlBlocks(req map[string]any) {
 	}
 }
 
-// AnchorClaudeCache ensures prompt-caching breakpoints land on system/tool head anchors,
+// Claude prompt-cache TTL choices for the head anchors.
+const (
+	ClaudeCacheTTL5m = "5m"
+	ClaudeCacheTTL1h = "1h"
+)
+
+// claudeCacheAnchor builds the head-anchor marker for one TTL. An unknown or
+// empty TTL keeps the default 5-minute window.
+func claudeCacheAnchor(ttl string) map[string]any {
+	if ttl == ClaudeCacheTTL1h {
+		return map[string]any{"type": "ephemeral", "ttl": ClaudeCacheTTL1h}
+	}
+	return map[string]any{"type": "ephemeral"}
+}
+
+// AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
+// Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
+// It is AnchorClaudeCacheWithTTL at the default 5-minute window.
+func AnchorClaudeCache(body []byte) []byte { return AnchorClaudeCacheWithTTL(body, "") }
+
+// AnchorClaudeCacheWithTTL ensures prompt-caching breakpoints land on system/tool head anchors,
 // the tool loop's final tool results, and at most 4 cache_control markers are dispatched
 // (parity with #3567 / #8a81085a / upstream #49c761cd).
-func AnchorClaudeCache(body []byte) []byte {
+// ttl picks the head-anchor window: ClaudeCacheTTL1h costs 2x per written token but
+// survives an idle gap up to an hour; the empty string and ClaudeCacheTTL5m both use
+// the default 5-minute ephemeral marker.
+func AnchorClaudeCacheWithTTL(body []byte, ttl string) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body
@@ -938,8 +1307,8 @@ func AnchorClaudeCache(body []byte) []byte {
 					delete(m, "cache_control")
 				}
 				if i == last {
-					want := map[string]any{"type": "ephemeral", "ttl": "1h"}
-					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+					want := claudeCacheAnchor(ttl)
+					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != want["ttl"] {
 						m["cache_control"] = want
 					}
 				} else if _, had := m["cache_control"]; had {
@@ -955,8 +1324,8 @@ func AnchorClaudeCache(body []byte) []byte {
 		for i, sb := range sys {
 			if m, ok := sb.(map[string]any); ok {
 				if i == lastSys {
-					want := map[string]any{"type": "ephemeral", "ttl": "1h"}
-					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+					want := claudeCacheAnchor(ttl)
+					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != want["ttl"] {
 						m["cache_control"] = want
 					}
 				} else {
@@ -977,7 +1346,7 @@ func AnchorClaudeCache(body []byte) []byte {
 
 	// 5. A tool loop's final tool results sit after the head anchors, so they
 	//    get the remaining slot of the budget when one is free.
-	markFinalToolResults(req)
+	markFinalToolResults(req, len(body))
 
 	// 6. Ensure total cache_control blocks <= the marker budget.
 	capCacheControlBlocks(req)
@@ -987,4 +1356,420 @@ func AnchorClaudeCache(body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// emptyToolInput reports whether a tool_use block carries no arguments. A call
+// with none cannot be answered: Claude clients validate the call against the
+// tool schema and reject a missing required field.
+func emptyToolInput(input any) bool {
+	switch v := input.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(v) == 0
+	case string:
+		switch strings.TrimSpace(v) {
+		case "", "{}", "null":
+			return true
+		}
+	}
+	return false
+}
+
+// dropArgumentlessToolUses removes tool_use blocks that carry no arguments when
+// another call to the same tool in this conversation does carry them, recording
+// each removed id in droppedIDs so the paired tool_result goes with it.
+//
+// A tool that is only ever called bare — TodoWrite with an empty list, a
+// list-everything helper — never matches, so its calls survive untouched.
+func dropArgumentlessToolUses(messages []any, droppedIDs map[string]bool, changed *bool, drops *sanitizeDrops) {
+	withArgs := make(map[string]bool)
+	for _, mRaw := range messages {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if bType, _ := block["type"].(string); bType != "tool_use" {
+				continue
+			}
+			name, _ := block["name"].(string)
+			if name != "" && !emptyToolInput(block["input"]) {
+				withArgs[name] = true
+			}
+		}
+	}
+	if len(withArgs) == 0 {
+		return
+	}
+
+	for _, mRaw := range messages {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(blocks))
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				kept = append(kept, bRaw)
+				continue
+			}
+			if bType, _ := block["type"].(string); bType == "tool_use" {
+				name, _ := block["name"].(string)
+				if withArgs[name] && emptyToolInput(block["input"]) {
+					if id, _ := block["id"].(string); id != "" {
+						droppedIDs[id] = true
+					}
+					drops.add("block:tool_use")
+					*changed = true
+					continue
+				}
+			}
+			kept = append(kept, bRaw)
+		}
+		if len(kept) != len(blocks) {
+			msgMap["content"] = kept
+		}
+	}
+}
+
+// dropToolResultsForIDs removes tool_result blocks whose tool_use_id names a
+// call that is no longer in the conversation. Returns whether anything changed.
+func dropToolResultsForIDs(messages []any, droppedIDs map[string]bool, drops *sanitizeDrops) bool {
+	if len(droppedIDs) == 0 {
+		return false
+	}
+	changed := false
+	for _, mRaw := range messages {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(blocks))
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				kept = append(kept, bRaw)
+				continue
+			}
+			if bType, _ := block["type"].(string); bType == "tool_result" || bType == "web_search_tool_result" {
+				toolUseID, _ := block["tool_use_id"].(string)
+				if droppedIDs[toolUseID] {
+					drops.add("block:" + bType)
+					changed = true
+					continue
+				}
+			}
+			kept = append(kept, bRaw)
+		}
+		if len(kept) != len(blocks) {
+			msgMap["content"] = kept
+		}
+	}
+	return changed
+}
+
+// DropArgumentlessToolCalls applies the argumentless-call rule to a Claude body
+// headed for a non-Claude lane, where SanitizeClaudePassthrough does not run.
+func DropArgumentlessToolCalls(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	messagesRaw, ok := req["messages"].([]any)
+	if !ok || len(messagesRaw) == 0 {
+		return body
+	}
+	droppedIDs := make(map[string]bool)
+	changed := false
+	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed, nil)
+	if dropToolResultsForIDs(messagesRaw, droppedIDs, nil) {
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	if filtered, dropped := DropNonContentfulClaudeMessages(messagesRaw, ClaudeIntentionalPrefill(body)); dropped {
+		messagesRaw = filtered
+		req["messages"] = messagesRaw
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// liftMidArraySystemTurns moves system turns that sit anywhere past the head
+// into the top-level system field, and reports whether it changed anything.
+//
+// Anthropic reads a system turn, wherever it appears, as a directive it must be
+// able to place: "role 'system' must precede an 'assistant' message or end the
+// array; the directive-only form (content: [] with output_config) is accepted
+// at any position." A harness that injects a reminder mid-history therefore
+// fails the whole request, and the turn stays in history so every later turn
+// fails too. Folding the text into the system field keeps the words and the
+// conversation.
+//
+// The directive form is left untouched — the API already places it. A turn with
+// nothing to say is dropped rather than moved.
+//
+// The text is folded into the adjacent user turn (the previous one, else the
+// next) rather than the system field: Anthropic caches tools → system →
+// messages, so growing the system field with every reminder re-bills the whole
+// history each turn. An adjacent user turn keeps the earlier prefix byte-stable.
+// Only a turn with no neighbouring user turn falls back to the system field.
+func liftMidArraySystemTurns(req map[string]any, messages []any) ([]any, bool) {
+	var kept []any
+	var moved, pending []string
+	changed := false
+	for i, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" || i == 0 {
+			if len(pending) > 0 {
+				if role == "user" {
+					appendClaudeUserText(msg, pending)
+				} else {
+					moved = append(moved, pending...)
+				}
+				pending = nil
+			}
+			kept = append(kept, mRaw)
+			continue
+		}
+		if _, directive := msg["output_config"]; directive {
+			kept = append(kept, mRaw)
+			continue
+		}
+		changed = true
+		text := claudePlainText(msg["content"])
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if len(kept) > 0 {
+			if prev, ok := kept[len(kept)-1].(map[string]any); ok && prev["role"] == "user" {
+				appendClaudeUserText(prev, []string{text})
+				continue
+			}
+		}
+		pending = append(pending, text)
+	}
+	// Rare: no user turn after the reminder yet. Attaching it to an earlier
+	// user turn would rewrite cached history, so fall back to the system field.
+	moved = append(moved, pending...)
+	if !changed || len(kept) == 0 {
+		return messages, false
+	}
+	if len(moved) > 0 {
+		appendClaudeSystemText(req, strings.Join(moved, "\n\n"))
+	}
+	return kept, true
+}
+
+// appendClaudeUserText appends system-reminder text blocks to a user turn. They
+// go after existing blocks so any tool_result blocks stay first, as the API
+// requires.
+func appendClaudeUserText(msg map[string]any, texts []string) {
+	var blocks []any
+	switch c := msg["content"].(type) {
+	case string:
+		if c != "" {
+			blocks = append(blocks, map[string]any{"type": "text", "text": c})
+		}
+	case []any:
+		blocks = c
+	case map[string]any:
+		// A bare block object: normalizeMessageContent wraps it into an array
+		// further down, so wrap it here too rather than dropping its text.
+		blocks = []any{c}
+	}
+	for _, t := range texts {
+		blocks = append(blocks, map[string]any{"type": "text", "text": "<system-reminder>\n" + t + "\n</system-reminder>"})
+	}
+	msg["content"] = blocks
+}
+
+// claudePlainText joins the text carried by a message's content, which is a
+// string or an array of blocks.
+func claudePlainText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []any:
+		var parts []string
+		for _, bRaw := range c {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := block["type"].(string); t != "text" {
+				continue
+			}
+			if text, ok := block["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	}
+	return ""
+}
+
+// appendClaudeSystemText adds text to the top-level system field whatever shape
+// the client sent it in: absent, a string, or a block array.
+func appendClaudeSystemText(req map[string]any, text string) {
+	switch system := req["system"].(type) {
+	case nil:
+		req["system"] = text
+	case string:
+		if strings.TrimSpace(system) == "" {
+			req["system"] = text
+			return
+		}
+		req["system"] = system + "\n\n" + text
+	case []any:
+		req["system"] = append(system, map[string]any{"type": "text", "text": text})
+	default:
+		req["system"] = text
+	}
+}
+
+// applyInlineToolEdits replays a client's mid-conversation tool changes
+// (inline-tools: tool_addition / tool_removal blocks) into the outgoing tool
+// list, then removes those blocks from the history.
+//
+// A Chat-format upstream reads tools only from the `tools` field. Without this
+// replay a tool the client loaded later reaches the model as a bare name: it
+// answers with an empty call — {"command"} missing — and the client rejects the
+// turn ("The required parameter command is missing") and retries the same
+// request, so the loop costs a full prompt each round.
+func applyInlineToolEdits(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	msgs, ok := req["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return body
+	}
+	tools, _ := req["tools"].([]any)
+	added := make(map[string]map[string]any)
+	var addedOrder []string
+	removed := make(map[string]bool)
+	changed := false
+	kept := make([]any, 0, len(msgs))
+	for _, mRaw := range msgs {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		keptBlocks := make([]any, 0, len(blocks))
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				keptBlocks = append(keptBlocks, bRaw)
+				continue
+			}
+			switch bType, _ := block["type"].(string); bType {
+			case "tool_addition":
+				changed = true
+				def, _ := block["tool"].(map[string]any)
+				name, _ := def["name"].(string)
+				if name == "" {
+					continue
+				}
+				// Claude shape: the typed conversion that follows wraps these
+				// into the Chat `{type:"function",function:{…}}` form.
+				claudeTool := map[string]any{"name": name}
+				if desc, _ := def["description"].(string); desc != "" {
+					claudeTool["description"] = desc
+				}
+				params := def["input_schema"]
+				if params == nil {
+					params = map[string]any{"type": "object", "properties": map[string]any{}}
+				}
+				claudeTool["input_schema"] = params
+				if _, seen := added[name]; !seen {
+					addedOrder = append(addedOrder, name)
+				}
+				added[name] = claudeTool
+			case "tool_removal":
+				changed = true
+				if name, _ := block["name"].(string); name != "" {
+					removed[name] = true
+				}
+			default:
+				keptBlocks = append(keptBlocks, bRaw)
+			}
+		}
+		if len(keptBlocks) == 0 {
+			continue
+		}
+		msg["content"] = keptBlocks
+		kept = append(kept, msg)
+	}
+	if !changed {
+		return body
+	}
+	out := make([]any, 0, len(tools)+len(added))
+	for _, tRaw := range tools {
+		tool, ok := tRaw.(map[string]any)
+		if !ok {
+			out = append(out, tRaw)
+			continue
+		}
+		name, _ := tool["name"].(string)
+		if removed[name] {
+			continue
+		}
+		if repl, ok := added[name]; ok {
+			out = append(out, repl)
+			delete(added, name)
+			continue
+		}
+		out = append(out, tRaw)
+	}
+	for _, name := range addedOrder {
+		if repl, ok := added[name]; ok {
+			out = append(out, repl)
+		}
+	}
+	req["messages"] = kept
+	if len(out) > 0 {
+		req["tools"] = out
+	} else {
+		delete(req, "tools")
+	}
+	updated, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return updated
 }

@@ -217,6 +217,35 @@ func TestSanitizeToolArgs(t *testing.T) {
 			t.Errorf("expected name alias removed, got %v", m["name"])
 		}
 	})
+
+	t.Run("Agent tool synthesizes description from prompt when missing", func(t *testing.T) {
+		args := `{"model":"sonnet","prompt":"Task 1: review độc lập read-only publication for PR #101"}`
+		got := sanitizeToolArgs("Agent", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["prompt"] != "Task 1: review độc lập read-only publication for PR #101" {
+			t.Errorf("unexpected prompt: %v", m["prompt"])
+		}
+		if m["description"] != "Task 1: review độc lập" {
+			t.Errorf("expected description 'Task 1: review độc lập', got %v", m["description"])
+		}
+	})
+
+	t.Run("Agent tool normalizes task and summary aliases", func(t *testing.T) {
+		args := `{"task":"do work","summary":"my summary"}`
+		got := sanitizeToolArgs("Agent_ide", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["prompt"] != "do work" {
+			t.Errorf("expected prompt 'do work', got %v", m["prompt"])
+		}
+		if m["description"] != "my summary" {
+			t.Errorf("expected description 'my summary', got %v", m["description"])
+		}
+		if _, ok := m["task"]; ok {
+			t.Errorf("expected task alias deleted")
+		}
+	})
 }
 
 // --- isValidPdfPagesArg ---

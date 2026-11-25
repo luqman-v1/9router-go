@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"database/sql"
 	json "encoding/json/v2"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 )
@@ -141,6 +143,88 @@ func TestHandleOAuthKiroSocialExchange_missingCode(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)
 	}
+}
+
+func TestHandleOAuthKiroSocialExchange_codeOnlyRejected(t *testing.T) {
+	handler := NewOAuthHandler(nil)
+	// A code-only payload is the regression: the backend requires the PKCE
+	// verifier produced by social-authorize, so omitting it must be rejected.
+	req := httptest.NewRequest("POST", "/api/oauth/kiro/social-exchange", strings.NewReader(`{"code":"code-123","provider":"google"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleOAuthKiroSocialExchange(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for code-only payload, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "missing code or codeVerifier") {
+		t.Errorf("expected missing code or codeVerifier error, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleOAuthKiroSocialExchange_HonorsContextAndTimeout(t *testing.T) {
+	t.Run("request context canceled", func(t *testing.T) {
+		unblock := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-unblock:
+			}
+		}))
+		t.Cleanup(func() {
+			close(unblock)
+			server.Close()
+		})
+
+		origURL := kiroSocialTokenURL
+		kiroSocialTokenURL = server.URL
+		t.Cleanup(func() { kiroSocialTokenURL = origURL })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+
+		handler := NewOAuthHandler(nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/oauth/kiro/social-exchange", strings.NewReader(`{"code":"c","codeVerifier":"v","provider":"google"}`)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		handler.HandleOAuthKiroSocialExchange(rec, req)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("client timeout enforced", func(t *testing.T) {
+		unblock := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-unblock:
+			}
+		}))
+		t.Cleanup(func() {
+			close(unblock)
+			server.Close()
+		})
+
+		origURL := kiroSocialTokenURL
+		origClient := kiroSocialHTTPClient
+		kiroSocialTokenURL = server.URL
+		kiroSocialHTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
+		t.Cleanup(func() {
+			kiroSocialTokenURL = origURL
+			kiroSocialHTTPClient = origClient
+		})
+
+		handler := NewOAuthHandler(nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/oauth/kiro/social-exchange", strings.NewReader(`{"code":"c","codeVerifier":"v","provider":"google"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		handler.HandleOAuthKiroSocialExchange(rec, req)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestHandleKiroAutoImport_MissingCache(t *testing.T) {

@@ -44,9 +44,9 @@ func TestCodexUsageMap(t *testing.T) {
 			name:  "reasoning tokens survive",
 			usage: `{"input_tokens":100,"output_tokens":40,"total_tokens":140,"output_tokens_details":{"reasoning_tokens":32}}`,
 			want: map[string]any{
-				"prompt_tokens":      100,
-				"completion_tokens":  40,
-				"total_tokens":       140,
+				"prompt_tokens":     100,
+				"completion_tokens": 40,
+				"total_tokens":      140,
 				"completion_tokens_details": map[string]any{
 					"reasoning_tokens": 32,
 				},
@@ -149,9 +149,9 @@ func TestSSEToOpenAIJSONPreservesCodexUsage(t *testing.T) {
 	}
 	var out struct {
 		Usage struct {
-			PromptTokens      int `json:"prompt_tokens"`
-			CompletionTokens  int `json:"completion_tokens"`
-			PromptDetails     struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			PromptDetails    struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 			CompletionDetails struct {

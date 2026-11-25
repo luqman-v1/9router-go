@@ -17,7 +17,9 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -84,6 +86,10 @@ type LiveModel struct {
 	ContextLength int
 	MaxOutput     int
 	Capabilities  *LiveCapabilities
+	// CompletionChat is Mistral's capabilities.completion_chat flag. Nil means
+	// the feed did not state one; false marks an embedding/OCR/speech model
+	// that must not appear in the Vibe chat catalog.
+	CompletionChat *bool
 	// LimitsAuthoritative marks a catalogue whose ContextLength/MaxOutput are
 	// the provider's own numbers for this exact model, not a best guess. They
 	// then outrank the static substring table, which only knows model families
@@ -156,6 +162,12 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchZedLiveCatalog(ctx, conn, connData, token)
 		}
+	case providers.ResolveAlias(providerID) == commandcodeCatalogProvider:
+		// The CLI feed, not the public /v1/models list: only it carries the
+		// per-model `hidden` flag and the windows the provider enforces.
+		fetch = func(ctx context.Context, token string) []LiveModel {
+			return h.fetchCommandcodeLiveCatalog(ctx, conn, token)
+		}
 	case isCompatibleProviderID(providerID):
 		// Upstream fetchCompatibleModelIds: custom nodes publish whatever their
 		// own /models endpoint reports.
@@ -165,6 +177,14 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 	case providerID == "anthropic":
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchAnthropicLiveCatalog(ctx, conn, connData, token)
+		}
+	case providers.ModelsListURL(providerID) != "" || providerHasModelsFetcher(providerID):
+		// Providers that publish an OpenAI-style models feed with per-model
+		// limits (nous, openrouter, tokenharbor, opencode zen/go, …). The feed
+		// is the provider's own declaration of each window, so it outranks the
+		// static tables.
+		fetch = func(ctx context.Context, token string) []LiveModel {
+			return h.fetchModelsFeedLiveCatalog(ctx, conn, connData, providerID, token)
 		}
 	default:
 		return nil
@@ -267,6 +287,23 @@ func liveCatalogStoreNegative(key string) {
 	liveCatalogStore.entries[key] = liveCatalogEntry{expiresAt: time.Now().Add(liveCatalogNegTTL)}
 }
 
+// InvalidateLiveCatalog purges cached live catalog entries for a provider.
+// If providerID is empty, it purges all cached entries.
+func InvalidateLiveCatalog(providerID string) {
+	liveCatalogStore.mu.Lock()
+	defer liveCatalogStore.mu.Unlock()
+	if providerID == "" {
+		liveCatalogStore.entries = make(map[string]liveCatalogEntry)
+		return
+	}
+	prefix := providerID + "|"
+	for k := range liveCatalogStore.entries {
+		if k == providerID || strings.HasPrefix(k, prefix) {
+			delete(liveCatalogStore.entries, k)
+		}
+	}
+}
+
 // ---- Kiro (AWS CodeWhisperer ListAvailableModels) ----
 
 // kiroFingerprintHeaders mirrors upstream buildKiroFingerprintHeaders: the
@@ -290,10 +327,14 @@ func kiroFingerprintHeaders(seed, accessToken string) map[string]string {
 	}
 }
 
+// kiroRegion returns the region the q.* host is queried in. The ARN's region
+// is only used when the host actually serves it; anything else falls back to
+// us-east-1, because splicing an unserved region into the hostname makes the
+// catalog request NXDOMAIN.
 func kiroRegion(profileArn string) string {
 	parts := strings.Split(profileArn, ":")
 	if len(parts) >= 4 && parts[3] != "" {
-		return parts[3]
+		return providers.KiroCatalogRegion(parts[3])
 	}
 	return kiroDefaultRegion
 }
@@ -470,13 +511,28 @@ func (h *ChatHandler) fetchGrokCLILiveCatalog(ctx context.Context, conn *models.
 // fetchCompatibleNodeModels ports upstream fetchCompatibleModelIds: a custom
 // node without configured models is asked directly (`GET <baseUrl>/models`),
 // which is how a node can publish models its custom-model rows do not cover.
+// The node's own feed is the authoritative source for its windows — the same
+// parser the provider feeds use keeps context_length/limit.context, so a custom
+// endpoint never budgets against the static family guess when it stated a limit.
 func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *models.ProviderConnection, connData *shared.ConnectionData, providerID string) []LiveModel {
 	apiKey := connData.APIKey
 	if apiKey == "" {
 		apiKey = connData.AccessToken
 	}
-	baseURL, _ := connData.ProviderSpecificData["baseUrl"].(string)
+	baseURL := strings.TrimSpace(connData.BaseURL)
+	if baseURL == "" {
+		baseURL, _ = connData.ProviderSpecificData["baseUrl"].(string)
+	}
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		// A compatible node keeps its endpoint on the node row, not on every
+		// connection: adding a key under a node asks for the credential alone.
+		// Without this lookup the catalogue request had no URL to call, so a
+		// node that was configured and working never published a live list.
+		if _, nodeData, err := h.Repo.GetProviderNodeByID(providerID); err == nil && nodeData != nil {
+			baseURL = strings.TrimRight(strings.TrimSpace(nodeData.BaseURL), "/")
+		}
+	}
 	if apiKey == "" || baseURL == "" {
 		return nil
 	}
@@ -485,6 +541,7 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	switch {
 	case strings.HasPrefix(providerID, "openai-compatible-"):
 		headers["Authorization"] = "Bearer " + apiKey
+		baseURL = CompatibleNodeModelsURL(baseURL)
 	case strings.HasPrefix(providerID, "anthropic-compatible-"):
 		baseURL = strings.TrimSuffix(baseURL, "/messages/models")
 		if !strings.HasSuffix(baseURL, "/messages") {
@@ -505,7 +562,7 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	if err != nil {
 		return nil
 	}
-	for key, value := range headers {
+	for key, value := range handlerutil.WithDefaultUserAgent(headers) {
 		req.Header.Set(key, value)
 	}
 	resp, err := h.Client.Do(req)
@@ -521,35 +578,29 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	if err != nil {
 		return nil
 	}
-	return parseOpenAIStyleModelIDs(body)
+	return parseModelsFeedLiveModels(body)
 }
 
-// parseOpenAIStyleModelIDs reads the `data`/`models` array every OpenAI-style
-// upstream returns, keeping the first occurrence of each id.
-func parseOpenAIStyleModelIDs(body []byte) []LiveModel {
-	var payload struct {
-		Data   []map[string]any `json:"data"`
-		Models []map[string]any `json:"models"`
+// CompatibleNodeModelsURL derives a compatible node's catalogue endpoint from
+// the same completed chat route a request uses, so both routes sit on the
+// prefix the operator configured. Appending a fixed "/v1/models" instead
+// doubled the version in AnyRouter's documented base
+// (https://anyrouter.dev/api/v1 became /api/v1/v1/models) while a bare host
+// was asked for /models even though its chat route gains /v1 — neither is the
+// models route belonging to the chat endpoint beside it.
+//
+// Exported because the dashboard's "Import from /models" fetch asks the same
+// question for the same node, and its answer must agree with the live
+// catalogue's.
+func CompatibleNodeModelsURL(baseURL string) string {
+	completed := ChatCompletionsURL(baseURL)
+	if route := strings.TrimSuffix(completed, "/chat/completions"); route != completed {
+		return route + "/models"
 	}
-	if json.Unmarshal(body, &payload) != nil {
-		return nil
-	}
-	entries := payload.Data
-	if len(entries) == 0 {
-		entries = payload.Models
-	}
-
-	seen := make(map[string]bool, len(entries))
-	out := make([]LiveModel, 0, len(entries))
-	for _, entry := range entries {
-		id := firstNonEmptyString(entry, "id", "name", "model")
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, LiveModel{ID: id})
-	}
-	return out
+	// A URL that names its own endpoint is left untouched by
+	// ChatCompletionsURL; that endpoint keeps its own /models child, which is
+	// what this call did before the derivation existed.
+	return strings.TrimRight(completed, "/") + "/models"
 }
 
 // parseGrokCLILiveModels mirrors upstream parseGrokCliModels: the catalog may
@@ -676,6 +727,7 @@ func (h *ChatHandler) fetchAnthropicLiveCatalog(ctx context.Context, conn *model
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set(constants.HeaderUserAgent, constants.DefaultClientUserAgent)
 
 	resp, err := h.Client.Do(req)
 	if err != nil {

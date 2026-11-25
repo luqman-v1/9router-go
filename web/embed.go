@@ -58,6 +58,17 @@ func Handler() http.Handler {
 		// asset, not a client-side route: answering it with the entry document
 		// would hand the browser HTML for a script it asked to execute.
 		if strings.Contains(path.Base(name), ".") && !strings.HasSuffix(name, ".html") {
+			// Some provider artwork is SVG-only in the embedded FS (e.g. kenari,
+			// runcrate, atmorouter, codewhale, hcnsec, keenable, smelt). The
+			// frontend requests .png; serve the .svg sibling when no .png exists.
+			if strings.HasPrefix(name, "providers/") && strings.HasSuffix(name, ".png") {
+				svgName := strings.TrimSuffix(name, ".png") + ".svg"
+				if isFile(subFS, svgName) {
+					w.Header().Set("Content-Type", "image/svg+xml")
+					serveFile(w, r, subFS, svgName)
+					return
+				}
+			}
 			http.NotFound(w, r)
 			return
 		}

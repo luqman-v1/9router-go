@@ -1,9 +1,12 @@
 package dashboard
 
 import (
+	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/analyticsrange"
@@ -207,4 +210,37 @@ func (h *DashboardHandler) HandleDeleteCacheEntry(w http.ResponseWriter, r *http
 	sc := h.getSemanticCache()
 	ok := sc.DeleteEntry(r.Context(), id)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": ok})
+}
+
+// HandleInvalidateSemanticCache handles POST /api/cache/semantic/invalidate.
+//
+// It clears semantic cache entries matching the filters in the request body.
+// At least one of `model` (the entry's model, matched by the store) or `prefix`
+// (case-sensitive prefix match on the entry's cache key) must be set; both are
+// ANDed when both are present. A request with neither is a bad request —
+// clearing everything stays behind DELETE /api/cache.
+func (h *DashboardHandler) HandleInvalidateSemanticCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		handlerutil.WriteJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var body struct {
+		Model  string `json:"model"`
+		Prefix string `json:"prefix"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+	}
+	body.Model = strings.TrimSpace(body.Model)
+	body.Prefix = strings.TrimSpace(body.Prefix)
+
+	if body.Model == "" && body.Prefix == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "model or prefix is required")
+		return
+	}
+
+	sc := h.getSemanticCache()
+	count := sc.InvalidateByModelAndPrefix(r.Context(), body.Model, body.Prefix)
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"invalidated": count, "success": true})
 }

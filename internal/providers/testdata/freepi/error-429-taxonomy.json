@@ -1,0 +1,31 @@
+{
+  "_source": "hungkevin/free-pi-cli-proxy server.mjs:1055-1120 isRetryableLimit / freepiFetchWithRetry",
+  "_note": "The 429 taxonomy. The split matters because retrying a daily-quota 429 burns the retry budget and delays the error without ever succeeding.",
+  "hourly_rate_limited": {
+    "status": 429,
+    "code": "rate_limit_exceeded",
+    "_meaning": "hourly request cap reached for THIS account",
+    "_action": "lock the connection short; rotation eligible; clears at the next hour boundary",
+    "_retry_same_account": false
+  },
+  "daily_quota_exhausted": {
+    "status": 429,
+    "codes": [
+      "creditlimitexceeded",
+      "insufficient_quota",
+      "billing_error",
+      "budgetlimiterror",
+      "gousagelimiterror"
+    ],
+    "_meaning": "the day's free allowance is spent",
+    "_action": "mark the connection exhausted until 00:00; never retry this account",
+    "_retry_same_account": false
+  },
+  "transient": {
+    "status": 429,
+    "code": "anything else",
+    "_action": "bounded backoff: <=4 attempts, base 2s, cap 30s, jitter",
+    "_fail_fast_when": "Retry-After > 5 minutes (that is a daily-quota signal, not a blip)"
+  },
+  "_header_precedence": ["retry-after-ms", "retry-after"]
+}

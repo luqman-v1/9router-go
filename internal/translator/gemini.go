@@ -7,6 +7,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -15,6 +16,10 @@ import (
 
 // GeminiStreamState holds translation state for Gemini stream chunks.
 type GeminiStreamState struct {
+	// RoleSent tracks whether the deferred `role: "assistant"` delta has been
+	// merged into the first real content/reasoning/tool_call delta. Empty
+	// prefill frames must not fabricate an assistant turn.
+	RoleSent         bool
 	MessageStartSent bool
 	MessageId        string
 	// SessionID is the conversation this stream belongs to, taken from the
@@ -28,10 +33,10 @@ type GeminiStreamState struct {
 	Usage                *OpenAIUsage
 	FinishReason         string
 	LastThoughtSignature string
-	// ToolCallCount counts functionCall parts emitted so far. It gives each
-	// OpenAI tool_call its own index (parallel calls must not share index 0)
-	// and turns a Gemini STOP into finish_reason "tool_calls" so clients like
-	// Zed run the tools instead of ending the turn.
+	// APIKeyId scopes bare-key thought signatures when a client sends no
+	// session header, so two keys on one account never replay each other's
+	// signature through the shared tool_call_id namespace.
+	APIKeyId      string
 	ToolCallCount int
 }
 
@@ -96,6 +101,65 @@ type GeminiFunctionResp struct {
 
 type GeminiFuncResp struct {
 	Result any `json:"result,omitempty"`
+	// raw holds the verbatim response object bytes, captured on unmarshal.
+	// The client request direction stringifies `result` when it is truthy and
+	// falls back to the whole response object otherwise (upstream
+	// `response?.result || response || {}`), so keys beside "result" must
+	// survive the decode.
+	raw jsontext.Value
+	// resultRaw holds the verbatim `result` value bytes. Re-emitting them
+	// verbatim matters: decoding result into a map loses the member order,
+	// and json/v2 re-marshals decoded maps in unstable order, which would
+	// make the tool payload non-deterministic byte for byte.
+	resultRaw jsontext.Value
+}
+
+// UnmarshalJSON decodes the known result field and keeps the verbatim object
+// for the whole-response fallback.
+func (r *GeminiFuncResp) UnmarshalJSON(data []byte) error {
+	type alias GeminiFuncResp
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*r = GeminiFuncResp(a)
+	if len(data) > 0 {
+		r.raw = append(jsontext.Value(nil), data...)
+	}
+	var fields struct {
+		Result jsontext.Value `json:"result"`
+	}
+	if err := json.Unmarshal(data, &fields); err == nil && len(fields.Result) > 0 {
+		r.resultRaw = append(jsontext.Value(nil), fields.Result...)
+	}
+	return nil
+}
+
+// remoteImageMimeType maps a remote image URL extension to a concrete MIME
+// type for the fileData fallback in convertContentToGeminiParts. The result
+// comes from a fixed set, never from the URL, so a caller-supplied URL cannot
+// inject anything into the emitted MIME string; unknown extensions fall back
+// to the default. Port of decolua/9router 7ba1d1ca (remoteImageMimeType),
+// serving the same Antigravity "Unsupported mime type: image/*" 400).
+func remoteImageMimeType(rawURL string) string {
+	path := rawURL
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	if idx := strings.IndexByte(path, '#'); idx >= 0 {
+		path = path[:idx]
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	case ".bmp":
+		return "image/bmp"
+	}
+	return "image/png"
 }
 
 type GeminiInlineData struct {
@@ -121,12 +185,23 @@ type GeminiFunctionDecl struct {
 }
 
 // GeminiRequest is the full Gemini API request body.
+//
+// The JSON member names are lowerCamelCase, which is what both the public
+// v1beta API and the Cloud Code/Antigravity envelope use on the wire. Upstream's
+// translator emits the same spelling (open-sse/translator/request/openai-to-gemini.js),
+// and the real agy 1.5.9 CLI sends `systemInstruction` — the snake_case spelling
+// this struct used before was accepted by protojson but was a fingerprint no
+// official client presents.
 type GeminiRequest struct {
-	SystemInstruction *GeminiContent  `json:"system_instruction,omitempty"`
+	SystemInstruction *GeminiContent  `json:"systemInstruction,omitempty"`
 	Contents          []GeminiContent `json:"contents"`
 	Tools             []GeminiTool    `json:"tools,omitempty"`
 	ToolConfig        any             `json:"toolConfig,omitempty"`
 	GenerationConfig  jsontext.Value  `json:"generationConfig,omitempty"`
+	// SessionID is the numeric Cloud Code conversation id the official client
+	// scopes a cascade to. It is only populated on the Antigravity lane; the
+	// public Gemini API has no such field and omitempty keeps it off that wire.
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // GeminiResponse is the Gemini API response body (non-stream).
@@ -169,8 +244,9 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 // TranslateOpenAIToGeminiWithSession is TranslateOpenAIToGemini for a request
 // that carries a conversation id. sessionID scopes the thought-signature
 // lookup, so a signature stored by another conversation on the same account is
-// never replayed here.
-func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]byte, error) {
+// never replayed here. When sessionID is empty and an apiKeyID is supplied,
+// bare-key lookups are namespaced to that key.
+func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string, apiKeyID ...string) ([]byte, error) {
 	var oreq struct {
 		Model               string         `json:"model"`
 		Messages            jsontext.Value `json:"messages"`
@@ -182,8 +258,12 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		Stream              bool           `json:"stream,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
 		ToolChoice          jsontext.Value `json:"tool_choice,omitempty"`
-		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
-		Thinking            *struct {
+		// ResponseFormat carries the client's OpenAI response_format (json_object
+		// / json_schema). The request is rebuilt field by field below, so a field
+		// this struct does not name is a field the Gemini upstream never sees.
+		ResponseFormat  jsontext.Value `json:"response_format,omitempty"`
+		ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+		Thinking        *struct {
 			Type         string `json:"type"`
 			BudgetTokens int    `json:"budget_tokens"`
 		} `json:"thinking,omitempty"`
@@ -304,8 +384,13 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 				}
 				ts := extractThoughtSig(tc.ID)
 				if ts == "" {
-					ts = GetGeminiThoughtSignature(tc.ID, sessionID, oreq.Model)
+					var apiKey string
+					if len(apiKeyID) > 0 {
+						apiKey = apiKeyID[0]
+					}
+					ts = GetGeminiThoughtSignature(tc.ID, sessionID, oreq.Model, apiKey)
 				}
+				ts = NormalizeGeminiThoughtSignature(ts)
 				if ts == "" && !firstFunctionCallSeen {
 					ts = DefaultThinkingSignature
 				}
@@ -485,6 +570,28 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		probe["enable_thinking"] = true
 	}
 	intent := thinking.Extract(probe)
+	// Parse include_thoughts / includeThoughts from the raw OpenAI body for the
+	// gemini-level wire format. includeThoughts defaults to true when thinking
+	// is active on the wire (level != "minimal" after clamping); the client can
+	// opt out with include_thoughts: false / includeThoughts: false. When the
+	// effective level is "minimal" (no thinking), GeminiConfig ignores it.
+	if intent != nil {
+		var raw map[string]any
+		if err := json.Unmarshal(openaiBody, &raw); err == nil {
+			if v, ok := raw["include_thoughts"]; ok {
+				if b, ok := v.(bool); ok {
+					intent.IncludeThoughts = &b
+				}
+			}
+			if intent.IncludeThoughts == nil {
+				if v, ok := raw["includeThoughts"]; ok {
+					if b, ok := v.(bool); ok {
+						intent.IncludeThoughts = &b
+					}
+				}
+			}
+		}
+	}
 	// The capability rows are model patterns, and the pattern table carries no
 	// provider scope, so the lookup is provider-agnostic by design: a vendor
 	// prefix on the model id is stripped and the global row for the bare id
@@ -506,6 +613,17 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 	}
 	if maxTokens != nil {
 		genConfig["maxOutputTokens"] = *maxTokens
+	}
+	// Carry the client's OpenAI response_format onto Gemini's native structured
+	// output (generationConfig.responseMimeType / responseJsonSchema). Without
+	// this, a client asking for JSON got free text silently: the request is
+	// rebuilt field by field, and response_format was dropped on the way.
+	// Parity with KeiRouter transform.geminiResponseFormat.
+	if mime, schema, ok := geminiResponseFormat(oreq.ResponseFormat); ok {
+		genConfig["responseMimeType"] = mime
+		if schema != nil {
+			genConfig["responseJsonSchema"] = schema
+		}
 	}
 	if len(genConfig) > 0 {
 		configJSON, err := json.Marshal(genConfig, json.Deterministic(true))
@@ -547,7 +665,7 @@ func moveFunctionResponsesLast(parts []GeminiPart) []GeminiPart {
 func extractThoughtSig(id string) string {
 	const sep = "__ts__"
 	if _, after, ok := strings.CutLast(id, sep); ok && after != "" {
-		return after
+		return NormalizeGeminiThoughtSignature(after)
 	}
 	return ""
 }
@@ -782,10 +900,8 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 			"model":   state.Model,
 			"choices": []map[string]any{
 				{
-					"index": 0,
-					"delta": map[string]any{
-						"role": "assistant",
-					},
+					"index":         0,
+					"delta":         map[string]any{},
 					"finish_reason": nil,
 				},
 			},
@@ -834,7 +950,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						if storeSession == "" {
 							storeSession = state.MessageId
 						}
-						StoreGeminiThoughtSignature(id, sig, storeSession, state.Model)
+						StoreGeminiThoughtSignature(id, sig, storeSession, state.Model, state.APIKeyId)
 						id += "__ts__" + sig
 					}
 					delta["tool_calls"] = []map[string]any{
@@ -851,6 +967,10 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					state.ToolCallCount++
 				}
 				if len(delta) > 0 {
+					if !state.RoleSent {
+						delta["role"] = "assistant"
+						state.RoleSent = true
+					}
 					results = append(results, map[string]any{
 						"id":      state.MessageId,
 						"object":  "chat.completion.chunk",
@@ -899,8 +1019,15 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				"model":   state.Model,
 				"choices": []map[string]any{
 					{
-						"index":         0,
-						"delta":         map[string]any{},
+						"index": 0,
+						"delta": func() map[string]any {
+							d := map[string]any{}
+							if !state.RoleSent {
+								d["role"] = "assistant"
+								state.RoleSent = true
+							}
+							return d
+						}(),
 						"finish_reason": openAIStop,
 					},
 				},
@@ -1015,8 +1142,11 @@ func convertContentToGeminiParts(content any) []GeminiPart {
 								}
 							}
 						} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+							// Antigravity rejects the wildcard (400 "Unsupported
+							// mime type: image/*"), so the fallback emits a
+							// concrete type inferred from a fixed extension set.
 							parts = append(parts, GeminiPart{
-								FileData: &GeminiFileData{FileUri: url, MimeType: "image/*"},
+								FileData: &GeminiFileData{FileUri: url, MimeType: remoteImageMimeType(url)},
 							})
 						}
 					}

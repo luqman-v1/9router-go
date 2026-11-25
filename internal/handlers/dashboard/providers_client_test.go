@@ -235,3 +235,79 @@ func TestHiddenProvidersStayOutOfTheQuotaList(t *testing.T) {
 		t.Errorf("providerOptions = %v, want the two visible providers only", opts)
 	}
 }
+
+func TestProvidersClientFilters_CooldownAndStatus(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	h := NewDashboardHandler(repo)
+
+	ids := []string{"c-unlocked", "c-expired", "c-locked", "c-ratelimited", "c-exhausted"}
+	for _, id := range ids {
+		if err := repo.CreateProviderConnection(id, "codex", "oauth", id, "secret-"+id); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+
+	if err := repo.LockConnectionModel("c-unlocked", "gpt-5", 3600, 1); err != nil {
+		t.Fatalf("lock c-unlocked: %v", err)
+	}
+	if err := repo.UnlockConnectionModel("c-unlocked", "gpt-5"); err != nil {
+		t.Fatalf("unlock c-unlocked: %v", err)
+	}
+	if err := repo.LockConnectionModel("c-expired", "gpt-5", -3600, 1); err != nil {
+		t.Fatalf("lock c-expired: %v", err)
+	}
+	if err := repo.LockConnectionModel("c-locked", "gpt-5", 3600, 1); err != nil {
+		t.Fatalf("lock c-locked: %v", err)
+	}
+	if err := repo.LockConnectionRateLimit("c-ratelimited", time.Now().Add(time.Hour), 1, 429, "Rate limit reached"); err != nil {
+		t.Fatalf("lock c-ratelimited: %v", err)
+	}
+	if err := repo.UpdateConnectionData("c-exhausted", `{"testStatus":"unavailable","lastError":"credit insufficient balance: balance=0"}`); err != nil {
+		t.Fatalf("update c-exhausted: %v", err)
+	}
+
+	r := setupProvidersClientRouter(h)
+
+	activeOut := getProvidersClient(t, r, "?accountStatus=active")
+	activeConns, _ := activeOut["connections"].([]any)
+	gotActive := map[string]bool{}
+	for _, raw := range activeConns {
+		m, _ := raw.(map[string]any)
+		id, _ := m["id"].(string)
+		gotActive[id] = true
+		if m["effectiveStatus"] != "active" {
+			t.Errorf("%s effectiveStatus = %v, want %q", id, m["effectiveStatus"], "active")
+		}
+		if m["isEffectivelyActive"] != true {
+			t.Errorf("%s isEffectivelyActive = %v, want true", id, m["isEffectivelyActive"])
+		}
+	}
+	wantActive := map[string]bool{"c-unlocked": true, "c-expired": true}
+	if len(gotActive) != len(wantActive) {
+		t.Fatalf("active filter returned %v, want %v", gotActive, wantActive)
+	}
+	for id := range wantActive {
+		if !gotActive[id] {
+			t.Errorf("active filter missing %s (got %v)", id, gotActive)
+		}
+	}
+
+	inactiveOut := getProvidersClient(t, r, "?accountStatus=inactive")
+	inactiveConns, _ := inactiveOut["connections"].([]any)
+	gotInactive := map[string]bool{}
+	for _, raw := range inactiveConns {
+		m, _ := raw.(map[string]any)
+		id, _ := m["id"].(string)
+		gotInactive[id] = true
+	}
+	wantInactive := map[string]bool{"c-locked": true, "c-ratelimited": true, "c-exhausted": true}
+	if len(gotInactive) != len(wantInactive) {
+		t.Fatalf("inactive filter returned %v, want %v", gotInactive, wantInactive)
+	}
+	for id := range wantInactive {
+		if !gotInactive[id] {
+			t.Errorf("inactive filter missing %s (got %v)", id, gotInactive)
+		}
+	}
+}

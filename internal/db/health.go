@@ -1,13 +1,16 @@
 package db
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+)
 
 // IsProviderHealthy checks whether at least one active connection for the given
 // provider exists without an active modelLock_<model>. Returns true when no
 // connections exist (optimistic default for no-auth providers).
 // Delegates to Repo to avoid duplicating model lock logic.
-func IsProviderHealthy(database *sql.DB, provider, model string) bool {
-	return NewRepo(database).IsProviderAvailable(provider, model)
+func IsProviderHealthy(ctx context.Context, database *sql.DB, provider, model string) bool {
+	return NewRepo(database).IsProviderAvailable(ctx, provider, model)
 }
 
 // ResetProviderHealth clears modelLock_* fields on provider connections.

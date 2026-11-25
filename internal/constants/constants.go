@@ -23,6 +23,20 @@ const (
 	AuthPrefixBearer = "Bearer "
 )
 
+// Default outbound client identity
+const (
+	// DefaultClientUserAgent is the User-Agent presented to an upstream that
+	// has no provider-specific identity of its own. The value matches what
+	// upstream's JS sends (Node's undici global fetch), and it is load-bearing
+	// against edge WAFs rather than cosmetic: Cloudflare fronts Nous
+	// Research's inference API and answers the Go default ("Go-http-client/…",
+	// sent when the header is absent) with HTTP 403 "Attention Required!" on
+	// both /v1/models and /v1/chat/completions, while this value is served
+	// normally. A fetch that leaves the header unset therefore fails while the
+	// chat path, which presents this identity, succeeds.
+	DefaultClientUserAgent = "node"
+)
+
 // Auth scheme names (used in ProviderConfig.AuthScheme)
 const (
 	AuthSchemeBearer = "bearer"

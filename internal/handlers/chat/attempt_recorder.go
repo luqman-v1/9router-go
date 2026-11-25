@@ -3,7 +3,9 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -97,14 +99,21 @@ func RecordAttemptFromContext(ctx context.Context, connID, account, provider, mo
 		text := ""
 		var ue *upstreamError
 		if errors.As(err, &ue) && len(ue.Body) > 0 {
-			text = extractErrorText(ue.Body)
+			if parsed := extractErrorText(ue.Body); parsed != "" {
+				text = parsed
+			} else if body := strings.TrimSpace(string(ue.Body)); body != "" {
+				// Some upstreams (Cloudflare Workers AI among them) answer with a
+				// body shape extractErrorText does not recognise. The wrapper's
+				// "forward to <url>" prefix alone is ~160 runes, so falling back to
+				// err.Error() used to truncate the useful part away entirely. Keep
+				// the raw body and let the status code travel in StatusCode.
+				text = fmt.Sprintf("upstream returned %d: %s", ue.StatusCode, body)
+			}
 		}
 		if text == "" {
 			text = err.Error()
 		}
-		if runes := []rune(text); len(runes) > 160 {
-			text = string(runes[:160])
-		}
+		text = truncateDetailText(text, maxPersistedErrorLen, "...[truncated]")
 		attempt.Error = text
 	}
 

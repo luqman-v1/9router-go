@@ -7,9 +7,30 @@ since: 1.9.14
 
 # Providers
 
-9router-go supports 40+ providers and 100+ models. Every provider is **isolated
+9router-go supports 150+ providers and 1000+ models. Every provider is **isolated
 and independent** — no provider is merged, cross-aliased, or redirected into
 another.
+
+## The provider catalog
+
+### OAuth & CLI sessions (28)
+
+Antigravity (`antigravity`), Antigravity CLI (ACP) (`agy-acp`), Claude Code (`claude`), Cline (`cline`), ClinePass (`clinepass`), CodeBuddy (`codebuddy-intl`), CodeBuddy CN (`codebuddy-cn`), Cursor IDE (`cursor`), Free Pi (`free-pi`), Freebuff (`freebuff`), GitHub Copilot (`github`), Grok CLI (Grok Build) (`grok-cli`), Kilo Code (`kilocode`), Kimi (`kimi`), kimi-coding (`kimi-coding`), MiniMax Code (`minimax-code`), MiniMax Code (Global) (`minimax-code-global`), Muse (Meta Model API) (`muse`), OpenAI Codex (`codex`), Qoder (`qoder`), Qoder CN (`qoder-cn`), trae (`trae`), windsurf (`windsurf`), xAI (Grok) (`xai`), Xiaomi MiMo (`xiaomi-mimo`), Zai GLM Coding (`glm`), ZCode (Z.ai) (`zcode`), Zed (`zed`)
+
+
+### Free tier (26)
+
+Agnes AI (`agnes`), API.airforce (`api-airforce`), Bazaarlink (`bazaarlink`), BytePlus ModelArk (`byteplus`), Cloudflare (`cloudflare-ai`), DaoXE (`daoxe`), Devin CLI (`devin-cli`), Edge TTS (`edge-tts`), Gemini (`gemini`), Gemini CLI (`gemini-cli`), Google TTS (`google-tts`), Keenable (`keenable`), Kilo Gateway (`kilo-gateway`), Kimchi (`kimchi`), Kiro AI (`kiro`), Local Device (`local-device`), NaN.Builders (`nan`), Nous Research (`nous`), NVIDIA NIM (`nvidia`), Ollama Cloud (`ollama`), OpenAdapter (`openadapter`), OpenCode Free (`opencode`), OpenRouter (`openrouter`), Poolside (`poolside`), SearXNG (`searxng`), Vertex AI (`vertex`)
+
+
+### API key (92)
+
+Alibaba (`alicode`), Alibaba Coding (`alicode-intl`), Alibaba Studio (`alims-intl`), Alibaba Token Plan (`alitp-intl`), Anthropic (`anthropic`), AssemblyAI (`assemblyai`), AtmoRouter (`atmorouter`), Atria Dawn (`atria`), AWS Bedrock (`bedrock`), AWS Bedrock (xAI) (`bedrock-xai`), AWS Polly (`aws-polly`), Azure OpenAI (`azure`), B.AI (`bai`), Baidu Qianfan (`baidu`), Black Forest Labs (`black-forest-labs`), Blackbox AI (`blackbox`), Brave Search (`brave-search`), Cerebras (`cerebras`), Chutes AI (`chutes`), Cohere (`cohere`), ComfyUI (`comfyui`), Command Code (`commandcode`), Command Code (Provider API) (`commandcode-goat`), Dahl Inference (`dahl`), Deepgram (`deepgram`), DeepRelay (`deeprelay`), DeepSeek (`deepseek`), ElevenLabs (`elevenlabs`), Exa (`exa`), Fal.ai (`fal-ai`), Featherless (`featherless`), Firecrawl (`firecrawl`), Fireworks AI (`fireworks`), Fish Audio (`fish-audio`), GLM (China) (`glm-cn`), Google PSE (`google-pse`), Groq (`groq`), HCNSec (`hcnsec`), HuggingFace (`huggingface`), Hyperbolic (`hyperbolic`), Inworld TTS (`inworld`), Jina AI (`jina-ai`), Jina Reader (`jina-reader`), Kenari (`kenari`), Linkup (`linkup`), LLM7 (`llm7`), Minimax (China) (`minimax-cn`), Minimax Coding (`minimax`), Mistral (`mistral`), Morph (`morph`), NanoBanana API (`nanobanana`), Nebius AI (`nebius`), Ollama Local (`ollama-local`), Ollama Search (`ollama-search`), OpenAI (`openai`), OpenCode Go (`opencode-go`), OpenCode Zen (`opencode-zen`), OpenDesign Cloud (`opendesign`), Perplexity (`perplexity`), Perplexity Agent (`perplexity-agent`), QwenCloud (`qwencloud`), Recraft (`recraft`), RunCrate (`runcrate`), Runway ML (`runwayml`), SD WebUI (`sdwebui`), SearchAPI (`searchapi`), Self-Hosted Embedding (`selfhosted-embedding`), Self-Hosted STT (`selfhosted-stt`), Self-Hosted TTS (`selfhosted-tts`), SenseNova (`sensenova`), SenseNova (Intl) (`sensenova-intl`), Serper (`serper`), SiliconFlow (`siliconflow`), Stability AI (`stability-ai`), SumoPod (`sumopod`), Synthetic (`synthetic`), Tavily (`tavily`), Tencent Hunyuan (`tencent`), TinyFish (`tinyfish`), Together AI (`together`), Token Harbor (`tokenharbor`), TokenRouter (`tokenrouter`), Topaz (`topaz`), v1m (System One) (`v1m`), Venice AI (`venice`), Vercel AI Gateway (`vercel-ai-gateway`), Vertex Partner (`vertex-partner`), Volcengine Ark (`volcengine-ark`), Voyage AI (`voyage-ai`), Xiaomi MiMo (Token Plan) (`xiaomi-tokenplan`), Xquik (`xquik`), You.com Search (`youcom`), Z.ai Web Search (`zai-search`)
+
+
+### Web session cookie (4)
+
+DeepSeek Web (`deepseek-web`), Gemini Web (`gemini-web`), Grok Web (Subscription) (`grok-web`), Perplexity Web (Pro/Max) (`perplexity-web`)
 
 ## Connecting
 
@@ -66,10 +87,19 @@ connection points at its node through `provider = node.id`.
 
 | Field | Purpose |
 |---|---|
-| Name | Display name |
-| Prefix | Wire syntax prefix (`provider/model`) |
+| Name | Display name — typing it suggests a prefix and a URL suffix, which follow the name until you edit them yourself |
+| Prefix | Wire syntax prefix (`provider/model`). Optional for OpenAI/Anthropic-compatible nodes: left blank, it is filled once server-side from the URL suffix when that is safe, else a random 8-char token. `custom-embedding` still requires an explicit prefix |
 | Base URL | Upstream endpoint |
 | Headers | Your own request headers |
+
+The Add dialog checks a candidate prefix live — `POST
+/api/provider-nodes/availability` answers `available`, `taken` (with the owner
+named), `invalid`, `automatic`, or `random` under the field. Advisory only:
+create re-validates. A registry id or alias is never suggested as a prefix,
+because it would shadow that provider's routing.
+
+The Edit dialog does not autofill: a suffix change renames the node id and
+rewrites saved combos.
 
 Validate an endpoint before saving with `POST /api/providers/validate`.
 
@@ -111,7 +141,14 @@ with `GET /api/providers/{id}/export-keys`, and remove many at once with
 
 **Custom models** are stored in the `customModels` key-value scope, not as columns
 on `providerNodes`. Add one at a time or paste many (separated by spaces, commas
-or newlines) — one request, atomic, per-row results.
+or newlines) — one request, atomic, per-row results. Rows can be edited (the
+Add modal reopens prefilled, model type locked) and deleted outright — a delete
+removes the row instead of parking its id in Disabled models.
+
+An OpenRouter custom model can carry a per-model JSON `extraBody` (the Add
+modal's "Custom request body" field) that the gateway shallow-merges into the
+outbound request body — pin `temperature` or `reasoning.effort` without the
+client sending them.
 
 **Aliases** (`/api/models/alias`) let a client write a short name for a long
 model id. **Deprecations** (`/api/models/deprecations`) surface models upstream

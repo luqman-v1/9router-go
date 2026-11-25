@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"bytes"
+	"context"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -196,5 +198,128 @@ func TestForwardKiro_StreamStillEmitsSSE(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
 		t.Errorf("stream body missing the terminal frame: %s", rec.Body.String())
+	}
+}
+
+func TestKiroIntegrityGateToggle(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{value: "", want: true},
+		{value: "on", want: true},
+		{value: "off", want: false},
+		{value: " OFF ", want: false},
+		{value: "0", want: false},
+		{value: "false", want: false},
+		{value: "no", want: false},
+	}
+	for _, tt := range tests {
+		t.Run("KIRO_INTEGRITY_GATE="+tt.value, func(t *testing.T) {
+			t.Setenv(kiroIntegrityGateEnv, tt.value)
+			if got := kiroIntegrityGateEnabled(); got != tt.want {
+				t.Errorf("kiroIntegrityGateEnabled() with %q = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// A tool call is fragmented across frames, so the gate holds it until the
+// stream ends. With the gate off the fragments must reach the client as they
+// arrive instead — the reason the toggle exists.
+func TestHandleKiroStream_IntegrityGateOffStreamsToolFragments(t *testing.T) {
+	t.Setenv(kiroIntegrityGateEnv, "off")
+
+	stream := kiroEventFrame("toolUseEvent", `{"name":"read","toolUseId":"t1","input":"{\"pa"}`)
+	stream = append(stream, kiroEventFrame("toolUseEvent", `{"name":"read","toolUseId":"t1","input":"th\":\"a\"}"}`)...)
+	stream = append(stream, kiroEventFrame("assistantResponseEvent", `{"content":"done"}`)...)
+
+	rec := httptest.NewRecorder()
+	req := &Request{Ctx: context.Background()}
+	if err := handleKiroStream(rec, req, bytes.NewReader(stream)); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("handleKiroStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	// Every fragment is its own chunk, so the call is emitted more than once.
+	if got := strings.Count(body, `"tool_calls"`); got < 2 {
+		t.Errorf("gate off should emit each fragment separately, got %d tool_calls chunks: %s", got, body)
+	}
+	// The first fragment carries the identity, the continuation only arguments.
+	if !strings.Contains(body, `"id":"t1"`) || !strings.Contains(body, `"name":"read"`) {
+		t.Errorf("first fragment must carry id and name: %s", body)
+	}
+	if !strings.Contains(body, `{\"pa`) {
+		t.Errorf("first argument fragment missing from stream: %s", body)
+	}
+}
+
+// With the gate on (the default) the fragments are reassembled and the client
+// sees exactly one complete call, which is what a client that does not
+// concatenate arguments needs.
+func TestHandleKiroStream_IntegrityGateOnEmitsCompleteToolCall(t *testing.T) {
+	t.Setenv(kiroIntegrityGateEnv, "")
+
+	stream := kiroEventFrame("toolUseEvent", `{"name":"read","toolUseId":"t1","input":"{\"path\":"}`)
+	stream = append(stream, kiroEventFrame("toolUseEvent", `{"name":"read","toolUseId":"t1","input":"\"a\"}"}`)...)
+
+	rec := httptest.NewRecorder()
+	req := &Request{Ctx: context.Background()}
+	if err := handleKiroStream(rec, req, bytes.NewReader(stream)); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("handleKiroStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	if got := strings.Count(body, `"tool_calls":[`); got != 1 {
+		t.Errorf("gate on should emit one reassembled tool_calls chunk, got %d: %s", got, body)
+	}
+	if !strings.Contains(body, `{\"path\":\"a\"}`) {
+		t.Errorf("reassembled arguments missing from stream: %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Errorf("tool turn must finish with tool_calls: %s", body)
+	}
+}
+
+// A /v1/messages client asked for Anthropic SSE. Kiro's frames are synthesized
+// as chat chunks, so they must be translated on the way out — a
+// chat.completion.chunk body is not something an Anthropic client can read.
+func TestHandleKiroStream_ClaudeClientGetsAnthropicSSE(t *testing.T) {
+	stream := kiroEventFrame("assistantResponseEvent", `{"content":"KIRO-OK"}`)
+
+	rec := httptest.NewRecorder()
+	req := &Request{Ctx: context.Background(), ClaudeClient: true, IsStream: true}
+	if err := handleKiroStream(rec, req, bytes.NewReader(stream)); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("handleKiroStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{"event: message_start", "event: content_block_delta", "event: message_stop", "KIRO-OK"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "chat.completion.chunk") || strings.Contains(body, "[DONE]") {
+		t.Errorf("chat-shaped SSE reached a Claude client:\n%s", body)
+	}
+}
+
+// The non-streaming fold reads these same chunks with sseToOpenAIJSON, so the
+// Claude translation must stay off when the client is not streaming.
+func TestHandleKiroNonStream_ClaudeClientStillFoldsToClaudeJSON(t *testing.T) {
+	stream := kiroEventFrame("assistantResponseEvent", `{"content":"KIRO-OK"}`)
+
+	rec := httptest.NewRecorder()
+	req := &Request{Ctx: context.Background(), ClaudeClient: true, TranslateResp: true}
+	if err := handleKiroNonStream(rec, req, bytes.NewReader(stream)); err != nil {
+		t.Fatalf("handleKiroNonStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "event: ") || strings.Contains(body, "chat.completion") {
+		t.Errorf("non-streaming answer must be one folded JSON document: %s", body)
+	}
+	if !strings.Contains(body, "KIRO-OK") {
+		t.Errorf("answer text missing: %s", body)
 	}
 }

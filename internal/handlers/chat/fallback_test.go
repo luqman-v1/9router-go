@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/tokensaver"
 )
 
@@ -448,9 +449,12 @@ func TestApplyTokenSavers_HeadroomCompressesWhenEnabled(t *testing.T) {
 
 	h, cleanup := setupHandlerForForward(t)
 	defer cleanup()
+	// The engine is pinned to external: the default is built-in, which would
+	// serve this request in-process and never reach the fake proxy.
 	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
 		HeadroomEnabled:   true,
 		HeadroomUrl:       ts.URL,
+		HeadroomEngine:    headroom.EngineExternal,
 		HeadroomTimeoutMs: 2000,
 	})
 
@@ -467,6 +471,80 @@ func TestApplyTokenSavers_HeadroomCompressesWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestApplyTokenSavers_HeadroomRecordsTokenSavings pins the accounting the usage
+// page depends on.
+//
+// The compression stage used to replace the body and drop the token counts on
+// the floor, so a request compressed by headroom alone reported SavedTokens 0.
+// The usage page only writes a compression row when SavedTokens > 0, so that
+// request was invisible there — the operator turned compression on, watched it
+// work, and the dashboard reported no compression at all.
+func TestApplyTokenSavers_HeadroomRecordsTokenSavings(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"short"}],
+			"tokens_before":900,"tokens_after":3,"tokens_saved":897}`))
+	}))
+	defer ts.Close()
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	// Headroom only: RTK and every style prompt off, which is the configuration
+	// that used to report nothing.
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		HeadroomEnabled:   true,
+		HeadroomUrl:       ts.URL,
+		HeadroomEngine:    headroom.EngineExternal,
+		HeadroomTimeoutMs: 2000,
+	})
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled at all today"}]}`)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) == string(body) {
+		t.Fatalf("body was not replaced by the compressed one")
+	}
+	if savedTokens <= 0 {
+		t.Fatalf("headroom compressed the body but reported 0 tokens saved")
+	}
+	if origTokens <= savedTokens {
+		t.Fatalf("original tokens %d must exceed saved %d", origTokens, savedTokens)
+	}
+	if savedPct <= 0 || savedPct > 100 {
+		t.Fatalf("saved pct = %d, want a percentage in (0, 100]", savedPct)
+	}
+}
+
+// TestApplyTokenSavers_HeadroomSavingsStackOnRTK covers the combined case: both
+// stages act on the same request, and the totals must describe what the
+// provider is about to be billed for rather than the last stage alone.
+func TestApplyTokenSavers_HeadroomSavingsStackOnRTK(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"short"}]}`))
+	}))
+	defer ts.Close()
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		RTKEnabled:        true,
+		HeadroomEnabled:   true,
+		HeadroomUrl:       ts.URL,
+		HeadroomEngine:    headroom.EngineExternal,
+		HeadroomTimeoutMs: 2000,
+	})
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled at all today"}]}`)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) == string(body) {
+		t.Fatalf("body was not replaced by the compressed one")
+	}
+	if savedTokens <= 0 || origTokens <= 0 {
+		t.Fatalf("expected stacked savings, got orig=%d saved=%d", origTokens, savedTokens)
+	}
+	if savedTokens >= origTokens {
+		t.Fatalf("saved %d must be less than original %d", savedTokens, origTokens)
+	}
+	if savedPct <= 0 || savedPct > 100 {
+		t.Fatalf("saved pct = %d, want a percentage in (0, 100]", savedPct)
+	}
+}
 func TestApplyTokenSavers_HeadroomFailsOpen(t *testing.T) {
 	// A proxy that is configured but not running must not fail the request.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -480,6 +558,7 @@ func TestApplyTokenSavers_HeadroomFailsOpen(t *testing.T) {
 	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
 		HeadroomEnabled:   true,
 		HeadroomUrl:       url,
+		HeadroomEngine:    headroom.EngineExternal,
 		HeadroomTimeoutMs: 300,
 	})
 

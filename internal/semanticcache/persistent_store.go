@@ -119,8 +119,8 @@ FROM semanticCacheEntries`
 	for rows.Next() {
 		var (
 			key, model, contentType, storedAtStr string
-			body                                  []byte
-			hitCount, tokensSaved                 int64
+			body                                 []byte
+			hitCount, tokensSaved                int64
 		)
 		if err := rows.Scan(&key, &model, &body, &contentType, &storedAtStr, &hitCount, &tokensSaved); err == nil {
 			storedAt, ok := parseStoredAt(storedAtStr)
@@ -154,9 +154,13 @@ func (p *PersistentLRUStore) Put(ctx context.Context, key string, e Entry) error
 	if p.db != nil {
 		storedAtStr := formatStoredAt(e.StoredAt)
 		_, _ = p.db.ExecContext(ctx, `
-INSERT OR REPLACE INTO semanticCacheEntries (
+INSERT INTO semanticCacheEntries (
 	key, model, responseBody, contentType, storedAt, hitCount, tokensSaved
-) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET
+	model = excluded.model, responseBody = excluded.responseBody,
+	contentType = excluded.contentType, storedAt = excluded.storedAt,
+	hitCount = excluded.hitCount, tokensSaved = excluded.tokensSaved`,
 			key, e.Model, e.ResponseBody, e.ContentType, storedAtStr, e.HitCount, e.TokensSaved,
 		)
 	}
@@ -205,6 +209,34 @@ func (p *PersistentLRUStore) InvalidateByModel(ctx context.Context, model string
 	count := p.lru.InvalidateByModel(ctx, model)
 	if p.db != nil {
 		_, _ = p.db.ExecContext(ctx, `DELETE FROM semanticCacheEntries WHERE model = ?`, model)
+	}
+	return count
+}
+
+// InvalidateByModelAndPrefix deletes matching entries in both memory and SQLite.
+// The in-memory LRU filter matches the model case-insensitively; the SQLite
+// delete matches it exactly (case-sensitive), so on a case-mismatched request
+// the in-memory entry and its disk row are removed by different predicates. The
+// prefix matches any key whose stored key starts with keyPrefix (keys are hex
+// digests, so no LIKE escaping is needed). An empty model with a non-empty
+// prefix matches all models with that key prefix; an empty prefix drops the
+// key predicate.
+func (p *PersistentLRUStore) InvalidateByModelAndPrefix(ctx context.Context, model, keyPrefix string) int {
+	count := p.lru.InvalidateByModelAndPrefix(ctx, model, keyPrefix)
+	if p.db != nil {
+		query := `DELETE FROM semanticCacheEntries`
+		args := []any{}
+		if model != "" && keyPrefix != "" {
+			query = `DELETE FROM semanticCacheEntries WHERE model = ? AND key LIKE ?`
+			args = []any{model, keyPrefix + "%"}
+		} else if model != "" {
+			query = `DELETE FROM semanticCacheEntries WHERE model = ?`
+			args = []any{model}
+		} else if keyPrefix != "" {
+			query = `DELETE FROM semanticCacheEntries WHERE key LIKE ?`
+			args = []any{keyPrefix + "%"}
+		}
+		_, _ = p.db.ExecContext(ctx, query, args...)
 	}
 	return count
 }

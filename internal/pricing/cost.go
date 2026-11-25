@@ -19,7 +19,13 @@ type TokenCounts struct {
 	CompletionTokens    int
 	CachedTokens        int
 	CacheCreationTokens int
-	ReasoningTokens     int
+	// CacheCreation1hTokens is the share of CacheCreationTokens written with
+	// the 1-hour ttl, which costs 2x input instead of the 1.25x the 5-minute
+	// window pays. It is a subset of the total, never an addition: a caller
+	// that does not know the split leaves it at zero and the whole write is
+	// billed at the 5-minute rate.
+	CacheCreation1hTokens int
+	ReasoningTokens       int
 }
 
 // freeModelNamespaces are model-id prefixes billed at zero. The namespace is
@@ -38,7 +44,7 @@ var (
 	// routed on the keyed paid lane (#410). That divergence is deliberate and
 	// recorded in internal/providers/model_formats_pricing_divergence_test.go,
 	// which fails when a new id starts disagreeing silently.
-	KnownFreeModels     = []string{"big-pickle"}
+	KnownFreeModels = []string{"big-pickle"}
 )
 
 // zeroPricing is what a free-namespace model costs.
@@ -158,7 +164,15 @@ func CalculateCost(tokens TokenCounts, p ModelPricing) float64 {
 		if rate == 0 {
 			rate = p.InputPer1M
 		}
-		cost += float64(tokens.CacheCreationTokens) / 1_000_000 * rate
+		hourly := tokens.CacheCreation1hTokens
+		if hourly > tokens.CacheCreationTokens {
+			hourly = tokens.CacheCreationTokens
+		}
+		if hourly > 0 {
+			// 2x input over 1.25x input is exactly 1.6x the 5-minute rate.
+			cost += float64(hourly) / 1_000_000 * rate * 8 / 5
+		}
+		cost += float64(tokens.CacheCreationTokens-hourly) / 1_000_000 * rate
 	}
 	return cost
 }

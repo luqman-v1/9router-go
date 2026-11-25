@@ -1,6 +1,9 @@
 package providers
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestIsModelDeprecation(t *testing.T) {
 	tests := []struct {
@@ -152,5 +155,40 @@ func TestDeprecationKeys(t *testing.T) {
 	// A bare model names no provider, so there is nothing to file it under.
 	if _, ok := DeprecationKeyForEntry("mimo-v2.5"); ok {
 		t.Error("DeprecationKeyForEntry for a bare model reported ok, want false")
+	}
+}
+
+func TestIsCooldown(t *testing.T) {
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+
+	active := &ModelDeprecation{Status: DeprecationCooldown, CooldownUntil: future}
+	if !active.IsCooldown() {
+		t.Error("active cooldown reported not cooling down")
+	}
+
+	lapsed := &ModelDeprecation{Status: DeprecationCooldown, CooldownUntil: past}
+	if lapsed.IsCooldown() {
+		t.Error("lapsed cooldown reported cooling down")
+	}
+
+	noWindow := &ModelDeprecation{Status: DeprecationCooldown}
+	if noWindow.IsCooldown() {
+		t.Error("cooldown without a window reported cooling down")
+	}
+
+	gone := &ModelDeprecation{Status: DeprecationGone, CooldownUntil: future}
+	if gone.IsCooldown() {
+		t.Error("gone record reported cooling down")
+	}
+
+	unknown := &ModelDeprecation{Status: DeprecationUnknown}
+	if unknown.IsCooldown() {
+		t.Error("unknown record reported cooling down")
+	}
+
+	var nilDeprecation *ModelDeprecation
+	if nilDeprecation.IsCooldown() {
+		t.Error("nil deprecation reported cooling down")
 	}
 }

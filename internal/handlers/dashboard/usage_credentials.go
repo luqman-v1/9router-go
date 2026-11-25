@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -209,9 +211,23 @@ type usageRefreshOutcome struct {
 // runUsageRefresh performs one guarded refresh. It returns err only for a
 // failure the caller should surface; a provider with no refresher is not an
 // error, it is simply nothing to do.
+//
+// An account that already carries a dead-grant park (testStatus
+// reauth_required) is skipped: re-spending the single-use refresh token
+// would answer invalid_grant again and bump the failure counter behind a
+// request the caller must not make. The caller keeps the stored access
+// token and reads with it, so the panel still renders while the badge
+// says to re-authorize.
 func (h *DashboardHandler) runUsageRefresh(ctx context.Context, conn *models.ProviderConnection, creds usageCredentials) usageRefreshOutcome {
 	if !canAttemptRefresh(conn, creds.raw) {
 		return usageRefreshOutcome{}
+	}
+	if h.Repo != nil {
+		if latest, err := h.Repo.GetProviderConnectionByID(conn.ID); err == nil && latest != nil {
+			if db.ConnectionRequiresReauth(latest.Data) {
+				return usageRefreshOutcome{}
+			}
+		}
 	}
 	creds = h.adoptStoredUsageCredentials(ctx, conn, creds)
 	result, err := h.refreshUsageCredentials(ctx, conn, creds, nil)
@@ -274,5 +290,171 @@ func (h *DashboardHandler) persistUsageTokens(conn *models.ProviderConnection, r
 	}
 	if encoded, err := json.Marshal(raw); err == nil {
 		_ = h.Repo.UpdateConnectionData(conn.ID, string(encoded))
+	}
+}
+
+// =============================================================================
+// Claude quota auto-ping catch-up tracking
+// Ports upstream decolua/9router PR #5531 / Issue #4001:
+// "fix(quota): catch Claude resets missed between auto-ping ticks"
+// =============================================================================
+
+// ClaudeAutoPingCatchupState tracks observed reset deadlines and failure cooldowns
+// for Claude auto-ping reactive cycles.
+type ClaudeAutoPingCatchupState struct {
+	mu           sync.Mutex
+	ResetCache   map[string]string    // key: "claude:<connId>", value: resetAt (RFC3339)
+	FailureCache map[string]time.Time // key: "claude:<connId>", value: failedAt
+}
+
+// GlobalClaudeAutoPingState is the process-wide state for Claude auto-ping catchup.
+var GlobalClaudeAutoPingState = NewClaudeAutoPingCatchupState()
+
+// NewClaudeAutoPingCatchupState creates an initialized state tracker.
+func NewClaudeAutoPingCatchupState() *ClaudeAutoPingCatchupState {
+	return &ClaudeAutoPingCatchupState{
+		ResetCache:   make(map[string]string),
+		FailureCache: make(map[string]time.Time),
+	}
+}
+
+// Reset clears all cached reset deadlines and failures (for testing).
+func (s *ClaudeAutoPingCatchupState) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ResetCache = make(map[string]string)
+	s.FailureCache = make(map[string]time.Time)
+}
+
+// NormalizeResetKey rounds resetAt timestamp down to the nearest minute,
+// matching upstream normalizeResetKey.
+func NormalizeResetKey(resetAt string) string {
+	t, err := time.Parse(time.RFC3339, resetAt)
+	if err != nil {
+		return resetAt
+	}
+	return t.Truncate(time.Minute).UTC().Format(time.RFC3339)
+}
+
+// ClaudeAutoPingLeadDuration matches upstream QUOTA_AUTOPING_CONFIG.pingLeadMs (5 seconds).
+const ClaudeAutoPingLeadDuration = 5 * time.Second
+
+// ClaudeAutoPingFailureCooldown matches upstream QUOTA_AUTOPING_CONFIG.failureCooldownMs (15 minutes).
+const ClaudeAutoPingFailureCooldown = 15 * time.Minute
+
+// ShouldPingForClaudeReset checks if current time has reached resetAt - pingLeadDuration.
+func ShouldPingForClaudeReset(resetAt string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, resetAt)
+	if err != nil {
+		return false
+	}
+	return !now.Before(t.Add(-ClaudeAutoPingLeadDuration))
+}
+
+// ShouldSkipAfterClaudePingFailure checks if connection is in failure cooldown.
+func (s *ClaudeAutoPingCatchupState) ShouldSkipAfterFailure(key string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	failedAt, ok := s.FailureCache[key]
+	if !ok {
+		return false
+	}
+	return now.Sub(failedAt) < ClaudeAutoPingFailureCooldown
+}
+
+// ClaudeAutoPingTickPlan describes the decision made for a connection on this tick.
+type ClaudeAutoPingTickPlan struct {
+	ShouldPing         bool
+	EffectiveResetAt   string
+	EffectiveResetKey  string
+	CatchingUpReset    bool
+	NewlyObservedReset string
+	Key                string
+}
+
+// PlanClaudeAutoPing evaluates whether Claude auto-ping should fire, handling
+// catch-up of due, unpinged deadlines missed between ticks.
+func (s *ClaudeAutoPingCatchupState) PlanClaudeAutoPing(
+	connID string,
+	lastPingedResetKey string,
+	newlyObservedResetAt string,
+	now time.Time,
+) ClaudeAutoPingTickPlan {
+	key := "claude:" + connID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if failedAt, ok := s.FailureCache[key]; ok && now.Sub(failedAt) < ClaudeAutoPingFailureCooldown {
+		return ClaudeAutoPingTickPlan{Key: key}
+	}
+
+	cachedReset := s.ResetCache[key]
+	resetAt := newlyObservedResetAt
+	if resetAt != "" {
+		s.ResetCache[key] = resetAt
+	}
+
+	resetKey := ""
+	if resetAt != "" {
+		resetKey = NormalizeResetKey(resetAt)
+	}
+
+	// Catch-up check:
+	// A tick may miss Claude's short lead window and observe the next reset.
+	// Catch up the unpinged cached deadline, without marking that next cycle
+	// as pinged. Keep the fresh reset in resetCache for subsequent ticks.
+	if cachedReset != "" &&
+		lastPingedResetKey != NormalizeResetKey(cachedReset) &&
+		ShouldPingForClaudeReset(cachedReset, now) {
+		resetAt = cachedReset
+		resetKey = NormalizeResetKey(cachedReset)
+	}
+
+	if resetAt == "" {
+		return ClaudeAutoPingTickPlan{Key: key}
+	}
+
+	if !ShouldPingForClaudeReset(resetAt, now) {
+		return ClaudeAutoPingTickPlan{Key: key}
+	}
+
+	if lastPingedResetKey == resetKey {
+		return ClaudeAutoPingTickPlan{Key: key}
+	}
+
+	catchingUp := resetAt != newlyObservedResetAt
+	if catchingUp {
+		// Retain the caught-up deadline in cache while pending
+		s.ResetCache[key] = resetAt
+	}
+
+	return ClaudeAutoPingTickPlan{
+		ShouldPing:         true,
+		EffectiveResetAt:   resetAt,
+		EffectiveResetKey:  resetKey,
+		CatchingUpReset:    catchingUp,
+		NewlyObservedReset: newlyObservedResetAt,
+		Key:                key,
+	}
+}
+
+// RecordPingSuccess marks ping succeeded and updates resetCache to the newly observed reset if caught up.
+func (s *ClaudeAutoPingCatchupState) RecordPingSuccess(plan ClaudeAutoPingTickPlan) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.FailureCache, plan.Key)
+	if plan.CatchingUpReset && plan.NewlyObservedReset != "" {
+		s.ResetCache[plan.Key] = plan.NewlyObservedReset
+	}
+}
+
+// RecordPingFailure records ping failure and enters failure cooldown.
+// Retains the caught-up deadline in resetCache so subsequent retries keep catching it up.
+func (s *ClaudeAutoPingCatchupState) RecordPingFailure(plan ClaudeAutoPingTickPlan, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.FailureCache[plan.Key] = now
+	if plan.CatchingUpReset {
+		s.ResetCache[plan.Key] = plan.EffectiveResetAt
 	}
 }

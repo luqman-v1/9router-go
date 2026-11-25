@@ -13,6 +13,8 @@ type ComboStrategy struct {
 	Strategy    string `json:"strategy,omitempty"`
 	StickyLimit int    `json:"stickyLimit,omitempty"`
 	JudgeModel  string `json:"judgeModel,omitempty"`
+	// Weights holds optional per-model weights for round-robin rotation.
+	Weights map[string]int `json:"weights,omitempty"`
 	// FirstTokenTimeoutMs bounds every combo candidate except the last until
 	// its first usable response; zero disables it. The last candidate keeps
 	// the global deadline, so the setting never makes a combo fail sooner.
@@ -55,6 +57,15 @@ type ComboStrategy struct {
 	// BudgetWindowMs is the window a BudgetCalls ceiling spans. Zero means
 	// DefaultBudgetWindowMs.
 	BudgetWindowMs int `json:"budgetWindowMs,omitempty"`
+	// ContextWindowMode selects how the combo advertises its context window
+	// in /v1/models: "min" narrows to the smallest seat window, "max"
+	// advertises the largest seat window, and "custom" advertises the
+	// explicit ContextWindow regardless of what the seats can serve. Absent
+	// defaults to min so a combo only promises what every seat agrees on.
+	ContextWindowMode string `json:"contextWindowMode,omitempty"`
+	// ContextWindow is the explicit window advertised when ContextWindowMode
+	// is "custom". Zero means "not set" and the combo falls back to min.
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 // BudgetCallsMax is the largest per-window ceiling the settings parser
@@ -66,8 +77,23 @@ type ComboStrategy struct {
 // what a stored budget means rather than the server silently normalizing it.
 const BudgetCallsMax = 1000000
 
-// DefaultFirstTokenGraceMs is the grace period applied after a model response
-// timeout when the combo does not set its own: five minutes.
+const (
+	// ComboWindowModeMin advertises the narrowest seat window: the combo can
+	// only promise what every seat can serve. The zero value (unset mode)
+	// resolves to this mode, so existing combos keep their current behaviour.
+	ComboWindowModeMin = "min"
+
+	// ComboWindowModeMax advertises the widest seat window: a fallback chain
+	// that fails past a small-window seat can still serve a long-prompt turn
+	// on a large-window seat, so advertising only the minimum undersells the
+	// chain.
+	ComboWindowModeMax = "max"
+
+	// ComboWindowModeCustom advertises the operator-declared ContextWindow
+	// regardless of what the seats report.
+	ComboWindowModeCustom = "custom"
+)
+
 const DefaultFirstTokenGraceMs = 5 * 60 * 1000
 
 // FirstTokenGrace resolves the effective grace period in milliseconds.
@@ -144,13 +170,24 @@ type SettingsData struct {
 	// HeadroomAutostart launches the local Headroom proxy daemon on 9router boot.
 	// It is decoupled from HeadroomEnabled so operators who run Headroom standalone or
 	// selectively toggle request compression still have the proxy ready on startup.
-	HeadroomAutostart          bool                            `json:"headroomAutostart"`
-	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
-	HeadroomKompress           bool                            `json:"headroomKompress"`
-	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
-	SemanticCacheEnabled       bool                            `json:"semanticCacheEnabled"`
-	SemanticCacheTTL           int                             `json:"semanticCacheTTL,omitempty"`
-	SemanticCacheMaxEntries    int                             `json:"semanticCacheMaxEntries,omitempty"`
+	HeadroomAutostart bool `json:"headroomAutostart"`
+	// HeadroomEngine selects the compression engine: "builtin" runs in-process
+	// with no dependency, "external" posts to HeadroomUrl. Empty means "builtin",
+	// so an existing settings row that never set the field gets the in-process
+	// engine rather than a proxy nobody installed.
+	HeadroomEngine          string `json:"headroomEngine,omitempty"`
+	HeadroomCodeAware       bool   `json:"headroomCodeAware"`
+	HeadroomKompress        bool   `json:"headroomKompress"`
+	HeadroomTimeoutMs       int    `json:"headroomTimeoutMs"`
+	SemanticCacheEnabled    bool   `json:"semanticCacheEnabled"`
+	SemanticCacheTTL        int    `json:"semanticCacheTTL,omitempty"`
+	SemanticCacheMaxEntries int    `json:"semanticCacheMaxEntries,omitempty"`
+	// ClaudeCacheTTL picks the prompt-cache window for the head anchors 9router
+	// writes onto Claude requests: "5m" (default) or "1h". The two are billed
+	// differently — a cache write costs 1.25x at 5m and 2x at 1h — and which is
+	// cheaper depends on how long the operator's sessions pause between turns.
+	// Empty means "5m", so a row that never set it keeps the default.
+	ClaudeCacheTTL             string                          `json:"claudeCacheTtl,omitempty"`
 	AutoUpdate                 bool                            `json:"autoUpdate"`
 	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
 	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
@@ -184,6 +221,18 @@ type SettingsData struct {
 	UptimeKumaEnabled  bool   `json:"uptimeKumaEnabled,omitempty"`
 	UptimeKumaPushURL  string `json:"uptimeKumaPushUrl,omitempty"`
 	UptimeKumaInterval int    `json:"uptimeKumaInterval,omitempty"`
+	// White-label branding (Settings > White-label branding card). Empty means
+	// the project default: the sidebar and login screen fall back to the
+	// built-in name and favicon. LoginLogo and TrayIcon stay separate from
+	// AppLogoUrl because the login tile and the tray render at different sizes
+	// and may be a different mark entirely.
+	AppName        string `json:"appName,omitempty"`
+	AppLogoURL     string `json:"appLogoUrl,omitempty"`
+	AppDescription string `json:"appDescription,omitempty"`
+	AppTagline     string `json:"appTagline,omitempty"`
+	LoginLogoURL   string `json:"loginLogo,omitempty"`
+	TrayAppName    string `json:"trayAppName,omitempty"`
+	TrayIconURL    string `json:"trayIcon,omitempty"`
 }
 
 // ProviderThinking is one provider's operator reasoning override, mirroring
@@ -226,6 +275,13 @@ func DefaultSettings() *SettingsData {
 		SystemPromptSuffix:      "",
 		HeadroomUrl:             "http://localhost:8787",
 		HeadroomAutostart:       false,
+		// The engine is written as the literal rather than imported from
+		// internal/headroom: the db package is imported by everything, and
+		// internal/headroom imports the proxy package, so importing it here
+		// would make the settings layer depend on the network stack.
+		// internal/headroom.NormalizeEngine is the single place that interprets
+		// the value, and it treats the empty string as this same engine.
+		HeadroomEngine:          "builtin",
 		HeadroomKompress:        true,
 		HeadroomTimeoutMs:       3000,
 		SemanticCacheEnabled:    false,

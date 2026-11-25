@@ -111,6 +111,69 @@ describe('dashboard API authentication and errors', () => {
     })
   })
 
+  it('uses the Kiro social PKCE authorize and exchange contract', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), init })
+      return Response.json({
+        success: true,
+        authUrl: 'https://prod.us-east-1.auth.desktop.kiro.dev/login',
+        state: 'state-123',
+        codeVerifier: 'verifier-123',
+      })
+    }
+    try {
+      await api.kiroSocialAuthorize('google')
+      await api.kiroSocialExchange('code-123', 'verifier-123', 'google')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    expect(requests[0]?.url).toBe('/api/oauth/kiro/social-authorize?provider=google')
+    expect(requests[1]?.url).toBe('/api/oauth/kiro/social-exchange')
+    expect(requests[1]?.init?.method).toBe('POST')
+    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
+      code: 'code-123',
+      codeVerifier: 'verifier-123',
+      provider: 'google',
+    })
+  })
+
+  it('polls server callback relay by state', async () => {
+    const originalFetch = globalThis.fetch
+    let seenUrl = ''
+    globalThis.fetch = async (input) => {
+      seenUrl = String(input)
+      return Response.json({ found: true, state: 'state-123', raw: 'code-123' })
+    }
+    try {
+      const res = await api.getOAuthCallbackResult('state-123')
+      expect(res.found).toBe(true)
+      expect(res.raw).toBe('code-123')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    expect(seenUrl).toBe('/api/oauth/callback-result?state=state-123')
+  })
+
+  it('sends proxy=1 when requesting an OAuth authorize URL behind a reverse proxy', async () => {
+    const originalFetch = globalThis.fetch
+    const seenUrls: string[] = []
+    globalThis.fetch = async (input) => {
+      seenUrls.push(String(input))
+      return Response.json({ url: 'https://accounts.google.test/auth', state: 'state-123', redirectUri: 'http://localhost:20130/callback' })
+    }
+    try {
+      await api.getAGYACPAuthorizeUrl('http://localhost:80/callback', true)
+      await api.getAntigravityAuthorizeUrl('http://localhost:80/callback', false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    expect(seenUrls[0]).toBe('/api/oauth/agy-acp/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcallback&proxy=1')
+    expect(seenUrls[1]).toBe('/api/oauth/antigravity/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcallback')
+  })
+
   it('triggers onUnauthorized and clears storage on 401 responses', async () => {
     const originalFetch = globalThis.fetch
     localStorage.setItem('9router_auth', 'true')

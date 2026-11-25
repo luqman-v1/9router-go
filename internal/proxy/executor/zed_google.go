@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -27,6 +27,12 @@ func zedGeminiStream(w http.ResponseWriter, req *Request, upstream io.Reader) er
 
 	state := &translator.GeminiStreamState{
 		Model: translator.RequestedModelFromContext(req.Ctx),
+		APIKeyId: func() string {
+			if k := middleware.AuthenticatedApiKeyFromContext(req.Ctx); k != nil {
+				return k.ID
+			}
+			return ""
+		}(),
 	}
 	doneSeen := false
 	var writeErr error
@@ -55,13 +61,7 @@ func zedGeminiStream(w http.ResponseWriter, req *Request, upstream io.Reader) er
 		if len(out) == 0 {
 			return
 		}
-		if req.TTFT != nil && *req.TTFT == 0 {
-			startTime := req.StartTime
-			if startTime.IsZero() {
-				startTime = time.Now()
-			}
-			*req.TTFT = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(req, req.StartTime)
 		if req.ResponseBuf != nil {
 			_, _ = req.ResponseBuf.Write(out)
 		}

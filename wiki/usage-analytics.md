@@ -73,14 +73,36 @@ and can be refreshed from a public provider with
 
 ## Quota tracking
 
-The Quota Tracker page reads per-provider quota and the reset schedules:
+The Quota Tracker page reads per-provider quota and the reset schedules.
+Providers with a tracker include Codex, GLM, ClinePass, Freebuff, and
+Cloudflare Workers AI:
 
+- **Cloudflare Workers AI** (`cloudflare-ai`) — today's usage read from
+  Cloudflare's GraphQL `viewer.accounts.aiInferenceAdaptiveGroups` for the
+  account, showing **Neurons (daily)** against the free-tier allowance of
+  10,000 neurons/day (override with `providerSpecificData.dailyNeuronLimit`)
+  and **Requests (today)** as unlimited. An auth-shaped failure says the token
+  has no Cloudflare AI Analytics access rather than reporting a generic error.
 - **Codex reset credits** — `GET /api/usage/{connectionId}/reset-credits`, and
   `POST …/reset-credits/consume` to spend one.
 - **GLM reset cards** (Z.ai international) —
   `GET|POST /api/usage/{connectionId}/glm-reset-cards`.
 - **Auto-ping schedule** — set a background interval that keeps quota current
   without traffic.
+
+### Daily check-ins
+
+Two providers pay a daily bonus for showing up, and a background loop collects
+it every 30 minutes per account (toggle in Settings, or the manual button on
+the Quota Tracker page):
+
+- **Qoder** daily credit check-in
+- **MiniMax Code** daily sign-in — reads the seven-day panel, claims when
+  claimable, and writes a per-account ledger to `DATA_DIR/minimax-checkin.json`
+  so the toggle takes effect without a restart
+
+`GET /api/minimax/checkins` returns check-in state keyed by connection id;
+`POST /api/minimax/checkins/{connectionId}` triggers a manual check-in.
 
 ## Cache analytics
 

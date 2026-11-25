@@ -1,7 +1,8 @@
 import { api, getAuthHeaders, type ProviderConnection } from '../../api/client'
 import { parseCustomModelsResponse, parseDisabledModelsMap } from '../../lib/customModels'
-import { getModelCaps, getModelKind } from '../../lib/models'
+import { getModelCaps, getModelKind, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
 import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
+import { isBannedConnection } from '../../lib/ban'
 
 export const MEDIA_KINDS: Record<string, true> = {
   image: true,
@@ -9,6 +10,29 @@ export const MEDIA_KINDS: Record<string, true> = {
   stt: true,
   embedding: true,
   video: true,
+}
+
+/**
+ * The prefix a provider's model ids are published under.
+ *
+ * A registered provider publishes the prefix the gateway serves it under
+ * ("oc" for opencode, "cmc" for commandcode); a compatible node publishes the
+ * prefix the operator chose for it. Upstream resolves this the same way
+ * (providers/[id]/page.js:217): `isCompatible ? (providerNode?.prefix ||
+ * providerId) : providerAlias`.
+ *
+ * Returning the provider's internal id instead published "opencode/<model>"
+ * where the gateway serves "oc/<model>", so a copied model id did not resolve
+ * at the router. The published prefix is what /v1/models serves, so it is
+ * what a copied id has to be.
+ */
+export function providerDisplayPrefix(
+  providerId: string,
+  node?: { prefix?: string } | undefined,
+  publishedPrefix?: string | undefined,
+): string {
+  if (node) return node.prefix || providerId
+  return publishedPrefix || PROVIDER_ID_TO_ALIAS[providerId] || providerId
 }
 
 export function isChatModel(m: unknown): boolean {
@@ -43,7 +67,10 @@ export interface CustomModelData {
   providerAlias?: string
   type?: string
   /** Capability flags saved from the Add Custom Model modal (upstream parity). */
-  caps?: { vision?: boolean; reasoning?: boolean }
+  caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean }
+  contextWindow?: number
+  maxOutput?: number
+  extraBody?: unknown
 }
 
 // Artwork is filed under another provider's id when the two genuinely share a
@@ -115,17 +142,22 @@ export function getProviderStats(
   })
 
   const total = list.length
-  const isConnError = (c: ProviderConnection) =>
-    c.testStatus === 'error' || c.testStatus === 'failed' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && !!c.lastError)
   const isConnConnected = (c: ProviderConnection) =>
     c.isActive === 1 && (c.testStatus === 'active' || c.testStatus === 'passed' || (c.testStatus !== 'error' && c.testStatus !== 'failed' && !c.lastError))
 
   const connected = list.filter(isConnConnected).length
-  const errorCount = list.filter(isConnError).length
+  const errorCount = list.filter(isConnectionError).length
   const allDisabled = total > 0 && list.every((c) => c.isActive === 0)
-  const latestError = list.find(isConnError)?.lastError
+  const latestError = list.find(isConnectionError)?.lastError
 
   return { total, connected, errorCount, allDisabled, latestError, connections: list }
+}
+
+/** A connection is an error when it has a failed/errored persisted state, but a
+ * banned connection is never an error — it belongs to the Banned tab instead. */
+export function isConnectionError(c: ProviderConnection): boolean {
+  if (isBannedConnection(c)) return false
+  return c.testStatus === 'error' || c.testStatus === 'failed' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && !!c.lastError)
 }
 
 

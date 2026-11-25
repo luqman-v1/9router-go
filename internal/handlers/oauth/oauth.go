@@ -18,14 +18,30 @@ import (
 	"9router/proxy/internal/log"
 )
 
+var (
+	kiroSocialTokenURL   = "https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token"
+	kiroSocialHTTPClient = &http.Client{Timeout: 15 * time.Second}
+)
+
 // OAuthHandler handles OAuth token import and social auth exchange endpoints.
 type OAuthHandler struct {
-	Repo *db.Repo
+	Repo      *db.Repo
+	callbacks *callbackRelay
 }
 
 // NewOAuthHandler initializes an OAuthHandler.
 func NewOAuthHandler(repo *db.Repo) *OAuthHandler {
-	return &OAuthHandler{Repo: repo}
+	return &OAuthHandler{
+		Repo:      repo,
+		callbacks: defaultCallbackRelay,
+	}
+}
+
+func (h *OAuthHandler) callbackStore() *callbackRelay {
+	if h != nil && h.callbacks != nil {
+		return h.callbacks
+	}
+	return defaultCallbackRelay
 }
 
 // HandleOAuthImport saves credentials from CLI token import (Codex, Cursor, GitLab, etc.).
@@ -186,11 +202,18 @@ func (h *OAuthHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *h
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to encode exchange request")
 		return
 	}
-	tokenResp, err := http.Post(
-		"https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token",
-		"application/json",
+	tokenReq, err := http.NewRequestWithContext(
+		r.Context(),
+		http.MethodPost,
+		kiroSocialTokenURL,
 		bytes.NewReader(exchangePayload),
 	)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to build exchange request")
+		return
+	}
+	tokenReq.Header.Set("Content-Type", "application/json")
+	tokenResp, err := kiroSocialHTTPClient.Do(tokenReq)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("token exchange failed: %v", err))
 		return

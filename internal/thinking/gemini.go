@@ -58,9 +58,13 @@ func GeminiConfig(intent *Intent, format string, caps providers.Capabilities, su
 			level = ToGeminiThinkingLevel(intent)
 		}
 		level = clampGeminiLevel(level, supported)
+		includeThoughts := level != "minimal"
+		if intent.IncludeThoughts != nil && level != "minimal" {
+			includeThoughts = *intent.IncludeThoughts
+		}
 		return map[string]any{
 			"thinkingLevel":   level,
-			"includeThoughts": level != "minimal",
+			"includeThoughts": includeThoughts,
 		}, GeminiLevelOutputFloor(level)
 	case "gemini-budget":
 		if intent.Mode == ModeNone && cd {

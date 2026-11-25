@@ -22,6 +22,24 @@ type comboStickyState struct {
 	// requests reuse it so a tool-use sequence stays on the same provider,
 	// even after Index has advanced for the next turn.
 	ServingIndex int
+	// Space is the combo's initial configured target list the rotation pointer
+	// lives in; Models is the list handed to the last rotation. Advancing the
+	// pointer across a list that a capability or affinity filter shortened
+	// skips whatever sat past the cut and, when a later seat served as a
+	// fallback, serves the same model again next turn.
+	Space  []string
+	Models []string
+
+	// Weighted round-robin state
+	Sig            string
+	CurrentWeights map[string]int
+	LastSeat       string
+	ServingRotated []string
+
+	// LastUsed stamps the last request this state served. A conversation-keyed
+	// entry makes this map client-driven and therefore unbounded without it
+	// (AGENTS.md §4.G).
+	LastUsed time.Time
 }
 
 // smartStickyEntry is one session's pinned model in the smart strategy.
@@ -59,6 +77,10 @@ type ChatHandler struct {
 	// one would otherwise upsert the same row.
 	deprecationMu    sync.Mutex
 	deprecationCache map[string]time.Time
+	// cooldownCache throttles kv writes when a model is cooled down after a
+	// live failure, so repeated failures within a single request window do not
+	// hammer the kv table with identical cooldown upserts.
+	cooldownCache map[string]time.Time
 	// smartSticky pins the model a session's smart-routed combo settles on,
 	// so later turns reuse the provider holding the warm prompt cache.
 	smartStickyMu sync.Mutex

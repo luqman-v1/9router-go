@@ -2,7 +2,9 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"fmt"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
@@ -669,5 +671,151 @@ func TestIsCopilotResponsesModel(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isCopilotResponsesModel(github, %q) = %v, want %v", tc.model, got, tc.want)
 		}
+	}
+}
+
+func TestResolveModelEntry_ConnectionNameAndIDPrefix(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	connData, _ := json.Marshal(map[string]any{"apiKey": "vibe-key-123"})
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-mistral-vibe', 'mistral', 'apikey', 'Mistral Vibe', 1, 1, ?, ?, ?)`, string(connData), now, now)
+	if err != nil {
+		t.Fatalf("seed vibe connection: %v", err)
+	}
+
+	apiConnData, _ := json.Marshal(map[string]any{"apiKey": "api-key-456"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-mistral-api', 'mistral', 'apikey', 'Mistral API', 2, 1, ?, ?, ?)`, string(apiConnData), now, now)
+	if err != nil {
+		t.Fatalf("seed api connection: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+
+	tests := []struct {
+		entry          string
+		wantProvider   string
+		wantModel      string
+		wantConnection string
+	}{
+		{"Mistral Vibe/codestral-latest", "mistral", "codestral-latest", "conn-mistral-vibe"},
+		{"mistral-vibe/codestral-latest", "mistral", "codestral-latest", "conn-mistral-vibe"},
+		{"conn-mistral-vibe/codestral-latest", "mistral", "codestral-latest", "conn-mistral-vibe"},
+		{"Mistral API/codestral-latest", "mistral", "codestral-latest", "conn-mistral-api"},
+		{"mistral-api/codestral-latest", "mistral", "codestral-latest", "conn-mistral-api"},
+		{"mistral/codestral-latest", "mistral", "codestral-latest", ""},
+	}
+
+	// Verify connection name cannot shadow a provider or alias (e.g. connection named "deepseek")
+	dsConnData, _ := json.Marshal(map[string]any{"apiKey": "ds-key"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-ds', 'openai', 'apikey', 'deepseek', 3, 1, ?, ?, ?)`, string(dsConnData), now, now)
+	if err != nil {
+		t.Fatalf("seed deepseek connection: %v", err)
+	}
+
+	tests = append(tests, struct {
+		entry          string
+		wantProvider   string
+		wantModel      string
+		wantConnection string
+	}{
+		"deepseek/deepseek-chat", "deepseek", "deepseek-chat", "",
+	})
+
+	for _, tc := range tests {
+		t.Run(tc.entry, func(t *testing.T) {
+			got := h.resolveModelEntry(tc.entry)
+			if got == nil {
+				t.Fatalf("resolveModelEntry(%q) = nil, want provider %s", tc.entry, tc.wantProvider)
+			}
+			if got.Provider != tc.wantProvider {
+				t.Errorf("Provider = %q, want %q", got.Provider, tc.wantProvider)
+			}
+			if got.Model != tc.wantModel {
+				t.Errorf("Model = %q, want %q", got.Model, tc.wantModel)
+			}
+			if got.ConnectionID != tc.wantConnection {
+				t.Errorf("ConnectionID = %q, want %q", got.ConnectionID, tc.wantConnection)
+			}
+		})
+	}
+}
+
+func TestResolveModel_BareClaudeFallbackToOAuth(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// 1. Keeps provider anthropic when nothing is connected
+	info, err := h.resolveModel("claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "anthropic" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want anthropic/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+
+	// 2. Uses Claude OAuth connection when no anthropic connection is active
+	now := time.Now().UTC().Format(time.RFC3339)
+	claudeData, _ := json.Marshal(map[string]any{"accessToken": "sk-ant-oat-test"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('c1', 'claude', 'oauth', 'Claude OAuth', 1, 1, ?, ?, ?)`, string(claudeData), now, now)
+	if err != nil {
+		t.Fatalf("seed claude connection: %v", err)
+	}
+
+	info, err = h.resolveModel("claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "claude" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want claude/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+
+	// 3. Keeps anthropic when an anthropic connection is active
+	anthropicData, _ := json.Marshal(map[string]any{"apiKey": "sk-ant-api-test"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('a1', 'anthropic', 'apikey', 'Anthropic API', 1, 1, ?, ?, ?)`, string(anthropicData), now, now)
+	if err != nil {
+		t.Fatalf("seed anthropic connection: %v", err)
+	}
+
+	info, err = h.resolveModel("claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "anthropic" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want anthropic/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+
+	// 4. Does not touch an explicit provider prefix
+	info, err = h.resolveModel("anthropic/claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "anthropic" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want anthropic/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+}
+
+func BenchmarkResolveModelEntry(b *testing.B) {
+	database, cleanup := setupChatTestDB(b)
+	defer cleanup()
+	now := time.Now().UTC().Format(time.RFC3339)
+	connData, _ := json.Marshal(map[string]any{"apiKey": "key-123"})
+	for i := 0; i < 60; i++ {
+		_, _ = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, 'mistral', 'apikey', ?, ?, 1, ?, ?, ?)`,
+			fmt.Sprintf("conn-%d", i), fmt.Sprintf("Mistral Conn %d", i), i+1, string(connData), now, now)
+	}
+	h := NewChatHandler(db.NewRepo(database))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = h.resolveModelEntry("mistral/codestral-latest")
 	}
 }

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -112,6 +113,19 @@ func coreSchema() []tableDef {
 			},
 			indexes: []string{
 				"CREATE INDEX IF NOT EXISTS idx_combo_name ON combos(name)",
+			},
+		},
+		{
+			name: "thoughtSignatures",
+			columns: [][2]string{
+				{"key", "TEXT PRIMARY KEY"},
+				{"signature", "TEXT NOT NULL"},
+				{"family", "TEXT NOT NULL DEFAULT ''"},
+				{"expiresAt", "TEXT NOT NULL"},
+				{"updatedAt", "TEXT NOT NULL"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_ts_expires ON thoughtSignatures(expiresAt)",
 			},
 		},
 		{
@@ -433,6 +447,9 @@ var goOnlyColumns = [][3]string{
 	// models column stays the wire contract — so upstream, which declares
 	// neither the column nor the concept, ignores it.
 	{"combos", "matchRules", "TEXT DEFAULT '[]'"},
+	// Custom system prompt per combo, with fallback to the global custom
+	// prompt when unset. Added additively; upstream ignores unknown columns.
+	{"combos", "customPrompt", "TEXT DEFAULT ''"},
 }
 
 // keiRouterTables are Go-only tables for KeiRouter port features.
@@ -509,6 +526,44 @@ var keiRouterTables = []tableDef{
 		},
 		indexes: []string{
 			"CREATE INDEX IF NOT EXISTS idx_grl_ts ON guardrail_logs(created_at DESC)",
+		},
+	},
+	{
+		// The tamper-evident admin audit trail. created_at is a microsecond
+		// integer, not the RFC3339 text the other tables use, because the row
+		// hash chain covers the exact timestamp: second-precision text would
+		// make a later Verify recompute a different hash than the one stored,
+		// and report every row as modified. The divergence is deliberate and
+		// load-bearing; see the package doc in internal/audit.
+		name: "audit_log",
+		columns: [][2]string{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL"},
+			{"actor", "TEXT NOT NULL DEFAULT ''"},
+			{"actor_type", "TEXT NOT NULL DEFAULT ''"},
+			{"action", "TEXT NOT NULL DEFAULT ''"},
+			{"target", "TEXT NOT NULL DEFAULT ''"},
+			{"resource_type", "TEXT NOT NULL DEFAULT ''"},
+			{"outcome", "TEXT NOT NULL DEFAULT ''"},
+			{"severity", "TEXT NOT NULL DEFAULT 'INFO'"},
+			{"client_ip", "TEXT NOT NULL DEFAULT ''"},
+			{"user_agent", "TEXT NOT NULL DEFAULT ''"},
+			{"http_method", "TEXT NOT NULL DEFAULT ''"},
+			{"http_route", "TEXT NOT NULL DEFAULT ''"},
+			{"status_code", "INTEGER NOT NULL DEFAULT 0"},
+			{"request_id", "TEXT NOT NULL DEFAULT ''"},
+			{"trace_id", "TEXT NOT NULL DEFAULT ''"},
+			{"span_id", "TEXT NOT NULL DEFAULT ''"},
+			{"detail", "TEXT NOT NULL DEFAULT '{}'"},
+			{"chain_id", "TEXT NOT NULL DEFAULT ''"},
+			{"chain_seq", "INTEGER NOT NULL DEFAULT 0"},
+			{"prev_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"hash", "TEXT NOT NULL DEFAULT ''"},
+			{"created_at", "INTEGER NOT NULL DEFAULT 0"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_audit_tenant_action_time ON audit_log(tenant_id, action, created_at)",
+			"CREATE INDEX IF NOT EXISTS idx_audit_chain_seq ON audit_log(chain_id, chain_seq)",
 		},
 	},
 }
@@ -595,12 +650,47 @@ var supersededIndexes = []string{
 	"DROP INDEX IF EXISTS idx_uh_clientkey",
 }
 
-// EnsureCoreSchema creates the upstream core tables/indexes when absent,
-// backfills missing columns on existing databases, and seeds the minimal
-// rows a fresh dashboard needs. Safe to call on every startup: every
-// statement is IF NOT EXISTS / OR IGNORE / column-presence-checked, so
-// existing user data is never touched.
+// EnsureCoreSchema brings the database the gateway opened to the shape the
+// runtime expects. The engine is derived from db's own driver so a handle
+// opened outside InitGlobalDatabase (the dbmigrate CLI, ad-hoc tests) picks
+// the right path too.
 func EnsureCoreSchema(db *sql.DB) error {
+	return ensureSchema(db, engineOfHandle(db))
+}
+
+// engineOfHandle inspects db's concrete driver type to pick an engine. The
+// process-wide handle opened by InitGlobalDatabase already records its engine
+// in CurrentEngine, but a handle opened directly (dbmigrate, tests) does not,
+// so we sniff the driver. pgx/stdlib registers *stdlib.Driver; modernc
+// registers *sqlite.Driver.
+func engineOfHandle(db *sql.DB) Engine {
+	if db == nil {
+		return EngineSQLite
+	}
+	drv := db.Driver()
+	if drv == nil {
+		return EngineSQLite
+	}
+	typeStr := fmt.Sprintf("%T", drv)
+	if strings.Contains(typeStr, "stdlib") || strings.Contains(typeStr, "pgx") {
+		return EnginePostgres
+	}
+	return EngineSQLite
+}
+
+// ensureSchema is the single engine dispatch point for schema bootstrap.
+// SQLite keeps the EnsureCoreSchemaSQLite path unchanged; PostgreSQL uses the
+// mirror DDL in schema_postgres.go.
+func ensureSchema(db *sql.DB, engine Engine) error {
+	if engine == EnginePostgres {
+		return schemaPostgres(context.Background(), db)
+	}
+	return ensureSchemaSQLite(db)
+}
+
+// ensureSchemaSQLite is the historical SQLite bootstrap, byte-for-byte what
+// EnsureCoreSchema did before PostgreSQL became a supported engine.
+func ensureSchemaSQLite(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("core schema: nil db")
 	}
@@ -646,7 +736,7 @@ func EnsureCoreSchema(db *sql.DB) error {
 	); err != nil {
 		return fmt.Errorf("core schema: seed settings: %w", err)
 	}
-	if err := BackfillCompressionAnalytics(db); err != nil {
+	if err := BackfillCompressionAnalytics(context.Background(), db); err != nil {
 		return err
 	}
 	return nil

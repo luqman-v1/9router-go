@@ -161,7 +161,7 @@ func zenChatLaneBody(body []byte) ([]byte, error) {
 // the inference gate refuses, which is what the messages lane used to do.
 func zenShapedBody(body []byte, cleanModel string, free bool) ([]byte, map[string]string) {
 	if free {
-		return translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+		return shapeOpenCodeFreeBody(body, false, cleanModel)
 	}
 	return translator.ConcealFingerprintTools(body)
 }
@@ -206,6 +206,13 @@ func zenHeaders(cfg *providers.ProviderConfig, session string, stream bool, free
 		// is what the inference gate expects alongside Bearer public.
 		headers["x-opencode-client"] = "desktop"
 		headers["User-Agent"] = proxy.DefaultOpenCodeV1UA
+		// Drop the public credential BuildOpenCodeHeaders seeds. This map is
+		// assigned to cfg.StaticHeaders, and proxy.Forward applies StaticHeaders
+		// *after* setting Authorization: Bearer <apiKey> — so leaving the
+		// placeholder here overwrote the caller's key with "Bearer public" on
+		// every paid zen request. The free lane keeps it deliberately: the
+		// inference gate answers only the public credential.
+		delete(headers, "Authorization")
 	}
 	for k, v := range cfg.StaticHeaders {
 		switch strings.ToLower(k) {
@@ -223,17 +230,16 @@ func zenHeaders(cfg *providers.ProviderConfig, session string, stream bool, free
 	return headers
 }
 
-// zenFreePrefix reports the inference-gate prefix a free model's lane travels
-// on. Chat and Responses live under the v2 gate's OpenAI-compatible surface
-// (/inference/openai/v1); the Messages endpoint was never migrated — the v2
-// prefix 404s it — so a free id on the messages lane keeps the legacy
-// /inference/v1 prefix, which still serves POST /messages.
-func zenFreePrefix(lanePath string) string {
-	if lanePath == zenMessagesPath {
-		return "/inference/v1"
-	}
-	return "/inference/openai/v1"
-}
+// A free id on the messages lane keeps the legacy /inference/v1 prefix (see
+// opencodeMessagesInferenceBase). Measured 2026-11-18: both
+// /inference/v1/messages and /inference/anthropic/v1/messages?beta=true route
+// — each answers 429 FreeUsageLimitError, while a bogus path under the same
+// origin answers 404/405 — so the /anthropic route exists and is a candidate.
+// It is NOT adopted here because neither path could be driven to a 200 from the
+// probe egress: its free allowance was spent. Switching a working lane on
+// route-existence alone would trade a known-good path for an unverified one.
+// Revisit with a clean egress; the reference sends
+// anthropic-beta: interleaved-thinking-2025-05-14 alongside that route.
 
 func zenAuthHeaders(apiKey string) map[string]string {
 	return map[string]string{"x-api-key": apiKey}
@@ -259,7 +265,7 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	free := isOpencodeFreeModel(cleanModel)
 	var zenToolNameMap map[string]string
 	if free {
-		body, zenToolNameMap = translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+		body, zenToolNameMap = shapeOpenCodeFreeBody(body, false, cleanModel)
 		body = translator.ApplyFingerprintSystemPrompt(body)
 		if req.IsStream {
 			w = NewOpenCodeExecuteBridgeWriter(w)
@@ -291,9 +297,9 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 		return proxy.ForwardOpenAI(reqCtx(req), req.Client, &cfg, req.APIKey, body, true)
 	}, func() (*http.Response, error) {
 		return forwardOpencodeRequestDirect(reqCtx(req), &cfg, req.APIKey, body, true)
-	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, free), zenHint, func(session string) {
+	}, opencodeSessionRotation(req, free, zenHint, func(session string) {
 		cfg.StaticHeaders = zenHeaders(&cfg, session, true, free)
-	}))
+	}), forgetOpencodeStableSession(req, free, zenHint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen: %w", err)
 	}
@@ -302,10 +308,22 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 		return err
 	}
 
-	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+	// The keyless gate can refuse inside a 200 frame, so read the first one
+	// before the head is committed. A paid lane answers a real status and its
+	// body is left streaming directly.
+	streamBody := resp.Body
+	if free {
+		var ferr error
+		streamBody, ferr = awaitOpenCodeFirstEvent(reqCtx(req), resp, 0)
+		if ferr != nil {
+			return ferr
+		}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+
+	if req.IsStream {
+		return execSSEStream(w, streamBody, req)
+	}
+	data, err := io.ReadAll(io.LimitReader(streamBody, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read opencode-zen response: %w", err)
 	}
@@ -341,7 +359,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 	free := isOpencodeFreeModel(cleanModel)
 	var toolNameMap map[string]string
 	if free {
-		body, toolNameMap = translator.ConcealOpenCodeV2FingerprintTools(body, true, isOpenCodeAutoToolChoiceModel(cleanModel))
+		body, toolNameMap = shapeOpenCodeFreeBody(body, true, cleanModel)
 		body = translator.ApplyFingerprintSystemPrompt(body)
 	} else {
 		body, toolNameMap = translator.ConcealFingerprintTools(body)
@@ -373,9 +391,9 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 		return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
 	}, func() (*http.Response, error) {
 		return forwardOpencodeRequestDirect(ctx, &cfg, req.APIKey, body, req.IsStream)
-	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, free), zenHint, func(session string) {
+	}, opencodeSessionRotation(req, free, zenHint, func(session string) {
 		cfg.StaticHeaders = zenHeaders(&cfg, session, req.IsStream, free)
-	}))
+	}), forgetOpencodeStableSession(req, free, zenHint))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen (responses): %w", err)
 	}
@@ -384,12 +402,21 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 		return err
 	}
 
+	responsesBody := resp.Body
+	if free {
+		var ferr error
+		responsesBody, ferr = awaitOpenCodeFirstEvent(ctx, resp, 0)
+		if ferr != nil {
+			return ferr
+		}
+	}
+
 	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-zen-responses")
+		stallReader := proxy.NewStallReaderWithContext(ctx, responsesBody, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-zen-responses")
 		defer stallReader.Close()
 		return handleCodexStream(w, req, stallReader)
 	}
-	return handleCodexStream(w, req, resp.Body)
+	return handleCodexStream(w, req, responsesBody)
 }
 
 // forwardZenMessages serves the /messages lane (Claude, Qwen). A /v1/messages
@@ -458,7 +485,8 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 			return forwardOpencodeRequest(ctx, req.Client, &msgCfg, "public", body, req.IsStream)
 		}, func() (*http.Response, error) {
 			return forwardOpencodeRequestDirect(ctx, &msgCfg, "public", body, req.IsStream)
-		}, rotateOpencodeStableSession(opencodeStableSessionKey(req, free), msgHint, mergeZenSession))
+		}, opencodeSessionRotation(req, free, msgHint, mergeZenSession),
+			forgetOpencodeStableSession(req, free, msgHint))
 	} else {
 		resp, err = proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
 	}
@@ -470,10 +498,19 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 		return err
 	}
 
-	if req.IsStream {
-		return handleClaudeMessagesStream(w, req, resp.Body)
+	messagesBody := resp.Body
+	if free {
+		var ferr error
+		messagesBody, ferr = awaitOpenCodeFirstEvent(ctx, resp, 0)
+		if ferr != nil {
+			return ferr
+		}
 	}
-	return handleClaudeMessagesNonStream(w, req, resp.Body)
+
+	if req.IsStream {
+		return handleClaudeMessagesStream(w, req, messagesBody)
+	}
+	return handleClaudeMessagesNonStream(w, req, messagesBody)
 }
 
 // normalizeZenResponsesBody applies the Responses-lane requirements: the output

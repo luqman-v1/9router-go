@@ -62,7 +62,7 @@ func TestIsProviderHealthy_NoConnections(t *testing.T) {
 	repo, cleanup := setupHealthConnTestDB(t)
 	defer cleanup()
 
-	if !IsProviderHealthy(repo.RawDB(), "openai", "gpt-4") {
+	if !IsProviderHealthy(t.Context(), repo.RawDB(), "openai", "gpt-4") {
 		t.Error("expected healthy=true when no connections exist")
 	}
 }
@@ -73,7 +73,7 @@ func TestIsProviderHealthy_NoModelLock(t *testing.T) {
 
 	insertTestConn(t, repo)
 
-	if !IsProviderHealthy(repo.RawDB(), "openai", "gpt-4") {
+	if !IsProviderHealthy(t.Context(), repo.RawDB(), "openai", "gpt-4") {
 		t.Error("expected healthy=true when no model lock exists")
 	}
 }
@@ -89,7 +89,7 @@ func TestIsProviderHealthy_WithModelLock(t *testing.T) {
 		t.Fatalf("LockConnectionModel: %v", err)
 	}
 
-	if IsProviderHealthy(repo.RawDB(), "openai", "gpt-4") {
+	if IsProviderHealthy(t.Context(), repo.RawDB(), "openai", "gpt-4") {
 		t.Error("expected healthy=false when all connections have active model lock")
 	}
 }
@@ -105,7 +105,7 @@ func TestIsProviderHealthy_WithUnlockedConnection(t *testing.T) {
 		t.Fatalf("LockConnectionModel: %v", err)
 	}
 
-	if !IsProviderHealthy(repo.RawDB(), "openai", "gpt-4") {
+	if !IsProviderHealthy(t.Context(), repo.RawDB(), "openai", "gpt-4") {
 		t.Error("expected healthy=true when at least one connection is unlocked")
 	}
 }
@@ -126,7 +126,7 @@ func TestResetProviderHealth_ClearsModelLocks(t *testing.T) {
 		t.Fatalf("ResetProviderHealth: %v", err)
 	}
 
-	if !IsProviderHealthy(repo.RawDB(), "openai", "gpt-4") {
+	if !IsProviderHealthy(t.Context(), repo.RawDB(), "openai", "gpt-4") {
 		t.Error("expected healthy=true after resetting health")
 	}
 }
@@ -137,13 +137,13 @@ func TestIsProviderAvailable_Repo(t *testing.T) {
 
 	insertTestConn(t, repo)
 
-	if !repo.IsProviderAvailable("openai", "gpt-4") {
+	if !repo.IsProviderAvailable(t.Context(), "openai", "gpt-4") {
 		t.Error("expected available=true when no lock")
 	}
 
 	repo.LockConnectionModel("conn-1", "gpt-4", 3600, 1)
 
-	if repo.IsProviderAvailable("openai", "gpt-4") {
+	if repo.IsProviderAvailable(t.Context(), "openai", "gpt-4") {
 		t.Error("expected available=false when locked")
 	}
 }

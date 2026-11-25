@@ -55,11 +55,11 @@ func TestForwardKiroRequest_Success(t *testing.T) {
 	}, payload)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Amz-Target") != "AmazonCodeWhispererStreamingService.GenerateAssistantResponse" {
-			t.Errorf("expected X-Amz-Target header")
-		}
 		if r.Header.Get("Amz-Sdk-Request") == "" {
 			t.Errorf("expected Amz-Sdk-Request header")
+		}
+		if !strings.Contains(r.Header.Get("User-Agent"), "KiroIDE-") {
+			t.Errorf("expected KiroIDE User-Agent, got %q", r.Header.Get("User-Agent"))
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write(frame)

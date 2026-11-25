@@ -78,8 +78,8 @@ func TestFetchAntigravityDashboardWeekly_HundredScaleAndWindow(t *testing.T) {
 	defer func() { antigravityDailyBaseURL = origDaily }()
 
 	weekly := fetchAntigravityDashboardWeekly(context.Background(), "mock-token", "mock-project")
-	if len(weekly) != 5 {
-		t.Fatalf("expected 5 weekly quota buckets, got %d: %v", len(weekly), weekly)
+	if len(weekly) != 6 {
+		t.Fatalf("expected 6 weekly quota buckets, got %d: %v", len(weekly), weekly)
 	}
 
 	tests := []struct {
@@ -124,6 +124,14 @@ func TestFetchAntigravityDashboardWeekly_HundredScaleAndWindow(t *testing.T) {
 		},
 		{
 			key:         "argon_weekly",
+			wantTotal:   100.0,
+			wantUsed:    2.0,
+			wantRemPct:  98.0,
+			wantWindow:  "weekly",
+			wantDisplay: "Gemini 4 Argon (Weekly)",
+		},
+		{
+			key:         "gemini_argon_weekly",
 			wantTotal:   100.0,
 			wantUsed:    2.0,
 			wantRemPct:  98.0,

@@ -149,6 +149,33 @@ func TestResolveFormatUsesTheProviderRegistryOffTheResponsesWire(t *testing.T) {
 	}
 }
 
+// TestOpenAIWireResolvesAutoToHigh pins that an adaptive/auto thinking intent
+// on an OpenAI wire resolves to a concrete level ("high") instead of shipping
+// the literal "auto", which strict OpenAI-compatible upstreams reject with
+// 400 invalid_reasoning_effort.
+func TestOpenAIWireResolvesAutoToHigh(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"reasoning_effort auto", map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "auto"}, "high"},
+		{"thinking adaptive", map[string]any{"model": "openai/gpt-5.4", "thinking": map[string]any{"type": "adaptive"}}, "high"},
+		{"level low", map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "low"}, "low"},
+		{"level medium", map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "medium"}, "medium"},
+		{"level high", map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "high"}, "high"},
+		{"level none", map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "none"}, "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := apply(t, "openai", "openrouter", "openai/gpt-5.4", tc.body, nil)
+			if out["reasoning_effort"] != tc.want {
+				t.Fatalf("%s: reasoning_effort = %v, want %q (body: %+v)", tc.name, out["reasoning_effort"], tc.want, out)
+			}
+		})
+	}
+}
+
 func TestApplyStepOmitsDisable(t *testing.T) {
 	out := apply(t, "openai", "cline", "step-5-preview",
 		map[string]any{"model": "step-5-preview", "reasoning_effort": "none"}, nil)

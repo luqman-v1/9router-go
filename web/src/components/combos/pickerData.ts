@@ -43,7 +43,6 @@ export interface PickerExtras {
   /** Deprecations keyed "<provider>/<model>", from /api/models/deprecations. */
   deprecations?: Record<string, unknown>
 }
-
 export function resolveModelPickerGroups(
   connections: ProviderConnection[] = [],
   providerNodes: ProviderNode[] = [],

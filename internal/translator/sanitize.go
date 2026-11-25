@@ -113,6 +113,8 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		sanitizeMonitorArgs(args)
 	case nameLower == "skill":
 		sanitizeSkillArgs(args)
+	case nameLower == "agent" || nameLower == "agent_ide" || nameLower == "subagent" || nameLower == "task":
+		sanitizeAgentArgs(args)
 	}
 
 	// Final ensure web_search has a string query if it has any query key that is not a string (e.g. null)
@@ -357,6 +359,43 @@ func sanitizeSkillArgs(args map[string]any) {
 				args["skill"] = strings.TrimSpace(v)
 				delete(args, alt)
 				break
+			}
+		}
+	}
+	delete(args, "thought")
+	delete(args, "explanation")
+}
+
+func sanitizeAgentArgs(args map[string]any) {
+	if _, ok := args["prompt"]; !ok {
+		for _, alt := range []string{"task", "instruction", "content", "message"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["prompt"] = strings.TrimSpace(v)
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	desc, ok := args["description"].(string)
+	if !ok || strings.TrimSpace(desc) == "" {
+		found := false
+		for _, alt := range []string{"title", "summary", "task_description", "name", "desc"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["description"] = strings.TrimSpace(v)
+				delete(args, alt)
+				found = true
+				break
+			}
+		}
+		if !found {
+			if promptStr, ok := args["prompt"].(string); ok && strings.TrimSpace(promptStr) != "" {
+				words := strings.Fields(strings.TrimSpace(promptStr))
+				if len(words) > 5 {
+					words = words[:5]
+				}
+				args["description"] = strings.Join(words, " ")
+			} else {
+				args["description"] = "Run subagent task"
 			}
 		}
 	}

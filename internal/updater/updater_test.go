@@ -263,6 +263,35 @@ func TestMatchReleaseAsset(t *testing.T) {
 	if url := matchReleaseAsset(assets, "windows", "amd64"); url != "url-windows-amd64" {
 		t.Errorf("expected url-windows-amd64, got %s", url)
 	}
+
+	// Regression for #1229: in the v1.9.16 release the Windows tray
+	// companion asset is listed before the server binary, and its name
+	// also contains the "windows" and "amd64" substrings — the server
+	// binary must still win, in the OS/arch match and in the fallback.
+	v1916 := []releaseAsset{
+		{Name: "9router-go-tray-windows-amd64.exe", BrowserDownloadURL: "url-tray-windows-amd64"},
+		{Name: "9router-go-windows-amd64.exe", BrowserDownloadURL: "url-server-windows-amd64"},
+		{Name: "9router-go-linux-amd64", BrowserDownloadURL: "url-server-linux-amd64"},
+		{Name: "SHA256SUMS.txt", BrowserDownloadURL: "url-checksums"},
+	}
+	cases := []struct {
+		name       string
+		assets     []releaseAsset
+		targetOS   string
+		targetArch string
+		want       string
+	}{
+		{"tray listed first, server wins", v1916, "windows", "amd64", "url-server-windows-amd64"},
+		{"fallback skips tray companion", v1916, "freebsd", "amd64", "url-server-windows-amd64"},
+		{"other platforms unaffected", v1916, "linux", "amd64", "url-server-linux-amd64"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if url := matchReleaseAsset(tc.assets, tc.targetOS, tc.targetArch); url != tc.want {
+				t.Errorf("expected %s, got %s", tc.want, url)
+			}
+		})
+	}
 }
 
 func TestAutoUpdate_StatusAndToggle(t *testing.T) {
@@ -678,7 +707,7 @@ func TestCheckUpdate_ManifestWithoutDigestFallsThroughToReleaseDigest(t *testing
 			// Exactly the shape this repo publishes: no sha256 key at all.
 			w.Header().Set("Content-Type", "application/json")
 			json.MarshalWrite(w, map[string]any{
-				"downloadUrl":  "https://example.invalid/releases/latest",
+				"downloadUrl":   "https://example.invalid/releases/latest",
 				"latestVersion": "1.9.7",
 				"releaseNotes":  "notes",
 			})
@@ -795,5 +824,57 @@ func TestCheckUpdate_UpToDateManifestNeedsNoDigest(t *testing.T) {
 	}
 	if info.Source != "manifest" {
 		t.Errorf("Source = %q, want manifest", info.Source)
+	}
+}
+
+func TestCheckUpdate_ManifestWithoutDigestServesAsFallbackWhenGitHubFails(t *testing.T) {
+	previousVersion := CurrentVersion
+	previousAPI := githubReleasesAPI
+	t.Cleanup(func() {
+		CurrentVersion = previousVersion
+		githubReleasesAPI = previousAPI
+	})
+	CurrentVersion = "1.9.6"
+
+	var releaseRequests int
+	server := releaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version.json" {
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, map[string]any{
+				"downloadUrl":   "https://example.invalid/releases/latest",
+				"latestVersion": "1.9.7",
+				"releaseNotes":  "notes from manifest",
+			})
+			return
+		}
+		releaseRequests++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	githubReleasesAPI = server.URL + "/repos/%s/releases/latest"
+	t.Setenv("UPDATE_URL", server.URL+"/version.json")
+	t.Setenv("UPDATE_REPO", "owner/repo")
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("expected manifest lead to serve as fallback on GitHub outage, got error: %v", err)
+	}
+	if releaseRequests != 1 {
+		t.Fatalf("expected 1 GitHub Releases attempt before falling back, got %d", releaseRequests)
+	}
+	if !info.HasUpdate || info.LatestVersion != "1.9.7" {
+		t.Fatalf("expected 1.9.7 update info from manifest fallback, got %+v", info)
+	}
+	if info.ReleaseNotes != "notes from manifest" {
+		t.Errorf("ReleaseNotes = %q, want %q", info.ReleaseNotes, "notes from manifest")
+	}
+	if info.Source != "manifest" {
+		t.Errorf("Source = %q, want manifest", info.Source)
+	}
+	if info.SHA256 != "" {
+		t.Errorf("SHA256 = %q, want empty", info.SHA256)
+	}
+	if cached := GetCachedInfo(); cached == nil || cached.LatestVersion != "1.9.7" {
+		t.Errorf("cached info = %+v, want LatestVersion 1.9.7", cached)
 	}
 }

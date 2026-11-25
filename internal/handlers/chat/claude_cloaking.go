@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"9router/proxy/internal/translator"
 )
 
 // Claude OAuth cloaking — ports the Next.js dashboard's
@@ -21,7 +23,7 @@ import (
 // block as system[0] and a metadata.user_id. Without them the API returns
 // 429 rate_limit_error ("Error") even though auth and the body are valid.
 
-const defaultClaudeCLIVersion = "2.1.280"
+const defaultClaudeCLIVersion = "2.1.322"
 
 var (
 	claudeVersionMu      sync.RWMutex
@@ -29,21 +31,9 @@ var (
 	claudeVersionRegex   = regexp.MustCompile(`(?i)version\s+(\d+\.\d+\.\d+)\s+or\s+newer\s+is\s+required`)
 )
 
-// ClaudeCLIVersion returns the active Claude Code CLI version. An env override
-// CLAUDE_CODE_VERSION wins; otherwise any adopted version from a
-// claude_code_version_too_old upstream rejection; otherwise defaultClaudeCLIVersion.
-// Mirrors OMP getClaudeCodeVersion() in claude-code-fingerprint.ts.
-func ClaudeCLIVersion() string {
-	if env := os.Getenv("CLAUDE_CODE_VERSION"); env != "" {
-		return env
-	}
-	claudeVersionMu.RLock()
-	defer claudeVersionMu.RUnlock()
-	if adoptedClaudeVersion != "" {
-		return adoptedClaudeVersion
-	}
-	return defaultClaudeCLIVersion
-}
+// ClaudeCLIVersion is defined in claude_cli_version.go: the env pin
+// CLAUDE_CODE_VERSION, then an adopted claude_code_version_too_old rejection,
+// then the npm-resolved live version, then defaultClaudeCLIVersion.
 
 // AdoptRequiredClaudeCodeVersion parses an Anthropic 400 rejection for
 // claude_code_version_too_old and adopts the required version for the rest
@@ -163,15 +153,19 @@ func applyClaudeCloaking(body []byte, apiKey, sessionID string) []byte {
 		return body
 	}
 
-	// cch: first 5 hex chars of sha256 over the pre-injection body.
-	cchSum := sha256.Sum256(body)
-	cch := hex.EncodeToString(cchSum[:])[:5]
-	build := make([]byte, 2)
-	if _, err := rand.Read(build); err != nil {
-		build = []byte{0, 0}
+	// cch and build: derived stably from apiKey and sessionID rather than body and rand.Read.
+	// If the billing header text changes on every turn, system[0] mutates, busting Anthropic's
+	// prefix prompt cache and driving cache_read_input_tokens to zero.
+	salt := apiKey
+	if sessionID != "" {
+		salt += ":" + sessionID
 	}
+	h := sha256.Sum256([]byte(salt))
+	build := hex.EncodeToString(h[16:18])[:3]
+	cch := hex.EncodeToString(h[:4])[:5]
+
 	billingText := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli; cch=%s;",
-		ClaudeCLIVersion(), hex.EncodeToString(build)[:3], cch)
+		ClaudeCLIVersion(), build, cch)
 	billingBlock := map[string]any{"type": "text", "text": billingText}
 
 	switch sys := req["system"].(type) {
@@ -235,6 +229,17 @@ func suffixClaudeToolName(name string) string {
 	return name + claudeToolSuffix
 }
 
+// renameToolReferenceBlock suffixes tool_name (and name, if present) on a tool_reference block
+// if the referenced tool was renamed.
+func renameToolReferenceBlock(block map[string]any, clientToolNames map[string]bool) {
+	if toolName, ok := block["tool_name"].(string); ok && clientToolNames[toolName] {
+		block["tool_name"] = suffixClaudeToolName(toolName)
+	}
+	if name, ok := block["name"].(string); ok && clientToolNames[name] {
+		block["name"] = suffixClaudeToolName(name)
+	}
+}
+
 // cloakClaudeTools mirrors cloakClaudeTools: renames client tools (those
 // without a "type" — server-side built-ins keep reserved names) with the
 // _ide suffix in tools[] and every tool_use block in messages[], and appends
@@ -266,6 +271,14 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 			clientDeclarations = append(clientDeclarations, tool)
 			continue
 		}
+		if name == translator.StructuredOutputTool {
+			// The gateway's forced structured-output tool (CarryClaudeStructuredOutput)
+			// is pinned by a tool_choice whose name is not in clientToolNames, so it
+			// would not be renamed in step 3: renaming it here would 400 upstream
+			// ("tool not found"). Keep it verbatim.
+			clientDeclarations = append(clientDeclarations, tool)
+			continue
+		}
 		suffixed := suffixClaudeToolName(name)
 		baseName := strings.TrimSuffix(name, claudeToolSuffix)
 		toolNameMap[suffixed] = baseName
@@ -286,8 +299,23 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 	if len(toolNameMap) == 0 {
 		return nil
 	}
+	// A client that is already Claude Code must keep its own tool names. The
+	// decoy set below is exactly the set this client uses, so renaming turns
+	// every real tool into "<name>_ide" while the system prompt still says
+	// "use TaskUpdate" — the model then calls the decoy of that name and the
+	// turn dies as "[Tool TaskUpdate is unavailable]".
+	if declaresClaudeCodeTools(clientToolNames) {
+		return nil
+	}
 
 	for _, name := range executor.CCDecoyTools {
+		// A client that already declares this tool — Claude Code itself, whose
+		// tools carry exactly these names — must not receive a second, identical
+		// declaration marked unusable: the model then picks the dead copy and the
+		// call comes back as "[Tool <name> is unavailable]".
+		if clientToolNames[name] {
+			continue
+		}
 		clientDeclarations = append(clientDeclarations, map[string]any{
 			"name":         name,
 			"description":  "This tool is currently unavailable.",
@@ -296,9 +324,13 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 	}
 	req["tools"] = clientDeclarations
 
-	// Rename tool_use blocks in history. Only client tools are renamed:
-	// server-side built-ins (web_search_20250305, ...) keep their reserved
-	// names, and already-suffixed names are not double-suffixed.
+	// Rename tool_use and tool_reference blocks in history. Only client tools
+	// are renamed: server-side built-ins (web_search_20250305, ...) keep their
+	// reserved names, and already-suffixed names are not double-suffixed.
+	// Deferred tool loading returns tool_reference blocks inside tool_result.content
+	// (or as message content parts). They resolve against tools[] by name, so they
+	// must follow the rename or Claude rejects the request:
+	// "400 Tool reference '<name>' not found in available tools".
 	if msgs, ok := req["messages"].([]any); ok {
 		for _, m := range msgs {
 			msg, ok := m.(map[string]any)
@@ -314,11 +346,23 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 				if !ok {
 					continue
 				}
-				if block["type"] != "tool_use" {
-					continue
-				}
-				if name, ok := block["name"].(string); ok && clientToolNames[name] {
-					block["name"] = suffixClaudeToolName(name)
+				switch block["type"] {
+				case "tool_use":
+					if name, ok := block["name"].(string); ok && clientToolNames[name] {
+						block["name"] = suffixClaudeToolName(name)
+					}
+				case "tool_reference":
+					renameToolReferenceBlock(block, clientToolNames)
+				case "tool_result":
+					if nestedList, ok := block["content"].([]any); ok {
+						for _, nc := range nestedList {
+							if nestedBlock, ok := nc.(map[string]any); ok {
+								if nestedBlock["type"] == "tool_reference" {
+									renameToolReferenceBlock(nestedBlock, clientToolNames)
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -337,4 +381,20 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 		return nil
 	}
 	return toolNameMap
+}
+
+// declaresClaudeCodeTools reports whether the client declares enough of Claude
+// Code's own tool names to be Claude Code itself. Three is enough to tell it
+// apart from a client that happens to have one tool of the same name.
+func declaresClaudeCodeTools(names map[string]bool) bool {
+	matches := 0
+	for _, name := range executor.CCDecoyTools {
+		if names[name] {
+			matches++
+			if matches >= 3 {
+				return true
+			}
+		}
+	}
+	return false
 }

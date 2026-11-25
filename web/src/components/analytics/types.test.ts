@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'bun:test'
+import { beforeAll, describe, expect, it } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { __setProviderCatalogForTest } from '../../lib/providers'
+import { parseProviderRegistry } from '../../lib/providers.registry-test'
 import {
   cachedTokensFor,
   calculateTPS,
@@ -6,9 +10,19 @@ import {
   fmt,
   formatDetailStatus,
   formatDuration,
+  getInputTokens,
+  getOutputTokens,
   providerDisplayName,
   type RequestDetailItem,
 } from './types'
+
+const registryItems = parseProviderRegistry(
+  readFileSync(resolve(import.meta.dirname, '../../../../internal/providers/provider_registry.go'), 'utf8'),
+)
+
+beforeAll(() => {
+  __setProviderCatalogForTest(registryItems)
+})
 
 describe('request detail token formatting', () => {
   it('prefers canonical cached_tokens', () => {
@@ -49,6 +63,38 @@ describe('request detail token formatting', () => {
   it('renders missing cache usage as zero', () => {
     expect(fmt(cachedTokensFor({}))).toBe('0')
     expect(fmt(cachedTokensFor({ tokens: { cached_tokens: 0, cache_read_input_tokens: 25 } }))).toBe('0')
+  })
+})
+
+describe('getInputTokens and getOutputTokens — issue #3890', () => {
+  it('prefers the canonical OpenAI prompt_tokens/completion_tokens', () => {
+    const tokens = { prompt_tokens: 50, completion_tokens: 100 }
+    expect(getInputTokens(tokens)).toBe(50)
+    expect(getOutputTokens(tokens)).toBe(100)
+  })
+
+  it('falls back to Claude input_tokens/output_tokens', () => {
+    const tokens = { input_tokens: 50, output_tokens: 100 }
+    expect(getInputTokens(tokens)).toBe(50)
+    expect(getOutputTokens(tokens)).toBe(100)
+  })
+
+  it('renders absent tokens as zero, no throw', () => {
+    expect(getInputTokens()).toBe(0)
+    expect(getOutputTokens(undefined)).toBe(0)
+    expect(getOutputTokens({})).toBe(0)
+  })
+
+  it('falls through zero canonical tokens to the Claude pair', () => {
+    // Legacy Claude rows store 0 in the canonical columns, so a 0 must not be
+    // treated as a real reading (upstream tokenDisplay.js uses `||`).
+    expect(getInputTokens({ prompt_tokens: 0, input_tokens: 50 })).toBe(50)
+    expect(getOutputTokens({ completion_tokens: 0, output_tokens: 100 })).toBe(100)
+  })
+
+  it('reports the cache-read count when it exceeds the prompt count', () => {
+    // Upstream tokenDisplay.js returns `prompt < cache ? cache : prompt`.
+    expect(getInputTokens({ prompt_tokens: 0, input_tokens: 10, cache_read_input_tokens: 500 })).toBe(500)
   })
 })
 

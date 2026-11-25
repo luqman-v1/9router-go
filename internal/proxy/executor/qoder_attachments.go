@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -164,7 +165,7 @@ func defaultQoderUploadImage(ctx context.Context, client *http.Client, buffer []
 	fileName := "image." + qoderMimeExt(mediaType)
 	boundary, body := qoderBuildMultipartFile(buffer, fileName, mediaType)
 
-	headers, err := buildQoderCosyHeaders(body, uploadURL, creds)
+	headers, err := buildQoderCosyHeaders(body, uploadURL, creds, []byte(strconv.Itoa(len(body))))
 	if err != nil {
 		return "", fmt.Errorf("build upload COSY headers: %w", err)
 	}

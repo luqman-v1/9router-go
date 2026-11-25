@@ -1,25 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
-    AlertCircle,
     Check,
-    Code2,
     Copy,
     ExternalLink,
-    FolderKanban,
-    HelpCircle,
     Key,
-    Layers,
-    Loader2,
     RefreshCw,
     Search,
-    Shield,
     Terminal,
-    Wrench,
-    X,
-    Zap
+    X
   } from 'lucide-svelte'
-  import Card from '../lib/ui/Card.svelte'
   import { copyToClipboard } from '../lib/clipboard'
   import { api, type APIKey } from '../api/client'
   import HermesToolCard from './cli-tools/HermesToolCard.svelte'
@@ -31,8 +21,7 @@
   }
 
   let {
-    apiKeys = [],
-    onRefresh
+    apiKeys = []
   }: Props = $props()
 
   let statuses = $state<Record<string, { installed?: boolean; version?: string | null; has9Router?: boolean } | null>>({})
@@ -99,7 +88,7 @@
     defaultKey?: string
   }
 
-  let toolsCatalog: ToolItem[] = $derived.by(() => [
+  let toolsCatalog = $derived.by((): ToolItem[] => [
     {
       id: 'claude',
       name: 'Claude Code',
@@ -736,10 +725,14 @@
         </div>
 
         <div class="flex items-center justify-between pt-2 border-t border-border/40 text-xs">
-          <span class="text-[11px] text-brand-500 font-semibold flex items-center gap-1">
+          <button
+            type="button"
+            onclick={() => (selectedTool = tool)}
+            class="inline-flex h-10 sm:h-7 items-center gap-1.5 px-3 rounded-lg border border-brand-500/40 bg-brand-500/10 text-[11px] font-semibold text-brand-600 transition-colors hover:bg-brand-500/20 dark:text-brand-400 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50"
+          >
             <span>Configure</span>
             <ExternalLink class="w-3 h-3" />
-          </span>
+          </button>
 
           <span class="text-[10px] font-mono text-text-subtle">
             {tool.configType === 'env' ? 'Environment' : tool.configType === 'mitm' ? 'Transparent' : 'Settings UI'}
@@ -753,7 +746,12 @@
 <!-- MODAL: Tool Configuration Detail -->
 {#if selectedTool}
   {@const status = getToolStatus(selectedTool.id)}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) selectedTool = null
+    }}
+  >
     <div class="w-full max-w-xl p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-5">
       <!-- Modal Header -->
       <div class="flex items-start justify-between pb-3 border-b border-border">

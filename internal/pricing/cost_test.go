@@ -32,6 +32,61 @@ func TestGetPricingForModel_Parity(t *testing.T) {
 			found: true,
 		},
 		{
+			name: "mistral large", provider: "mistral", model: "mistral-large-latest",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 6},
+			found: true,
+		},
+		{
+			name: "mistral codestral", provider: "mistral", model: "codestral-latest",
+			want:  ModelPricing{InputPer1M: 0.3, OutputPer1M: 0.9},
+			found: true,
+		},
+		{
+			name: "mistral medium", provider: "mistral", model: "mistral-medium-latest",
+			want:  ModelPricing{InputPer1M: 2.7, OutputPer1M: 8.1},
+			found: true,
+		},
+		{
+			name: "mistral embed", provider: "mistral", model: "mistral-embed",
+			want:  ModelPricing{InputPer1M: 0.1, OutputPer1M: 0},
+			found: true,
+		},
+		{
+			name: "gemini-4 pattern (carbon)", provider: "commandcode", model: "google/gemini-4-carbon",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 0.1875},
+			found: true,
+		},
+		{
+			name: "gemini-4 pattern (carbon tier)", provider: "antigravity", model: "gemini-4-carbon-medium",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 0.1875},
+			found: true,
+		},
+		{
+			name: "gemini-4 argon explicit pricing", provider: "vertex", model: "gemini-4-argon",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 0.1875},
+			found: true,
+		},
+		{
+			name: "claude-fable-5-2 canonical", provider: "anthropic", model: "claude-fable-5-2",
+			want:  ModelPricing{InputPer1M: 8, OutputPer1M: 40, CachedPer1M: 0.2, ReasoningPer1M: 40, CacheCreationPer1M: 10},
+			found: true,
+		},
+		{
+			name: "claude-fable-5-1 canonical", provider: "anthropic", model: "claude-fable-5-1",
+			want:  ModelPricing{InputPer1M: 10, OutputPer1M: 50, CachedPer1M: 1, ReasoningPer1M: 50, CacheCreationPer1M: 12.5},
+			found: true,
+		},
+		{
+			name: "claude-haiku-5-5 canonical", provider: "anthropic", model: "claude-haiku-5-5",
+			want:  ModelPricing{InputPer1M: 0.1, OutputPer1M: 0.5, CachedPer1M: 0.01, ReasoningPer1M: 0.5, CacheCreationPer1M: 0.125},
+			found: true,
+		},
+		{
+			name: "gpt-6.1-terra canonical", provider: "openai", model: "gpt-6.1-terra",
+			want:  ModelPricing{InputPer1M: 1, OutputPer1M: 5, CachedPer1M: 0.05, ReasoningPer1M: 5, CacheCreationPer1M: 1.25},
+			found: true,
+		},
+		{
 			// The vendor prefix is stripped before the canonical lookup.
 			name: "vendor-prefixed id", provider: "cline", model: "deepseek/deepseek-v4.1-flash",
 			want:  ModelPricing{InputPer1M: 0.14, OutputPer1M: 0.28, CachedPer1M: 0.0028, ReasoningPer1M: 0.28, CacheCreationPer1M: 0.14},
@@ -234,5 +289,28 @@ func TestCommandCodePricing_OMPParity(t *testing.T) {
 	p, ok := GetPricingForModel("cmc", "claude-sonnet-5")
 	if !ok || p.InputPer1M != 2.0 {
 		t.Errorf("cmc alias failed to resolve pricing")
+	}
+}
+
+// TestCalculateCost_OneHourCacheWritePricesHigher pins the per-window split: a
+// 1h write costs 2x input against the 5m window's 1.25x, so moving the same
+// total between the two windows must change the bill by exactly 1.6x on that
+// share — and an unreported split must keep pricing the whole write at 5m.
+func TestCalculateCost_OneHourCacheWritePricesHigher(t *testing.T) {
+	p, ok := GetPricing("anthropic", "claude-opus-5-5")
+	if !ok {
+		t.Fatal("opus pricing missing")
+	}
+	const write = 1_000_000
+	allFive := CalculateCost(TokenCounts{CacheCreationTokens: write}, p)
+	allHour := CalculateCost(TokenCounts{CacheCreationTokens: write, CacheCreation1hTokens: write}, p)
+
+	if want := allFive * 8 / 5; math.Abs(allHour-want) > 1e-9 {
+		t.Errorf("1h write = %v, want %v (1.6x of %v)", allHour, want, allFive)
+	}
+	// A split larger than the total cannot bill more than the total.
+	over := CalculateCost(TokenCounts{CacheCreationTokens: write, CacheCreation1hTokens: write * 3}, p)
+	if math.Abs(over-allHour) > 1e-9 {
+		t.Errorf("clamped 1h = %v, want %v", over, allHour)
 	}
 }

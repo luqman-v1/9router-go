@@ -155,6 +155,37 @@ func TestAnchorClaudeCache_TypedFinalTurnIsUntouched(t *testing.T) {
 	assertMarkers(t, markerPositions(req), []string{"system[0]", "tools[1]"})
 }
 
+// A typed tail on a long conversation is the conversation: a session that wakes
+// after the 5m cache window would otherwise re-bill its entire history at full
+// price on every request that ends in text.
+func TestAnchorClaudeCache_LongTypedTailTakesAFreeSlot(t *testing.T) {
+	long := strings.Repeat("context ", 30000) // ~240 KB of history
+	body := withExtraTurns(toolLoopBody,
+		`{"role": "assistant", "content": [{"type": "text", "text": "`+long+`"}]},
+		 {"role": "user", "content": [{"type": "text", "text": "Thanks, and the tests?"}]}`)
+
+	req := anchoredRequest(t, []byte(body))
+
+	assertMarkers(t, markerPositions(req), []string{"system[0]", "tools[1]", "messages[6].0"})
+}
+
+// A string-content typed tail is wrapped into a block so it can carry the
+// breakpoint, and its text survives.
+func TestAnchorClaudeCache_LongTypedTailStringContent(t *testing.T) {
+	long := strings.Repeat("context ", 30000)
+	body := withExtraTurns(toolLoopBody,
+		`{"role": "assistant", "content": [{"type": "text", "text": "`+long+`"}]},
+		 {"role": "user", "content": "and the tests?"}`)
+
+	req := anchoredRequest(t, []byte(body))
+
+	assertMarkers(t, markerPositions(req), []string{"system[0]", "tools[1]", "messages[6].0"})
+	block := blockAt(t, req, 6, 0)
+	if block["type"] != "text" || block["text"] != "and the tests?" {
+		t.Errorf("tail block = %#v, want the original text", block)
+	}
+}
+
 // Re-anchoring an already anchored body must land on the same markers, or every
 // step of a tool loop would invalidate the cache the previous one wrote.
 func TestAnchorClaudeCache_FinalToolResultsAreIdempotent(t *testing.T) {

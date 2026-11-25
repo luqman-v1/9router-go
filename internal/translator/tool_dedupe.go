@@ -48,11 +48,12 @@ func DedupeToolsDeepSeek(body []byte, model string) []byte {
 	if !ok {
 		return body
 	}
-	kept, dropped := dedupeToolList(tools)
-	if dropped == 0 {
+	kept, droppedNames := dedupeToolList(tools)
+	if len(droppedNames) == 0 {
 		return body
 	}
 	req["tools"] = kept
+	CleanStrippedToolReferences(req["messages"], droppedNames)
 	// Deterministic marshaling keeps the serialized request prefix stable
 	// across turns, which DeepSeek's prefix prompt cache requires;
 	// json/v2 randomizes map member order by default.
@@ -63,23 +64,92 @@ func DedupeToolsDeepSeek(body []byte, model string) []byte {
 	return out
 }
 
-// dedupeToolList drops every tool whose name was already declared and reports
-// how many were removed.
-func dedupeToolList(tools []any) (kept []any, dropped int) {
+// dedupeToolList drops every tool whose name was already declared and returns
+// the names that were dropped.
+func dedupeToolList(tools []any) (kept []any, droppedNames map[string]bool) {
 	seen := make(map[string]bool, len(tools))
 	kept = make([]any, 0, len(tools))
+	droppedNames = make(map[string]bool)
 	for _, tool := range tools {
 		name := declaredToolName(tool)
 		if name != "" {
 			if seen[name] {
-				dropped++
+				droppedNames[name] = true
 				continue
 			}
 			seen[name] = true
 		}
 		kept = append(kept, tool)
 	}
-	return kept, dropped
+	return kept, droppedNames
+}
+
+// CleanStrippedToolReferences removes Claude Code tool_reference blocks inside
+// tool_result messages that name a stripped or unavailable tool. Strict
+// Claude-compatible upstreams (e.g. z.ai 400 code 1210) reject the request when
+// a tool_reference points to a tool not present in tools[]. If all content items
+// are removed from a tool_result, it is replaced with a placeholder text block
+// ("[Tool <name> is unavailable]") so the content array is never empty (decolua/9router #a3039ab1).
+func CleanStrippedToolReferences(messages any, strippedNames map[string]bool) int {
+	if len(strippedNames) == 0 || messages == nil {
+		return 0
+	}
+	msgList, ok := messages.([]any)
+	if !ok {
+		return 0
+	}
+	cleaned := 0
+	for _, msg := range msgList {
+		m, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := m["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, blk := range content {
+			b, ok := blk.(map[string]any)
+			if !ok || b["type"] != "tool_result" {
+				continue
+			}
+			rawInner, ok := b["content"].([]any)
+			if !ok {
+				continue
+			}
+			var kept []any
+			var removedNames []string
+			for _, item := range rawInner {
+				itemMap, ok := item.(map[string]any)
+				if ok && itemMap["type"] == "tool_reference" {
+					toolName, _ := itemMap["tool_name"].(string)
+					if strippedNames[toolName] {
+						removedNames = append(removedNames, toolName)
+						cleaned++
+						continue
+					}
+				}
+				kept = append(kept, item)
+			}
+			if len(removedNames) > 0 {
+				if len(kept) > 0 {
+					b["content"] = kept
+				} else {
+					lines := make([]string, 0, len(removedNames))
+					for _, name := range removedNames {
+						lines = append(lines, "[Tool "+name+" is unavailable]")
+					}
+					b["content"] = []any{
+						map[string]any{
+							"type": "text",
+							"text": strings.Join(lines, "\n"),
+						},
+					}
+				}
+			}
+		}
+	}
+	return cleaned
 }
 
 // declaredToolName reads the tool name in either wire shape: a bare "name" or

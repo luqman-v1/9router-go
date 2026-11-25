@@ -56,6 +56,20 @@ func TestDecideStop_CronFallsThrough(t *testing.T) {
 	}
 }
 
+// TestDecideStop_WindowsRunFallsThrough: windows-run has no supervisor (it
+// runs `9router-go start` at logon), so it behaves like cron and requires
+// verified socket ownership rather than StopSupervised.
+func TestDecideStop_WindowsRunFallsThrough(t *testing.T) {
+	path, refusal := DecideStop(service.Info{Backend: service.BackendWindowsRun}, true, true)
+	if path != StopVerified || refusal != RefuseNone {
+		t.Errorf("windows-run with socket proof = (%v, %q), want (StopVerified, \"\")", path, refusal)
+	}
+	path, refusal = DecideStop(service.Info{Backend: service.BackendWindowsRun}, true, false)
+	if path != StopRefused || refusal != RefuseNoSocketOwner {
+		t.Errorf("windows-run without socket proof = (%v, %q), want (StopRefused, %q)", path, refusal, RefuseNoSocketOwner)
+	}
+}
+
 // TestDecideStop_UnsupervisedFailsClosed is the removed-L3 guard: no socket
 // proof means no token, on every platform. The claim-only path must not come
 // back by accident.
@@ -92,6 +106,9 @@ func TestRefusalText_CarriesNoSecret(t *testing.T) {
 func TestIsSupervised_CronIsNot(t *testing.T) {
 	if IsSupervised(service.Info{Backend: service.BackendCron}, true) {
 		t.Error("cron reported as supervised")
+	}
+	if IsSupervised(service.Info{Backend: service.BackendWindowsRun}, true) {
+		t.Error("windows-run reported as supervised")
 	}
 	if !IsSupervised(service.Info{Backend: service.BackendSystemdUser}, true) {
 		t.Error("systemd-user reported as unsupervised")

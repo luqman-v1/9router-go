@@ -18,6 +18,17 @@ const (
 	// stored instanceId instead of re-claiming (which upstream reads as
 	// session hijacking: 409 session_superseded).
 	LeaseScopeFreebuffSession = "freebuff-session"
+
+	// LeaseScopeFreePiSession coordinates free-pi session ownership across
+	// processes sharing one DB file: key = sha256 of the account identity,
+	// value = the holder's per-process epoch.
+	//
+	// The value is deliberately NOT the session id. Every process derives the
+	// same free-pi session id from the account (uuid.NewSHA1), so a session-id
+	// value would match for all holders and make ReleaseLease's
+	// compare-and-delete free a sibling's live row. The epoch answers "is the
+	// holder me?"; the session id is recomputable and needs no storage.
+	LeaseScopeFreePiSession = "free-pi-session"
 )
 
 // EnsureUpstreamLeases creates the upstream_leases table if absent. Safe to

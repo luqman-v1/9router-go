@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"9router/proxy/internal/browsercookies"
 	"9router/proxy/internal/proxy/executor"
 )
 
@@ -49,8 +50,16 @@ func validateDeepSeekWeb(ctx context.Context, apiKey string, providerData map[st
 
 	headers := deepSeekWebHeaders()
 	headers["authorization"] = "Bearer " + token
+	// deepSeekCookie is the site's own session header. A paste can be a
+	// Cookie-Editor JSON export, so render it through the shared normalizer
+	// rather than trimming alone; a malformed export is reported instead of
+	// sent to the site as a header it cannot read.
 	if cookie, ok := providerData["deepSeekCookie"].(string); ok && strings.TrimSpace(cookie) != "" {
-		headers["cookie"] = strings.TrimSpace(cookie)
+		normalized, err := browsercookies.NormalizeCookieHeaderInput(cookie)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		headers["cookie"] = normalized
 	}
 
 	status, body, err := validateProbeDo(ctx, http.MethodGet, deepSeekUsersCurrentURL, headers, nil)

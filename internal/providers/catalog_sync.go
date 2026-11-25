@@ -93,8 +93,13 @@ var (
 
 // ProviderAliases maps 9router provider IDs to models.dev provider IDs for limit resolution.
 var ProviderAliases = map[string]string{
-	"glm":           "zai",
-	"glm-cn":        "zhipuai",
+	"glm":    "zai",
+	"glm-cn": "zhipuai",
+	// The ZCode start-plan lane is served from the Z.ai coding-plan catalog.
+	// Without this mapping `zcode/glm-5.4` misses models.dev's 1M entry and
+	// falls through to the `*glm-5*` 200k pattern. This is only a catalog
+	// lookup key — routing and credentials stay strictly zcode-owned.
+	"zcode":         "zai-coding-plan",
 	"claude":        "anthropic",
 	"gemini":        "google",
 	"kimi":          "moonshotai",
@@ -105,6 +110,12 @@ var ProviderAliases = map[string]string{
 	"hunyuan":       "tencent",
 	"doubao":        "volcengine",
 	"cloudflare-ai": "cloudflare-workers-ai",
+	// models.dev files Together under "togetherai" and the Codex OAuth lane
+	// serves OpenAI's own catalog (gpt-daybreak-* carry their API windows there).
+	"together":     "togetherai",
+	"codex":        "openai",
+	"kilo-gateway": "kilo",
+	"github":       "github-copilot",
 	// OpenCode's free tier ships as a user-created "openai-compatible-chat-*"
 	// node, so the catalog lookup is keyed by that generated id. models.dev
 	// files the same weights under `opencode`, and without this mapping every
@@ -134,13 +145,14 @@ func catalogBaseID(modelID string) string {
 	return base
 }
 
-// catalogProviderKeys returns the ids a catalog entry may be filed under for a
-// lookup on providerID: the provider itself, plus every local id that maps to
-// it through ProviderAliases (our `claude` is models.dev `anthropic`). Mirrors
-// sync.js localIds, so a lookup under either name resolves.
+// catalogProviderKeys returns every provider spelling that may own a catalog
+// entry for providerID. Upstream files limits per registry entry, while
+// /v1/models publishes short aliases (e.g. `oc` for `opencode`), so a lookup
+// must consider the id itself, its canonical id, the models.dev id those two
+// map to, and every local alias that resolves to the same canonical provider.
 func catalogProviderKeys(providerID string) []string {
-	keys := make([]string, 0, 2)
-	seen := make(map[string]bool, 2)
+	keys := make([]string, 0, 4)
+	seen := make(map[string]bool, 4)
 	add := func(id string) {
 		if id == "" || seen[id] {
 			return
@@ -148,10 +160,24 @@ func catalogProviderKeys(providerID string) []string {
 		seen[id] = true
 		keys = append(keys, id)
 	}
-	add(providerID)
+	id := strings.ToLower(providerID)
+	add(id)
+	canonical := ResolveAlias(id)
+	add(canonical)
+	if mapped, ok := ProviderAliases[id]; ok {
+		add(mapped)
+	}
+	if mapped, ok := ProviderAliases[canonical]; ok {
+		add(mapped)
+	}
 	for local, upstream := range ProviderAliases {
-		if upstream == providerID {
+		if upstream == id || upstream == canonical {
 			add(local)
+		}
+	}
+	for alias, target := range ProviderAliasMap {
+		if target == id || target == canonical {
+			add(alias)
 		}
 	}
 	return keys
@@ -196,22 +222,25 @@ func GetCatalogLimits(provider, model string) (contextWindow, maxOutput int) {
 	if model == "" {
 		return 0, 0
 	}
-	base := strings.ToLower(model)
-	if idx := strings.Index(base, ":"); idx != -1 {
-		base = base[:idx]
+	// Normalize exactly like catalogBaseID (the writer): strip the vendor
+	// namespace first, then the ":suffix". Doing ":" first turned
+	// "hf:openai/gpt-oss-120b" into "hf" and missed the catalog key.
+	base := catalogBaseID(model)
+	// The writer keys entries by catalogBaseID (vendor namespace stripped),
+	// but a catalog written by upstream's sync.js keeps slash-bearing ids
+	// verbatim (`meta-llama/Llama-3.3-70B-Instruct-Turbo`). Try the bare id
+	// first, then the lowercased full id with its ":suffix" removed, then the
+	// id minus its first segment, so both writers' keys resolve.
+	full := strings.ToLower(model)
+	if idx := strings.Index(full, ":"); idx != -1 {
+		full = full[:idx]
 	}
-	// A model id can carry more than one qualifier: the published
-	// `nvidia/z-ai/glm-5.3` has both the provider alias and the vendor
-	// namespace, while the catalog files it under the bare `glm-5.3`. Try the
-	// id minus its first segment first, because catalog keys may themselves
-	// contain a slash (`deepseek-ai/deepseek-v4.1-flash`), then fall back to
-	// the last segment alone.
 	candidates := []string{base}
-	if idx := strings.Index(base, "/"); idx != -1 {
-		candidates = append(candidates, base[idx+1:])
+	if full != base {
+		candidates = append(candidates, full)
 	}
-	if idx := strings.LastIndex(base, "/"); idx != -1 && base[idx+1:] != candidates[len(candidates)-1] {
-		candidates = append(candidates, base[idx+1:])
+	if idx := strings.Index(full, "/"); idx != -1 && full[idx+1:] != base {
+		candidates = append(candidates, full[idx+1:])
 	}
 
 	catalogMu.RLock()
@@ -219,10 +248,7 @@ func GetCatalogLimits(provider, model string) (contextWindow, maxOutput int) {
 	if globalCatalog == nil || globalCatalog.Providers == nil {
 		return 0, 0
 	}
-	keys := []string{strings.ToLower(provider)}
-	if mapped, ok := ProviderAliases[strings.ToLower(provider)]; ok {
-		keys = append(keys, mapped)
-	}
+	keys := catalogProviderKeys(provider)
 	for _, key := range keys {
 		byModel, ok := globalCatalog.Providers[key]
 		if !ok {

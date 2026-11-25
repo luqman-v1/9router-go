@@ -1,0 +1,6 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/commands.ts closeOtherSession -> POST /session/reset ; hungkevin/free-pi-cli-proxy server.mjs:960 releaseSession",
+  "_note": "Force-releases the caller's OTHER sessions. `released:false` is a success, not a failure: it means there was nothing to release, which is the outcome the caller wanted. Idempotent.",
+  "released": true,
+  "_alt": { "released": false }
+}

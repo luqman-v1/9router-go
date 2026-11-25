@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"database/sql"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // countProxyPoolBindings counts, per pool, what still points at it. A pool is
@@ -116,39 +118,18 @@ func (h *DashboardHandler) HandleCreateProxyPool(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
-	var req struct {
-		Name        string   `json:"name"`
-		ProxyURL    string   `json:"proxyUrl"`
-		URLs        []string `json:"urls"`
-		Type        string   `json:"type"`
-		NoProxy     string   `json:"noProxy"`
-		StrictProxy bool     `json:"strictProxy"`
-		IsActive    bool     `json:"isActive"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+	var req createProxyPoolRequest
+	if verr := decodeProxyPoolJSON(body, &req); verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
 		return
 	}
 
-	if req.Name == "" {
-		req.Name = "Proxy Pool"
-	}
-	if req.Type == "" {
-		if strings.HasPrefix(req.ProxyURL, "socks") {
-			req.Type = "socks5"
-		} else {
-			req.Type = "http"
-		}
-	}
-
-	poolData := db.ProxyPoolData{
-		Name:        req.Name,
-		ProxyURL:    req.ProxyURL,
-		NoProxy:     req.NoProxy,
-		Type:        req.Type,
-		StrictProxy: req.StrictProxy,
+	poolData, verr := validateCreateProxyPool(req)
+	if verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
+		return
 	}
 
 	created, err := h.Repo.InsertProxyPool(poolData)
@@ -173,15 +154,35 @@ func (h *DashboardHandler) HandleUpdateProxyPool(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
-	var updates map[string]any
-	if err := json.Unmarshal(body, &updates); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+	var req updateProxyPoolRequest
+	if verr := decodeProxyPoolJSON(body, &req); verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
+		return
+	}
+
+	existing, err := h.Repo.GetProxyPool(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "proxy pool not found")
+		return
+	}
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	updates, verr := buildUpdateProxyPoolMap(req, existing)
+	if verr != nil {
+		writeProxyPoolValidationError(w, verr.Field, verr.Reason)
 		return
 	}
 
 	if err := h.Repo.UpdateProxyPool(id, updates); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			handlerutil.WriteJSONError(w, http.StatusNotFound, "proxy pool not found")
+			return
+		}
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -243,16 +244,12 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	proxyParsed, err := url.Parse(targetURL)
-	if err != nil {
-		h.writeProbeResult(w, id, false, 0, "invalid proxy URL format")
+	tr, probeErr := poolProbeTransport(targetURL)
+	if probeErr != "" {
+		h.writeProbeResult(w, id, false, 0, probeErr)
 		return
 	}
 
-	tr := &http.Transport{
-		Proxy:             http.ProxyURL(proxyParsed),
-		DisableKeepAlives: true,
-	}
 	defer tr.CloseIdleConnections()
 	client := &http.Client{
 		Transport: tr,
@@ -409,4 +406,29 @@ func (h *DashboardHandler) testRelayPool(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	finish(true, "")
+}
+
+// poolProbeTransport returns the transport the pool test endpoint probes
+// through, or a message for the operator when the URL cannot be dialled.
+//
+// It goes through proxy.NewSafeTransportForProxy rather than building its own
+// http.Transport: the shared constructor validates the scheme and applies the
+// SSRF dialer's proxy exemption, so a pool this reports as healthy is one
+// requests can actually dial. A hand-built transport accepted any scheme
+// url.Parse accepted and could report "passed" for a pool the request path
+// would refuse.
+func poolProbeTransport(targetURL string) (*http.Transport, string) {
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		return nil, "invalid proxy URL format"
+	}
+	if !proxy.ProxyURLDialable(targetURL) {
+		return nil, "unsupported proxy protocol in " + parsed.Scheme
+	}
+
+	tr := proxy.NewSafeTransportForProxy(targetURL)
+	// The probe opens one connection and discards it; keep-alives would leave
+	// the socket to the idle timeout instead of closing with the request.
+	tr.DisableKeepAlives = true
+	return tr, ""
 }

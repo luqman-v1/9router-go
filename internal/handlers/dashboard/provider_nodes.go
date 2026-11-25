@@ -12,11 +12,15 @@ import (
 	"strings"
 	"syscall"
 
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 
+	"9router/proxy/internal/customjson"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // ProviderNodeResponse is the JSON representation of a provider node with unpacked data fields.
@@ -39,6 +43,9 @@ type ProviderNodeResponse struct {
 	URLSuffixGenerated bool   `json:"urlSuffixGenerated"`
 	CreatedAt          string `json:"createdAt"`
 	UpdatedAt          string `json:"updatedAt"`
+	// CustomJSON is the request template and response mapping of a custom
+	// JSON node (apiType "custom-json"); absent for every other node.
+	CustomJSON jsontext.Value `json:"customJson,omitempty"`
 	// Limits is the node's capacity policy plus the usage it is measured against
 	// (PR4). The list fills it for every node so the editor never has to make a
 	// second call to discover what a node is currently allowed.
@@ -95,14 +102,16 @@ func (h *DashboardHandler) HandleGetProviderNodes(w http.ResponseWriter, r *http
 
 		if n.Data != "" {
 			var dataObj struct {
-				Prefix  string `json:"prefix"`
-				APIType string `json:"apiType"`
-				BaseURL string `json:"baseUrl"`
+				Prefix     string         `json:"prefix"`
+				APIType    string         `json:"apiType"`
+				BaseURL    string         `json:"baseUrl"`
+				CustomJSON jsontext.Value `json:"customJson"`
 			}
 			if err := json.Unmarshal([]byte(n.Data), &dataObj); err == nil {
 				item.Prefix = dataObj.Prefix
 				item.APIType = dataObj.APIType
 				item.BaseURL = dataObj.BaseURL
+				item.CustomJSON = dataObj.CustomJSON
 			}
 		}
 
@@ -129,12 +138,13 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	defer r.Body.Close()
 
 	var req struct {
-		Name      string `json:"name"`
-		Prefix    string `json:"prefix"`
-		APIType   string `json:"apiType"`
-		BaseURL   string `json:"baseUrl"`
-		Type      string `json:"type"`
-		URLSuffix string `json:"urlSuffix"`
+		Name       string         `json:"name"`
+		Prefix     string         `json:"prefix"`
+		APIType    string         `json:"apiType"`
+		BaseURL    string         `json:"baseUrl"`
+		Type       string         `json:"type"`
+		URLSuffix  string         `json:"urlSuffix"`
+		CustomJSON jsontext.Value `json:"customJson"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -148,15 +158,26 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if req.Prefix == "" {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
-		return
+	nodeType := req.Type
+	if nodeType == "" {
+		nodeType = "openai-compatible"
 	}
 	// A prefix is the alias every model this node serves is published under, so
 	// two owners of one prefix is not a cosmetic clash: resolution walks the
 	// registry aliases first, so a node claiming `gh` shadows GitHub Copilot
 	// entirely and its models answer from the wrong upstream. Refuse rather
 	// than let the operator discover it from a misrouted request.
+	//
+	// Leaving it blank is allowed for the chat-compatible providers: the node
+	// then publishes its models under its own id (models_list falls back to
+	// the provider id when no prefix is registered), so nothing resolves to an
+	// empty namespace. custom-embedding keeps the requirement — its catalog is
+	// addressed as `<prefix>/<model>` everywhere and a blank prefix would make
+	// two embedding nodes indistinguishable.
+	if req.Prefix == "" && nodeType == "custom-embedding" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
+		return
+	}
 	if conflict := h.providerNodePrefixConflict(req.Prefix, ""); conflict != "" {
 		handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
 			"error":    "Prefix \"" + req.Prefix + "\" is already used by " + conflict + ". Choose a different prefix.",
@@ -165,11 +186,6 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 			"conflict": conflict,
 		})
 		return
-	}
-
-	nodeType := req.Type
-	if nodeType == "" {
-		nodeType = "openai-compatible"
 	}
 
 	apiType := req.APIType
@@ -181,17 +197,27 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	if req.BaseURL == "" {
 		req.BaseURL = defaultBaseURL
 	}
+	// Validate a custom JSON node's configuration before storing it, so a bad
+	// template or header fails fast instead of being persisted.
+	var customJSON jsontext.Value
+	if nodeType == "openai-compatible" && apiType == customjson.APIType {
+		cfg, err := customjson.Normalize(req.CustomJSON, req.BaseURL)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		customJSON = cfg.Marshal()
+	}
 	// The same URL gate HandleValidateProviderNode applies, and it runs after the
 	// default is filled in so a body that omits baseUrl (which means "the
-	// provider's own endpoint") is not refused for having none. Without it a node
-	// pointing at a cloud-metadata or RFC1918 address is stored and only refused
-	// later, when a chat request dials it — the write succeeds, the operator sees
-	// a working provider row, and the first request fails with a dial error naming
-	// an address the operator never typed. A share link can carry an arbitrary
-	// url=, so this is the one path where an untrusted string reaches the node
-	// table. The socket-level guard still backs it up (chat/resolution.go builds
-	// its client from proxy.NewSafeTransport), but a refusal at write time is the
-	// one the operator can act on.
+	// provider's own endpoint") is not refused for having none. Cloud metadata
+	// is always refused. A private/LAN base URL is refused only while the
+	// operator has switched private networking off
+	// (ALLOW_PRIVATE_NETWORKING=false): with it on — the default — a self-hosted
+	// or LAN provider is a normal upstream and this write gate is the only check
+	// its base URL passes. The dial-time socket guard is NOT a backstop while the
+	// switch is on: proxy.NewSafeTransport's ControlContext returns before it
+	// examines any address, so it refuses nothing on this path.
 	if !isValidHTTPURL(req.BaseURL) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL must be an absolute http(s) URL")
 		return
@@ -200,7 +226,7 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL is not allowed")
 		return
 	}
-	if !nodeRequestIsLocal(r) {
+	if !nodeRequestIsLocal(r) && !proxy.IsPrivateNetworkingAllowed() {
 		if err := handlerutil.AssertPublicURL(req.BaseURL); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL is not allowed")
 			return
@@ -210,11 +236,19 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
+	// A blank prefix is filled only now, because the value it is filled from —
+	// the URL suffix — is not settled until the id resolves above. The conflict
+	// guard already ran on any prefix the operator typed; this call checks the
+	// derived one, and never rewrites a prefix they chose.
+	if nodeType != "custom-embedding" {
+		req.Prefix = h.fillBlankPrefix(req.Prefix, suffix, "")
+	}
 
-	dataBytes, _ := json.Marshal(map[string]string{
-		"prefix":  req.Prefix,
-		"apiType": apiType,
-		"baseUrl": req.BaseURL,
+	dataBytes, _ := json.Marshal(map[string]any{
+		"prefix":     req.Prefix,
+		"apiType":    apiType,
+		"baseUrl":    req.BaseURL,
+		"customJson": customJSON,
 	})
 
 	node, err := h.Repo.CreateProviderNode(id, nodeType, req.Name, string(dataBytes))
@@ -231,6 +265,7 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 			Prefix:             req.Prefix,
 			APIType:            apiType,
 			BaseURL:            req.BaseURL,
+			CustomJSON:         customJSON,
 			URLSuffix:          suffix,
 			URLSuffixGenerated: suffix == "",
 			CreatedAt:          node.CreatedAt,
@@ -263,11 +298,12 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 	}
 	defer r.Body.Close()
 	var req struct {
-		Name      string `json:"name"`
-		Prefix    string `json:"prefix"`
-		APIType   string `json:"apiType"`
-		BaseURL   string `json:"baseUrl"`
-		URLSuffix string `json:"urlSuffix"`
+		Name       string         `json:"name"`
+		Prefix     string         `json:"prefix"`
+		APIType    string         `json:"apiType"`
+		BaseURL    string         `json:"baseUrl"`
+		URLSuffix  string         `json:"urlSuffix"`
+		CustomJSON jsontext.Value `json:"customJson"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -291,7 +327,13 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if prefix == "" {
+	nodeType := ""
+	if node.Type != nil {
+		nodeType = *node.Type
+	}
+	// Same rule as create: the chat-compatible providers may leave the prefix
+	// blank and publish under the node id; custom-embedding still needs one.
+	if prefix == "" && nodeType == "custom-embedding" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
 		return
 	}
@@ -309,11 +351,7 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 		})
 		return
 	}
-	nodeType := ""
-	if node.Type != nil {
-		nodeType = *node.Type
-	}
-	if nodeType == "openai-compatible" && req.APIType != "chat" && req.APIType != "responses" {
+	if nodeType == "openai-compatible" && req.APIType != "chat" && req.APIType != "responses" && req.APIType != customjson.APIType {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid OpenAI compatible API type")
 		return
 	}
@@ -336,6 +374,17 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 	if nodeType == "openai-compatible" {
 		apiType = req.APIType
 	}
+	// Validate a custom JSON node's configuration before storing it, so a bad
+	// template or header fails fast instead of being persisted.
+	var customJSON jsontext.Value
+	if nodeType == "openai-compatible" && apiType == customjson.APIType {
+		cfg, err := customjson.Normalize(req.CustomJSON, baseURL)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		customJSON = cfg.Marshal()
+	}
 
 	// An apiType change does not rename the node. Upstream's id is immutable,
 	// so there the two simply drift apart (docs/PARITY-REMAINING.md) and every
@@ -350,18 +399,25 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
+	// Same fill as create, once the suffix is settled. excludeID is the node
+	// being edited: its own stored prefix must not read as a collision with
+	// itself when the derived value happens to equal what it already carries.
+	if nodeType != "custom-embedding" {
+		prefix = h.fillBlankPrefix(prefix, suffix, id)
+	}
 
-	dataBytes, _ := json.Marshal(map[string]string{
-		"prefix":  prefix,
-		"apiType": apiType,
-		"baseUrl": baseURL,
+	dataBytes, _ := json.Marshal(map[string]any{
+		"prefix":     prefix,
+		"apiType":    apiType,
+		"baseUrl":    baseURL,
+		"customJson": customJSON,
 	})
 	updated, err := h.Repo.UpdateProviderNode(renamedID, name, string(dataBytes))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	syncNodeConnections(h, renamedID, prefix, apiType, nodeType, baseURL, name)
+	syncNodeConnections(h, renamedID, prefix, apiType, nodeType, baseURL, name, customJSON)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"node": ProviderNodeResponse{
 			ID:                 updated.ID,
@@ -370,6 +426,7 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 			Prefix:             prefix,
 			APIType:            apiType,
 			BaseURL:            baseURL,
+			CustomJSON:         customJSON,
 			URLSuffix:          suffix,
 			URLSuffixGenerated: suffix == "",
 			CreatedAt:          updated.CreatedAt,
@@ -381,7 +438,7 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 // syncNodeConnections propagates edited node fields into the
 // providerSpecificData of every attached connection, mirroring upstream
 // updateProviderConnection calls after updateProviderNode.
-func syncNodeConnections(h *DashboardHandler, nodeID, prefix, apiType, nodeType, baseURL, nodeName string) {
+func syncNodeConnections(h *DashboardHandler, nodeID, prefix, apiType, nodeType, baseURL, nodeName string, customJSON jsontext.Value) {
 	conns, err := h.Repo.GetProviderConnections(nodeID, false)
 	if err != nil || len(conns) == 0 {
 		return
@@ -403,6 +460,18 @@ func syncNodeConnections(h *DashboardHandler, nodeID, prefix, apiType, nodeType,
 			psd["apiType"] = apiType
 		} else {
 			delete(psd, "apiType")
+		}
+		// Switching a node back to Chat Completions or Responses removes the
+		// business template from every connection, not just from the node.
+		if len(customJSON) == 0 {
+			delete(psd, "customJson")
+		} else {
+			var decoded map[string]any
+			if json.Unmarshal(customJSON, &decoded) != nil {
+				delete(psd, "customJson")
+			} else {
+				psd["customJson"] = decoded
+			}
 		}
 		psd["baseUrl"] = baseURL
 		psd["nodeName"] = nodeName
@@ -449,10 +518,12 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	defer r.Body.Close()
 
 	var req struct {
-		BaseURL string `json:"baseUrl"`
-		APIKey  string `json:"apiKey"`
-		Type    string `json:"type"`
-		ModelID string `json:"modelId"`
+		BaseURL    string         `json:"baseUrl"`
+		APIKey     string         `json:"apiKey"`
+		Type       string         `json:"type"`
+		ModelID    string         `json:"modelId"`
+		APIType    string         `json:"apiType"`
+		CustomJSON jsontext.Value `json:"customJson"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -463,7 +534,8 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
-	if baseURL == "" || apiKey == "" {
+	customNoAuth := req.APIType == customjson.APIType && rawAuthType(req.CustomJSON) == customjson.AuthNone
+	if baseURL == "" || (apiKey == "" && !customNoAuth) {
 		writeNodeValidation(w, map[string]any{"valid": false, "error": "Base URL and API key required"})
 		return
 	}
@@ -484,8 +556,12 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	}
 
 	// SSRF guard for remote callers; loopback peers keep self-hosted nodes
-	// (e.g. ollama-local) reachable, mirroring upstream isLocalRequest.
-	if !nodeRequestIsLocal(r) {
+	// (e.g. ollama-local) reachable, mirroring upstream isLocalRequest. The
+	// guard is skipped when the operator has private networking on (the
+	// default) — a LAN/self-hosted endpoint is a normal upstream then, and this
+	// write gate is the only check it passes. The dial-time socket guard is
+	// inactive while the switch is on, so it re-checks nothing here.
+	if !nodeRequestIsLocal(r) && !proxy.IsPrivateNetworkingAllowed() {
 		if err := handlerutil.AssertPublicURL(baseURL); err != nil {
 			writeNodeValidation(w, map[string]any{"valid": false, "error": "URL not allowed"})
 			return
@@ -493,6 +569,10 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	}
 
 	ctx := r.Context()
+	if req.APIType == customjson.APIType {
+		writeNodeValidation(w, probeCustomJSON(ctx, nil, baseURL, req.CustomJSON, apiKey, strings.TrimSpace(req.ModelID)))
+		return
+	}
 	switch strings.TrimSpace(req.Type) {
 	case "custom-embedding":
 		validateCustomEmbeddingNode(w, ctx, baseURL, apiKey, strings.TrimSpace(req.ModelID))
@@ -515,7 +595,7 @@ func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, ba
 	base := strings.TrimSuffix(baseURL, "/")
 	headers := map[string]string{"Authorization": "Bearer " + apiKey}
 
-	status, body, err := validateProbeDo(ctx, http.MethodGet, base+"/models", headers, nil)
+	status, body, err := validateProbeDo(ctx, http.MethodGet, chat.CompatibleNodeModelsURL(base), headers, nil)
 	if err != nil {
 		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeNetworkMessage(err)})
 		return
@@ -548,7 +628,7 @@ func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, ba
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}
-		chatStatus, _, cErr := validateProbeDo(ctx, http.MethodPost, base+"/chat/completions", chatHeaders, payload)
+		chatStatus, _, cErr := validateProbeDo(ctx, http.MethodPost, chat.ChatCompletionsURL(base), chatHeaders, payload)
 		if cErr == nil && (chatStatus == http.StatusUnauthorized || chatStatus == http.StatusForbidden) {
 			writeNodeValidation(w, map[string]any{"valid": false, "error": "API key unauthorized"})
 			return
@@ -693,23 +773,28 @@ func isValidHTTPURL(v string) bool {
 }
 
 // loopbackRequestHosts are hosts considered local callers (upstream LOOPBACK_HOSTS).
+//
+// The set is only consulted when r.RemoteAddr did not parse as an IP: net/http
+// always writes "host:port" there, so this is the malformed-address fallback.
+// It is not a second, header-based locality test — the Host header is
+// client-controlled and must never decide whether a caller is local.
 var loopbackRequestHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
-// nodeRequestIsLocal mirrors dashboardGuard.isLocalRequest: loopback peers may
-// reference self-hosted provider nodes, so the SSRF guard is skipped for them.
+// nodeRequestIsLocal reports whether the peer on the TCP connection is on a
+// loopback address (127.0.0.1 or ::1). It inspects r.RemoteAddr only;
+// client-supplied Host headers must never be trusted to determine locality,
+// because "Host: localhost" from a remote socket is trivial to send and would
+// otherwise disable every guard this function backs.
 func nodeRequestIsLocal(r *http.Request) bool {
-	host := strings.ToLower(r.Host)
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = strings.Trim(h, "[]")
-	}
-	if loopbackRequestHosts[host] {
-		return true
-	}
 	remote, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return loopbackRequestHosts[strings.Trim(strings.ToLower(remote), "[]")]
+	if err != nil {
+		remote = r.RemoteAddr
 	}
-	return false
+	remote = strings.Trim(strings.ToLower(remote), "[]")
+	if ip := net.ParseIP(remote); ip != nil {
+		return ip.IsLoopback()
+	}
+	return loopbackRequestHosts[remote]
 }
 
 // validateNodeNetworkMessage maps an outbound probe error to a user-friendly
@@ -790,13 +875,13 @@ func (h *DashboardHandler) providerNodePrefixConflict(prefix, excludeID string) 
 		return ""
 	}
 	// A registry alias wins resolution over any node, so claiming one is the
-	// more damaging of the two collisions and is checked first.
-	if _, taken := providers.ProviderAliasMap[prefix]; taken {
-		return "provider alias \"" + prefix + "\""
-	}
-	// A canonical registry id is published under itself when it has no alias,
-	// so it is an owner too.
-	if _, taken := providers.KnownProviders[prefix]; taken {
+	// more damaging of the two collisions and is checked first. Membership is
+	// read from the same set the dashboard receives, so the suggestion the
+	// client shows and the refusal here can never disagree.
+	if providers.IsReservedProviderPrefix(prefix) {
+		if _, alias := providers.ProviderAliasMap[prefix]; alias {
+			return "provider alias \"" + prefix + "\""
+		}
 		return "provider \"" + prefix + "\""
 	}
 	nodes, err := h.Repo.GetProviderNodes()

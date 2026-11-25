@@ -77,7 +77,6 @@ export interface ProviderConnectionLike {
   isActive?: number | boolean
   testStatus?: string | null
   providerSpecificData?: { authMethod?: string; region?: string; profileArn?: string; [key: string]: unknown }
-  [key: string]: unknown
 }
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
@@ -99,6 +98,26 @@ function groupByProviderStable<T extends ProviderConnectionLike>(connections: T[
     seen.get(key)!.push(conn)
   }
   return Array.from(seen.values()).flat()
+}
+
+export interface ProviderConnectionGroup<T> {
+  provider: string
+  connections: T[]
+}
+
+// Fold a sorted connection list into per-provider groups. Order within a group
+// follows the input order (the caller's sort), and providers keep first-seen
+// order, so a grouped list reads the same way as the flat one.
+export function groupConnectionsByProvider<T extends { provider: string }>(
+  connections: T[],
+): ProviderConnectionGroup<T>[] {
+  const groups = new Map<string, T[]>()
+  for (const conn of connections) {
+    const key = conn.provider || ''
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(conn)
+  }
+  return Array.from(groups, ([provider, list]) => ({ provider, connections: list }))
 }
 
 // Upstream emits Codex quota rows in this order. Unknown keys sort last but
@@ -456,8 +475,8 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
       case 'antigravity':
         if (d.quotas) {
           const entries = Object.entries(d.quotas)
-          const weeklyKeys = new Set(['gemini_weekly', 'claude_gpt_weekly', 'argon_weekly'])
-          const sessionKeys = new Set(['gemini_session', 'claude_gpt_session', 'argon_session'])
+          const weeklyKeys = new Set(['gemini_weekly', 'claude_gpt_weekly', 'gemini_argon_weekly', 'argon_weekly'])
+          const sessionKeys = new Set(['gemini_session', 'claude_gpt_session', 'gemini_argon_session', 'argon_session'])
           const summaryKeys = new Set([...weeklyKeys, ...sessionKeys])
           const geminiModels = entries.filter(([k]) => k.startsWith('gemini-') && !k.includes('image') && !k.includes('argon'))
           const argonModels = entries.filter(([k]) => k.includes('argon'))
@@ -475,8 +494,8 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
 
           const hasGeminiWeekly = Boolean(d.quotas.gemini_weekly)
           const hasGeminiSession = Boolean(d.quotas.gemini_session)
-          const hasArgonWeekly = Boolean(d.quotas.argon_weekly)
-          const hasArgonSession = Boolean(d.quotas.argon_session)
+          const hasArgonWeekly = Boolean(d.quotas.gemini_argon_weekly || d.quotas.argon_weekly)
+          const hasArgonSession = Boolean(d.quotas.gemini_argon_session || d.quotas.argon_session)
           const hasClaudeWeekly = Boolean(d.quotas.claude_gpt_weekly)
           const hasClaudeSession = Boolean(d.quotas.claude_gpt_session)
 
@@ -534,7 +553,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
           // 2. Gemini 4 Argon Family
           if (hasArgonSession) {
             summaryModels
-              .filter(([k]) => k === 'argon_session')
+              .filter(([k]) => k === 'gemini_argon_session' || (k === 'argon_session' && !d.quotas?.gemini_argon_session))
               .forEach(([modelKey, quota]) => {
                 normalizedQuotas.push({
                   name: (quota.displayName as string) || modelKey,
@@ -546,14 +565,19 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
                   window: (quota.window as string) || (modelKey.includes('weekly') ? 'weekly' : '5h'),
                 })
               })
-          } else if (argonModels.length > 0) {
+          } else if (!hasArgonWeekly && argonModels.length > 0) {
             const rep = argonModels.reduce((min, cur) =>
               (cur[1].remainingPercentage as number ?? 100) < (min[1].remainingPercentage as number ?? 100) ? cur : min,
             )[1]
-            const weeklyResetAt = d.quotas.argon_weekly?.resetAt
-            const isDuplicateOfWeekly =
-              hasArgonWeekly && rep.resetAt === weeklyResetAt && (rep.remainingPercentage ?? 0) === 0
-            if (!isDuplicateOfWeekly) {
+            const geminiSession = d.quotas.gemini_session as Record<string, any> | undefined
+            const geminiWeekly = d.quotas.gemini_weekly as Record<string, any> | undefined
+            const geminiSessionResetAt = geminiSession?.resetAt
+            const geminiWeeklyResetAt = geminiWeekly?.resetAt
+            const sharesMainGeminiPool =
+              (hasGeminiSession && rep.resetAt === geminiSessionResetAt && rep.remainingPercentage === geminiSession?.remainingPercentage) ||
+              (hasGeminiWeekly && rep.resetAt === geminiWeeklyResetAt && rep.remainingPercentage === geminiWeekly?.remainingPercentage)
+
+            if (!sharesMainGeminiPool) {
               normalizedQuotas.push({
                 name: 'Gemini 4 Argon',
                 modelKey: 'gemini-4-argon',
@@ -568,7 +592,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
           // Show Argon weekly row if present
           if (hasArgonWeekly) {
             summaryModels
-              .filter(([k]) => k === 'argon_weekly')
+              .filter(([k]) => k === 'gemini_argon_weekly' || (k === 'argon_weekly' && !d.quotas?.gemini_argon_weekly))
               .forEach(([modelKey, quota]) => {
                 normalizedQuotas.push({
                   name: (quota.displayName as string) || modelKey,
@@ -988,6 +1012,19 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
     }
     normalizedQuotas.sort(
       (a, b) => (CLAUDE_QUOTA_ORDER[a.name] ?? 99) - (CLAUDE_QUOTA_ORDER[b.name] ?? 99),
+    )
+    return normalizedQuotas
+  }
+
+  const pLower = provider?.toLowerCase()
+  if (pLower === 'commandcode' || pLower === 'commandcode-goat' || pLower === 'cmc' || pLower === 'cmc-goat') {
+    const COMMANDCODE_QUOTA_ORDER: Record<string, number> = {
+      '5-hour limit': 0,
+      'Weekly limit': 1,
+      'Monthly': 2,
+    }
+    normalizedQuotas.sort(
+      (a, b) => (COMMANDCODE_QUOTA_ORDER[a.name] ?? 99) - (COMMANDCODE_QUOTA_ORDER[b.name] ?? 99),
     )
     return normalizedQuotas
   }

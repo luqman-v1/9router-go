@@ -1,25 +1,32 @@
 package executor
 
-import "strings"
+import (
+	"context"
+	json "encoding/json/v2"
+	"fmt"
+	"strings"
+)
 
-// Codex 0.155 serves some models on a different request shape: the tools and
-// the instructions travel as an input prefix instead of top-level fields, and
-// reasoning carries no summary. Those models are flagged `responsesLite: true`
-// on their registry entry upstream (open-sse/providers/registry/codex.js); the
-// flag is mirrored here because the Go catalog is a flat id list.
-//
-// A model that is not in this set keeps the classic shape, so this is additive
-// rather than a change to the existing Codex path.
+// Unlike upstream's model flag, Lite is selected only by the incoming contract.
+// Classic allows parallel tool calls on models which upstream defaults to Lite.
+const CodexResponsesLiteHeader = "x-openai-internal-codex-responses-lite"
 
-// codexResponsesLiteModels mirrors the `responsesLite: true` registry flag.
-var codexResponsesLiteModels = map[string]bool{
-	"gpt-6.1-sol": true,
-	"gpt-6-sol":   true,
-	"gpt-6-luna":  true,
-	// The `[1m]` ids resolve to their base model upstream (upstreamModelId),
-	// so they keep the base model's transport shape.
-	"gpt-6-sol[1m]":  true,
-	"gpt-6-luna[1m]": true,
+type codexLiteContextKey struct{}
+
+// WithCodexLiteHeader preserves the caller's explicit Lite choice across routing.
+func WithCodexLiteHeader(ctx context.Context, value string) context.Context {
+	if !strings.EqualFold(strings.TrimSpace(value), "true") {
+		return ctx
+	}
+	return context.WithValue(ctx, codexLiteContextKey{}, true)
+}
+
+func codexLiteRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	requested, _ := ctx.Value(codexLiteContextKey{}).(bool)
+	return requested
 }
 
 // codexResponsesLiteDefaultEffort is the effort a lite model gets when the
@@ -49,43 +56,29 @@ func responseInputItems(items any) ([]any, bool) {
 	}
 }
 
-// isCodexResponsesLiteModel reports whether a model uses the responses-lite
-// shape. A trailing "(level)" override is stripped first: that suffix is a
-// 9router request override, not part of the model id.
-func isCodexResponsesLiteModel(model string) bool {
-	base := model
-	if open := strings.LastIndex(base, "("); open != -1 && strings.HasSuffix(base, ")") {
-		base = strings.TrimSpace(base[:open])
-	}
-	return codexResponsesLiteModels[base]
-}
-
 // applyCodexResponsesLite rewrites a Codex request into the responses-lite
 // shape: the top-level tools and instructions move into the input array as a
-// developer prefix, and the top-level fields are cleared. A body that already
-// carries the prefix is left alone, so replaying a transcript back does not
-// double-wrap it. It reports false when the body asks for hosted search — Lite
-// cannot execute it, so the caller has to keep regular Responses — or when the
-// input shape is one this cannot read.
+// developer prefix, and the top-level fields are cleared. Existing prefixes
+// remain intact; distinct top-level tools gain a separate prefix. It reports
+// false when the input shape cannot be read.
 func applyCodexResponsesLite(req map[string]any) bool {
 	input, ok := responseInputItems(req["input"])
 	if !ok {
 		return false
 	}
-	for _, item := range input {
-		if m, isMap := item.(map[string]any); isMap {
-			if t, _ := m["type"].(string); t == codexAdditionalToolsType {
-				return true
-			}
-		}
-	}
-
 	tools, _ := responseInputItems(req["tools"])
-	prefix := []any{map[string]any{
-		"type":  "additional_tools",
-		"role":  "developer",
-		"tools": tools,
-	}}
+	// Native Codex prefixes have stable IDs and may appear at different points
+	// in history. Never merge, move or rebuild them: only add missing top-level
+	// tools as a separate prefix, preserving all client-supplied items verbatim.
+	if hasCodexLitePrefix(req) {
+		addCodexLiteTopLevel(req, input, tools)
+		finishCodexLiteFields(req)
+		return true
+	}
+	if tools == nil {
+		tools = []any{}
+	}
+	prefix := []any{map[string]any{"type": codexAdditionalToolsType, "role": "developer", "tools": tools}}
 	if instructions, _ := req["instructions"].(string); strings.TrimSpace(instructions) != "" {
 		prefix = append(prefix, map[string]any{
 			"type":    "message",
@@ -95,13 +88,50 @@ func applyCodexResponsesLite(req map[string]any) bool {
 	}
 
 	req["input"] = append(prefix, input...)
+	finishCodexLiteFields(req)
+	return true
+}
+
+func addCodexLiteTopLevel(req map[string]any, input, tools []any) {
+	prefixLists, _ := splitCodexLitePrefix(input)
+	seen := make(map[string]bool)
+	for _, list := range prefixLists {
+		for _, tool := range list {
+			if key, err := marshalStable(tool); err == nil {
+				seen[string(key)] = true
+			}
+		}
+	}
+	var missing []any
+	for _, tool := range tools {
+		key, err := marshalStable(tool)
+		if err == nil && seen[string(key)] {
+			continue
+		}
+		missing = append(missing, tool)
+		if err == nil {
+			seen[string(key)] = true
+		}
+	}
+	var prefix []any
+	if len(missing) > 0 {
+		prefix = append(prefix, map[string]any{"type": codexAdditionalToolsType, "role": "developer", "tools": missing})
+	}
+	if instructions, _ := req["instructions"].(string); strings.TrimSpace(instructions) != "" {
+		prefix = append(prefix, map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": instructions}}})
+	}
+	if len(prefix) > 0 {
+		req["input"] = append(prefix, input...)
+	}
+}
+
+func finishCodexLiteFields(req map[string]any) {
 	req["instructions"] = ""
 	req["tools"] = nil
-	if tc, _ := req["tool_choice"].(string); tc == "" {
+	if tc, ok := req["tool_choice"]; !ok || tc == nil || tc == "" {
 		req["tool_choice"] = "auto"
 	}
 	req["parallel_tool_calls"] = false
-	return true
 }
 
 // applyCodexLiteReasoning gives a lite model the reasoning block it accepts:
@@ -122,23 +152,49 @@ func applyCodexLiteReasoning(req map[string]any) {
 	req["reasoning"] = reasoning
 }
 
-// applyCodexModelShape dispatches on the model: a lite one gets the prefix shape
-// and the lite reasoning block, anything else keeps the classic one. Called once
-// per request, after the body has been normalised to Responses shape.
-//
-// Hosted search is registered and lifted out of any prefix first, so a body
-// asking for it stays on regular Responses rather than losing the tool inside
-// the prefix (upstream 7bf931781).
-func applyCodexModelShape(req map[string]any, cleanModel string) {
-	if !isCodexResponsesLiteModel(cleanModel) {
-		return
+// shapeCodexResponsesBody owns both the wire shape and the header decision.
+// Hosted search takes precedence over Lite, as in upstream 7bf931781.
+func shapeCodexResponsesBody(body []byte, requested bool) ([]byte, bool, error) {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, false, fmt.Errorf("decode Responses body: %w", err)
 	}
-	registered := registerCodexHostedWebSearch(req)
-	if liftCodexHostedWebSearch(req) || registered {
-		return
+	translateCodexClaudeWebSearch(req)
+	translateCodexClaudeWebSearchChoice(req)
+	registerCodexHostedWebSearch(req)
+	lite := requested || hasCodexLitePrefix(req)
+	if liftCodexHostedWebSearch(req) {
+		wasLite := lite
+		lite = false
+		if reasoning, ok := req["reasoning"].(map[string]any); ok && wasLite {
+			delete(reasoning, "context")
+			if reasoning["summary"] == nil {
+				reasoning["summary"] = "auto"
+			}
+		}
 	}
-	if !applyCodexResponsesLite(req) {
-		return
+	if lite {
+		if !applyCodexResponsesLite(req) {
+			return nil, false, fmt.Errorf("codex lite requires an input array")
+		}
+		applyCodexLiteReasoning(req)
 	}
-	applyCodexLiteReasoning(req)
+	out, err := marshalStable(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode Responses body: %w", err)
+	}
+	return out, lite, nil
+}
+
+func hasCodexLitePrefix(req map[string]any) bool {
+	input, ok := responseInputItems(req["input"])
+	if !ok {
+		return false
+	}
+	for _, item := range input {
+		if m, ok := item.(map[string]any); ok && m["type"] == codexAdditionalToolsType {
+			return true
+		}
+	}
+	return false
 }

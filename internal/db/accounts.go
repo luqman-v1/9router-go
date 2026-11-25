@@ -292,26 +292,75 @@ func (r *Repo) GetConnectionBackoffLevel(connID string) int {
 	return int(level)
 }
 
+// ConnectionModelLockedData reports whether a connection's already-loaded
+// data blob carries an unexpired modelLock_<model> field. Semantics mirror
+// IsConnectionModelLocked exactly — missing, empty, unparseable or malformed
+// values mean unlocked — without the per-check row fetch: the rotation loop
+// and the combo failure loop both hold the blob in memory already, so
+// re-reading it from SQLite per connection cost a query and a full-blob
+// unmarshal to learn something the request already had.
+func ConnectionModelLockedData(rawData, model string) bool {
+	if model == "" {
+		return false
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(rawData), &raw); err != nil {
+		return false // malformed data — treat as unlocked
+	}
+	str, ok := raw[modelLockPrefix+model].(string)
+	if !ok || str == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		return false
+	}
+	return time.Now().UTC().Before(t)
+}
+
 // IsProviderAvailable returns true if at least one active connection for the
 // given provider has no active modelLock_<model>. This is the connection-based
 // replacement for the old kv-based IsProviderHealthy, matching Next.js's
 // isModelLockActive + filterAvailableAccounts flow.
 // Returns true when no connections exist (optimistic default for no-auth providers).
-func (r *Repo) IsProviderAvailable(provider, model string) bool {
+//
+// One statement over (data) instead of GetProviderConnections plus a
+// per-connection lock fetch: the health pre-check ran on every combo
+// candidate per pass, so an eight-connection pool paid 1 + 8 queries and 8
+// full-blob unmarshals to answer a question one scan answers. Lock fields
+// are parsed in Go — not json_extract — so a malformed blob stays "unlocked"
+// exactly as before instead of becoming a SQL error.
+func (r *Repo) IsProviderAvailable(ctx context.Context, provider, model string) bool {
 	if provider == "" {
 		return true
 	}
-	conns, err := r.GetProviderConnections(provider, true)
-	if err != nil || len(conns) == 0 {
-		return true
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT data FROM providerConnections WHERE provider = ? AND isActive = TRUE`,
+		provider,
+	)
+	if err != nil {
+		return true // fail open, as before
 	}
-	for _, c := range conns {
-		locked, err := r.IsConnectionModelLocked(c.ID, model)
-		if err == nil && !locked {
-			return true
+	defer func() { _ = rows.Close() }()
+	// "No connections" and "all connections locked" are different answers:
+	// an empty pool stays available (the optimistic default for no-auth
+	// providers predates model locks), while a pool whose every row is
+	// locked for the model is not.
+	rowsSeen := false
+	for rows.Next() {
+		rowsSeen = true
+		var rawData string
+		if err := rows.Scan(&rawData); err != nil {
+			return true // fail open on scan trouble, as before
+		}
+		if !ConnectionModelLockedData(rawData, model) {
+			return true // one unlocked connection is all the answer needs
 		}
 	}
-	return false
+	if err := rows.Err(); err != nil {
+		return true
+	}
+	return !rowsSeen
 }
 
 // ResetProviderHealth clears modelLock_* fields on connections, matching
@@ -393,8 +442,8 @@ func (r *Repo) clearSpecificModelLock(provider, model string) error {
 			continue
 		}
 		if _, err := r.db.Exec(
-			`UPDATE providerConnections SET data = json_set(data, ?, json('null'), '$.backoffLevel', 0), updatedAt = datetime('now') WHERE id = ?`,
-			key, p.id,
+			`UPDATE providerConnections SET data = json_set(data, ?, json('null'), '$.backoffLevel', 0), updatedAt = ? WHERE id = ?`,
+			key, nowUTC(), p.id,
 		); err != nil {
 			return fmt.Errorf("clear lock %s on %s: %w", key, p.id, err)
 		}
@@ -413,8 +462,8 @@ func (r *Repo) clearConnectionModelLocks(id, data string) error {
 		q += ", ?, json('null')"
 		args = append(args, "$.\""+f+"\"")
 	}
-	q += ", '$.backoffLevel', 0), updatedAt = datetime('now') WHERE id = ?"
-	args = append(args, id)
+	q += ", '$.backoffLevel', 0), updatedAt = ? WHERE id = ?"
+	args = append(args, id, nowUTC())
 	_, err := r.db.Exec(q, args...)
 	return err
 }

@@ -21,7 +21,8 @@ import (
 
 // ForwardGemini sends an OpenAI-format request to a Gemini-native endpoint.
 // projectID is non-empty for antigravity (cloudcode-pa.googleapis.com).
-func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
+// apiKeyID scopes bare-key thought signatures when no session header is sent.
+func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string, apiKeyID string) (*http.Response, error) {
 	body := []byte(bodyStr)
 	if projectID != "" {
 		// Body-inspecting tier resolution (upstream getModelUpstreamId): an
@@ -54,14 +55,15 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 		}
 
-		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio)
+		sessID := handlerutil.GetSessionID(ctx)
+		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio, sessID)
 		if err != nil {
 			return nil, fmt.Errorf("wrap antigravity image: %w", err)
 		}
 		sendBody = wrapped
 	} else {
 		// Translate OpenAI → Gemini native
-		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
+		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx), apiKeyID)
 		if err != nil {
 			return nil, fmt.Errorf("translate to Gemini: %w", err)
 		}
@@ -72,10 +74,20 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 		}
 
-		// Wrap for antigravity if needed
+		// Wrap for the lane that needs an envelope.
 		sendBody = geminiBody
-		if projectID != "" {
-			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
+		switch {
+		case cfg.Format == "gemini-cli":
+			// Cloud Code Assist: {project, model, request} with no userId,
+			// requestType or requestId — the CLI's own shape.
+			wrapped, err := translator.WrapForGeminiCLI(geminiBody, projectID, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("wrap for gemini-cli: %w", err)
+			}
+			sendBody = wrapped
+		case projectID != "":
+			sessID := handlerutil.GetSessionID(ctx)
+			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName, sessID)
 			if err != nil {
 				return nil, fmt.Errorf("wrap for antigravity: %w", err)
 			}
@@ -96,16 +108,36 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		action = "streamGenerateContent?alt=sse"
 	}
 	var requestURL string
-	if projectID != "" {
+	switch {
+	case cfg.Format == "gemini-cli":
+		// The v1internal root takes the action directly; the model rides in
+		// the envelope, not the path.
+		requestURL = fmt.Sprintf("%s:%s", baseURL, action)
+	case projectID != "":
 		requestURL = fmt.Sprintf("%s/v1internal:%s", baseURL, action)
-	} else {
+	default:
 		requestURL = fmt.Sprintf("%s/v1beta/models/%s:%s", baseURL, modelName, action)
+	}
+
+	accept := "application/json"
+	if isStream {
+		accept = "text/event-stream"
 	}
 
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Authorization": "Bearer " + apiKey,
 		"User-Agent":    providers.AntigravityCLIUserAgent,
+		"Accept":        accept,
+	}
+	if isStream {
+		headers["Accept-Encoding"] = "identity"
+	}
+	if cfg.Format == "gemini-cli" {
+		// Cloud Code Assist identifies the CLI in two more headers and answers
+		// 403 without them.
+		headers["User-Agent"] = translator.GeminiCLIUserAgent(modelName)
+		headers["X-Goog-Api-Client"] = translator.GeminiCLIApiClient
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(sendBody))
@@ -126,9 +158,54 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		}
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
+	UnwrapIdentityGzip(req, resp)
+
+	// 429 fallback: when the Antigravity backend answers a bare
+	// RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED / RATE_LIMIT_EXCEEDED /
+	// "Individual quota reached" marker), the backend flagged the
+	// systemInstruction shape itself. Retry once with the
+	// systemInstruction folded into contents[0].
+	if resp.StatusCode == http.StatusTooManyRequests && projectID != "" && cfg.Format != "gemini-cli" {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
+		_ = resp.Body.Close()
+		if isBareResourceExhausted(errBody) {
+			// Translate the OpenAI body to Gemini, move the systemInstruction,
+			// then re-wrap for Antigravity.
+			geminiBody, terr := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
+			if terr == nil {
+				if rewritten, ok := translator.MoveSystemInstructionToContents(geminiBody); ok {
+					sessID := handlerutil.GetSessionID(ctx)
+					rewrapped, werr := translator.WrapForAntigravity(rewritten, projectID, modelName, sessID)
+					if werr == nil {
+						log.Warn("gemini", "retrying with systemInstruction moved to contents[0]", "model", modelName)
+						reqRetry, rerr := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(rewrapped))
+						if rerr == nil {
+							for k, v := range headers {
+								reqRetry.Header.Set(k, v)
+							}
+							if respRetry, derr := client.Do(reqRetry); derr == nil {
+								UnwrapIdentityGzip(reqRetry, respRetry)
+								if respRetry.StatusCode == http.StatusOK {
+									return respRetry, nil
+								}
+								errBodyRetry, _ := io.ReadAll(io.LimitReader(respRetry.Body, constants.UpstreamErrLimit))
+								_ = respRetry.Body.Close()
+								log.Warn("gemini", "retry with moved systemInstruction also failed", "status", respRetry.StatusCode, "body", string(errBodyRetry[:min(500, len(errBodyRetry))]))
+								// Return the original 429 so the combo loop can rotate.
+								return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+							}
+						}
+					}
+				}
+			}
+		}
+		// Not a bare 429 or retry didn't apply: re-create the body for the
+		// regular error handling below.
+		resp.Body = io.NopCloser(bytes.NewReader(errBody))
+	}
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
@@ -164,11 +241,15 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 						req2.Header.Set(k, v)
 					}
 					if resp2, err := client.Do(req2); err == nil {
+						UnwrapIdentityGzip(req2, resp2)
 						if resp2.StatusCode == http.StatusOK {
+							if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
+								translator.PurgeSessionThoughtSignatures(sessID)
+							}
 							return resp2, nil
 						}
 						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, constants.UpstreamErrLimit))
-						resp2.Body.Close()
+						_ = resp2.Body.Close()
 						log.Warn("gemini", "retry with default thoughtSignature also failed", "status", resp2.StatusCode, "body", string(errBody2[:min(500, len(errBody2))]))
 						// Fall through to try stripping as last resort
 						if bytes.Contains(errBody2, []byte("thought signature")) || bytes.Contains(errBody2, []byte("Thought signature")) {
@@ -181,11 +262,15 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 										req3.Header.Set(k, v)
 									}
 									if resp3, err := client.Do(req3); err == nil {
+										UnwrapIdentityGzip(req3, resp3)
 										if resp3.StatusCode == http.StatusOK {
+											if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
+												translator.PurgeSessionThoughtSignatures(sessID)
+											}
 											return resp3, nil
 										}
 										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, constants.UpstreamErrLimit))
-										resp3.Body.Close()
+										_ = resp3.Body.Close()
 										log.Warn("gemini", "retry without thoughtSignature also failed", "status", resp3.StatusCode, "body", string(errBody3[:min(500, len(errBody3))]))
 										return nil, &UpstreamError{StatusCode: resp3.StatusCode, Body: errBody3, Header: resp3.Header}
 									}
@@ -200,6 +285,25 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 	return resp, nil
+}
+
+// isBareResourceExhausted reports whether a 429 error body is a bare
+// RESOURCE_EXHAUSTED status with no explicit quota markers (QUOTA_EXHAUSTED,
+// RATE_LIMIT_EXCEEDED, "Individual quota reached"). Such a response means
+// the Antigravity backend flagged the request content itself — typically
+// the systemInstruction shape — and moving the systemInstruction into
+// contents[0] is the upstream fix.
+func isBareResourceExhausted(body []byte) bool {
+	s := string(body)
+	if !strings.Contains(s, "RESOURCE_EXHAUSTED") {
+		return false
+	}
+	for _, marker := range []string{"QUOTA_EXHAUSTED", "RATE_LIMIT_EXCEEDED", "Individual quota reached"} {
+		if strings.Contains(s, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // isTransientGeminiTransportError reports whether a client.Do failure is a

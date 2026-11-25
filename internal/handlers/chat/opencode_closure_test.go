@@ -4,7 +4,9 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestOpencodeClosureError_ClassifiesVariants(t *testing.T) {
@@ -221,5 +223,78 @@ func TestOpencodeClosureError_RealRateLimitPassesThrough(t *testing.T) {
 	classified := opencodeClosureError("opencode", "deepseek-v4.1-flash-free", origErr)
 	if !errors.Is(classified, origErr) {
 		t.Errorf("expected a non-free-tier 429 to be forwarded untouched")
+	}
+}
+
+// The gate announces a spent allowance's real reset in Retry-After. That value
+// must survive the classifier instead of being replaced by its hardcoded
+// estimate, or the caller re-probes a spent egress long before the window it
+// was told to wait for.
+func TestOpencodeClosureError_PrefersUpstreamRetryAfter(t *testing.T) {
+	cases := []struct {
+		name   string
+		header http.Header
+		want   string
+	}{
+		{"header delta-seconds wins", http.Header{"Retry-After": {"3600"}}, "3600"},
+		{"http-date is honoured", http.Header{"Retry-After": {time.Now().Add(90 * time.Minute).UTC().Format(http.TimeFormat)}}, ""},
+		// No carrier: the classifier's own 60s estimate stands.
+		{"no carrier keeps the estimate", nil, "60"},
+		{"unparseable header keeps the estimate", http.Header{"Retry-After": {"soon"}}, "60"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origErr := &upstreamError{
+				StatusCode: 429,
+				Body:       []byte(`{"error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`),
+				Header:     tc.header,
+			}
+			var ue *upstreamError
+			if !errors.As(opencodeClosureError("opencode", "model", origErr), &ue) {
+				t.Fatal("expected a classified upstream error")
+			}
+			got := ue.Header.Get("Retry-After")
+			if tc.want != "" {
+				if got != tc.want {
+					t.Errorf("Retry-After = %q, want %q", got, tc.want)
+				}
+				return
+			}
+			// An http-date resolves to a delta; assert it is the ~90m the carrier
+			// named rather than the 60s estimate.
+			//
+			// Not an exact second: http.TimeFormat carries second granularity, so
+			// formatting a time with sub-second precision truncates it, and the
+			// time elapsed between building the header and parsing it can cost one
+			// more. The floor sat at 5399s for exactly that reason and failed CI in
+			// the window where the truncation and the elapsed time together cross a
+			// second. The property under test is "the carrier wins over the
+			// estimate", which a range states honestly.
+			secs, err := strconv.Atoi(got)
+			if err != nil {
+				t.Fatalf("Retry-After = %q, want delta-seconds", got)
+			}
+			if secs < 5395 || secs > 5400 {
+				t.Errorf("Retry-After = %ds, want ~5400s from the date carrier", secs)
+			}
+		})
+	}
+}
+
+// A real carrier longer than the safety ceiling is still clamped: this change
+// moves where the value comes from, not the 2h cap that stops a hostile or
+// nonsensical duration from parking an egress forever.
+func TestOpencodeClosureError_ClampsTheUpstreamCarrier(t *testing.T) {
+	origErr := &upstreamError{
+		StatusCode: 429,
+		Body:       []byte(`{"error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`),
+		Header:     http.Header{"Retry-After": {"999999"}},
+	}
+	var ue *upstreamError
+	if !errors.As(opencodeClosureError("opencode", "model", origErr), &ue) {
+		t.Fatal("expected a classified upstream error")
+	}
+	if got, want := ue.Header.Get("Retry-After"), "7200"; got != want {
+		t.Errorf("Retry-After = %q, want %q (the 2h maxResetCooldown ceiling)", got, want)
 	}
 }

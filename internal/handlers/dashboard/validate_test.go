@@ -3,7 +3,9 @@ package dashboard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -931,6 +933,29 @@ func TestHandleValidateProvider_OpencodeSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleValidateProvider_OpencodeGoSendsSessionHeader(t *testing.T) {
+	calls := withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		return http.StatusOK, []byte(`data: {"choices":[{"delta":{"content":"Hello!"}}]}\n\n`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"opencode-go","apiKey":"sk-test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 probe, got %d", len(*calls))
+	}
+	p := (*calls)[0]
+	sum := sha256.Sum256([]byte("sk-test"))
+	want := "validate-" + hex.EncodeToString(sum[:])[:16]
+	if got := p.headers.Get("x-opencode-session"); got != want {
+		t.Errorf("x-opencode-session = %q, want %q", got, want)
+	}
+	if out["valid"] != true {
+		t.Errorf("expected valid=true, got %v", out["valid"])
+	}
+}
+
 func TestHandleValidateProvider_OpencodeQuotaLimit(t *testing.T) {
 	errMsg := "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"
 	withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
@@ -946,5 +971,93 @@ func TestHandleValidateProvider_OpencodeQuotaLimit(t *testing.T) {
 	}
 	if out["error"] != errMsg {
 		t.Errorf("expected error %q, got %q", errMsg, out["error"])
+	}
+}
+
+func TestHandleValidateProvider_KenariUsesGenericProbe(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidate(t, `{"provider":"kenari","apiKey":"kenari-key"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("expected valid=true, got %v", out["valid"])
+	}
+	if out["supported"] != true {
+		t.Errorf("expected supported=true, got %v", out["supported"])
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one probe, got %d", len(*calls))
+	}
+	probe := (*calls)[0]
+	if probe.method != http.MethodGet || probe.url != "https://kenari.id/v1/models" {
+		t.Errorf("unexpected probe %s %s", probe.method, probe.url)
+	}
+	if got := probe.headers.Get("Authorization"); got != "Bearer kenari-key" {
+		t.Errorf("expected bearer auth header, got %q", got)
+	}
+}
+
+func TestHandleValidateProvider_KenariAliasResolves(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, _ := postValidate(t, `{"provider":"ki","apiKey":"kenari-key"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0].url != "https://kenari.id/v1/models" {
+		t.Fatalf("alias ki did not resolve to kenari: %+v", *calls)
+	}
+}
+
+// --- deeprelay ---
+
+func TestHandleValidateProvider_DeepRelayProbesBillingBalance(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidate(t, `{"provider":"deeprelay","apiKey":"deeprelay_live_test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true || out["supported"] != true {
+		t.Errorf("expected valid+supported, got %v", out)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one probe, got %d", len(*calls))
+	}
+	probe := (*calls)[0]
+	if probe.method != http.MethodGet || probe.url != "https://api.deeprelay.ai/v1/billing/balance" {
+		t.Errorf("unexpected probe %s %s", probe.method, probe.url)
+	}
+	if got := probe.headers.Get("Authorization"); got != "Bearer deeprelay_live_test" {
+		t.Errorf("expected bearer auth header, got %q", got)
+	}
+}
+
+func TestHandleValidateProvider_DeepRelayAliasResolves(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, _ := postValidate(t, `{"provider":"dr","apiKey":"k"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0].url != "https://api.deeprelay.ai/v1/billing/balance" {
+		t.Fatalf("alias dr did not resolve to deeprelay: %+v", *calls)
+	}
+}
+
+func TestHandleValidateProvider_DeepRelayInvalidKey(t *testing.T) {
+	staticProbeStub(t, http.StatusUnauthorized)
+
+	rec, out := postValidate(t, `{"provider":"deeprelay","apiKey":"nope"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid=false, got %d", rec.Code)
+	}
+	if out["valid"] != false {
+		t.Errorf("expected valid=false, got %v", out["valid"])
+	}
+	if out["error"] != "Invalid API key" {
+		t.Errorf("expected 'Invalid API key', got %v", out["error"])
 	}
 }

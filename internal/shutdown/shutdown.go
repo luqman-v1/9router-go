@@ -87,8 +87,8 @@ func TestReset() {
 // port (Windows cannot rebind a port held by a live listener at all), so main
 // runs the hook after fxApp.Stop rather than the requester spawning eagerly.
 var (
-	afterMu    sync.Mutex
-	afterStop  func()
+	afterMu   sync.Mutex
+	afterStop func()
 )
 
 // RestartAfterStop registers fn to run once this process has drained, then

@@ -114,11 +114,11 @@ type QoderCosyCreds struct {
 
 // BuildQoderCosyHeaders signs a Qoder request for any COSY path (chat and the
 // model list share the scheme). Exported for the dashboard key-validate probe.
-func BuildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds) (map[string]string, error) {
-	return buildQoderCosyHeaders(body, requestURL, creds)
+func BuildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds, signatureBody ...[]byte) (map[string]string, error) {
+	return buildQoderCosyHeaders(body, requestURL, creds, signatureBody...)
 }
 
-func buildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds) (map[string]string, error) {
+func buildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds, signatureBody ...[]byte) (map[string]string, error) {
 	// Upstream throws on a missing user id or token rather than inventing one:
 	// a signature over a made-up account is rejected with
 	// 403 {"code":"105","message":"Login expired"}, which reads as an expired
@@ -168,8 +168,12 @@ func buildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds)
 	})
 	payloadB64 := base64.StdEncoding.EncodeToString(payloadJSON)
 
+	signatureBytes := body
+	if len(signatureBody) > 0 && len(signatureBody[0]) > 0 {
+		signatureBytes = signatureBody[0]
+	}
 	sigPath := qoderCosySigPath(requestURL)
-	sigInput := fmt.Sprintf("%s\n%s\n%s\n%s\n%s", payloadB64, cosyKeyB64, timestamp, string(body), sigPath)
+	sigInput := fmt.Sprintf("%s\n%s\n%s\n%s\n%s", payloadB64, cosyKeyB64, timestamp, string(signatureBytes), sigPath)
 	sig := md5Hex([]byte(sigInput))
 
 	// Upstream persists the machine UUID on the connection so every request
@@ -204,7 +208,7 @@ func buildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds)
 		"Cosy-Organization-Id":   "",
 		"Cosy-Organization-Tags": "",
 		"Login-Version":          "v2",
-		"X-Request-Id":           uuid.New().String(),
+		"X-Request-Id":           reqID,
 	}
 
 	return headers, nil
@@ -504,7 +508,7 @@ func qoderResolveCredential(ctx context.Context, do QoderDoer, creds QoderCosyCr
 	if !IsQoderPAT(creds.AuthToken) {
 		return creds, nil
 	}
-	endpoints := QoderEndpointsFor(string(region))
+	endpoints := QoderEndpointsFor(qoderProviderIDForRegion(region))
 	token, err := ExchangeQoderJobToken(ctx, do, endpoints.JobTokenExchangeURL, creds.AuthToken)
 	if err != nil {
 		return creds, &proxy.UpstreamError{
@@ -577,6 +581,7 @@ func qoderApplyChatHeaders(headers map[string]string, built qoderBuiltChat) {
 	headers["Content-Type"] = "application/json"
 	headers["Accept"] = "text/event-stream"
 	headers["Cache-Control"] = "no-cache"
+	headers["User-Agent"] = "qodercli/1.0.0"
 	headers["X-Model-Key"] = built.QoderKey
 	headers["X-Model-Source"] = qoderModelSource(built)
 	headers["Accept-Encoding"] = "identity"

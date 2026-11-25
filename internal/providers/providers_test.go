@@ -2,6 +2,8 @@ package providers
 
 import (
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -195,6 +197,18 @@ func TestNewProvidersRegistry_v059(t *testing.T) {
 	if _, ok := KnownProviders["xquik"]; !ok {
 		t.Error("expected xquik provider registered")
 	}
+	if _, ok := KnownProviders["keenable"]; !ok {
+		t.Error("expected keenable provider registered")
+	}
+	if cfg := KnownProviders["keenable"]; !cfg.NoAuth {
+		t.Errorf("expected keenable to be NoAuth, got NoAuth=%v", cfg.NoAuth)
+	}
+	if cfg := KnownProviders["keenable"]; cfg.SearchURL != "https://api.keenable.ai/v1/search" {
+		t.Errorf("expected keenable SearchURL, got %q", cfg.SearchURL)
+	}
+	if cfg := KnownProviders["keenable"]; cfg.FetchURL != "https://api.keenable.ai/v1/fetch" {
+		t.Errorf("expected keenable FetchURL, got %q", cfg.FetchURL)
+	}
 	if _, ok := KnownProviders["ollama-search"]; !ok {
 		t.Error("expected ollama-search provider registered")
 	}
@@ -232,8 +246,10 @@ func TestGetProviderModelKind(t *testing.T) {
 	}{
 		{provider: "nvidia", model: "fastpitch", want: "tts"},
 		{provider: "nvidia", model: "tacotron2", want: "tts"},
-		{provider: "nvidia", model: "nvidia/nv-embedqa-e5-v5", want: "embedding"},
+		{provider: "nvidia", model: "nvidia/nvclip", want: "embedding"},
+		{provider: "nvidia", model: "nvclip", want: "embedding"},
 		{provider: "nvidia", model: "nvidia/parakeet-ctc-1.1b-asr", want: "stt"},
+		{provider: "nvidia", model: "parakeet-ctc-1.1b-asr", want: "stt"},
 		{provider: "nvidia", model: "minimaxai/minimax-m3", want: ""},
 		{provider: "antigravity", model: "gemini-3.1-flash-image", want: "image"},
 		{provider: "antigravity", model: "gemini-3.8-flash-high", want: ""},
@@ -435,5 +451,97 @@ func TestNewProvidersRegistry_v062(t *testing.T) {
 		if got := GetProviderModelKind("gemini", model); got != "tts" {
 			t.Errorf("GetProviderModelKind(gemini, %q) = %q, want tts", model, got)
 		}
+	}
+}
+
+func TestKnownProviders_Kenari(t *testing.T) {
+	cfg, ok := KnownProviders["kenari"]
+	if !ok {
+		t.Fatal("expected KnownProviders to contain kenari")
+	}
+	if cfg.BaseURL != "https://kenari.id/v1/chat/completions" {
+		t.Errorf("kenari expected BaseURL https://kenari.id/v1/chat/completions, got %s", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("kenari expected bearer/Authorization, got %s/%s", cfg.AuthScheme, cfg.AuthHeader)
+	}
+	if got := ResolveAlias("ki"); got != "kenari" {
+		t.Errorf("ResolveAlias(ki) = %q, want kenari", got)
+	}
+	if got := RegistryAliases["kenari"]; got != "ki" {
+		t.Errorf("RegistryAliases[kenari] = %q, want ki", got)
+	}
+	models := GetProviderModels("kenari")
+	if len(models) == 0 {
+		t.Error("GetProviderModels(kenari) returned empty list")
+	}
+	for _, m := range models {
+		if m == "deepseek-v4" {
+			goto found
+		}
+	}
+	t.Error("GetProviderModels(kenari) missing deepseek-v4")
+found:
+}
+
+// The beta header must live under one key: a leftover case variant would be
+// copied into the request after the merged one and win, dropping the client's
+// own flags without a trace.
+func TestWithAnthropicBeta_KeepsOneCanonicalKey(t *testing.T) {
+	headers := map[string]string{
+		"anthropic-beta": "old-flag",
+		"Anthropic-Beta": "another-flag",
+		"x-relay-path":   "/v1/messages",
+	}
+
+	out := WithAnthropicBeta(headers, "merged-flag")
+
+	if len(out) != 2 {
+		t.Fatalf("expected the two non-beta headers plus one beta key, got %v", out)
+	}
+	if out["Anthropic-Beta"] != "merged-flag" {
+		t.Errorf("canonical key = %q", out["Anthropic-Beta"])
+	}
+	for k := range out {
+		if strings.EqualFold(k, "Anthropic-Beta") && k != "Anthropic-Beta" {
+			t.Errorf("case variant %q survived", k)
+		}
+	}
+	if headers["Anthropic-Beta"] != "another-flag" {
+		t.Error("the input map must not be mutated")
+	}
+}
+
+func TestKnownProviders_DeepRelay(t *testing.T) {
+	cfg, ok := KnownProviders["deeprelay"]
+	if !ok {
+		t.Fatal("expected KnownProviders to contain deeprelay")
+	}
+	if cfg.BaseURL != "https://api.deeprelay.ai/v1/chat/completions" {
+		t.Errorf("deeprelay BaseURL = %q", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("deeprelay auth = %s/%s, want bearer/Authorization", cfg.AuthScheme, cfg.AuthHeader)
+	}
+	if got := ResolveAlias("dr"); got != "deeprelay" {
+		t.Errorf("ResolveAlias(dr) = %q, want deeprelay", got)
+	}
+	if _, ok := ProviderRegistry["deeprelay"]; !ok {
+		t.Error("expected ProviderRegistry to contain deeprelay")
+	}
+	if !slices.Contains(GetProviderModels("deeprelay"), "deeprelay/deepseek-v4-pro") {
+		t.Errorf("deeprelay catalog missing deepseek-v4-pro: %v", GetProviderModels("deeprelay"))
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/qwen3-embedding-8b"); got != "embedding" {
+		t.Errorf("embedding kind = %q, want embedding", got)
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/seedream-4.0"); got != "image" {
+		t.Errorf("image kind = %q, want image", got)
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/wan2.7-t2v"); got != "video" {
+		t.Errorf("video kind = %q, want video", got)
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/deepseek-v4-pro"); got != "" {
+		t.Errorf("chat model kind = %q, want empty", got)
 	}
 }

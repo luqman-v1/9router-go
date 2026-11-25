@@ -18,7 +18,7 @@ func TestCaptureUsageFromSSEChunk_ResponsesSSE(t *testing.T) {
 
 	chunk := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":5200,\"output_tokens\":180,\"total_tokens\":5380,\"input_tokens_details\":{\"cached_tokens\":4096},\"output_tokens_details\":{\"reasoning_tokens\":64}}}}\n\n")
 
-	captureUsageFromSSEChunk(ctx, chunk)
+	_ = captureUsageFromSSEChunk(ctx, nil, chunk)
 
 	usage := translator.GetAndClearUsage(ctx)
 	if usage == nil {
@@ -35,6 +35,36 @@ func TestCaptureUsageFromSSEChunk_ResponsesSSE(t *testing.T) {
 	}
 	if usage.ReasoningTokens() != 64 {
 		t.Errorf("ReasoningTokens = %d, want 64", usage.ReasoningTokens())
+	}
+}
+
+// TestCaptureUsageFromSSEChunk_ClaudeEvents verifies that the passthrough
+// executor records prompt and cache counts from Claude message_start, and the
+// completion count from message_delta, across separate chunk calls.
+func TestCaptureUsageFromSSEChunk_ClaudeEvents(t *testing.T) {
+	ctx := translator.WithUsageCapture(context.Background())
+
+	start := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":100,\"cache_creation_input_tokens\":20,\"cache_read_input_tokens\":500}}}\n\n")
+	delta := []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":25}}\n\n")
+
+	acc := captureUsageFromSSEChunk(ctx, nil, start)
+	_ = captureUsageFromSSEChunk(ctx, acc, delta)
+
+	usage := translator.GetAndClearUsage(ctx)
+	if usage == nil {
+		t.Fatal("expected usage to be recorded, got nil")
+	}
+	if usage.PromptTokens != 620 {
+		t.Errorf("PromptTokens = %d, want 620 (100 + 500 + 20)", usage.PromptTokens)
+	}
+	if usage.CachedTokens != 500 {
+		t.Errorf("CachedTokens = %d, want 500", usage.CachedTokens)
+	}
+	if usage.CacheCreationInputTokens != 20 {
+		t.Errorf("CacheCreationInputTokens = %d, want 20", usage.CacheCreationInputTokens)
+	}
+	if usage.CompletionTokens != 25 {
+		t.Errorf("CompletionTokens = %d, want 25", usage.CompletionTokens)
 	}
 }
 

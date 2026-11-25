@@ -9,9 +9,23 @@ package providers
 
 // ProviderMeta is the display metadata for one provider.
 type ProviderMeta struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Alias       string   `json:"alias,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Alias is the provider's upstream alias (the registry entry's
+	// `uiAlias || alias`).
+	Alias string `json:"alias,omitempty"`
+	// ModelPrefix is the prefix this provider's model ids are PUBLISHED
+	// under — what /v1/models serves and what a client pastes. It is
+	// GetProviderAlias(id), which for most providers is the alias but not
+	// for all: `freebuff` publishes as "freebuff" while its upstream alias
+	// is "fb", and `sumopod` publishes as "sp" while its upstream alias is
+	// "sumopod".
+	//
+	// The dashboard's copy button used the provider id, so it handed out
+	// "opencode/<model>" where the gateway serves "oc/<model>" — an id the
+	// router does not resolve. The published prefix is the only value that
+	// is guaranteed to round-trip.
+	ModelPrefix string   `json:"modelPrefix,omitempty"`
 	Category    Category `json:"category"`
 	AuthType    string   `json:"authType"`
 	Color       string   `json:"color,omitempty"`
@@ -160,7 +174,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Priority:     20,
 		ServiceKinds: []string{"llm", "image", "webSearch"},
 		Website:      "https://antigravity.google",
-		Notice:       &Notice{SignupURL: "https://antigravity.google"},
+		Notice:       &Notice{Text: "Risk Notice: This provider uses a personal OAuth session not officially licensed for proxy gateways. Account may be restricted or suspended by the upstream provider. Use at your own risk.", SignupURL: "https://antigravity.google"},
 	},
 	"claude": {
 		ID:           "claude",
@@ -445,6 +459,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "bolt",
 		ServiceKinds: []string{"llm"},
 	},
+	"free-pi": {
+		ID:            "free-pi",
+		Name:          "Free Pi",
+		Alias:         "fp",
+		Category:      CategoryOAuth,
+		Color:         "#7c3aed",
+		Icon:          "terminal",
+		ServiceKinds:  []string{"llm"},
+		Website:       "https://freepi.ai",
+		Usage:         true,
+		ModelsFetcher: &Fetcher{URL: "https://api.freepi.ai/client-version", Type: "free-pi"},
+	},
 	"gemini-cli": {
 		ID:           "gemini-cli",
 		Name:         "Gemini CLI",
@@ -454,7 +480,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "terminal",
 		ServiceKinds: []string{"llm"},
 		Website:      "https://github.com/google-gemini/gemini-cli",
-		Notice:       &Notice{SignupURL: "https://github.com/google-gemini/gemini-cli"},
+		Notice:       &Notice{Text: "Risk Notice: This provider uses a personal OAuth session not officially licensed for proxy gateways. Account may be restricted or suspended by the upstream provider. Use at your own risk.", SignupURL: "https://github.com/google-gemini/gemini-cli"},
 	},
 	"kiro": {
 		ID:           "kiro",
@@ -465,7 +491,10 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "psychology_alt",
 		ServiceKinds: []string{"llm"},
 		Website:      "https://kiro.dev",
-		Notice:       &Notice{SignupURL: "https://kiro.dev"},
+		Notice: &Notice{
+			Text:      "Risk Notice: This provider drives AWS CodeWhisperer by presenting itself as the Kiro IDE client, and speaks for a personal or corporate Kiro session that is not officially licensed for proxy gateways. Account, quota or seat access may be restricted or suspended by your AWS organization or by Kiro. Use at your own risk.",
+			SignupURL: "https://kiro.dev",
+		},
 	},
 	"mimo-free": {
 		ID:            "mimo-free",
@@ -613,6 +642,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		ServiceKinds: []string{"llm"},
 		Website:      "https://kilo.ai",
 		Notice:       &Notice{APIKeyURL: "https://kilo.ai/dashboard?tab=apiKeys"},
+	},
+	"kenari": {
+		ID:           "kenari",
+		Name:         "Kenari",
+		Alias:        "ki",
+		Category:     CategoryAPIKey,
+		AuthType:     "apikey",
+		Color:        "#F59E0B",
+		Icon:         "smart_toy",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://kenari.id",
+		Notice:       &Notice{APIKeyURL: "https://kenari.id/dashboard"},
 	},
 	"nan": {
 		ID:           "nan",
@@ -810,6 +851,17 @@ var ProviderRegistry = map[string]ProviderMeta{
 		ServiceKinds: []string{"llm"},
 		Website:      "https://www.alibabacloud.com/campaign/ai-landing-page-token",
 		Notice:       &Notice{APIKeyURL: "https://modelstudio.console.alibabacloud.com/?apiKey=1"},
+	},
+	"qwencloud": {
+		ID:           "qwencloud",
+		Name:         "QwenCloud",
+		Alias:        "qwencloud",
+		Category:     CategoryAPIKey,
+		Color:        "#8B3DFE",
+		Icon:         "cloud",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://www.qwencloud.com",
+		Notice:       &Notice{APIKeyURL: "https://home.qwencloud.com/api-keys"},
 	},
 	"anthropic": {
 		ID:            "anthropic",
@@ -1016,6 +1068,24 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Notice:        &Notice{Text: "Use your CommandCode CLI API key (starts with user_...) from ~/.commandcode/auth.json or commandcode.ai/studio.", APIKeyURL: "https://commandcode.ai/studio"},
 		ModelsFetcher: &Fetcher{URL: "https://api.commandcode.ai/provider/v1/models", Type: "commandcode-free"},
 	},
+	// Command Code's documented Provider API (commandcode.ai/docs/provider) —
+	// a separate entry from `commandcode` above, which speaks the CLI's
+	// internal /alpha/generate envelope. This one is standard OpenAI
+	// Chat/Responses plus Anthropic Messages on one bearer, with the lane
+	// chosen per model from the live catalogue's supported_endpoints.
+	"commandcode-goat": {
+		ID:            "commandcode-goat",
+		Name:          "Command Code (Provider API)",
+		Alias:         "cmc-goat",
+		Category:      CategoryAPIKey,
+		AuthType:      "apikey",
+		Color:         "#000000",
+		Icon:          "smart_toy",
+		ServiceKinds:  []string{"llm", "systemone"},
+		Website:       "https://commandcode.ai/docs/provider",
+		Notice:        &Notice{Text: "Use your Command Code API key (starts with user_...) from Studio. OpenAI- and Anthropic-compatible endpoints on one key; Claude models answer /messages only, everything else /chat/completions.", APIKeyURL: "https://commandcode.ai/studio"},
+		ModelsFetcher: &Fetcher{URL: "https://api.commandcode.ai/provider/v1/models", Type: "commandcode-all"},
+	},
 	"deepgram": {
 		ID:           "deepgram",
 		Name:         "Deepgram",
@@ -1039,6 +1109,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		ServiceKinds: []string{"llm"},
 		Website:      "https://deepseek.com",
 		Notice:       &Notice{APIKeyURL: "https://platform.deepseek.com/api_keys"},
+	},
+	"agy-acp": {
+		ID:           "agy-acp",
+		Name:         "Antigravity CLI (ACP)",
+		Alias:        "agcpy",
+		Category:     CategoryOAuth,
+		Color:        "#F59E0B",
+		Icon:         "terminal",
+		Priority:     21,
+		ServiceKinds: []string{"llm"},
+		Website:      "https://antigravity.google",
+		Notice:       &Notice{Text: "Risk Notice: This provider drives the official `agy` CLI over Agent Client Protocol. Google's Antigravity Additional Terms of Service section 6 and FAQ state that wrapping agy in third-party tools and automating account rotation are not supported and may suspend your account. Multi-account failover is OFF by default. Install agy >= 1.5.0 (AGY_PATH overrides the binary), then either reference an existing Antigravity OAuth connection or import a refresh token. Use at your own risk.", SignupURL: "https://antigravity.google"},
 	},
 	"devin-cli": {
 		ID:           "devin-cli",
@@ -1356,16 +1438,17 @@ var ProviderRegistry = map[string]ProviderMeta{
 		ServiceKinds: []string{"llm"},
 	},
 	"mistral": {
-		ID:           "mistral",
-		Name:         "Mistral",
-		Alias:        "mistral",
-		Category:     CategoryAPIKey,
-		AuthType:     "apikey",
-		Color:        "#FF7000",
-		Icon:         "air",
-		ServiceKinds: []string{"llm", "embedding"},
-		Website:      "https://mistral.ai",
-		Notice:       &Notice{APIKeyURL: "https://console.mistral.ai/api-keys"},
+		ID:            "mistral",
+		Name:          "Mistral",
+		Alias:         "mistral",
+		Category:      CategoryAPIKey,
+		AuthType:      "apikey",
+		Color:         "#FF7000",
+		Icon:          "air",
+		ServiceKinds:  []string{"llm", "embedding"},
+		Website:       "https://mistral.ai",
+		Notice:        &Notice{APIKeyURL: "https://console.mistral.ai/api-keys"},
+		ModelsFetcher: &Fetcher{URL: "https://api.mistral.ai/v1/models", Type: "openai"},
 	},
 	"morph": {
 		ID:           "morph",
@@ -1409,7 +1492,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Category:     CategoryAPIKey,
 		Color:        "#ffffffff",
 		Icon:         "cloud",
-		ServiceKinds: []string{"llm"},
+		ServiceKinds: []string{"llm", "tts"},
 		Website:      "https://ollama.com",
 	},
 	"ollama-search": {
@@ -1439,15 +1522,16 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Notice:       &Notice{APIKeyURL: "https://platform.openai.com/api-keys"},
 	},
 	"opencode-go": {
-		ID:           "opencode-go",
-		Name:         "OpenCode Go",
-		Alias:        "ocg",
-		Category:     CategoryAPIKey,
-		Color:        "#E87040",
-		Icon:         "terminal",
-		ServiceKinds: []string{"llm", "image", "video", "embedding"},
-		Website:      "https://opencode.ai/auth",
-		Notice:       &Notice{Text: "OpenCode Go subscription: $5/mo (then 10/mo). Access to Kimi, GLM, Qwen, MiMo, MiniMax models.", APIKeyURL: "https://opencode.ai/auth"},
+		ID:            "opencode-go",
+		Name:          "OpenCode Go",
+		Alias:         "ocg",
+		Category:      CategoryAPIKey,
+		Color:         "#E87040",
+		Icon:          "terminal",
+		ServiceKinds:  []string{"llm", "image", "video", "embedding"},
+		Website:       "https://opencode.ai/auth",
+		Notice:        &Notice{Text: "OpenCode Go subscription: $5/mo (then 10/mo). Access to Kimi, GLM, Qwen, MiMo, MiniMax models.", APIKeyURL: "https://opencode.ai/auth"},
+		ModelsFetcher: &Fetcher{URL: "https://opencode.ai/inference/go/v1/models", Type: "opencode-go"},
 	},
 	"opencode-zen": {
 		ID:                "opencode-zen",
@@ -1463,6 +1547,26 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:           "https://opencode.ai/auth",
 		Notice:            &Notice{Text: "OpenCode Zen PAYG: pay-as-you-go, key from https://opencode.ai/auth. Same models as Zen: paid + free tiers on the fast lane.", APIKeyURL: "https://opencode.ai/auth"},
 		ModelsFetcher:     &Fetcher{URL: "https://opencode.ai/zen/v1/models", Type: "opencode-free"},
+	},
+	// Open Design OpenDesign Cloud (open-design.ai) / AMR:
+	// https://open-design.ai/amr. Dual-plane provider: runtime key at
+	// amr-link.open-design.ai/v1 for model traffic; control key at
+	// amr-api.open-design.ai for plan/wallet/allowance. Its usage fetcher is
+	// fetched from the control host explicitly (fetchOpenDesignUsage).
+	"opendesign": {
+		ID:                "opendesign",
+		Name:              "OpenDesign Cloud",
+		Alias:             "od",
+		Category:          CategoryAPIKey,
+		AuthType:          "apikey",
+		Color:             "#E87040",
+		Icon:              "flare",
+		Usage:             true,
+		PassthroughModels: true,
+		ServiceKinds:      []string{"llm"},
+		Website:           "https://open-design.ai/amr",
+		Notice:            &Notice{Text: "Open Design Cloud: two keys per account — a runtime key (`sk-amr-…`) answers model requests at amr-link.open-design.ai/v1, a control key (`vela_ctrl_…`) reads the Design Plan allowance at amr-api.open-design.ai.", APIKeyURL: "https://open-design.ai/amr"},
+		ModelsFetcher:     &Fetcher{URL: "https://amr-link.open-design.ai/v1/models", Type: "openai"},
 	},
 	"perplexity": {
 		ID:           "perplexity",
@@ -1587,6 +1691,39 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://token.sensenova.cn",
 		Notice:       &Notice{APIKeyURL: "https://token.sensenova.cn"},
 	},
+	"sensenova-intl": {
+		// International platform (platform.sensenova.ai). Same OpenAI-compatible
+		// wire as the China entry, different host: keys are per-site, and
+		// token.sensenova.cn rejects international keys (401 "Forbidden"), so each
+		// site is its own provider with its own model catalog — same split as
+		// alicode/alicode-intl (upstream registry/sensenova-intl.js, 14b27dc7).
+		ID:           "sensenova-intl",
+		Name:         "SenseNova (Intl)",
+		Alias:        "sensenova-intl",
+		Category:     CategoryAPIKey,
+		Color:        "#5B5CE2",
+		Icon:         "auto_awesome",
+		ServiceKinds: []string{"llm", "image", "imageToText"},
+		Website:      "https://platform.sensenova.ai",
+		Notice:       &Notice{APIKeyURL: "https://platform.sensenova.ai"},
+	},
+	"synthetic": {
+		// synthetic.new — OpenAI-compatible inference over Hugging Face-hosted
+		// open models (upstream registry/synthetic.js, ebe398a9). The chat base
+		// is /openai/v1; key validation and the quota tracker both read
+		// /v2/quotas, because /openai/v1/models is public and answers 200 for
+		// any Bearer value.
+		ID:           "synthetic",
+		Name:         "Synthetic",
+		Alias:        "synthetic",
+		Category:     CategoryAPIKey,
+		AuthType:     "apikey",
+		Color:        "#111827",
+		Icon:         "hub",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://synthetic.new",
+		Notice:       &Notice{APIKeyURL: "https://synthetic.new/user-settings/api"},
+	},
 	"siliconflow": {
 		ID:           "siliconflow",
 		Name:         "SiliconFlow",
@@ -1647,6 +1784,19 @@ var ProviderRegistry = map[string]ProviderMeta{
 		ServiceKinds: []string{"webSearch", "webFetch"},
 		Website:      "https://www.tinyfish.ai/",
 		Notice:       &Notice{APIKeyURL: "https://agent.tinyfish.ai/api-keys"},
+	},
+	"keenable": {
+		ID:           "keenable",
+		Name:         "Keenable",
+		Alias:        "keenable",
+		Category:     CategoryFreeTier,
+		AuthType:     "apikey",
+		Color:        "#3B82F6",
+		Icon:         "search",
+		Priority:     999,
+		ServiceKinds: []string{"webSearch", "webFetch"},
+		Website:      "https://keenable.ai/",
+		Notice:       &Notice{Text: "Keyless web search and fetch with optional API key.", APIKeyURL: "https://app.keenable.ai/api-keys"},
 	},
 	"together": {
 		ID:           "together",
@@ -1917,5 +2067,22 @@ var ProviderRegistry = map[string]ProviderMeta{
 		NoAuth:       true,
 		ServiceKinds: []string{"embedding"},
 		Website:      "https://github.com/ggml-org/llama.cpp",
+	},
+	// DeepRelay — pay-per-token inference. One /v1 lane serves chat,
+	// embeddings, image and video, and the wallet lives on
+	// GET /v1/billing/balance (see dashboard usage fetcher + key probe).
+	"deeprelay": {
+		ID:           "deeprelay",
+		Name:         "DeepRelay",
+		Alias:        "dr",
+		Category:     CategoryAPIKey,
+		AuthType:     "apikey",
+		Color:        "#6C5CE7",
+		Icon:         "relay",
+		Priority:     50,
+		Usage:        true,
+		ServiceKinds: []string{"llm"},
+		Website:      "https://deeprelay.ai",
+		Notice:       &Notice{APIKeyURL: "https://deeprelay.ai/dashboard"},
 	},
 }

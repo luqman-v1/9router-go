@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
 
@@ -51,7 +52,10 @@ type testModelRequest struct {
 
 // HandleTestModel handles POST /api/models/test — the dashboard's per-model
 // Test button. Body: {"model":"<provider>/<model>","kind":"<service kind>"},
-// where an absent kind means a plain LLM chat probe.
+// where an absent kind or the explicit "llm" kind means a plain LLM chat probe:
+// upstream's Add Custom Model dialog sends "llm" for its default Chat / LLM
+// type (decolua/9router 850eb573), and the upstream route defaults an omitted
+// kind to "llm" (e414975d). Both spellings must reach the same chat lane.
 func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -140,10 +144,13 @@ func (h *MediaHandler) dispatchProbe(rec *httptest.ResponseRecorder, probe *http
 }
 
 // isProbeKind reports whether the dashboard asked for something this handler
-// knows how to probe. "" is the LLM default and is always probeable.
+// knows how to probe. "" is this port's LLM sentinel; "llm" is the explicit
+// spelling upstream's dashboard sends. Both are always probeable and fall
+// through to the chat lane in probeFor/dispatchProbe/verdictForKind, matching
+// upstream pingModelByKind, which probes an unrecognized kind as chat.
 func isProbeKind(kind string) bool {
 	switch kind {
-	case "", "embedding", "image", "tts", "stt", "video", "systemone":
+	case "", "llm", "embedding", "image", "tts", "stt", "video", "systemone":
 		return true
 	}
 	return false
@@ -201,6 +208,24 @@ func probeFor(kind, model string) probePayload {
 		_ = mw.Close()
 		return probePayload{body: buf, contentType: mw.FormDataContentType()}
 	case "systemone":
+		provider := ""
+		modelID := model
+		if idx := strings.Index(model, "/"); idx >= 0 {
+			provider = model[:idx]
+			modelID = model[idx+1:]
+		}
+		if providers.GetProviderModelPayloadShape(provider, modelID) == "fields" {
+			return jsonProbe(map[string]any{
+				"model": model,
+				"state": "Customer: I was charged twice for my order this morning.",
+				"fields": map[string]any{
+					"probe": map[string]any{
+						"type":         "text",
+						"instructions": "Extract the billing issue reported by the customer.",
+					},
+				},
+			})
+		}
 		return jsonProbe(map[string]any{
 			"model": model,
 			"state": "Customer: I was charged twice for my order this morning.",
@@ -522,15 +547,26 @@ func (b probeBody) hasText() bool {
 }
 
 func (b probeBody) hasAnswers() bool {
-	raw, ok := b.field("answers")
-	if !ok || raw[0] != '{' {
-		return false
+	for _, key := range []string{"answers", "fields", "values", "result"} {
+		raw, ok := b.field(key)
+		if !ok {
+			continue
+		}
+		if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(raw, []byte("null")) {
+			continue
+		}
+		if raw[0] == '{' {
+			var obj map[string]jsontext.Value
+			if json.Unmarshal(raw, &obj) == nil {
+				if len(obj) > 0 {
+					return true
+				}
+				continue
+			}
+		}
+		return true
 	}
-	var answers map[string]jsontext.Value
-	if json.Unmarshal(raw, &answers) != nil {
-		return false
-	}
-	return len(answers) > 0
+	return false
 }
 
 // errorMessage reports an `error` field carried under HTTP 200. The field is

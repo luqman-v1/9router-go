@@ -179,6 +179,54 @@ func TestForwardOpencodeZen_MessagesLaneFromClaudeClient(t *testing.T) {
 	}
 }
 
+// A paid zen request must travel with the connection's own key. zenHeaders
+// seeds its map from proxy.BuildOpenCodeHeaders, which hardcodes
+// "Authorization: Bearer public"; that map becomes cfg.StaticHeaders, and
+// proxy.Forward applies StaticHeaders *after* it sets the caller key — so
+// leaving the placeholder in overwrote the real credential with the public
+// one on every paid request. The free lane keeps the placeholder on purpose:
+// the inference gate answers only the public credential.
+func TestZenHeaders_AuthorizationPerLane(t *testing.T) {
+	tests := []struct {
+		name string
+		free bool
+		want string
+	}{
+		{name: "paid lane carries the caller key", free: false, want: ""},
+		{name: "free lane carries the public credential", free: true, want: "Bearer public"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &providers.ProviderConfig{StaticHeaders: map[string]string{}}
+			headers := zenHeaders(cfg, "ses_000000000000ffffffffffffff", true, tt.free)
+			if got := headers["Authorization"]; got != tt.want {
+				t.Errorf("Authorization = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The same contract end to end: a paid chat request reaches the upstream with
+// the connection's key, not the public placeholder.
+func TestForwardOpencodeZen_PaidChatLaneSendsCallerKey(t *testing.T) {
+	probe := newZenProbe(t, zenChatReply)
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      context.Background(),
+		Client:   probe.server.Client(),
+		Config:   zenConfig(probe),
+		APIKey:   "sk-zen",
+		Body:     []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		IsStream: true,
+	}
+	if err := ForwardOpencodeZen(rec, req); err != nil {
+		t.Fatalf("ForwardOpencodeZen: %v", err)
+	}
+	if probe.auth != "Bearer sk-zen" {
+		t.Errorf("upstream Authorization = %q, want the connection key %q", probe.auth, "Bearer sk-zen")
+	}
+}
+
 // A Responses client on a chat-lane model must not be relayed as if the
 // upstream spoke Responses.
 func TestForwardOpencodeZen_ChatLaneFromResponsesClient(t *testing.T) {

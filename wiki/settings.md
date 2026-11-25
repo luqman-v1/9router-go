@@ -178,11 +178,17 @@ Rename the product for anyone you share the dashboard with.
 | Field | Notes |
 |---|---|
 | Application name | Shown in the sidebar. Leave blank for `9router-go` |
+| Application description | Up to 200 characters |
+| Tagline | Up to 80 characters, shown beneath the app name on the login screen |
 | Logo URL | An HTTPS URL, or a local absolute path such as `/logo.png` |
+| Login logo URL | The logo tile on the login screen; falls back to `/favicon.svg` when unset |
+| Tray app name | The Windows tray companion's first menu item and tray title, up to 60 characters; falls back to `9Router Go` when unset |
+| Tray icon URL | The tray icon; a broken URL falls back to the embedded `tray.ico` |
 | Upload image | PNG, SVG, WebP or JPEG, max 2 MB. The file is stored in the gateway's own data directory and the URL field is filled in for you |
 
 Uploading means an operator with no public web host still gets a branded
-sidebar — the image is served by the gateway itself.
+sidebar — the image is served by the gateway itself. Every URL field takes
+the same HTTPS-or-local-path rule.
 
 ---
 
@@ -277,3 +283,8 @@ remembers.
 The last card. Shows what the automatic model-health loop found, and lets you
 re-enable a model it disabled. See [Usage & Analytics](usage-analytics.html) for
 how the loop decides.
+
+That loop is scheduled. For a model that is failing *right now*, see the
+[Model Breakers](advanced-features.html#model-breakers) page — it watches live
+traffic and holds one provider/model pair out of rotation without touching its
+siblings.

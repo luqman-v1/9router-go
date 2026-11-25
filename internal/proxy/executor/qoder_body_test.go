@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,11 @@ func qoderSeedCatalog(t *testing.T, creds QoderCosyCreds, region QoderRegion, co
 	for key, config := range configs {
 		raw[key] = config
 	}
-	qoderCatalogs[qoderCatalogKey(creds, region)] = &qoderCatalog{rawConfigs: raw, expiresAt: time.Now().Add(time.Hour)}
+	qoderCatalogs[qoderCatalogKey(creds, region)] = &qoderCatalog{
+		rawConfigs: raw,
+		names:      qoderCatalogNames(raw),
+		expiresAt:  time.Now().Add(time.Hour),
+	}
 	t.Cleanup(func() {
 		qoderCatalogMu.Lock()
 		defer qoderCatalogMu.Unlock()
@@ -122,6 +127,39 @@ func qoderFixture(t *testing.T) QoderCosyCreds {
 // The core of issue #121: what reaches Qoder must be a Qoder payload, not the
 // client's OpenAI body. Every key here is one Qoder's router needs to match a
 // flow — missing any of them is the 400 the issue reports.
+// SRouter hoists both system and developer messages into Qoder's top-level
+// system field; leaving developer in messages makes the router reject the
+// turn. Keep the payload identical to the IDE's shape.
+func TestForwardQoder_HoistsDeveloperIntoSystem(t *testing.T) {
+	creds := qoderFixture(t)
+	srv, got := qoderCaptureServer(t, qoderSSE(qoderChunk(`{"content":"ok"}`, `"stop"`), "[DONE]"))
+
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      t.Context(),
+		Client:   srv.Client(),
+		Config:   &providers.ProviderConfig{BaseURL: srv.URL},
+		APIKey:   creds.AuthToken,
+		ConnData: map[string]any{"userId": creds.UserID, "machineId": creds.MachineID},
+		Body:     []byte(`{"model":"qd/qfmodel","messages":[{"role":"system","content":"SYS"},{"role":"developer","content":"DEV"},{"role":"user","content":"go"}],"stream":false,"max_tokens":10}`),
+	}
+	if err := ForwardQoder(rec, req); err != nil {
+		t.Fatalf("ForwardQoder: %v", err)
+	}
+	payload := qoderDecodeCaptured(t, got.Body)
+	system, _ := payload["system"].(string)
+	if !strings.Contains(system, "SYS") || !strings.Contains(system, "DEV") {
+		t.Errorf("system = %q, want both system and developer prompts", system)
+	}
+	messages, _ := payload["messages"].([]any)
+	for _, msg := range messages {
+		m, _ := msg.(map[string]any)
+		if role, _ := m["role"].(string); role == "system" || role == "developer" {
+			t.Errorf("messages still carries %q role", role)
+		}
+	}
+}
+
 func TestForwardQoder_SendsQoderPayloadNotOpenAIBody(t *testing.T) {
 	creds := qoderFixture(t)
 	srv, got := qoderCaptureServer(t, qoderSSE(qoderChunk(`{"content":"pong"}`, `"stop"`), "[DONE]"))
@@ -380,5 +418,60 @@ func TestForwardQoder_MissingUserIDIsA401NamingTheFix(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "userId") {
 		t.Errorf("error %q must say the userId is missing", err)
+	}
+}
+
+// Issue #1423: /algo/api/v2/image/upload signs over the ASCII decimal multipart
+// byte length while Cosy-Bodyhash/Bodylength still describe the binary body.
+func TestBuildQoderCosyHeaders_SignatureBodyKeepsBodyIntegrityHeaders(t *testing.T) {
+	body := []byte("binary multipart body")
+	sigBody := []byte(strconv.Itoa(len(body)))
+	creds := QoderCosyCreds{UserID: "user-1", AuthToken: "jt-abc"}
+	url := "https://api2.qoder.sh/algo/api/v2/image/upload?request_id=abc"
+
+	base, err := buildQoderCosyHeaders(body, url, creds)
+	if err != nil {
+		t.Fatalf("base build: %v", err)
+	}
+	signed, err := buildQoderCosyHeaders(body, url, creds, sigBody)
+	if err != nil {
+		t.Fatalf("signed build: %v", err)
+	}
+	if signed["Cosy-Bodyhash"] != base["Cosy-Bodyhash"] {
+		t.Errorf("Cosy-Bodyhash changed: %q vs %q", signed["Cosy-Bodyhash"], base["Cosy-Bodyhash"])
+	}
+	if signed["Cosy-Bodylength"] != base["Cosy-Bodylength"] {
+		t.Errorf("Cosy-Bodylength changed: %q vs %q", signed["Cosy-Bodylength"], base["Cosy-Bodylength"])
+	}
+	if signed["Cosy-Bodyhash"] != md5Hex(body) {
+		t.Errorf("Cosy-Bodyhash = %q, want %q", signed["Cosy-Bodyhash"], md5Hex(body))
+	}
+	if signed["Cosy-Bodylength"] != fmt.Sprintf("%d", len(body)) {
+		t.Errorf("Cosy-Bodylength = %q, want %d", signed["Cosy-Bodylength"], len(body))
+	}
+
+	// The Authorization signature must be computed over signatureBody, not
+	// over body: this is what keeps the body-integrity headers (hash/length)
+	// describing the binary body while the signature covers the ASCII length.
+	headers := make(http.Header)
+	for k, v := range signed {
+		headers.Set(k, v)
+	}
+	parts := strings.Split(headers.Get("Authorization"), ".")
+	if len(parts) != 3 {
+		t.Fatalf("malformed Authorization header: %q", headers.Get("Authorization"))
+	}
+	payloadB64 := parts[1]
+	cosyKey := headers.Get("Cosy-Key")
+	cosyDate := headers.Get("Cosy-Date")
+	cosySigPath := headers.Get("Cosy-Sigpath")
+	expectedSig := md5Hex([]byte(fmt.Sprintf("%s\n%s\n%s\n%s\n%s", payloadB64, cosyKey, cosyDate, string(sigBody), cosySigPath)))
+	sig := parts[2]
+	if sig != expectedSig {
+		t.Errorf("Authorization signature = %q, want %q (signature over signatureBody)", sig, expectedSig)
+	}
+	sigOverBody := md5Hex([]byte(fmt.Sprintf("%s\n%s\n%s\n%s\n%s", payloadB64, cosyKey, cosyDate, string(body), cosySigPath)))
+	if sig == sigOverBody {
+		t.Errorf("signature should differ from signature over body")
 	}
 }

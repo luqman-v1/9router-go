@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/daemon"
@@ -18,8 +19,16 @@ import (
 // gatewayBinaryName mirrors cmd/9router-go's rename rule so an `opencode-go`
 // install looks for its own sibling rather than a different install's gateway.
 func gatewayBinaryName() string {
-	if base := filepath.Base(os.Args[0]); len(base) > 5 && base[len(base)-5:] == "-tray" {
-		return base[:len(base)-5]
+	return gatewayBinaryNameFromArg0(os.Args[0])
+}
+
+func gatewayBinaryNameFromArg0(arg0 string) string {
+	base := filepath.Base(arg0)
+	if len(base) >= 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
+		base = base[:len(base)-4]
+	}
+	if name, ok := strings.CutSuffix(base, "-tray"); ok && name != "" {
+		return name
 	}
 	return "9router-go"
 }
@@ -62,6 +71,7 @@ func runGatewayCLI(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
+	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -81,8 +91,10 @@ func trimOutput(b []byte) string {
 }
 
 // startGateway boots the gateway through the CLI's daemon path.
+// `9router-go start` already detaches into the background; `--background` is a
+// root-only flag and fails usage parsing when placed after a subcommand.
 func startGateway() error {
-	return runGatewayCLI("start", "--background")
+	return execGatewayCLI("start")
 }
 
 // stopSupervised stops through the init supervisor. No token is sent: systemd,
@@ -111,12 +123,15 @@ func autostartEnabled() bool {
 	return ok && info.Enabled
 }
 
-// setAutostart installs or removes the boot entry.
+// execGatewayCLI is a test seam for tray actions that delegate to the sibling
+// gateway CLI.
+var execGatewayCLI = runGatewayCLI
+
+// setAutostart installs or removes the boot entry through the sibling gateway
+// binary so the registered command launches 9router-go, not 9router-tray.
 func setAutostart(on bool) error {
 	if on {
-		_, err := service.Install(nil)
-		return err
+		return execGatewayCLI("service", "install")
 	}
-	_, err := service.Uninstall()
-	return err
+	return execGatewayCLI("service", "uninstall")
 }

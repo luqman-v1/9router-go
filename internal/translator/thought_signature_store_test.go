@@ -2,6 +2,7 @@ package translator
 
 import (
 	json "encoding/json/v2"
+	"strings"
 	"testing"
 )
 
@@ -12,25 +13,25 @@ func TestThoughtSignatureStore_BasicAndSession(t *testing.T) {
 	sig := "sig_abc_xyz"
 	sessionID := "session_1"
 
-	StoreGeminiThoughtSignature(callID, sig, sessionID)
+	StoreGeminiThoughtSignature(callID, sig, sessionID, "")
 
 	// Retrieve by session + callID
-	if got := GetGeminiThoughtSignature(callID, sessionID); got != sig {
+	if got := GetGeminiThoughtSignature(callID, sessionID, ""); got != sig {
 		t.Errorf("expected %q, got %q", sig, got)
 	}
 
 	// Retrieve by callID alone (global fallback)
-	if got := GetGeminiThoughtSignature(callID, ""); got != sig {
+	if got := GetGeminiThoughtSignature(callID, "", ""); got != sig {
 		t.Errorf("expected %q, got %q", sig, got)
 	}
 
 	// Retrieve with __ts__ suffix attached
-	if got := GetGeminiThoughtSignature(callID+"__ts__dummy", sessionID); got != sig {
+	if got := GetGeminiThoughtSignature(callID+"__ts__dummy", sessionID, ""); got != sig {
 		t.Errorf("expected %q for clean lookup, got %q", sig, got)
 	}
 
 	// Unknown callID
-	if got := GetGeminiThoughtSignature("call_unknown", sessionID); got != "" {
+	if got := GetGeminiThoughtSignature("call_unknown", sessionID, ""); got != "" {
 		t.Errorf("expected empty for unknown, got %q", got)
 	}
 }
@@ -128,8 +129,75 @@ func TestThoughtSignatureStore_FamilyScoping(t *testing.T) {
 
 	// Untagged queries/entries remain backward compatible
 	untaggedCall := "call_legacy"
-	StoreGeminiThoughtSignature(untaggedCall, "LEGACY_SIG", storeSession)
+	StoreGeminiThoughtSignature(untaggedCall, "LEGACY_SIG", storeSession, "")
 	if got := GetGeminiThoughtSignature(untaggedCall, storeSession, "gemini-3.8-flash"); got != "LEGACY_SIG" {
 		t.Errorf("expected LEGACY_SIG for untagged entry, got %q", got)
+	}
+}
+
+// TestThoughtSignatureStore_CrossKeyIsolation pins that a signature stored
+// under one API key is invisible to another key on the same account. Both
+// requests carry no session header, so the bare tool-call id is all they
+// share: without key scoping the lookup would replay key A's signature for
+// key B's tool call and Gemini would reject the request as corrupted.
+func TestThoughtSignatureStore_CrossKeyIsolation(t *testing.T) {
+	ClearGeminiThoughtSignatures()
+	t.Cleanup(func() { SetThoughtSignaturePersistence(nil) })
+
+	const (
+		apiKeyA = "key-a"
+		apiKeyB = "key-b"
+		callID  = "call_shared_1"
+		sigA    = "SIG_FROM_KEY_A"
+		sigB    = "SIG_FROM_KEY_B"
+	)
+
+	StoreGeminiThoughtSignature(callID, sigA, "", "gemini-3.8-flash", apiKeyA)
+	StoreGeminiThoughtSignature(callID, sigB, "", "gemini-3.8-flash", apiKeyB)
+
+	if got := GetGeminiThoughtSignature(callID, "", "gemini-3.8-flash", apiKeyA); got != sigA {
+		t.Errorf("key A must read its own signature %q, got %q", sigA, got)
+	}
+	if got := GetGeminiThoughtSignature(callID, "", "gemini-3.8-flash", apiKeyB); got != sigB {
+		t.Errorf("key B must read its own signature %q, got %q", sigB, got)
+	}
+}
+
+func TestNormalizeGeminiThoughtSignature(t *testing.T) {
+	// Standard valid signature
+	if got := NormalizeGeminiThoughtSignature(DefaultThinkingSignature); got != DefaultThinkingSignature {
+		t.Errorf("NormalizeGeminiThoughtSignature(DefaultThinkingSignature) = %q, want %q", got, DefaultThinkingSignature)
+	}
+
+	// Double-base64 signature (starts with Q0FR...) falls back to DefaultThinkingSignature
+	doubleB64 := "Q0FRUzI3TUJDaElJRXhBQ0dBSTRBVUlJZEdocGJt"
+	if got := NormalizeGeminiThoughtSignature(doubleB64); got != DefaultThinkingSignature {
+		t.Errorf("expected fallback to DefaultThinkingSignature for Q0FR signature, got %q", got)
+	}
+
+	// Oversized signature (> 32KB) falls back to DefaultThinkingSignature
+	oversized := strings.Repeat("A", 33*1024)
+	if got := NormalizeGeminiThoughtSignature(oversized); got != DefaultThinkingSignature {
+		t.Errorf("expected fallback to DefaultThinkingSignature for oversized signature, got %q", got)
+	}
+
+	if got := NormalizeGeminiThoughtSignature(""); got != "" {
+		t.Errorf("expected empty string for empty input, got %q", got)
+	}
+}
+
+func TestPurgeSessionThoughtSignatures(t *testing.T) {
+	sess := "test-session-purge"
+	callID := "call_purge_1"
+	StoreGeminiThoughtSignature(callID, DefaultThinkingSignature, sess, "gemini-4-argon")
+
+	if got := GetGeminiThoughtSignature(callID, sess, "gemini-4-argon"); got == "" {
+		t.Fatal("expected signature to be stored")
+	}
+
+	PurgeSessionThoughtSignatures(sess)
+
+	if got := GetGeminiThoughtSignature(callID, sess, "gemini-4-argon"); got != "" {
+		t.Errorf("expected signature to be purged, got %q", got)
 	}
 }

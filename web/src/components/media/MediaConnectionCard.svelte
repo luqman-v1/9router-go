@@ -9,11 +9,18 @@
     conn: ProviderConnection
     latency: number | null | undefined
     isTesting: boolean
+    toggleLocked?: boolean
     onTestLatency: () => void
     onToggle: () => void
   }
 
-  let { conn, latency, isTesting, onTestLatency, onToggle }: Props = $props()
+  let { conn, latency, isTesting, toggleLocked = false, onTestLatency, onToggle }: Props = $props()
+  let isMediaActive = $derived(
+    conn.isActive === 1 &&
+    conn.mediaEnabled !== false &&
+    conn.isMediaActive !== false &&
+    !conn.disabledKinds?.includes('media')
+  )
 </script>
 
 <Card class="p-4 flex items-center justify-between gap-3 {conn.isActive === 1 ? 'border-border' : 'border-border opacity-60 bg-surface-2/40'}">
@@ -46,6 +53,6 @@
       <Clock class="w-3.5 h-3.5 {isTesting ? 'animate-spin' : ''}" />
       <span>{isTesting ? 'Pinging…' : latency !== undefined && latency !== null ? `${latency}ms` : 'Ping'}</span>
     </button>
-    <Toggle size="sm" checked={conn.isActive === 1} onChange={onToggle} />
+    <Toggle size="sm" checked={isMediaActive} disabled={toggleLocked || conn.isActive !== 1} onChange={onToggle} title={toggleLocked || conn.isActive !== 1 ? 'Disabled for all services on the Providers page' : isMediaActive ? 'Disable' : 'Enable'} />
   </div>
 </Card>

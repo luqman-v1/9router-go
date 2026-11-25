@@ -77,6 +77,7 @@ func (h *ChatHandler) LogFailure(
 		"cached_tokens":               usage.GetCachedTokens(),
 		"cache_creation_input_tokens": usage.CacheCreationInputTokens,
 	}
+	addCacheCreationSplit(tokens, usage)
 	if info.SavedTokens > 0 {
 		tokens["original_input_tokens"] = info.OriginalInputTokens
 		tokens["compressed_input_tokens"] = info.OriginalInputTokens - info.SavedTokens
@@ -259,6 +260,31 @@ func (h *ChatHandler) LogUsage(ctx context.Context, info *UsageLogInfo, usage *t
 }
 
 // logUsage persists a usage record and updates connection metadata.
+// addCacheCreationSplit records Anthropic's per-window split of a cache write
+// beside the total. An upstream that does not report it leaves both at zero, so
+// a row that never carried the split stays distinguishable from a 5m-only write.
+func addCacheCreationSplit(tokens map[string]int, usage *translator.OpenAIUsage) {
+	if usage.CacheCreation5mInputTokens > 0 {
+		tokens["cache_creation_5m_input_tokens"] = usage.CacheCreation5mInputTokens
+	}
+	if usage.CacheCreation1hInputTokens > 0 {
+		tokens["cache_creation_1h_input_tokens"] = usage.CacheCreation1hInputTokens
+	}
+}
+
+// cacheCreationSplitJSON renders the split as trailing JSON fields, or "" when
+// the upstream never reported it.
+func cacheCreationSplitJSON(usage *translator.OpenAIUsage) string {
+	out := ""
+	if usage.CacheCreation5mInputTokens > 0 {
+		out += fmt.Sprintf(`,"cache_creation_5m_input_tokens":%d`, usage.CacheCreation5mInputTokens)
+	}
+	if usage.CacheCreation1hInputTokens > 0 {
+		out += fmt.Sprintf(`,"cache_creation_1h_input_tokens":%d`, usage.CacheCreation1hInputTokens)
+	}
+	return out
+}
+
 func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
 	if usage == nil {
 		usage = &translator.OpenAIUsage{}
@@ -298,18 +324,21 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	// charges them at their own, cheaper rate. The provider matters because
 	// gateways can price the same model differently.
 	cost := pricing.EstimateCost(info.Provider, info.Model, pricing.TokenCounts{
-		PromptTokens:        usage.PromptTokens,
-		CompletionTokens:    usage.CompletionTokens,
-		CachedTokens:        cachedTokens,
-		CacheCreationTokens: cacheCreationTokens,
-		ReasoningTokens:     usage.ReasoningTokens(),
+		PromptTokens:          usage.PromptTokens,
+		CompletionTokens:      usage.CompletionTokens,
+		CachedTokens:          cachedTokens,
+		CacheCreationTokens:   cacheCreationTokens,
+		CacheCreation1hTokens: usage.CacheCreation1hInputTokens,
+		ReasoningTokens:       usage.ReasoningTokens(),
 	})
 	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
 
 	usageKVs := []any{
 		"provider", info.Provider, "model", info.Model,
 		"prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", cachedTokens,
-		"cache_creation", cacheCreationTokens, "ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost,
+		"cache_creation", cacheCreationTokens, "cache_creation_5m", usage.CacheCreation5mInputTokens,
+		"cache_creation_1h", usage.CacheCreation1hInputTokens,
+		"ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost,
 	}
 	if metrics != nil {
 		usageKVs = append(usageKVs, "tok_per_sec", metrics.TokPerSec(), "max_gap_ms", metrics.MaxGapMs)
@@ -332,7 +361,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	// reasoning_tokens belongs here for the same reason as the cache figures:
 	// the stored row is what the dashboard bills and charts from, so omitting
 	// it makes every reasoning turn look cheaper than it was.
-	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":%d,"reasoning_tokens":%d}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, cachedTokens, cacheCreationTokens, usage.ReasoningTokens())
+	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":%d,"reasoning_tokens":%d%s}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, cachedTokens, cacheCreationTokens, usage.ReasoningTokens(), cacheCreationSplitJSON(usage))
 	// The caller is recorded beside the upstream credential (#365). A per-key
 	// token budget is measured from what THAT client spent, and
 	// usageHistory.apiKey holds the provider credential — which attributed every
@@ -374,7 +403,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
 
 	if h.Repo != nil && (info.SavedTokens > 0 || info.OriginalInputTokens > 0) {
-		mode := resolveCompressionMode(h.TokenSaver, info.SavedTokens)
+		mode := resolveCompressionMode(h.TokenSaver)
 		skipReason := ""
 		if info.SavedTokens == 0 {
 			skipReason = "no_savings"
@@ -415,6 +444,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"cache_creation_input_tokens": cacheCreationTokens,
 		"reasoning_tokens":            usage.ReasoningTokens(),
 	}
+	addCacheCreationSplit(tokensMap, usage)
 	if info.SavedTokens > 0 {
 		tokensMap["original_input_tokens"] = info.OriginalInputTokens
 		tokensMap["compressed_input_tokens"] = info.OriginalInputTokens - info.SavedTokens
@@ -549,18 +579,88 @@ func extractContent(content any) string {
 	case string:
 		return v
 	case []any:
-		parts := make([]string, 0, len(v))
+		// One shared budget for the whole array: constants.MaxMessageContentLen
+		// is the cap the caller applies anyway. Every append is cut to what is
+		// left of it, so neither many blocks nor one oversized block can grow
+		// past it — building a preview the caller would throw away buys nothing.
+		var b strings.Builder
 		for _, block := range v {
-			if m, ok := block.(map[string]any); ok {
-				if text, ok := m["text"].(string); ok {
-					parts = append(parts, text)
-				}
+			if b.Len() >= constants.MaxMessageContentLen {
+				b.WriteString(" ...")
+				break
+			}
+			m, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			// A Claude block carries its text under text/thinking/tool_use.input/
+			// tool_result.content, never all under "text". Reading only "text"
+			// logged every tool turn as an empty message, so the detail view
+			// showed a 186k-token request as twenty empty rows and a lost tool
+			// result could not be diagnosed from it.
+			switch blockType(m) {
+			case "tool_use":
+				// Name only. The arguments are already logged by the entry
+				// builder as `name#hash8` (toolCallSignature), and serialising
+				// an arbitrary tool payload here would allocate in proportion to
+				// a body the preview is about to discard.
+				name, _ := m["name"].(string)
+				writePreview(&b, "[tool_use "+truncateDetailText(name, 100, "...")+"]")
+			case "tool_result":
+				// A string is the shape a tool result actually has; anything
+				// else gets a marker rather than a recursive walk of a payload
+				// this preview would discard anyway.
+				out, _ := m["content"].(string)
+				writePreview(&b, "[tool_result "+truncateDetailText(out, 400, "...")+"]")
+			case "thinking":
+				// Checked assertion: a thinking block whose payload is null or
+				// not a string used to panic the very request this log describes.
+				thought, _ := m["thinking"].(string)
+				writePreview(&b, "[thinking "+truncateDetailText(thought, 200, "...")+"]")
+			}
+			if text, ok := m["text"].(string); ok {
+				writePreview(&b, truncateDetailText(text, constants.MaxMessageContentLen, "..."))
 			}
 		}
-		return strings.Join(parts, " ")
+		return b.String()
 	default:
 		return fmt.Sprintf("%v", content)
 	}
+}
+
+// writePreview appends one separator-prefixed fragment, cut to whatever is left
+// of the shared budget. The cut happens before the copy, so a fragment the
+// budget cannot hold is never built.
+func writePreview(b *strings.Builder, fragment string) {
+	remaining := constants.MaxMessageContentLen - b.Len()
+	if remaining <= 0 {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteString(" ")
+		remaining--
+	}
+	if len(fragment) > remaining {
+		fragment = truncateDetailText(fragment, remaining, "")
+	}
+	b.WriteString(fragment)
+}
+
+// blockType names a content block by its own type field, falling back to the
+// key that carries its payload for clients that omit it.
+func blockType(m map[string]any) string {
+	if t, ok := m["type"].(string); ok && t != "" {
+		return t
+	}
+	switch {
+	case m["input"] != nil:
+		return "tool_use"
+	case m["tool_use_id"] != nil:
+		return "tool_result"
+	case m["thinking"] != nil:
+		return "thinking"
+	}
+	return ""
 }
 
 // upsertDailyUsage reads the existing daily aggregate, merges new tokens, and upserts.
@@ -746,19 +846,30 @@ func maskAPIKey(key string) string {
 	return handlerutil.MaskAPIKey(key)
 }
 
-func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string {
-	hasRTK := savedTokens > 0
+// resolveCompressionMode names the saver configuration that produced a saving,
+// so the usage page's mode breakdown says which one did the work.
+//
+// The mode comes from the switches alone. It used to be seeded from
+// savedTokens > 0, which attributed a saving from any stage to "rtk" —
+// headroom-only compression was filed as RTK, and an operator could not tell
+// which engine did the work.
+//
+// Headroom is a stage of its own rather than folded into "rtk": it is a separate
+// switch, with its own engine, and an operator reading the breakdown needs to
+// see it separately from the in-process savers that ran before it.
+func resolveCompressionMode(ts *shared.TokenSaverConfig) string {
+	hasRTK := false
 	hasCaveman := false
 	hasPonytail := false
 	hasADHD := false
+	hasHeadroom := false
 
 	if ts != nil {
-		if ts.RTKEnabled() {
-			hasRTK = true
-		}
+		hasRTK = ts.RTKEnabled()
 		hasCaveman = ts.CavemanEnabled()
 		hasPonytail = ts.PonytailEnabled()
 		hasADHD = ts.ADHDEnabled()
+		hasHeadroom = ts.HeadroomEnabled()
 	}
 
 	personaCount := 0
@@ -772,8 +883,20 @@ func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string
 		personaCount++
 	}
 
-	if (hasRTK && personaCount > 0) || personaCount > 1 {
+	// "stacked" means more than one distinct stage acted on the same request:
+	// RTK, headroom and the style prompts are all separate stages.
+	stageCount := personaCount
+	if hasRTK {
+		stageCount++
+	}
+	if hasHeadroom {
+		stageCount++
+	}
+	if stageCount > 1 {
 		return "stacked"
+	}
+	if hasHeadroom {
+		return "headroom"
 	}
 	if hasRTK {
 		return "rtk"
@@ -787,7 +910,10 @@ func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string
 	if hasPonytail {
 		return "ponytail"
 	}
-	return "rtk"
+	// Nothing was switched on, so no stage ran. "none" rather than "rtk":
+	// the old fallback claimed RTK compressed a request on an instance where
+	// RTK was off, which is the one mode an operator would never question.
+	return "none"
 }
 
 func (h *ChatHandler) upsertDailyUsageError(provider, model, endpoint, connectionID, apiKey, status string) {

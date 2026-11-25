@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
+    loopbackPeerOrigin,
     OAUTH_CHANNEL,
     parseCallbackURL,
     writeCallback,
@@ -39,11 +40,13 @@
       }
       if (window.opener) {
         const origins = [window.location.origin, 'http://localhost:1455']
+        const peer = loopbackPeerOrigin(window.location.origin)
+        if (peer) origins.push(peer)
         for (const origin of origins) {
           try {
             window.opener.postMessage({
               type: 'oauth_callback',
-              data: { ...payload, error: '', errorDescription: '' },
+              data: { ...payload, code: payload.raw, error: '', errorDescription: '' },
             }, origin)
           } catch {
             /* opener may have navigated away */

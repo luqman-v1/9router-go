@@ -7,7 +7,7 @@ import (
 
 // applyFormat ports applyFormat: one dialect out. none on a model that
 // cannot disable clamps to level minimal before the writer runs.
-func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string) {
+func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string, provider, model string) {
 	none := cfg.Mode == ModeNone
 	cd := caps.CanDisableThinking()
 	eff := cfg
@@ -26,6 +26,8 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 		supported:  supported,
 		display:    display,
 		caps:       caps,
+		provider:   provider,
+		model:      model,
 	})
 }
 
@@ -47,8 +49,8 @@ func levelFor(level string, supported []string) string {
 		return NormalizeOpenAILevel(level, supported)
 	}
 	if level == "auto" {
-		// "auto" asks the upstream to decide; it is not a level to clamp.
-		return level
+		// Preserved verbatim: the step writer must ship "auto" unchanged.
+		return "auto"
 	}
 	if !KnownEffort(level) {
 		level = "medium"
@@ -87,9 +89,24 @@ func levelFor(level string, supported []string) string {
 
 func withDisplay(thinking map[string]any, display string) map[string]any {
 	if display != "" {
-		thinking["display"] = display
+		thinking["display"] = normalizeDisplay(display)
 	}
 	return thinking
+}
+
+// normalizeDisplay resolves the client's display value to the two the wire
+// accepts (summarized | omitted). An unknown value defaults to summarized,
+// the Anthropic default for a thinking block.
+func normalizeDisplay(display string) string {
+	norm := strings.ToLower(strings.TrimSpace(display))
+	switch norm {
+	case "summarized", "omitted":
+		return norm
+	case "none", "off", "hidden", "false":
+		return "omitted"
+	default:
+		return "summarized"
+	}
 }
 
 func containsLevel(levels []string, want string) bool {
@@ -99,4 +116,14 @@ func containsLevel(levels []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// openAILevelFor resolves a level for the OpenAI and OpenAI Responses wires,
+// which reject the literal "auto". "auto" resolves to "high"; every other
+// level is handled by levelFor.
+func openAILevelFor(level string, supported []string) string {
+	if level == "auto" {
+		return "high"
+	}
+	return levelFor(level, supported)
 }

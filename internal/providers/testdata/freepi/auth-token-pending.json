@@ -1,0 +1,9 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/auth-flow.ts pollForToken -> POST /auth/token",
+  "_note": "Three distinct pending shapes plus two failure shapes, all documented in that one function. A granted login replaces the whole body with {\"token\": \"...\"}.",
+  "pending_no_retry_after": {},
+  "pending_with_retry_after": { "retry_after": 10 },
+  "consent_required_body": { "code": "consent_required" },
+  "consent_required_status": 403,
+  "_granted_elsewhere": "auth-token-granted.json"
+}

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"9router/proxy/internal/constants"
 )
 
 // TestSuggestedModelsVercelFree covers the Vercel AI Gateway free-tier filter.
@@ -219,7 +221,9 @@ func TestSuggestedModelsBadRequests(t *testing.T) {
 }
 
 func TestSuggestedModelsNousFree(t *testing.T) {
+	var gotUA string
 	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"data":[
 			{"id":"vendor/free-chat","name":"Free Chat","context_length":262144,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["text"]}},
@@ -248,5 +252,11 @@ func TestSuggestedModelsNousFree(t *testing.T) {
 	}
 	if out.Data[0].ContextLength == nil || *out.Data[0].ContextLength != 262144 {
 		t.Fatalf("expected contextLength 262144, got %v", out.Data[0])
+	}
+	// Nous's catalogue is behind Cloudflare, which refuses the Go default
+	// identity with 403 "Attention Required!" — the empty catalogue this test
+	// would then see is indistinguishable from an empty feed.
+	if gotUA != constants.DefaultClientUserAgent {
+		t.Errorf("feed User-Agent = %q, want %q", gotUA, constants.DefaultClientUserAgent)
 	}
 }

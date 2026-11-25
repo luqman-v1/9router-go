@@ -92,7 +92,7 @@ func (h *DashboardHandler) HandleCreateComboPresets(w http.ResponseWriter, r *ht
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if err := h.Repo.CreateCombo(uuid.New().String(), item.Name, "", string(modelsJSON), "fallback"); err != nil {
+		if err := h.Repo.CreateCombo(uuid.New().String(), item.Name, "", string(modelsJSON), "fallback", ""); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

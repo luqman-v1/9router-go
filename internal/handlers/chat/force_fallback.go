@@ -35,6 +35,11 @@ func forceFallbackEnabled(settings *db.SettingsData) bool {
 // skipped for a per-model lock or a quota cache carries no cooldown to shorten,
 // and forcing a request onto it would discard the very lock that removed it —
 // so those stay out and the caller keeps reporting the ordinary failure.
+// Likewise an account parked for a dead OAuth grant (testStatus
+// reauth_required) is terminal: waiting it out cannot help, only a re-login
+// can, so forcing makes the gateway pay a guaranteed 401 (and a forced
+// refresh of a single-use token) to report the same failure. Those stay out
+// even with the toggle on.
 func (h *ChatHandler) forceMinCooldownConnection(
 	provider string,
 	conns []*models.ProviderConnection,
@@ -52,6 +57,17 @@ func (h *ChatHandler) forceMinCooldownConnection(
 	for _, c := range conns {
 		if c == nil || excludeSet[c.ID] || !codexAccountServesModel(c, model) {
 			continue
+		}
+		// A reauth_required account is only terminal while its park is still
+		// active: once oauthLockedUntil runs out the account returns to
+		// rotation as a normal candidate (the park is a cooldown, not a
+		// disable). Forcing while parked is the minimax incident — a
+		// guaranteed 401 from a grant waiting cannot be helped by
+		// re-sending it.
+		if db.ConnectionRequiresReauth(c.Data) {
+			if until, ok := db.ConnectionOAuthLockUntil(c.Data); ok && until.After(now) {
+				continue
+			}
 		}
 		until, ok := db.ConnectionBlockedUntil(c.Data)
 		if !ok || !until.After(now) {

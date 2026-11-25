@@ -47,6 +47,7 @@ func SetupRoutes(r interface {
 	Put(pattern string, handlerFn http.HandlerFunc)
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
+	Options(pattern string, handlerFn http.HandlerFunc)
 	HandleFunc(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	chatH := chat.NewChatHandler(repo, ts)
@@ -93,6 +94,11 @@ func SetupRoutes(r interface {
 	r.Get("/models/{kind}", chatH.HandleModelsByKind)
 	r.Get("/models/*", chatH.HandleModelLookup)
 	r.Get("/v1/models", chatH.HandleModels)
+	// Gemini API surface. A Gemini SDK speaks only this protocol — it lists
+	// models, then posts contents[] to an action-suffixed path — so without
+	// these routes a Gemini client cannot use the gateway at all.
+	r.Get("/v1beta/models", chatH.HandleGeminiListModels)
+	r.Post("/v1beta/models/*", chatH.HandleGeminiGenerateContent)
 	r.Get("/v1/models/*", chatH.HandleModelLookup)
 	r.Get("/api/v1/models", chatH.HandleModels)
 	r.Get("/api/v1/models/*", chatH.HandleModelLookup)
@@ -105,6 +111,13 @@ func SetupRoutes(r interface {
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
 	r.Post("/api/chat", chatH.HandleOllamaChat)
+	// An Ollama client lists models before it chats; without this the gateway
+	// looks like an Ollama server with nothing installed. The preflight for
+	// these two paths is registered in SetupServerRouter, outside the API-key
+	// group: a browser never sends credentials on an OPTIONS request, so a
+	// preflight answered by this group 401s and the real GET never happens.
+	r.Get("/api/tags", mediaH.HandleOllamaTags)
+	r.Get("/tags", mediaH.HandleOllamaTags)
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
@@ -161,6 +174,7 @@ func SetupRoutes(r interface {
 	r.Delete("/headroom/extras", headroomH.HandleHeadroomExtras)
 	r.HandleFunc("/headroom/proxy", headroomH.HandleHeadroomProxy)
 	r.HandleFunc("/headroom/proxy/*", headroomH.HandleHeadroomProxy)
+	r.Post("/mcp", headroomH.HandleMCP)
 
 	r.Post("/api/headroom/start", headroomH.HandleHeadroomStart)
 	r.Post("/api/headroom/stop", headroomH.HandleHeadroomStop)
@@ -185,6 +199,8 @@ func SetupRoutes(r interface {
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
 	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
+	// Qoder daily-credit check-in state (read-only).
+	r.Get("/api/qoder/checkins", dashH.HandleGetQoderCheckins)
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	// Usage per client API key. Registered before the {connectionId} route:
 	// chi matches in order, so a route added after it would be read as a
@@ -196,6 +212,19 @@ func SetupRoutes(r interface {
 	// GLM Reset Cards (Z.ai international)
 	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
 	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
+	// Claude reset credits (cedar_ember grants)
+	r.Get("/api/usage/{connectionId}/claude-reset-credits", dashH.HandleListClaudeResetCredits)
+	r.Post("/api/usage/{connectionId}/claude-reset-credits/consume", dashH.HandleConsumeClaudeResetCredit)
+
+	// Free-pi ad surface. The creative is served to the dashboard, and the
+	// impression is reported only from the client's render event — an
+	// impression for an ad nobody saw is a false report to the advertiser whose
+	// spend funds the inference (see free_pi_ads.go).
+	r.Get("/api/free-pi/ad", dashH.HandleGetFreePiAd)
+	r.Post("/api/free-pi/ad/impression", dashH.HandleFreePiImpression)
+	// Freebuff ad surface.
+	r.Get("/api/freebuff/ad", dashH.HandleGetFreebuffAd)
+	r.Post("/api/freebuff/ad/impression", dashH.HandleFreebuffImpression)
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
@@ -258,6 +287,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
 	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
+	// MiniMax Code daily check-in state and the manual "Check in now" action.
+	// Registered here (the real server's dashboard group, under
+	// RequireDashboardAuth) as well as in dashboard.RegisterRoutes (tests-only):
+	// a route added to that table alone 404s on a production boot.
+	r.Get("/api/minimax/checkins", dashH.HandleGetMiniMaxCheckins)
+	r.Post("/api/minimax/checkins/{connectionId}", dashH.HandleMiniMaxCheckinNow)
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	// Usage per client API key. Registered before the {connectionId} route:
 	// chi matches in order, so a route added after it would be read as a
@@ -270,15 +305,38 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// GLM Reset Cards (Z.ai international)
 	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
 	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
+	// Claude reset credits (cedar_ember grants)
+	r.Get("/api/usage/{connectionId}/claude-reset-credits", dashH.HandleListClaudeResetCredits)
+	r.Post("/api/usage/{connectionId}/claude-reset-credits/consume", dashH.HandleConsumeClaudeResetCredit)
+
+	// Free-pi ad surface. The creative is served to the dashboard, and the
+	// impression is reported only from the client's render event — an
+	// impression for an ad nobody saw is a false report to the advertiser whose
+	// spend funds the inference (see free_pi_ads.go).
+	r.Get("/api/free-pi/ad", dashH.HandleGetFreePiAd)
+	r.Post("/api/free-pi/ad/impression", dashH.HandleFreePiImpression)
+	// Freebuff ad surface.
+	r.Get("/api/freebuff/ad", dashH.HandleGetFreebuffAd)
+	r.Post("/api/freebuff/ad/impression", dashH.HandleFreebuffImpression)
 
 	// Cache Analytics & Management
 	r.Get("/api/cache", dashH.HandleGetCache)
 	r.Delete("/api/cache", dashH.HandleDeleteCache)
 	r.Get("/api/cache/entries", dashH.HandleGetCacheEntries)
 	r.Delete("/api/cache/entries", dashH.HandleDeleteCacheEntry)
+	r.Post("/api/cache/semantic/invalidate", dashH.HandleInvalidateSemanticCache)
 
 	// Compression Analytics
 	r.Get("/api/analytics/compression", dashH.HandleGetCompressionAnalytics)
+
+	// Per-model circuit breaker (one provider/model pair, distinct from the
+	// provider breaker). Registered here and in dashboard.RegisterRoutes (a
+	// tests-only table); a route added there alone 404s on the real server.
+	// The bulk reset comes first: chi matches in order, so a route registered
+	// after the parameterised one is read as a model named "reset".
+	r.Get("/api/model-breakers", dashH.HandleGetModelBreakers)
+	r.Post("/api/model-breakers/reset", dashH.HandleResetAllModelBreakers)
+	r.Post("/api/model-breakers/{provider}/{model}/reset", dashH.HandleResetModelBreaker)
 
 	// Jailbreak: agent prompt presets + per-model binding. Registered here and in
 	// dashboard.RegisterRoutes (a tests-only table); a route added there alone
@@ -292,6 +350,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/jailbreak/models", dashH.HandleListJailbreakModels)
 	r.Get("/api/jailbreak/models/catalog", dashH.HandleJailbreakModelCatalog)
 	r.Put("/api/jailbreak/models", dashH.HandleSetJailbreakModel)
+	r.Put("/api/jailbreak/keys/model", dashH.HandleSetJailbreakKeyModel)
+	r.Delete("/api/jailbreak/keys/model", dashH.HandleDeleteJailbreakKeyModel)
+	r.Get("/api/jailbreak/keys/bindings", dashH.HandleListJailbreakKeyBindings)
 	r.Delete("/api/jailbreak/models", dashH.HandleDeleteJailbreakModel)
 	r.Get("/api/jailbreak/excludes", dashH.HandleGetJailbreakExcludes)
 	r.Put("/api/jailbreak/excludes", dashH.HandlePutJailbreakExcludes)
@@ -301,8 +362,22 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/jailbreak/preview", dashH.HandlePreviewJailbreak)
 	r.Put("/api/jailbreak/presets/order", dashH.HandleReorderJailbreakPresets)
 	r.Post("/api/jailbreak/presets/upload", dashH.HandleUploadJailbreakPreset)
+	// Preset auto-sync: the standing-subscription version of the GitHub import
+	// above, so a collection whose prompts change updates without the operator
+	// re-importing it by hand.
+	r.Get("/api/jailbreak/sync/sources", dashH.HandleListJailbreakSyncSources)
+	r.Put("/api/jailbreak/sync/sources", dashH.HandleSaveJailbreakSyncSources)
+	r.Post("/api/jailbreak/sync/run", dashH.HandleRunJailbreakSync)
+	// GitHub credential and mirror: the api.github.com quota is 60 anonymous
+	// requests an hour, which a library following several collections exhausts
+	// inside one pass. A token raises it to 5,000, and an operator whose network
+	// cannot reach GitHub directly can point both endpoints at a mirror.
+	r.Get("/api/jailbreak/github", dashH.HandleGetJailbreakGithub)
+	r.Put("/api/jailbreak/github/token", dashH.HandleSaveJailbreakGithubToken)
 
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
+	// Provider Nodes (Custom Endpoints) — see dashboard/routes.go for the twin registration.
+	r.Post("/api"+dashboard.AvailabilityRoutePath, dashH.HandleCheckProviderNodeAvailability)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
 	r.Put("/api/provider-nodes/{id}", dashH.HandleUpdateProviderNode)
 	r.Delete("/api/provider-nodes/{id}", dashH.HandleDeleteProviderNode)
@@ -364,6 +439,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/keys/{id}/reset-quota", dashH.HandleResetApiKeyQuota)
 	r.Get("/api/keys/{id}/models", dashH.HandleGetApiKeyModels)
 	r.Put("/api/keys/{id}/models", dashH.HandleSetApiKeyModels)
+	r.Get("/api/keys/{id}/budget", dashH.HandleGetApiKeyBudget)
 	r.Put("/api/keys/{id}", dashH.HandleUpdateApiKey)
 	r.Get("/api/plans", dashH.HandleListPlans)
 	r.Post("/api/plans", dashH.HandleCreatePlan)
@@ -418,6 +494,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/settings/database/prune", dashH.HandlePruneDatabase)
 	r.Post("/api/settings/database/prune-usage", dashH.HandlePruneUsageHistory)
 	r.Post("/api/settings/database/vacuum", dashH.HandleVacuumDatabase)
+	// Process control. The mirror of dashboard.RegisterRoutes, which is mounted
+	// by tests only; a route added there alone 404s here on the real server.
+	r.Post("/api/system/restart", dashH.HandleRestartGateway)
 	r.Post("/api/settings/proxy-test", dashH.HandleProxyTest)
 	// White-label logo upload: the file lands under DATA_DIR/uploads and
 	// appLogoUrl is rewritten to the path this gateway serves it from.
@@ -452,10 +531,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/tunnel/tailscale-enable", dashH.HandleTailscaleEnable)
 	r.Post("/api/tunnel/tailscale-disable", dashH.HandleTailscaleDisable)
 
-	// Single Sign-On settings checks + SP metadata (profile page)
+	// Single Sign-On settings checks (profile page). The browser login flows and
+	// SP metadata are registered in SetupServerRouter instead: they have to be
+	// reachable before a session exists.
 	r.Post("/api/auth/oidc/test", ssoH.HandleOidcTest)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
-	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Mount OAuth routes under dashboard auth so web dashboard can initiate and exchange tokens
 	oauthH := oauth.NewOAuthHandler(repo)
@@ -496,8 +576,21 @@ func mountOAuthRoutes(r interface {
 	r.Post("/api/oauth/freebuff/poll", oauthH.HandleFreebuffPoll)
 	r.Get("/api/oauth/freebuff/session", oauthH.HandleFreebuffSessionStatus)
 	r.Post("/api/oauth/freebuff/session/switch", oauthH.HandleFreebuffSessionSwitch)
+	// free-pi: GitHub device flow. initiate() refuses to call upstream unless the
+	// request asserts the user accepted the consent screen, and the consent text
+	// itself is served from here rather than duplicated in the SPA.
+	r.Get("/api/oauth/free-pi/consent", oauthH.HandleFreePiConsent)
+	r.Post("/api/oauth/free-pi/initiate", oauthH.HandleFreePiInitiate)
+	r.Post("/api/oauth/free-pi/poll", oauthH.HandleFreePiPoll)
+	// The dashboard equivalent of free-pi-cli's /close-other-session: a
+	// deliberate user action, because the same call would also end a human's
+	// running CLI session on that account.
+	r.Post("/api/oauth/free-pi/session/reset", oauthH.HandleFreePiSessionReset)
 	r.Get("/api/oauth/antigravity/authorize", oauthH.HandleAntigravityAuthorize)
 	r.Post("/api/oauth/antigravity/exchange", oauthH.HandleAntigravityExchange)
+	// agy-acp: same Google consumer OAuth client, its own connection rows.
+	r.Get("/api/oauth/agy-acp/authorize", oauthH.HandleAGYACPAuthorize)
+	r.Post("/api/oauth/agy-acp/exchange", oauthH.HandleAGYACPExchange)
 	r.Get("/api/oauth/cline/authorize", oauthH.HandleClineAuthorize)
 	r.Post("/api/oauth/cline/exchange", oauthH.HandleClineExchange)
 	r.Get("/api/oauth/pkce/authorize", oauthH.HandlePKCEAuthorize)
@@ -508,6 +601,7 @@ func mountOAuthRoutes(r interface {
 	r.Get("/api/oauth/codex/start-proxy", oauthH.HandleCodexStartProxy)
 	r.Get("/api/oauth/codex/poll-status", oauthH.HandleCodexPollStatus)
 	r.Get("/api/oauth/codex/stop-proxy", oauthH.HandleCodexStopProxy)
+	r.Get("/api/oauth/callback-result", oauthH.HandleCallbackResult)
 	r.Get("/api/oauth/authcode/authorize", oauthH.HandleAuthCodeAuthorize)
 	r.Post("/api/oauth/authcode/exchange", oauthH.HandleAuthCodeExchange)
 	r.Get("/api/oauth/trae/authorize", oauthH.HandleTraeAuthorize)
@@ -539,10 +633,33 @@ func mountOAuthRoutes(r interface {
 // warning on SetupRoutes about the two PersistentStores.
 func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	// Public (unauthenticated) endpoints
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	healthH := func(w http.ResponseWriter, r *http.Request) {
+		// The browser probes this endpoint from the dashboard's tunnel and
+		// Tailscale cards (EndpointView.svelte clientPingUrl). A cross-origin
+		// fetch needs CORS on the response or the probe fails on a healthy
+		// gateway, so the headers are part of the contract, not decoration.
+		handlerutil.WriteCORSHeaders(w)
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
-	})
+	}
+	r.Get("/health", healthH)
+	// Upstream serves the same answer under /api as well, and an older
+	// dashboard build polls that path.
+	r.Get("/api/health", healthH)
+	// Preflights live here, not in the API-key group: an OPTIONS request never
+	// carries credentials, so answering it behind RequireApiKey would 401 and
+	// the browser would never send the real request. Registered per path rather
+	// than as a blanket OPTIONS passthrough in the middleware, which would have
+	// opened every protected route.
+	corsPreflight := func(w http.ResponseWriter, r *http.Request) {
+		handlerutil.WriteCORSPreflight(w)
+	}
+	r.Options("/health", corsPreflight)
+	r.Options("/api/health", corsPreflight)
+	// An Ollama client lists models before it chats, and a browser-based one
+	// sends a preflight first.
+	r.Options("/api/tags", corsPreflight)
+	r.Options("/tags", corsPreflight)
 	// Version info is public (upstream PUBLIC_API_PATHS): the Sidebar polls
 	// /api/version on every dashboard page including /login, before any
 	// session or API key exists.
@@ -626,6 +743,28 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
+	// First-run setup: an anonymous GET/POST pair that lets a fresh install set
+	// the dashboard password from the browser. The handler itself refuses a
+	// completed setup and a non-loopback peer, so the anonymity is only usable
+	// before the gateway is configured.
+	r.Get("/api/setup", dashH.HandleGetSetup)
+	r.Post("/api/setup", dashH.HandlePostSetup)
+	// Deliberately outside the admin group: this is the recovery path for an
+	// operator who cannot log in, so it cannot require the session it is meant
+	// to restore. The handler refuses anything but a loopback peer on the TCP
+	// connection, and rejects cross-site POSTs.
+	r.Post("/api/auth/reset-password", dashH.HandleResetPassword)
+	// SSO browser login flows and SP metadata. Anonymous by necessity: they
+	// exist precisely for the case where no session exists yet, so mounting
+	// them behind RequireDashboardAuth 401'd the browser at the one moment they
+	// are needed. The settings *tests* stay in the dashboard group, because
+	// those are admin reads that echo the IdP configuration.
+	ssoPubH := sso.NewHandler(repo)
+	r.Get("/api/auth/oidc/start", ssoPubH.HandleOIDCStart)
+	r.Get("/api/auth/oidc/callback", ssoPubH.HandleOIDCCallback)
+	r.Get("/api/auth/saml/start", ssoPubH.HandleSAMLStart)
+	r.Post("/api/auth/saml/acs", ssoPubH.HandleSAMLACS)
+	r.Get("/api/auth/saml/metadata", ssoPubH.HandleSamlMetadata)
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
 
@@ -740,7 +879,21 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// before any traffic, so the cache on that instance never fills.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireDashboardAuth(repo))
+		// The audit trail records every mutating dashboard request (plus the
+		// sensitive reads it names) and serves the log itself. It reads the
+		// recorder from the repo per request — the recorder starts in the boot
+		// hook, after this router exists, so a nil recorder simply means
+		// "auditing off" for a router built by hand in a unit test.
+		r.Use(dashboard.AuditMiddleware(repo))
 		SetupDashboardRoutes(r, repo, engineChatH)
+		// The log itself: list, export, verify the chain, and the recorder
+		// counters. Mounted in this group (not inside SetupDashboardRoutes) so
+		// the endpoints are present in a production boot even though the tests
+		// table RegisterRoutes mounts does not know them.
+		r.Get("/api/audit", dashH.HandleAuditList)
+		r.Get("/api/audit/export", dashH.HandleAuditExport)
+		r.Get("/api/audit/verify", dashH.HandleAuditVerify)
+		r.Get("/api/audit/status", dashH.HandleAuditStatus)
 	})
 
 	// CLI Tools status is a dashboard read: the SPA calls it with the session

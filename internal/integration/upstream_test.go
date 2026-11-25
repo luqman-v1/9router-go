@@ -74,6 +74,17 @@ func (u *Upstream) Count() int {
 	return len(u.requests)
 }
 
+// Requests returns a copy of everything this upstream has observed, for
+// assertions about paths the caller does not know in advance (or that must NOT
+// have been called at all).
+func (u *Upstream) Requests() []RecordedRequest {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make([]RecordedRequest, len(u.requests))
+	copy(out, u.requests)
+	return out
+}
+
 // Last returns the most recent request, failing the test when there was none.
 func (u *Upstream) Last(t *testing.T) RecordedRequest {
 	t.Helper()
@@ -201,7 +212,7 @@ func (e *Env) AddCombo(t *testing.T, id, name string, models []string) {
 	if err != nil {
 		t.Fatalf("encode combo models: %v", err)
 	}
-	if err := e.Repo.CreateCombo(id, name, "llm", string(encoded), "fallback"); err != nil {
+	if err := e.Repo.CreateCombo(id, name, "llm", string(encoded), "fallback", ""); err != nil {
 		t.Fatalf("create combo %s: %v", name, err)
 	}
 }

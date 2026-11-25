@@ -3,6 +3,7 @@ package providers
 import (
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // Connection status vocabulary, mirroring the upstream Next.js 9router
@@ -53,19 +54,41 @@ func EffectiveStatus(isActive int, testStatus string, hasActiveCooldown bool) st
 	return EffectiveStatusWithError(isActive, testStatus, hasActiveCooldown, "")
 }
 
+// hasActiveCooldownInMap inspects an already-unmarshaled connection data map
+// for any unexpired modelLock_* or account-wide rateLimitedUntil timestamp.
+func hasActiveCooldownInMap(data map[string]any, now time.Time) bool {
+	for k, v := range data {
+		if k != "rateLimitedUntil" && !strings.HasPrefix(k, "modelLock_") {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err == nil && now.Before(t) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasActiveCooldown reports whether a connection's data JSON carries any
-// live modelLock_* entry. These are written by the chat path when a model
-// returns 429/capacity, and cleared when the lock expires or the operator
-// resets health. A live lock means the account is currently in a cooldown
-// window for at least one model.
+// unexpired modelLock_* or rateLimitedUntil entry. Unlocked entries stored as
+// null and lapsed timestamps return false.
 func HasActiveCooldown(dataJSON string) bool {
 	if strings.TrimSpace(dataJSON) == "" {
 		return false
 	}
-	// Fast path: scan the raw JSON for the prefix. This avoids unmarshalling
-	// the whole blob on every status check, and is safe because modelLock_*
-	// keys are always written by this codebase, never by user input.
-	return strings.Contains(dataJSON, `"modelLock_`)
+	// Fast path: avoid unmarshalling rows that carry neither cooldown key prefix.
+	if !strings.Contains(dataJSON, `"modelLock_`) && !strings.Contains(dataJSON, `"rateLimitedUntil"`) {
+		return false
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+		return false
+	}
+	return hasActiveCooldownInMap(data, time.Now().UTC())
 }
 
 // ConnectionStatus resolves the effective status of a connection row,
@@ -84,8 +107,9 @@ func ConnectionStatus(isActive int, dataJSON string) (status string, effectively
 	}
 	testStatus, _ := data["testStatus"].(string)
 	lastError := errorTextOf(data["lastError"])
-	status = EffectiveStatusWithError(isActive, testStatus, HasActiveCooldown(dataJSON), lastError)
-	return status, IsEffectivelyActiveWithError(isActive, testStatus, HasActiveCooldown(dataJSON), lastError)
+	cooldown := hasActiveCooldownInMap(data, time.Now().UTC())
+	status = EffectiveStatusWithError(isActive, testStatus, cooldown, lastError)
+	return status, IsEffectivelyActiveWithError(isActive, testStatus, cooldown, lastError)
 }
 
 // errorTextOf flattens the two shapes lastError is stored in — a bare string

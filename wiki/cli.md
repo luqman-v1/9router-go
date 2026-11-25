@@ -53,7 +53,13 @@ binds — including a `.env` file — so they never probe the wrong address.
 9router-go service uninstall   # remove the entry
 ```
 
-Force a backend: `--backend systemd|launchd|openrc|runit|cron`.
+Force a backend: `--backend systemd|launchd|openrc|runit|cron|windows-run|windows-task`.
+
+On Windows, `windows-run` installs a `HKCU\...\Run` registry entry from a
+non-elevated session — no admin rights. `windows-task` registers a `schtasks`
+scheduled task and needs an Administrator console; an elevated install tries it
+first and falls back to `windows-run` when `schtasks` fails. `status` and
+`uninstall` inspect both, so a switch of backend leaves no stale entry.
 
 | Backend | Scope | Needs root |
 |---|---|---|

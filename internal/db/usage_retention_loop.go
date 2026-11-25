@@ -101,9 +101,11 @@ func runRetentionPass(ctx context.Context, repo *Repo, defaultRetention time.Dur
 		return
 	}
 
-	if _, err := repo.RawDB().ExecContext(passCtx, `PRAGMA optimize`); err != nil {
-		if ctx.Err() == nil {
-			log.Printf("[RETENTION] PRAGMA optimize failed: %v", err)
+	if engineOf(repo.RawDB()) == EngineSQLite {
+		if _, err := repo.RawDB().ExecContext(passCtx, `PRAGMA optimize`); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("[RETENTION] PRAGMA optimize failed: %v", err)
+			}
 		}
 	}
 }

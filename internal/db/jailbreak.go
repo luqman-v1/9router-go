@@ -37,10 +37,34 @@ type JailbreakDoc struct {
 	// of them is never injected with this preset, even when a keyword above
 	// matches it. A global exclude list (see GetJailbreakExcludes) overrides
 	Excludes []JailbreakKeyword `json:"excludes,omitempty"`
+	// Position decides where the prompt lands in the outbound body. "" and
+	// "system" both prepend it as a system prompt, which is the shape a
+	// persona is meant to have and the only shape every wire format carries;
+	// "append" puts it after the original content. Leaving it empty is the
+	// deliberate default: a preset written by an older build (or imported
+	// from a file) must keep its prepend behaviour instead of silently
+	// moving the instructions below the user's text, where they read as
+	// further instructions to the model rather than a standing role.
+	Position string `json:"position,omitempty"`
+	// Mode decides what kind of turn the prompt travels as. "" deploys it as
+	// a system prompt; "chat" sends it as a scripted trailing user turn
+	// instead, which is the only way to reach an endpoint that has no system
+	// prompt slot at all. Empty is the default for the same reason as
+	// Position: legacy rows keep behaving exactly as they did before mode
+	// existed.
+	Mode string `json:"mode,omitempty"`
 	// Order is the operator's arrangement position in the preset list. Zero
 	// means "unsorted" and falls back to id order, so a preset written by an
 	// older build (or by import) keeps its place without a migration.
 	Order int `json:"order,omitempty"`
+	// SyncOrigin records the repository a synced preset came from, in the
+	// "owner/repo@ref" shape, together with the file it was read from. A
+	// preset carrying both was written by the sync worker and is rewritten by
+	// it on every pass; a preset with neither was typed, uploaded or imported
+	// by hand, and sync never touches it — that distinction is what keeps an
+	// operator's own edit from being reverted by the next pass.
+	SyncOrigin string `json:"syncOrigin,omitempty"`
+	SyncPath   string `json:"syncPath,omitempty"`
 	// CreatedAt / UpdatedAt are RFC3339 UTC stamps the store fills on write.
 	// They let the dashboard sort by newest or recently-touched, which is how
 	// an operator finds the preset they just edited in a long library.
@@ -52,6 +76,10 @@ type JailbreakDoc struct {
 type JailbreakModelConfig struct {
 	Enabled  bool   `json:"enabled"`
 	PresetID string `json:"presetId,omitempty"`
+	// APIKeyID restricts this binding to one client API key. Empty is every
+	// key. A key-scoped binding outranks the same model's global binding, so
+	// a resold key can carry a different persona than the operator's own.
+	APIKeyID string `json:"apiKeyId,omitempty"`
 }
 
 const (
@@ -128,6 +156,18 @@ func (r *Repo) getJailbreakDocByKey(key string) (*JailbreakDoc, error) {
 
 // SaveJailbreakPreset saves or updates a preset.
 func (r *Repo) SaveJailbreakPreset(d *JailbreakDoc) error {
+	return r.SaveJailbreakPresetContext(context.Background(), d)
+}
+
+// SaveJailbreakPresetContext is the same write with the caller's context, for
+// the background sync worker. The sync-specific fields on the doc (SyncOrigin,
+// SyncPath) are carried through untouched: they are what a later pass reads to
+// tell its own work from the operator's.
+func (r *Repo) SaveJailbreakPresetContext(ctx context.Context, d *JailbreakDoc) error {
+	// ctx is accepted for signature parity with the read paths and for a future
+	// cancellable write; this store writes synchronously, so honouring a caller
+	// that passes nil ends here rather than reassigning a value nothing reads.
+	_ = ctx
 	if d == nil {
 		return fmt.Errorf("nil jailbreak doc")
 	}
@@ -233,8 +273,17 @@ func (r *Repo) DeleteJailbreakPreset(id string) error {
 
 // ListJailbreakPresets returns all available presets.
 func (r *Repo) ListJailbreakPresets() ([]*JailbreakDoc, error) {
+	return r.ListJailbreakPresetsContext(context.Background())
+}
+
+// ListJailbreakPresetsContext is the same read with the caller's context, for
+// the background sync worker whose pass must stop when the gateway shuts down.
+func (r *Repo) ListJailbreakPresetsContext(ctx context.Context) ([]*JailbreakDoc, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rows, err := r.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT key, value FROM kv WHERE scope = ? AND (key LIKE ? OR key = ?) ORDER BY key ASC`,
 		jailbreakScope, jailbreakDocPrefix+"%", jailbreakDocKey,
 	)
@@ -363,10 +412,34 @@ func (r *Repo) SetJailbreakModelPreset(modelID string, presetID string, enabled 
 	if presetID == "" || presetID == "off" || presetID == "none" {
 		presetID = ""
 	}
-	cfg := JailbreakModelConfig{
+	return r.writeJailbreakModelPreset(modelID, JailbreakModelConfig{
 		Enabled:  enabled,
 		PresetID: presetID,
+	})
+}
+
+// SetJailbreakKeyModelPreset binds a preset to a model for one API key only.
+// The stored key is "<apiKeyID>:<modelID>", which the resolver reads ahead of
+// the same model's global binding. An empty apiKeyID is rejected: callers that
+// mean "every key" must use SetJailbreakModelPreset.
+func (r *Repo) SetJailbreakKeyModelPreset(apiKeyID string, modelID string, presetID string, enabled bool) error {
+	if apiKeyID == "" {
+		return fmt.Errorf("empty api key id")
 	}
+	if modelID == "" {
+		return fmt.Errorf("empty model id")
+	}
+	if presetID == "" || presetID == "off" || presetID == "none" {
+		presetID = ""
+	}
+	return r.writeJailbreakModelPreset(apiKeyID+":"+modelID, JailbreakModelConfig{
+		Enabled:  enabled,
+		PresetID: presetID,
+		APIKeyID: apiKeyID,
+	})
+}
+
+func (r *Repo) writeJailbreakModelPreset(bindingID string, cfg JailbreakModelConfig) error {
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -374,7 +447,7 @@ func (r *Repo) SetJailbreakModelPreset(modelID string, presetID string, enabled 
 	_, err = r.db.ExecContext(context.Background(),
 		`INSERT INTO kv (scope, key, value) VALUES (?, ?, ?)
 		 ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
-		jailbreakScope, jailbreakModelPrefix+modelID, string(raw),
+		jailbreakScope, jailbreakModelPrefix+bindingID, string(raw),
 	)
 	if err == nil {
 		r.invalidateJailbreakRuleset()
@@ -473,7 +546,7 @@ func (r *Repo) ListJailbreakModelConfigs() (map[string]JailbreakModelConfig, err
 // carry forwarded leg ids (combo and fusion) resolve through
 // ResolveJailbreakDoc, which takes every candidate id.
 func (r *Repo) GetJailbreakDocForModel(modelID string) (*JailbreakDoc, error) {
-	return r.ResolveJailbreakDoc(modelID)
+	return r.ResolveJailbreakDoc("", modelID)
 }
 
 // jailbreakUsagePrefix marks the per-preset injection counters. The key is
@@ -570,6 +643,25 @@ func (r *Repo) DeleteJailbreakModel(modelID string) error {
 	}
 	_, err := r.db.ExecContext(context.Background(), `DELETE FROM kv WHERE scope = ? AND key = ?`,
 		jailbreakScope, jailbreakModelPrefix+modelID)
+	if err == nil {
+		r.invalidateJailbreakRuleset()
+	}
+	return err
+}
+
+// DeleteJailbreakKeyModel removes one key-scoped binding outright. It is the
+// per-key twin of DeleteJailbreakModel: the stored row is "<apiKeyID>:<modelID>",
+// so the dashboard's per-key delete button drops exactly that row and leaves
+// the same model's global binding untouched.
+func (r *Repo) DeleteJailbreakKeyModel(apiKeyID, modelID string) error {
+	if apiKeyID == "" {
+		return fmt.Errorf("empty api key id")
+	}
+	if modelID == "" {
+		return fmt.Errorf("empty model id")
+	}
+	_, err := r.db.ExecContext(context.Background(), `DELETE FROM kv WHERE scope = ? AND key = ?`,
+		jailbreakScope, jailbreakModelPrefix+apiKeyID+":"+modelID)
 	if err == nil {
 		r.invalidateJailbreakRuleset()
 	}

@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // DeprecationStatus is how a model reached the deprecated state.
@@ -18,7 +19,18 @@ const (
 	// DeprecationRetired was learned from a successful catalogue sync that no
 	// longer lists the model.
 	DeprecationRetired DeprecationStatus = "retired"
+	// DeprecationCooldown is a transient 5-minute unavailability learned from a
+	// live failure. It must never overwrite or erase a permanent "gone" or
+	// "retired" record.
+	DeprecationCooldown DeprecationStatus = "cooldown"
 )
+
+// modelCooldownSec is how long a model stays in cooldown after a live failure
+// before it is eligible to be tried again.
+const modelCooldownSec = 5 * 60 // 5 minutes
+
+// ModelCooldownSec is the exported cooldown duration in seconds.
+const ModelCooldownSec = modelCooldownSec
 
 // ModelDeprecation is what the gateway knows about one provider's model: when
 // it was found dead, and what the upstream said about it.
@@ -26,12 +38,27 @@ const (
 // Key is "<provider>/<model>" — the same wire shape as a combo entry, so a
 // caller holding a combo target needs no separate resolution step.
 type ModelDeprecation struct {
-	Provider   string            `json:"provider"`
-	Model      string            `json:"model"`
-	Status     DeprecationStatus `json:"status"`
-	Message    string            `json:"message,omitempty"`
-	Successor  string            `json:"successor,omitempty"`
-	DetectedAt string            `json:"detectedAt,omitempty"`
+	Provider      string            `json:"provider"`
+	Model         string            `json:"model"`
+	Status        DeprecationStatus `json:"status"`
+	Message       string            `json:"message,omitempty"`
+	Successor     string            `json:"successor,omitempty"`
+	DetectedAt    string            `json:"detectedAt,omitempty"`
+	CooldownUntil string            `json:"cooldownUntil,omitempty"`
+}
+
+// IsCooldown reports whether the deprecation is a transient cooldown that is
+// still active (CooldownUntil in the future). A cooldown whose window has
+// lapsed reads as unknown.
+func (d *ModelDeprecation) IsCooldown() bool {
+	if d == nil || d.Status != DeprecationCooldown || d.CooldownUntil == "" {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, d.CooldownUntil)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(until)
 }
 
 // DeprecationKey builds the storage key for a provider/model pair. Both parts

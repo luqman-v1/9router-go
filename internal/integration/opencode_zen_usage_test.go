@@ -69,4 +69,3 @@ func TestOpenCodeZenQuotaParsesProviderShape(t *testing.T) {
 		}
 	}
 }
-

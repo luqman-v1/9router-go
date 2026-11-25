@@ -39,6 +39,18 @@ var validOpenAIContentTypes = map[string]bool{
 // on DashScope), so the filter must not strip them.
 type FilterOptions struct {
 	PreserveCacheControl bool
+	// StrictReasoningRemoving removes reasoning fields (reasoning_content,
+	// reasoning, reasoning_details) echoed on assistant history. Upstream
+	// paramSupport strips these for groq/mistral/cerebras: strict validators
+	// reject unknown assistant-message fields, which knocks those providers
+	// out of every multi-turn combo where a client replays prior reasoning.
+	StrictReasoningRemoving bool
+	// FlattenContent flattens message content arrays into a single concatenated
+	// text string. Upstream open-sse/translator/concerns/paramSupport.js
+	// STRIP_RULES enables this for cloudflare-ai: Cloudflare AI Workers reject
+	// array content with 400 AiError: Bad input: oneOf at '/' not met ...
+	// Type mismatch of '/messages/0/content', 'array' not in 'string' (code 5006).
+	FlattenContent bool
 }
 
 // FilterToOpenAIFormat normalises a body to clean OpenAI shape — port of
@@ -60,13 +72,79 @@ func filterToOpenAIFormat(body map[string]any, opts FilterOptions) bool {
 			changed = true
 		}
 	}
-	if normalizeTools(body) {
+	if normalizeTools(body, opts) {
 		changed = true
 	}
 	if normalizeToolChoice(body) {
 		changed = true
 	}
+	if opts.PreserveCacheControl && capOpenAICacheControlMarkers(body) {
+		changed = true
+	}
 	return changed
+}
+
+// capOpenAICacheControlMarkers enforces Anthropic's four-breakpoint limit on a
+// direct OpenAI-format request body when PreserveCacheControl is set, dropping
+// the leading markers so at most four survive. It returns true when a marker
+// was removed. Markers are gathered across the top-level system field, tools
+// and messages in document order, mirroring capOpenAICacheControlBlocks.
+func capOpenAICacheControlMarkers(body map[string]any) bool {
+	markers := make([]map[string]any, 0, 8)
+	if sys, ok := body["system"].([]any); ok {
+		for _, b := range sys {
+			if m, ok := b.(map[string]any); ok && m["cache_control"] != nil {
+				markers = append(markers, m)
+			}
+		}
+	} else if m, ok := body["system"].(map[string]any); ok && m["cache_control"] != nil {
+		markers = append(markers, m)
+	}
+	if tools, ok := body["tools"].([]any); ok {
+		for _, t := range tools {
+			tool, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			if tool["cache_control"] != nil {
+				markers = append(markers, tool)
+			}
+			if fn, ok := tool["function"].(map[string]any); ok && fn["cache_control"] != nil {
+				markers = append(markers, fn)
+			}
+		}
+	}
+	if msgs, ok := body["messages"].([]any); ok {
+		for _, m := range msgs {
+			msg, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch c := msg["content"].(type) {
+			case []any:
+				for _, b := range c {
+					if bm, ok := b.(map[string]any); ok && bm["cache_control"] != nil {
+						markers = append(markers, bm)
+					}
+				}
+			case map[string]any:
+				if c["cache_control"] != nil {
+					markers = append(markers, c)
+				}
+			}
+			if msg["cache_control"] != nil {
+				markers = append(markers, msg)
+			}
+		}
+	}
+	if len(markers) <= cacheControlMarkerBudget {
+		return false
+	}
+	drop := len(markers) - cacheControlMarkerBudget
+	for i := range drop {
+		delete(markers[i], "cache_control")
+	}
+	return true
 }
 
 // FilterToOpenAIFormatJSON is FilterToOpenAIFormat over raw bytes;

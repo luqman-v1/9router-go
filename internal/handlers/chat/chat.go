@@ -9,6 +9,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
@@ -79,6 +80,20 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Pre-filter on raw body bytes: only decode/inspect conversation history
+	// for stalled tool loops when the request actually carries tool calls.
+	// Keeps every non-tool request zero-cost (per §4.A, §4.G).
+	if bytes.Contains(body, []byte(`"tool_calls"`)) || bytes.Contains(body, []byte(`"tool_use"`)) {
+		var msgBody struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &msgBody); err == nil {
+			if h.CheckStalledToolLoopOpenAI(w, msgBody.Messages, reqBody.Model, reqBody.Stream) {
+				return
+			}
+		}
+	}
+
 	// Per-key model policy runs after the bypass path — synthetic warmup and
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
@@ -88,6 +103,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = executor.WithCodexLiteHeader(ctx, r.Header.Get(executor.CodexResponsesLiteHeader))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver; the flag travels on ctx to applyTokenSavers.
 	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
@@ -98,6 +114,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// outlive the request (docs/provider-limits-plan.md D7).
 	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
+	ctx = handlerutil.WithClientAnthropicVersion(ctx, r.Header.Get("anthropic-version"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
 	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
 	// The operator's providerThinking overrides are read once here, not once
@@ -356,6 +373,20 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-filter on raw body bytes: only decode/inspect conversation history
+	// for stalled tool loops when the request actually carries tool calls.
+	// Keeps every non-tool request zero-cost (per §4.A, §4.G).
+	if bytes.Contains(body, []byte(`"tool_calls"`)) || bytes.Contains(body, []byte(`"tool_use"`)) {
+		var msgBody struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &msgBody); err == nil {
+			if h.CheckStalledToolLoopClaude(w, msgBody.Messages, reqBody.Model, reqBody.Stream) {
+				return
+			}
+		}
+	}
+
 	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
@@ -378,19 +409,26 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			claudeNative = cfg != nil && cfg.Format == providers.FormatClaude
 		}
 	}
+	// A multi-lane provider (opencode-zen, kimi, commandcode-goat, …) has no
+	// single Format, so the model's own declaration decides: converting this
+	// body to OpenAI here would hand a Messages-lane model a shape its endpoint
+	// rejects. Same rule tryForwardWithConnection applies below.
+	if !claudeNative {
+		claudeNative = executor.ServesMessagesEndpoint(modelInfo.Provider, modelInfo.Model)
+	}
 	if claudeNative {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))
 		if providerCfg != nil && providerCfg.RequireClaudeToolType {
 			body = translator.DefaultClaudeToolType(body)
 		}
-		body = translator.AnchorClaudeCache(body)
+		body = translator.AnchorClaudeCacheWithTTL(body, h.claudeCacheTTL())
 		if err := json.Unmarshal(body, &workingBody); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
 	} else {
-		openaiBody, err := translator.TranslateClaudeToOpenAI(body)
+		openaiBody, err := translator.TranslateClaudeToOpenAI(body, modelInfo.Provider, modelInfo.Model)
 		if err != nil {
 			log.Error("chat", "translate failed", "error", err)
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))
@@ -416,12 +454,18 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// A Messages client's own beta flags have to reach the upstream: the
+	// registry list is the gateway's choice of betas, not the caller's. Without
+	// this the Chat Completions handler carried them and this one dropped them,
+	// so a Claude Code feature behind a beta it asked for was still refused.
+	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver; the flag travels on ctx to applyTokenSavers.
 	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
 		ctx = WithTokenSaverBypass(ctx)
 	}
 	ctx = withProviderLimitState(ctx)
+	ctx = handlerutil.WithClientAnthropicVersion(ctx, r.Header.Get("anthropic-version"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
 	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
 	// The operator's providerThinking overrides are read once here, not once

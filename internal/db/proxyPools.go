@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	json "encoding/json/v2"
@@ -90,12 +91,23 @@ func (r *Repo) invalidateActivePoolIDs() {
 // GetProxyPool reads a proxy pool from the proxyPools table.
 func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 	var data string
-	var isActive int
+	var isActive any
 	err := r.db.QueryRow(
 		`SELECT data, isActive FROM proxyPools WHERE id = ?`, poolID,
 	).Scan(&data, &isActive)
 	if err != nil {
 		return nil, fmt.Errorf("proxy pool %s: %w", poolID, err)
+	}
+	var active bool
+	switch v := isActive.(type) {
+	case bool:
+		active = v
+	case int64:
+		active = v != 0
+	case float64:
+		active = v != 0
+	default:
+		return nil, fmt.Errorf("proxy pool %s: unsupported isActive type %T", poolID, isActive)
 	}
 
 	var raw map[string]any
@@ -105,7 +117,7 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 
 	pool := &ProxyPool{
 		ID:       poolID,
-		IsActive: isActive == 1,
+		IsActive: active,
 		Name:     handlerutil.GetString(raw, "name"),
 		Strategy: handlerutil.GetString(raw, "strategy"),
 	}
@@ -171,6 +183,9 @@ type ProxyPoolData struct {
 	StrictProxy  bool    `json:"strictProxy"`
 	LastTestedAt *string `json:"lastTestedAt"`
 	LastError    *string `json:"lastError"`
+	// IsActive controls the proxyPools.isActive column on insert; nil defaults to active (1).
+	// Excluded from the JSON data blob to keep byte-compatibility with the shared schema.
+	IsActive *bool `json:"-"`
 }
 
 // InsertProxyPool inserts a new proxy pool row and returns the pool object in
@@ -178,13 +193,21 @@ type ProxyPoolData struct {
 func (r *Repo) InsertProxyPool(d ProxyPoolData) (map[string]any, error) {
 	id := randomID()
 	now := time.Now().UTC().Format(time.RFC3339)
+	active := true
+	if d.IsActive != nil {
+		active = *d.IsActive
+	}
+	isActiveInt := 0
+	if active {
+		isActiveInt = 1
+	}
 	dataBytes, err := json.Marshal(d)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pool data: %w", err)
 	}
 	_, err = r.db.Exec(
 		`INSERT INTO proxyPools (id, isActive, testStatus, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, 1, "unknown", string(dataBytes), now, now,
+		id, isActiveInt, "unknown", string(dataBytes), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert proxy pool: %w", err)
@@ -197,7 +220,7 @@ func (r *Repo) InsertProxyPool(d ProxyPoolData) (map[string]any, error) {
 		"noProxy":      d.NoProxy,
 		"type":         d.Type,
 		"strictProxy":  d.StrictProxy,
-		"isActive":     true,
+		"isActive":     active,
 		"testStatus":   "unknown",
 		"lastTestedAt": nil,
 		"lastError":    nil,
@@ -232,17 +255,28 @@ func (r *Repo) ListProxyPools() ([]map[string]any, error) {
 	var list []map[string]any
 	for rows.Next() {
 		var id, dataStr, createdAt, updatedAt string
-		var isActiveInt int
+		var isActive any
 		var testStatus sql.NullString
-		if err := rows.Scan(&id, &isActiveInt, &testStatus, &dataStr, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &isActive, &testStatus, &dataStr, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan proxyPools: %w", err)
+		}
+		var active bool
+		switch v := isActive.(type) {
+		case bool:
+			active = v
+		case int64:
+			active = v != 0
+		case float64:
+			active = v != 0
+		default:
+			return nil, fmt.Errorf("scan proxyPools: unsupported isActive type %T", isActive)
 		}
 		var poolData map[string]any
 		if err := json.Unmarshal([]byte(dataStr), &poolData); err != nil {
 			poolData = make(map[string]any)
 		}
 		poolData["id"] = id
-		poolData["isActive"] = (isActiveInt == 1)
+		poolData["isActive"] = active
 		poolData["testStatus"] = testStatus.String
 		poolData["createdAt"] = createdAt
 		poolData["updatedAt"] = updatedAt
@@ -281,7 +315,7 @@ func (r *Repo) ActivePoolIDs() []string {
 // filter runs in SQL and the payload decodes into a typed struct, so a database
 // holding many pools does not pay for rows rotation can never pick.
 func (r *Repo) queryActivePoolIDs() []string {
-	rows, err := r.db.Query(`SELECT id, data FROM proxyPools WHERE isActive = 1 ORDER BY createdAt`)
+	rows, err := r.db.QueryContext(context.Background(), `SELECT id, data FROM proxyPools WHERE isActive = TRUE ORDER BY createdAt`)
 	if err != nil {
 		return nil
 	}
@@ -303,6 +337,9 @@ func (r *Repo) queryActivePoolIDs() []string {
 		if poolPayloadHasURL(payload.ProxyURL, payload.URLs) {
 			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil
 	}
 	return ids
 }
@@ -346,12 +383,13 @@ func (r *Repo) DeleteProxyPool(id string) error {
 // UpdateProxyPool updates a proxy pool's data, isActive, and testStatus.
 func (r *Repo) UpdateProxyPool(id string, updates map[string]any) error {
 	var dataStr string
-	var isActive int
+	var isActive any
 	var testStatus string
 	err := r.db.QueryRow(`SELECT data, isActive, testStatus FROM proxyPools WHERE id = ?`, id).Scan(&dataStr, &isActive, &testStatus)
 	if err != nil {
 		return err
 	}
+	isActiveInt := scanBoolAsInt(isActive)
 	var existing map[string]any
 	_ = json.Unmarshal([]byte(dataStr), &existing)
 	if existing == nil {
@@ -361,9 +399,9 @@ func (r *Repo) UpdateProxyPool(id string, updates map[string]any) error {
 		if k == "isActive" {
 			if b, ok := v.(bool); ok {
 				if b {
-					isActive = 1
+					isActiveInt = 1
 				} else {
-					isActive = 0
+					isActiveInt = 0
 				}
 			}
 		} else if k == "testStatus" {
@@ -377,7 +415,7 @@ func (r *Repo) UpdateProxyPool(id string, updates map[string]any) error {
 	updatedBytes, _ := json.Marshal(existing)
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = r.db.Exec(`UPDATE proxyPools SET data = ?, isActive = ?, testStatus = ?, updatedAt = ? WHERE id = ?`,
-		string(updatedBytes), isActive, testStatus, now, id)
+		string(updatedBytes), isActiveInt != 0, testStatus, now, id)
 	proxyPoolCache.Delete(id)
 	r.invalidateActivePoolIDs()
 	return err
@@ -386,12 +424,13 @@ func (r *Repo) UpdateProxyPool(id string, updates map[string]any) error {
 // SetProxyPoolStatus updates only testStatus and lastTestedAt on a pool.
 func (r *Repo) SetProxyPoolStatus(id string, status string, latencyMs int64) error {
 	var dataStr string
-	var isActive int
+	var isActive any
 	var currentStatus string
 	err := r.db.QueryRow(`SELECT data, isActive, testStatus FROM proxyPools WHERE id = ?`, id).Scan(&dataStr, &isActive, &currentStatus)
 	if err != nil {
 		return err
 	}
+	_ = isActive
 	var existing map[string]any
 	_ = json.Unmarshal([]byte(dataStr), &existing)
 	if existing == nil {
@@ -405,4 +444,21 @@ func (r *Repo) SetProxyPoolStatus(id string, status string, latencyMs int64) err
 		string(updatedBytes), status, now, id)
 	proxyPoolCache.Delete(id)
 	return err
+}
+
+// scanBoolAsInt normalizes an isActive column scanned through any: SQLite
+// returns int64, PostgreSQL returns bool, both map to 0/1 for legacy callers.
+func scanBoolAsInt(v any) int {
+	switch n := v.(type) {
+	case bool:
+		if n {
+			return 1
+		}
+		return 0
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }

@@ -14,18 +14,23 @@ import (
 //   - the system prompt must start with the CLI harness preamble, verbatim
 //     (a 2,000-char prefix fails; caller instructions appended after the full
 //     preamble pass);
-//   - tool declarations must be the CLI built-ins, byte-exact: a
-//     foreign-named tool, a renamed clone, or an edited description all
-//     answer 400 "Request validation failed"; at least six definitions are
-//     required;
+//   - the built-in tool names must be declared: a request whose declarations
+//     omit them entirely is refused (429 FreeUsageLimitError), while a
+//     foreign-named tool alongside them answers 400 "Request validation
+//     failed";
 //   - tool CALLS are not constrained: history may carry calls to undeclared
 //     names and the model may emit them.
 //
-// So caller tools never travel as declarations. They are described in the
-// appended system text and keep their names in history, and the genuine
-// built-in set is declared in their place. The returned rename map is empty:
-// no name is rewritten, so response tool_calls arrive in the caller's own
-// spelling and need no restoring.
+// Declaring the caller's tools in place of the built-ins passes the gate but
+// loses the turn: the harness preamble runs in Code Mode, which says the
+// built-ins are the only tools there are, and the model follows it — it
+// narrates, or calls a built-in placeholder, instead of the caller's tool
+// (measured live 2026-11-25). So the caller's declarations travel natively
+// beside an inert placeholder for every built-in, the preamble's Code Mode
+// section is stripped, and a note after the caller's own text states that the
+// built-ins are placeholders and the caller's tools are called directly by
+// name. The returned rename map is empty: no name is rewritten, so response
+// tool_calls arrive in the caller's own spelling and need no restoring.
 //
 // flat is true for Responses API bodies and false for Chat Completions;
 // Claude Messages bodies (a "system" field or input_schema tools) are
@@ -40,7 +45,7 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 	claude := isOpenCodeClaudeShapedRequest(request)
 	origSystem := opencodeSystemString(request)
 	installCallerToolsWithInertBuiltins(request, flat, claude)
-	injectStrippedHarnessSystem(request, flat, claude, origSystem)
+	injectStrippedHarnessSystem(request, flat, claude, origSystem, openCodeModelIdentityNote(request))
 	if flat {
 		// Prior-turn function_call items with no name fail the Responses
 		// validator; a harness history can carry one.
@@ -55,6 +60,23 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 		return body, map[string]string{}
 	}
 	return out, map[string]string{}
+}
+
+// openCodeGenuineToolNames lists the CLI built-ins the gate accepts, in
+// declaration order.
+var openCodeGenuineToolNames = []string{
+	"edit",
+	"glob",
+	"grep",
+	"question",
+	"read",
+	"shell",
+	"skill",
+	"subagent",
+	"webfetch",
+	"websearch",
+	"write",
+	"execute",
 }
 
 // openCodeGenuineToolSet lists the built-in names the gate accepts as
@@ -152,17 +174,134 @@ func ensureOpencodeToolSchema(tool any, flat, claude bool) any {
 	return tool
 }
 
+// openCodeModelIdentityNote overrides the harness preamble's static "Your
+// Model" block with the model the client actually selected. The preamble is a
+// verbatim CLI capture (see opencode_free_harness.go) and the inference gate
+// fingerprints its bytes, so it cannot be edited; a correction appended after
+// it is accepted and stops the model from reporting GLM-5.3-Flash Free for
+// every free-tier id.
+func openCodeModelIdentityNote(request map[string]any) string {
+	model, _ := request["model"].(string)
+	if model == "" {
+		return ""
+	}
+	return "# Your Model (this session)\n" +
+		"The '# Your Model' block in the harness above is a fixed capture used by the inference gate and does not describe this request.\n" +
+		"Your actual model for this session is: " + model
+}
+
+// openCodeHarnessPrefix is the part of the harness preamble that a stripped
+// system prompt keeps byte-exact: everything before the first section whose
+// instructions assume the built-in tools are the ones to call.
+func openCodeHarnessPrefix() string {
+	cut := len(openCodeHarnessSystem)
+	for _, marker := range openCodeStrippedMarkers {
+		if i := strings.Index(openCodeHarnessSystem, marker); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return openCodeHarnessSystem[:cut]
+}
+
 // injectStrippedHarnessSystem sets the system prompt to the harness preamble
 // minus its Code Mode section (which instructs the model to route all tool
 // use through the built-ins — inert placeholders here), followed by the
-// caller's own system text and the direct-call note.
-func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, origSystem string) {
-	sys := strings.TrimRight(stripOpencodeCodeMode(openCodeHarnessSystem), " 	\r\n")
+// caller's own system text, the direct-call note and the model identity note.
+func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, origSystem, identityNote string) {
+	preamble := strings.TrimRight(stripOpencodeCodeMode(openCodeHarnessSystem), " \t\r\n")
+	suffix := "\n\n" + opencodeDirectCallNote
 	if strings.TrimSpace(origSystem) != "" {
-		sys += "\n\n" + origSystem
+		suffix = "\n\n" + origSystem + suffix
 	}
-	sys += "\n\n" + opencodeDirectCallNote
-	setOpencodeSystem(request, flat, claude, sys)
+	if identityNote != "" {
+		suffix += "\n\n" + identityNote
+	}
+	injectPreambleSuffix(request, flat, claude, preamble, suffix)
+}
+
+// injectOpenCodeHarnessSuffix prepends the full harness preamble and appends
+// suffix after the caller's own text. The preamble itself is not optional: the
+// gate fingerprints it, and a request without it is refused regardless of
+// lane. It is what a title request and an agent turn share; they differ only
+// in suffix.
+func injectOpenCodeHarnessSuffix(request map[string]any, flat, claude bool, suffix string) {
+	injectPreambleSuffix(request, flat, claude, openCodeHarnessSystem, suffix)
+}
+
+func injectPreambleSuffix(request map[string]any, flat, claude bool, preamble, suffix string) {
+	switch {
+	case claude:
+		injectClaudeSystem(request, preamble, suffix)
+	case flat:
+		instructions, _ := request["instructions"].(string)
+		if strings.TrimSpace(instructions) == "" {
+			request["instructions"] = preamble + suffix
+			return
+		}
+		request["instructions"] = preamble + "\n\n" + instructions + suffix
+	default:
+		injectChatSystem(request, preamble, suffix)
+	}
+}
+
+func injectClaudeSystem(request map[string]any, preamble, suffix string) {
+	switch system := request["system"].(type) {
+	case string:
+		if strings.TrimSpace(system) == "" {
+			request["system"] = preamble + suffix
+			return
+		}
+		request["system"] = preamble + "\n\n" + system + suffix
+	case []any:
+		blocks := system
+		if len(blocks) > 0 {
+			request["system"] = append([]any{openCodeHarnessTextBlock(preamble)}, blocks...)
+		} else {
+			request["system"] = []any{openCodeHarnessTextBlock(preamble)}
+		}
+		if trimmed := strings.TrimPrefix(suffix, "\n\n"); trimmed != "" {
+			request["system"] = append(request["system"].([]any), openCodeHarnessTextBlock(trimmed))
+		}
+	default:
+		request["system"] = preamble + suffix
+	}
+}
+
+func openCodeHarnessTextBlock(text string) map[string]any {
+	return map[string]any{"type": "text", "text": text}
+}
+
+func injectChatSystem(request map[string]any, preamble, suffix string) {
+	messages, ok := request["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		request["messages"] = []any{map[string]any{"role": "system", "content": preamble + suffix}}
+		return
+	}
+	first, ok := messages[0].(map[string]any)
+	if !ok || first["role"] != "system" {
+		request["messages"] = append([]any{map[string]any{"role": "system", "content": preamble + suffix}}, messages...)
+		return
+	}
+	switch content := first["content"].(type) {
+	case string:
+		if strings.TrimSpace(content) == "" {
+			first["content"] = preamble + suffix
+			return
+		}
+		first["content"] = preamble + "\n\n" + content + suffix
+	case []any:
+		blocks := content
+		if len(blocks) > 0 {
+			first["content"] = append([]any{openCodeHarnessTextBlock(preamble)}, blocks...)
+		} else {
+			first["content"] = []any{openCodeHarnessTextBlock(preamble)}
+		}
+		if trimmed := strings.TrimPrefix(suffix, "\n\n"); trimmed != "" {
+			first["content"] = append(first["content"].([]any), openCodeHarnessTextBlock(trimmed))
+		}
+	default:
+		first["content"] = preamble + suffix
+	}
 }
 
 // dropNamelessOpenCodeV2FunctionCalls removes prior-turn function_call items
@@ -190,9 +329,9 @@ func dropNamelessOpenCodeV2FunctionCalls(request map[string]any) {
 // validate. A "none" choice is dropped on every lane (the gate answers it
 // with 403 FreeTierError; tool suppression lives in the prompt). On the
 // Responses lane an explicit choice becomes "auto" on auto-only models, and a
-// forced choice naming no genuine built-in is dropped (reporting the drop so
-// the caller does not refill "auto" over it). On the chat and Claude lanes a
-// forced choice naming a caller tool becomes "required": the name cannot
+// forced choice naming no genuine name is dropped (reporting the drop so the
+// caller does not refill "auto" over it). On the chat and Claude lanes a
+// forced choice naming anything else becomes "required": the name cannot
 // travel, but the intent to force a tool call can.
 //
 // It reports whether a forced choice was dropped on the Responses lane.
@@ -299,23 +438,16 @@ func opencodeSystemString(request map[string]any) string {
 	return ""
 }
 
-func setOpencodeSystem(request map[string]any, flat, claude bool, s string) {
-	switch {
-	case claude:
-		request["system"] = s
-	case flat:
-		request["instructions"] = s
-	default:
-		if msgs, ok := request["messages"].([]any); ok && len(msgs) > 0 {
-			if first, ok := msgs[0].(map[string]any); ok && first["role"] == "system" {
-				first["content"] = s
-				return
-			}
-			request["messages"] = append([]any{map[string]any{"role": "system", "content": s}}, msgs...)
-			return
-		}
-		request["messages"] = []any{map[string]any{"role": "system", "content": s}}
-	}
+// openCodeStrippedMarkers are the preamble passages that only make sense when
+// the built-ins are the live tool set: the tool-preference bullets, the Code
+// Mode section and the worktree guidance after it.
+var openCodeStrippedMarkers = []string{
+	"- Prefer dedicated tools over shell",
+	"- Use the write tool",
+	"- Use the edit tool",
+	"- Prefer parallelizing",
+	"# Code Mode",
+	"When you create a worktree",
 }
 
 func stripOpencodeCodeMode(sys string) string {

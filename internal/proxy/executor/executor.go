@@ -29,12 +29,14 @@ type Request struct {
 	APIKey         string
 	Body           []byte
 	IsStream       bool
-	ClaudeClient   bool              // /v1/messages client: body is Claude Messages, response must be translated back
+	ClaudeClient   bool // /v1/messages client: body is Claude Messages, response must be translated back
 	TranslateResp  bool
 	ConnectionID   string            // for OAuth refresh by fallback
+	AuthType       string            // connection authType column ("oauth", "mcode-lease", ...)
+	APIKeyID       string            // authenticated key id for signature scoping
 	SessionID      string            // client session / conversation id
-	ConnData       map[string]any    // connection providerSpecificData (e.g. fingerprintId for client cloaking)
 	Leases         LeaseStore        // cross-process lease backend (nil = memory only)
+	ConnData       map[string]any    // connection providerSpecificData (e.g. fingerprintId for client cloaking)
 	ModelName      string            // extracted model name
 	Endpoint       string            // custom URL override (azure)
 	ToolNameMap    map[string]string // claude OAuth tool-cloak map (suffixed -> original)
@@ -47,6 +49,37 @@ type Request struct {
 	ResponseBuf          io.Writer // writer to capture response text for token estimation & logging
 	StartTime            time.Time // request start time for TTFT tracking
 	TTFT                 *int64    // pointer to TTFT metric (ms to first chunk)
+	// ACPCredentials resolves the OAuth credential pair for ACP-style
+	// providers (agy-acp). Set by the chat handler so the executor can
+	// refresh/reference an antigravity connection without owning the DB.
+	ACPCredentials func(ctx context.Context, connData map[string]any, connectionID string) (accessToken, refreshToken string, expiresAt time.Time, err error)
+	// OnUpstreamError is an optional provider-scoped retry hook. It receives
+	// the upstream status and a bounded copy of the error body and returns a
+	// rewritten request body when the refusal is caused by a fixable param
+	// (Mistral Vibe's reasoning_effort snap). The executor replays at most
+	// once; leaving it nil keeps the ordinary single-attempt path.
+	OnUpstreamError func(status int, detail []byte) ([]byte, bool)
+}
+
+// markTTFT stamps the time-to-first-token on the first emitted chunk, once.
+// The usage recorder reads metrics.TTFT into latency.ttft for the dashboard
+// detail row; a stream that never calls this records TTFT as unseen (0),
+// which renders as "— (non-stream)" and is excluded from the TTFT averages.
+// Every streaming executor must call it before flushing the first
+// client-visible frame — the semantic first token, not the first byte or an
+// empty role-only delta. startTime comes from req.StartTime so the value
+// matches what the chat handler measures.
+func markTTFT(req *Request, startTime time.Time) {
+	if req == nil || req.TTFT == nil || *req.TTFT != 0 {
+		return
+	}
+	if startTime.IsZero() {
+		startTime = req.StartTime
+	}
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	*req.TTFT = time.Since(startTime).Milliseconds()
 }
 
 // Executor forwards a request upstream and writes the response.

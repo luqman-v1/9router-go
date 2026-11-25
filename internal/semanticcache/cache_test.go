@@ -307,3 +307,50 @@ func TestSemanticCache_StatsAndListing(t *testing.T) {
 		t.Fatalf("cache.Len = %d, want 0", cache.Len())
 	}
 }
+
+// InvalidateByModelAndPrefix removes only entries matching both filters:
+// model is case-insensitive, key prefix is case-sensitive. Passing an empty
+// filter leaves that axis unconstrained; passing neither matches everything.
+func TestSemanticCache_InvalidateByModelAndPrefix(t *testing.T) {
+	ctx := context.Background()
+	cache := New(Config{
+		Enabled:    true,
+		TTL:        time.Hour,
+		MaxEntries: 100,
+	}, nil)
+
+	put := func(key, model string) {
+		if err := cache.store.Put(ctx, key, Entry{
+			Key:          key,
+			Model:        model,
+			ResponseBody: []byte(`{"ok":true}`),
+			StoredAt:     time.Now(),
+		}); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	put("abcdef", "gpt-4o")
+	put("abcghi", "GPT-4o")
+	put("defabc", "claude-3-5")
+
+	// Prefix only: matches the two gpt-4o keys sharing "abc" prefix.
+	if got := cache.InvalidateByModelAndPrefix(ctx, "", "abc"); got != 2 {
+		t.Fatalf("prefix-only invalidate = %d, want 2", got)
+	}
+	if cache.Len() != 1 {
+		t.Fatalf("cache.Len = %d, want 1", cache.Len())
+	}
+
+	// Model only (case-insensitive): matches claude-3-5.
+	if got := cache.InvalidateByModelAndPrefix(ctx, "CLAUDE-3-5", ""); got != 1 {
+		t.Fatalf("model-only invalidate = %d, want 1", got)
+	}
+	if cache.Len() != 0 {
+		t.Fatalf("cache.Len = %d, want 0", cache.Len())
+	}
+
+	// Both filters with nothing left to match.
+	if got := cache.InvalidateByModelAndPrefix(ctx, "gpt-4o", "abc"); got != 0 {
+		t.Fatalf("both-filters invalidate = %d, want 0", got)
+	}
+}

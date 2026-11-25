@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -369,7 +370,7 @@ func TestJailbreakGlobalExcludeRoutes(t *testing.T) {
 	if err := repo.SetJailbreakModelPreset("providerx/deepseek-4-pro", "p", true); err != nil {
 		t.Fatalf("bind model: %v", err)
 	}
-	doc, err := repo.ResolveJailbreakDoc("providerx/deepseek-4-pro")
+	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-4-pro")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -512,6 +513,223 @@ func TestJailbreakDuplicateAndReorder(t *testing.T) {
 	for i, id := range want {
 		if presets[i].ID != id {
 			t.Errorf("preset[%d] = %q, want %q (full order %s)", i, presets[i].ID, id, presetIDs(presets))
+		}
+	}
+}
+
+// TestJailbreakKeyModelBindings drives the per-key binding endpoints: a
+// key-scoped write must round-trip through its read filtered to that key, an
+// empty keyId must be refused, and an unknown key reads as bindings-free
+// rather than leaking other keys' rows.
+func TestJailbreakKeyModelBindings(t *testing.T) {
+	tests := []struct {
+		name        string
+		keyID       string
+		modelID     string
+		presetID    string
+		enabled     *bool
+		wantPreset  string
+		wantEnabled bool
+	}{
+		{name: "armed with preset", keyID: "key-alpha", modelID: "tkh/mimo-v2.6-flash:free", presetID: "deepseek", wantPreset: "deepseek", wantEnabled: true},
+		{name: "armed without preset defaults", keyID: "key-beta", modelID: "gpt-4o", enabled: new(true), wantPreset: "default", wantEnabled: true},
+		{name: "disarmed by off", keyID: "key-gamma", modelID: "claude-opus-4", presetID: "off", wantPreset: "", wantEnabled: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, cleanup := setupTestDB(t)
+			defer cleanup()
+			r := setupTestRouter(repo)
+
+			write := map[string]any{"keyId": tc.keyID, "id": tc.modelID}
+			if tc.enabled != nil {
+				write["enabled"] = *tc.enabled
+			}
+			if tc.presetID != "" {
+				write["presetId"] = tc.presetID
+			}
+			payload, _ := json.Marshal(write)
+			req := httptest.NewRequest(http.MethodPut, "/api/jailbreak/keys/model", bytes.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("PUT status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+			}
+
+			// A global binding for the same model must not appear under the key.
+			if err := repo.SetJailbreakModelPreset(tc.modelID, "global-preset", true); err != nil {
+				t.Fatalf("seed global binding: %v", err)
+			}
+			if err := repo.SetJailbreakKeyModelPreset("other-key", tc.modelID, "other-preset", true); err != nil {
+				t.Fatalf("seed other-key binding: %v", err)
+			}
+
+			req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId="+url.QueryEscape(tc.keyID), nil)
+			rec = httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+			}
+			var got map[string]db.JailbreakModelConfig
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode bindings: %v", err)
+			}
+			cfg, ok := got[tc.modelID]
+			if !ok {
+				t.Fatalf("bindings = %v, want the bare model id %q", got, tc.modelID)
+			}
+			if cfg.APIKeyID != tc.keyID {
+				t.Errorf("apiKeyId = %q, want %q", cfg.APIKeyID, tc.keyID)
+			}
+			wantPreset := tc.wantPreset
+			wantEnabled := tc.wantEnabled
+			if cfg.PresetID != wantPreset {
+				t.Errorf("presetId = %q, want %q", cfg.PresetID, wantPreset)
+			}
+			if cfg.Enabled != wantEnabled {
+				t.Errorf("enabled = %v, want %v", cfg.Enabled, wantEnabled)
+			}
+			for _, id := range got {
+				if id.APIKeyID != tc.keyID {
+					t.Fatalf("binding leaked from key %q", id.APIKeyID)
+				}
+			}
+		})
+	}
+
+	// An unknown key reads as bindings-free, not as someone else's rows.
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	r := setupTestRouter(repo)
+	if err := repo.SetJailbreakKeyModelPreset("key-alpha", "gpt-4o", "deepseek", true); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId=key-unseen", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown key status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]db.JailbreakModelConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode bindings: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("bindings = %v, want empty", got)
+	}
+
+	// An empty keyId is refused rather than answering with every row.
+	payload, _ := json.Marshal(map[string]any{"keyId": "", "id": "gpt-4o", "presetId": "deepseek"})
+	req = httptest.NewRequest(http.MethodPut, "/api/jailbreak/keys/model", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty keyId write status = %d, want 400", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId=", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty keyId read status = %d, want 400", rec.Code)
+	}
+}
+
+// TestJailbreakKeyModelDelete pins the per-key delete button's contract: the
+// row is dropped outright (a later read no longer lists it), while the same
+// model's global binding and another key's binding survive. An empty keyId or
+// model id is refused, and deleting an absent row still answers ok.
+func TestJailbreakKeyModelDelete(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	r := setupTestRouter(repo)
+
+	if err := repo.SetJailbreakModelPreset("gpt-4o", "global-preset", true); err != nil {
+		t.Fatalf("seed global binding: %v", err)
+	}
+	if err := repo.SetJailbreakKeyModelPreset("key-alpha", "gpt-4o", "deepseek", true); err != nil {
+		t.Fatalf("seed key binding: %v", err)
+	}
+	if err := repo.SetJailbreakKeyModelPreset("key-beta", "gpt-4o", "claude", true); err != nil {
+		t.Fatalf("seed other-key binding: %v", err)
+	}
+
+	payload, _ := json.Marshal(map[string]any{"keyId": "key-alpha", "id": "gpt-4o"})
+	req := httptest.NewRequest(http.MethodDelete, "/api/jailbreak/keys/model", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+
+	// The deleted row is gone from key-alpha's list...
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId=key-alpha", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read key-alpha status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]db.JailbreakModelConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode bindings: %v", err)
+	}
+	if _, ok := got["gpt-4o"]; ok {
+		t.Errorf("key-alpha bindings = %v, want gpt-4o deleted", got)
+	}
+
+	// ...while key-beta's binding for the same model survives.
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/keys/bindings?keyId=key-beta", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read key-beta status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	got = map[string]db.JailbreakModelConfig{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode bindings: %v", err)
+	}
+	if cfg, ok := got["gpt-4o"]; !ok || cfg.PresetID != "claude" || !cfg.Enabled {
+		t.Errorf("key-beta bindings = %v, want gpt-4o -> claude untouched", got)
+	}
+
+	// The global binding for the same model is untouched as well.
+	req = httptest.NewRequest(http.MethodGet, "/api/jailbreak/models", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read global status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	global := map[string]db.JailbreakModelConfig{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &global); err != nil {
+		t.Fatalf("decode global: %v", err)
+	}
+	if cfg, ok := global["gpt-4o"]; !ok || cfg.PresetID != "global-preset" || !cfg.Enabled {
+		t.Errorf("global bindings = %v, want gpt-4o -> global-preset untouched", global)
+	}
+
+	// Deleting an absent row still answers ok (idempotent).
+	req = httptest.NewRequest(http.MethodDelete, "/api/jailbreak/keys/model", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("repeat DELETE status = %d, want 200", rec.Code)
+	}
+
+	// Empty keyId or model id is refused rather than deleting something.
+	for name, body := range map[string]map[string]any{
+		"empty keyId": {"keyId": "", "id": "gpt-4o"},
+		"empty id":    {"keyId": "key-alpha", "id": "  "},
+	} {
+		bad, _ := json.Marshal(body)
+		req = httptest.NewRequest(http.MethodDelete, "/api/jailbreak/keys/model", bytes.NewReader(bad))
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: DELETE status = %d, want 400", name, rec.Code)
 		}
 	}
 }

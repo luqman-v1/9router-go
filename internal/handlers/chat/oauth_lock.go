@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 )
@@ -39,4 +40,19 @@ func (h *ChatHandler) clearOAuthAccountPark(connectionID string) {
 	if err := h.Repo.ClearConnectionOAuthLock(connectionID); err != nil {
 		log.Warn("oauth", "clear account park failed", "conn", connectionID, "error", err)
 	}
+}
+
+// connectionParkedForReauth reports whether a connection is already parked
+// for a dead OAuth grant (testStatus reauth_required). A forced refresh
+// against such an account re-spends a single-use token that has already
+// been refused, so callers that would refresh reactively skip it.
+func connectionParkedForReauth(h *ChatHandler, connectionID string) bool {
+	if h == nil || h.Repo == nil || connectionID == "" {
+		return false
+	}
+	conn, err := h.Repo.GetProviderConnectionByID(connectionID)
+	if err != nil || conn == nil {
+		return false
+	}
+	return db.ConnectionRequiresReauth(conn.Data)
 }

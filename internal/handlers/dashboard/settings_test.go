@@ -3,12 +3,14 @@ package dashboard
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	json "encoding/json/v2"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -724,4 +726,65 @@ func TestHandleImportDatabase_ClientContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleProxyTest_ValidatesTestURLAndHonorsContext(t *testing.T) {
+	t.Run("rejects invalid testUrl scheme with 400", func(t *testing.T) {
+		repo, cleanup := setupSettingsTestDB(t)
+		defer cleanup()
+		h := NewDashboardHandler(repo)
+
+		for _, badURL := range []string{"file:///etc/passwd", "not-a-url", "ftp://example.com"} {
+			body := `{"proxyUrl":"http://127.0.0.1:8080","testUrl":"` + badURL + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/settings/proxy-test", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.HandleProxyTest(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("testUrl %q: status = %d, want 400: %s", badURL, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "Invalid test URL") {
+				t.Fatalf("testUrl %q: expected Invalid test URL message, got %s", badURL, rec.Body.String())
+			}
+		}
+	})
+
+	t.Run("honors canceled request context", func(t *testing.T) {
+		unblock := make(chan struct{})
+		proxySrv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-unblock:
+			}
+		}))
+		t.Cleanup(func() {
+			close(unblock)
+			proxySrv.Close()
+		})
+
+		repo, cleanup := setupSettingsTestDB(t)
+		defer cleanup()
+		h := NewDashboardHandler(repo)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		body := `{"proxyUrl":"` + proxySrv.URL + `","testUrl":"http://example.com","timeoutMs":3000}`
+		req := httptest.NewRequest(http.MethodPost, "/api/settings/proxy-test", strings.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		start := time.Now()
+		h.HandleProxyTest(rec, req)
+		if elapsed := time.Since(start); elapsed >= time.Second {
+			t.Fatalf("HandleProxyTest ignored request context, took %v", elapsed)
+		}
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "context deadline exceeded") {
+			t.Fatalf("expected context deadline exceeded in body, got %s", rec.Body.String())
+		}
+	})
 }

@@ -1,12 +1,9 @@
 <script lang="ts">
   import {
     Check,
-    Copy,
     Database,
     Download,
-    Key,
     Loader2,
-    Lock,
     RefreshCw,
     Save,
     Shield,

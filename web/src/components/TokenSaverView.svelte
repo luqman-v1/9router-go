@@ -58,6 +58,10 @@
 
   let headroomEnabled = $state(false)
   let headroomAutostart = $state(false)
+  // The engine is the in-process one by default, so compression works without
+  // the Python proxy installed. The value is only "external" once an operator
+  // picks it, which is why the state default matches the backend default.
+  let headroomEngine = $state<'builtin' | 'external'>('builtin')
   let headroomUrl = $state('http://localhost:8787')
   let headroomTimeoutMs = $state(3000)
   let headroomStatus = $state<{
@@ -70,6 +74,7 @@
     managedPid?: number | null
     path?: string | null
     version?: string | null
+    engine?: 'builtin' | 'external'
   }>({
     installed: false,
     running: false,
@@ -135,6 +140,13 @@
   let ponytailLevel = $state('full')
   let adhdEnabled = $state(false)
   let adhdLevel = $state('full')
+  // A user-authored system prompt, separate from the built-in style savers:
+  // house style, language, a coding convention. Prefix is the first thing the
+  // model reads; suffix is its last word, which is what survives a turn of
+  // untrusted content.
+  let systemPromptEnabled = $state(false)
+  let systemPromptPrefix = $state('')
+  let systemPromptSuffix = $state('')
   let semanticCacheEnabled = $state(false)
   let semanticCacheTTL = $state('1440')
   let semanticCacheMaxEntries = $state('1000')
@@ -215,11 +227,23 @@
   )
 
   let headroomRunning = $derived(!!headroomStatus.running)
+  // The status answers "is compression running", not "is a process running".
+  // The built-in engine has no process, so a proxy-derived label read
+  // "Not installed" on an instance that was compressing every request — the
+  // opposite of the truth. The engine decides the wording, and the process
+  // state only matters for the external engine that has one.
+  //
+  // The toggle gates the whole thing: this row renders whether or not
+  // compression is switched on, so a built-in engine with the toggle off must
+  // not read "Active" — nothing is being compressed on that request path.
+  let headroomActive = $derived(
+    headroomEnabled && (headroomEngine === 'external' ? headroomRunning : true)
+  )
   let headroomStatusLabel = $derived(
     headroomStatus.loading
       ? 'Checking…'
-      : headroomRunning
-        ? 'Running'
+      : headroomActive
+        ? 'Active'
         : headroomStatus.localUrl !== false && !headroomStatus.installed
           ? 'Not installed'
           : headroomStatus.localUrl !== false
@@ -245,6 +269,10 @@
 
       if (typeof settings.headroomEnabled === 'boolean') headroomEnabled = settings.headroomEnabled
       if (typeof settings.headroomAutostart === 'boolean') headroomAutostart = settings.headroomAutostart
+      // An absent engine means the settings row predates the field, which is the
+      // built-in engine — the same default the backend normalizes to.
+      if (settings.headroomEngine === 'external') headroomEngine = 'external'
+      else if (settings.headroomEngine === 'builtin') headroomEngine = 'builtin'
       if (typeof settings.headroomUrl === 'string' && settings.headroomUrl) headroomUrl = settings.headroomUrl
       if (typeof settings.headroomTimeoutMs === 'number' && settings.headroomTimeoutMs > 0) {
         headroomTimeoutMs = settings.headroomTimeoutMs
@@ -264,6 +292,9 @@
       if (typeof settings.ponytailLevel === 'string' && settings.ponytailLevel) ponytailLevel = settings.ponytailLevel
       if (typeof settings.adhdEnabled === 'boolean') adhdEnabled = settings.adhdEnabled
       if (typeof settings.adhdLevel === 'string' && settings.adhdLevel) adhdLevel = settings.adhdLevel
+      if (typeof settings.systemPromptEnabled === 'boolean') systemPromptEnabled = settings.systemPromptEnabled
+      if (typeof settings.systemPromptPrefix === 'string') systemPromptPrefix = settings.systemPromptPrefix
+      if (typeof settings.systemPromptSuffix === 'string') systemPromptSuffix = settings.systemPromptSuffix
       if (typeof settings.semanticCacheEnabled === 'boolean') semanticCacheEnabled = settings.semanticCacheEnabled
       if (typeof settings.semanticCacheTTL === 'number' && settings.semanticCacheTTL > 0) semanticCacheTTL = String(settings.semanticCacheTTL)
       if (typeof settings.semanticCacheMaxEntries === 'number' && settings.semanticCacheMaxEntries > 0) semanticCacheMaxEntries = String(settings.semanticCacheMaxEntries)
@@ -488,7 +519,15 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     const nextUrl = headroomUrl.trim() || 'http://localhost:8787'
     headroomUrl = nextUrl
     headroomEnabled = value
-    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl })
+    // The engine is written with the toggle so the two never disagree: a saved
+    // row with headroomEnabled true and an unset engine resolves to the
+    // built-in engine on the backend, and the panel must show that same choice.
+    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl, headroomEngine: headroomEngine })
+  }
+  async function handleHeadroomEngineChange(value: 'builtin' | 'external') {
+    headroomEngine = value
+    await patchSetting({ headroomEngine: value })
+    refreshHeadroomStatus()
   }
 
   async function handleToggleHeadroomAutostart(value: boolean) {
@@ -524,6 +563,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         managedPid: data.managedPid,
         path: data.path,
         version: data.version,
+        engine: data.engine === 'external' ? 'external' : 'builtin',
       }
       if (!data.installed) {
         headroomExtras = {
@@ -743,6 +783,18 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     patchSetting({ adhdLevel: levelId })
   }
 
+  function handleToggleSystemPrompt(value: boolean) {
+    systemPromptEnabled = value
+    patchSetting({ systemPromptEnabled: value })
+  }
+
+  function saveSystemPrompt() {
+    patchSetting({
+      systemPromptPrefix,
+      systemPromptSuffix,
+    })
+  }
+
   function copyInstallCommand() {
     copyToClipboard('pip install "headroom-ai[proxy]"')
     copiedInstallCmd = true
@@ -771,6 +823,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         headroomEnabled = !!data.headroomEnabled
         headroomAutostart = data.headroomAutostart === true
         headroomUrl = data.headroomUrl || 'http://localhost:8787'
+        // Same normalization as the settings effect: anything that is not the
+        // external engine means the built-in one.
+        headroomEngine = data.headroomEngine === 'external' ? 'external' : 'builtin'
         if (typeof data.headroomTimeoutMs === 'number') headroomTimeoutMs = data.headroomTimeoutMs
         codeAware = data.headroomCodeAware === true
         kompress = data.headroomKompress !== false
@@ -810,13 +865,13 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
 <div class="space-y-6 p-6">
   <!-- Optimal Configuration & Synergy Guide -->
   <div class="rounded-xl border border-primary/25 bg-gradient-to-r from-primary/5 via-surface-2 to-surface-2 p-4 text-text-main shadow-sm">
-    <div class="flex items-center justify-between gap-4">
-      <div class="flex items-center gap-3">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div class="flex items-center gap-3 min-w-0">
         <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
           <span class="material-symbols-outlined text-xl">recommend</span>
         </span>
-        <div>
-          <h3 class="text-sm font-semibold flex items-center gap-2">
+        <div class="min-w-0">
+          <h3 class="text-sm font-semibold flex flex-wrap items-center gap-x-2 gap-y-1">
             Optimal Setup: The Developer Stack
             <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
               Recommended Synergy
@@ -827,10 +882,10 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
           </p>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2 shrink-0">
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:opacity-50"
+          class="inline-flex items-center gap-1.5 px-3 py-2 sm:py-1.5 text-xs font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:opacity-50"
           onclick={applyRecommendedPreset}
         >
           <span class="material-symbols-outlined text-sm">
@@ -840,7 +895,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         </button>
         <button
           type="button"
-          class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-3 transition-colors cursor-pointer"
+          class="inline-flex items-center justify-center h-9 w-9 shrink-0 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-3 transition-colors cursor-pointer"
           onclick={() => showRecommendedGuide = !showRecommendedGuide}
           aria-label="Toggle details"
         >
@@ -908,9 +963,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     </div>
 
     <!-- 1. Compress tool output (RTK) -->
-    <div class="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-2 pb-4 border-b border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Compress tool output{' '}
             <a
@@ -926,35 +981,37 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {rtkEnabled ? 'Active' : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          git/grep/ls/tree/logs → 60-90% fewer input tokens ({rtkFiltersList.length || 55} OmniRoute filters)
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if rtkEnabled}
+            <button
+              type="button"
+              onclick={() => (rtkExpanded = !rtkExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={rtkExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={rtkExpanded ? 'Hide RTK settings' : 'Configure RTK'}
+              aria-expanded={rtkExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {rtkExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={rtkEnabled}
+            onChange={() => handleToggleRTK(!rtkEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if rtkEnabled}
-          <button
-            type="button"
-            onclick={() => (rtkExpanded = !rtkExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{rtkExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {rtkExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={rtkEnabled}
-          onChange={() => handleToggleRTK(!rtkEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        git/grep/ls/tree/logs → 60-90% fewer input tokens ({rtkFiltersList.length || 55} OmniRoute filters)
+      </p>
     </div>
 
     {#if rtkEnabled && rtkExpanded}
       <div class="py-4 border-b border-border space-y-4">
         <!-- Sub-tabs: Simple | Advance -->
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <div class="inline-flex p-1 rounded-lg bg-surface-2 border border-border">
+          <div class="inline-flex p-1.5 sm:p-1 rounded-lg bg-surface-2 border border-border">
             <button
               type="button"
               onclick={() => handleSetRtkMode('simple')}
@@ -1298,9 +1355,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 2. Compress context (Headroom) -->
-    <div class="flex items-center justify-between py-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-3 flex-wrap">
+    <div class="py-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Compress context{' '}
             <a
@@ -1313,7 +1370,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             </a>
           </p>
           <span
-            class="text-xs px-2 py-0.5 rounded {headroomRunning ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}"
+            class="text-xs px-2 py-0.5 rounded {headroomActive ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}"
           >
             {headroomStatusLabel}
           </span>
@@ -1322,31 +1379,33 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             onclick={() => (isHeadroomModalOpen = true)}
             class="text-xs text-primary underline hover:opacity-80 cursor-pointer"
           >
-            {headroomRunning ? 'Manage' : 'Setup'}
+            {headroomActive ? 'Manage' : 'Setup'}
           </button>
         </div>
-        <p class="text-sm text-text-muted mt-1">
-          Compress prompts via /v1/compress before routing to the model
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if headroomStatus.installed}
+            <button
+              type="button"
+              onclick={() => (headroomExpanded = !headroomExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={headroomExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={headroomExpanded ? 'Hide Headroom settings' : 'Configure Headroom'}
+              aria-expanded={headroomExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {headroomExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={headroomEnabled}
+            onChange={() => handleToggleHeadroom(!headroomEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if headroomStatus.installed}
-          <button
-            type="button"
-            onclick={() => (headroomExpanded = !headroomExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{headroomExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {headroomExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={headroomEnabled}
-          onChange={() => handleToggleHeadroom(!headroomEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Compress prompts via /v1/compress before routing to the model
+      </p>
     </div>
 
     {#if headroomStatus.installed && headroomExpanded}
@@ -1446,9 +1505,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 3. Compress LLM output (Caveman) -->
-    <div class="flex items-center justify-between pt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Compress LLM output{' '}
             <a
@@ -1464,35 +1523,37 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {cavemanEnabled ? `Active (${cavemanLevel})` : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Terse-style system prompt → ~65% fewer output tokens (up to 87%)
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if cavemanEnabled}
+            <button
+              type="button"
+              onclick={() => (cavemanExpanded = !cavemanExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={cavemanExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={cavemanExpanded ? 'Hide Caveman settings' : 'Configure Caveman'}
+              aria-expanded={cavemanExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {cavemanExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={cavemanEnabled}
+            onChange={() => handleToggleCaveman(!cavemanEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if cavemanEnabled}
-          <button
-            type="button"
-            onclick={() => (cavemanExpanded = !cavemanExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{cavemanExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {cavemanExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={cavemanEnabled}
-          onChange={() => handleToggleCaveman(!cavemanEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Terse-style system prompt → ~65% fewer output tokens (up to 87%)
+      </p>
     </div>
 
     {#if cavemanEnabled && cavemanExpanded}
       <div class="pt-2 pb-4 border-b border-border space-y-4">
         <!-- Sub-tabs: Simple | Advance -->
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <div class="inline-flex p-1 rounded-lg bg-surface-2 border border-border">
+          <div class="inline-flex p-1.5 sm:p-1 rounded-lg bg-surface-2 border border-border">
             <button
               type="button"
               onclick={() => handleSetCavemanMode('simple')}
@@ -1745,9 +1806,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 4. Lazy senior dev (Ponytail) -->
-    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 mt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Lazy senior dev{' '}
             <a
@@ -1763,28 +1824,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {ponytailEnabled ? `Active (${ponytailLevel})` : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Bias the model toward minimal code: YAGNI, reuse stdlib, deletion over addition
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if ponytailEnabled}
+            <button
+              type="button"
+              onclick={() => (ponytailExpanded = !ponytailExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={ponytailExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={ponytailExpanded ? 'Hide Ponytail settings' : 'Configure Ponytail'}
+              aria-expanded={ponytailExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {ponytailExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={ponytailEnabled}
+            onChange={() => handleTogglePonytail(!ponytailEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if ponytailEnabled}
-          <button
-            type="button"
-            onclick={() => (ponytailExpanded = !ponytailExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{ponytailExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {ponytailExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={ponytailEnabled}
-          onChange={() => handleTogglePonytail(!ponytailEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Bias the model toward minimal code: YAGNI, reuse stdlib, deletion over addition
+      </p>
     </div>
 
     {#if ponytailEnabled && ponytailExpanded}
@@ -1813,9 +1876,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 5. Action-first output (I have ADHD) -->
-    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 mt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             I have ADHD{' '}
             <a
@@ -1831,28 +1894,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {adhdEnabled ? `Active (${adhdLevel})` : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Action-first output style: lead with command/code, numbered bounded steps, one concrete next step under 2 mins, no fluff/preamble.
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if adhdEnabled}
+            <button
+              type="button"
+              onclick={() => (adhdExpanded = !adhdExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={adhdExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={adhdExpanded ? 'Hide ADHD settings' : 'Configure ADHD'}
+              aria-expanded={adhdExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {adhdExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={adhdEnabled}
+            onChange={() => handleToggleADHD(!adhdEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if adhdEnabled}
-          <button
-            type="button"
-            onclick={() => (adhdExpanded = !adhdExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{adhdExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {adhdExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={adhdEnabled}
-          onChange={() => handleToggleADHD(!adhdEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Action-first output style: lead with command/code, numbered bounded steps, one concrete next step under 2 mins, no fluff/preamble.
+      </p>
     </div>
 
     {#if adhdEnabled && adhdExpanded}
@@ -1880,7 +1945,64 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       </div>
     {/if}
 
-    <!-- 6. Prompt & Response Cache -->
+    <!-- 6. Custom system prompt -->
+    <div class="pt-4 mt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <p class="font-medium">Custom system prompt</p>
+          <span class="text-xs px-2 py-0.5 rounded font-medium {systemPromptEnabled ? 'bg-success/15 text-success' : 'bg-surface-3 text-text-muted'}">
+            {systemPromptEnabled ? 'Active' : 'Disabled'}
+          </span>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <Toggle
+            checked={systemPromptEnabled}
+            onChange={() => handleToggleSystemPrompt(!systemPromptEnabled)}
+          />
+        </div>
+      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Inject your own instruction into every request. The prefix leads the system prompt; the suffix lands after it, where
+        it survives a turn of untrusted content.
+      </p>
+    </div>
+
+    {#if systemPromptEnabled}
+      <div class="py-3 px-4 rounded-lg bg-surface-2/40 border border-border mt-3 space-y-3">
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-text-muted" for="system-prompt-prefix">Prefix</label>
+          <textarea
+            id="system-prompt-prefix"
+            bind:value={systemPromptPrefix}
+            rows="2"
+            placeholder="House style, language, conventions — read before anything else"
+            class="w-full px-3 py-2 rounded-lg bg-surface-1 border border-border text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/40"
+          ></textarea>
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-text-muted" for="system-prompt-suffix">Suffix</label>
+          <textarea
+            id="system-prompt-suffix"
+            bind:value={systemPromptSuffix}
+            rows="2"
+            placeholder="Last word the model reads — e.g. always answer in Vietnamese"
+            class="w-full px-3 py-2 rounded-lg bg-surface-1 border border-border text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/40"
+          ></textarea>
+        </div>
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <p class="text-xs text-text-muted">Applied to chat, Responses and Claude requests alike.</p>
+          <button
+            type="button"
+            onclick={saveSystemPrompt}
+            class="px-3 py-1.5 rounded text-xs font-medium bg-primary text-white hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            Save prompt
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    <!-- 7. Prompt & Response Cache -->
     <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 flex-wrap">
@@ -1947,12 +2069,12 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
   <div class="flex flex-col gap-4">
     <div class="flex items-center justify-between text-sm">
       <span>Status</span>
-      <span class={headroomRunning ? 'text-success font-medium' : 'text-warning font-medium'}>
+      <span class={headroomActive ? 'text-success font-medium' : 'text-warning font-medium'}>
         {headroomStatusLabel}
       </span>
     </div>
 
-    {#if headroomRunning}
+    {#if headroomEngine === 'external' && headroomRunning}
       <a
         href="/api/headroom/proxy/dashboard"
         target="_blank"
@@ -1963,6 +2085,37 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       </a>
     {/if}
 
+    <div class="flex flex-col gap-1">
+      <p class="text-sm font-medium">Compression engine</p>
+      <div class="flex gap-2" role="group" aria-label="Compression engine">
+        <button
+          type="button"
+          onclick={() => handleHeadroomEngineChange('builtin')}
+          aria-pressed={headroomEngine === 'builtin'}
+          class="flex-1 px-3 py-2 rounded-lg border text-sm text-left transition-colors cursor-pointer {headroomEngine === 'builtin'
+            ? 'border-primary bg-primary/10 text-text-main'
+            : 'border-border bg-surface-2 text-text-muted hover:bg-surface-3'}"
+        >
+          <span class="font-medium block">Built-in</span>
+          <span class="text-xs text-text-muted">In-process, no install</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => handleHeadroomEngineChange('external')}
+          aria-pressed={headroomEngine === 'external'}
+          class="flex-1 px-3 py-2 rounded-lg border text-sm text-left transition-colors cursor-pointer {headroomEngine === 'external'
+            ? 'border-primary bg-primary/10 text-text-main'
+            : 'border-border bg-surface-2 text-text-muted hover:bg-surface-3'}"
+        >
+          <span class="font-medium block">External proxy</span>
+          <span class="text-xs text-text-muted">Needs headroom-ai + URL</span>
+        </button>
+      </div>
+      <p class="text-xs text-text-muted">
+        Built-in compresses in this process — nothing to install, no extra round trip. The
+        external proxy adds semantic compression but must be running at the URL below.
+      </p>
+    </div>
     <div class="flex flex-col gap-1">
       <p class="text-sm font-medium">Proxy URL</p>
       <input
@@ -2079,7 +2232,12 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
 
 <!-- MODAL: Confirmation for Extras -->
 {#if extrasConfirm}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) extrasConfirm = null
+    }}
+  >
     <div class="w-full max-w-sm p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
       <div class="space-y-1">
         <h3 class="text-base font-bold text-text-main">{extrasConfirm.title}</h3>

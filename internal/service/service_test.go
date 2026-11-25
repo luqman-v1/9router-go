@@ -150,8 +150,8 @@ func TestRenderRunitRun(t *testing.T) {
 
 func TestRenderCronLine(t *testing.T) {
 	line := renderCronLine("/usr/local/bin/9router-go", []string{"--rtk=true"})
-	if !strings.HasPrefix(line, "@reboot /usr/local/bin/9router-go start --rtk=true ") {
-		t.Errorf("cron line must reboot-start the daemon: %q", line)
+	if !strings.HasPrefix(line, "@reboot /usr/local/bin/9router-go --rtk=true start ") {
+		t.Errorf("cron line must place global flags before start: %q", line)
 	}
 	if !strings.Contains(line, cronMarker) {
 		t.Errorf("cron line must carry the ownership marker: %q", line)

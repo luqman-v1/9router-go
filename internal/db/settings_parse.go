@@ -134,6 +134,12 @@ func applyHeadroomSettings(s *SettingsData, raw map[string]any) {
 	if v, ok := raw["headroomAutostart"].(bool); ok {
 		s.HeadroomAutostart = v
 	}
+	// An empty field is not written: the row keeps whatever the default put
+	// there, which is the built-in engine. Storing "" would make a later read
+	// lose the default and look like a row that never had one.
+	if v := handlerutil.GetString(raw, "headroomEngine"); v != "" {
+		s.HeadroomEngine = v
+	}
 	if v, ok := raw["headroomCodeAware"].(bool); ok {
 		s.HeadroomCodeAware = v
 	}
@@ -154,6 +160,11 @@ func applyCacheSettings(s *SettingsData, raw map[string]any) {
 	}
 	if v, ok := raw["semanticCacheMaxEntries"].(float64); ok && v > 0 {
 		s.SemanticCacheMaxEntries = int(v)
+	}
+	// Only the two known windows are accepted: an unknown value would leave the
+	// head anchors on the default 5m while the dashboard showed something else.
+	if v := handlerutil.GetString(raw, "claudeCacheTtl"); v == "5m" || v == "1h" {
+		s.ClaudeCacheTTL = v
 	}
 	if v, ok := raw["autoUpdate"].(bool); ok {
 		s.AutoUpdate = v

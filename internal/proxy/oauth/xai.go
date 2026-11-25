@@ -36,13 +36,13 @@ func refreshXAI(ctx context.Context, p *Params) (*TokenResult, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := p.Client.Do(req)
+	resp, err := refreshHTTPClient(p.Client).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("xAI POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("xAI read response: %w", err)
 	}

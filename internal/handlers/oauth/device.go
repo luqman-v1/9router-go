@@ -16,6 +16,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/proxy/executor"
 )
 
 // deviceProviders lists providers supporting the device-code family.
@@ -450,6 +451,9 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	conn := h.saveDeviceConnection(deviceCanonical(body.Provider), tokens)
+	// Fill the live model catalog while the fresh credential is in hand, so
+	// the first chat request after login resolves from a warm snapshot.
+	refreshQoderCatalogAfterDeviceLogin(r.Context(), deviceCanonical(body.Provider), tokens)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "authorized", "id": conn.id, "connectionId": conn.id,
 		"provider": body.Provider, "name": conn.name, "email": conn.email,
@@ -604,10 +608,32 @@ func qoderOpenAPIBase(provider string) string {
 	return "https://openapi.qoder.sh"
 }
 
+// qoderDefaultTokenLifetimeSeconds bounds a Qoder grant that reports no
+// expires_in (30 days) so a credential without a reported lifetime is still
+// eventually skipped rather than used forever.
+const qoderDefaultTokenLifetimeSeconds = 30 * 24 * 60 * 60
+
+// qoderIDVal reads an account identifier Qoder may publish as a string or a
+// number under any of several keys.
+func qoderIDVal(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case string:
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		case float64:
+			if v > 0 {
+				return fmt.Sprintf("%.0f", v)
+			}
+		}
+	}
+	return ""
+}
+
 func qoderPoll(ctx context.Context, provider string, session map[string]any, nonce string) (deviceTokens, error) {
 	var t deviceTokens
 	verifier, _ := session["verifier"].(string)
-	machineID, _ := session["machineId"].(string)
 	if nonce == "" || verifier == "" {
 		return t, fmt.Errorf("invalid_request: missing nonce/verifier")
 	}
@@ -633,24 +659,30 @@ func qoderPoll(ctx context.Context, provider string, session map[string]any, non
 	if json.Unmarshal(out, &data) != nil {
 		return t, fmt.Errorf("poll_failed: invalid JSON")
 	}
+	// Qoder reports "still authorizing" as a 200 body carrying errorCode
+	// NotFound / DeviceTokenNonceRequired rather than an HTTP 202/404. Keep those
+	// pending; any other errorCode is a real poll failure.
+	if errorCode := strVal(data, "errorCode"); errorCode != "" {
+		if errorCode == "NotFound" || errorCode == "DeviceTokenNonceRequired" {
+			return t, fmt.Errorf("authorization_pending")
+		}
+		return t, fmt.Errorf("poll_failed: %s", errorCode)
+	}
 	token := strVal(data, "token")
 	if token == "" {
 		return t, fmt.Errorf("poll_failed: no token")
 	}
 	t.access = token
 	t.refresh = strVal(data, "refresh_token")
-	// machineId is generated at start and persisted so every later request from
-	// this auth presents the same machine (upstream cosy.js generateMachineId).
-	t.extra = map[string]any{"machineId": machineID}
+	t.extra = map[string]any{}
 	// The COSY signature is bound to the account's user id, so it must be
 	// persisted at login. Upstream stores it in providerSpecificData.userId
 	// (src/lib/oauth/providers/qoder.js mapTokens); without it every later
 	// request is signed with a placeholder and Qoder answers
-	// 403 {"code":"105","message":"Login expired"}.
-	uid := strVal(data, "user_id")
-	if uid != "" {
-		t.extra["userId"] = uid
-	}
+	// 403 {"code":"105","message":"Login expired"}. Resolve it from the poll
+	// body, then userinfo, and fail the login when neither yields one rather
+	// than storing an unusable credential.
+	uid := qoderIDVal(data, "user_id", "id")
 	if ui, _, _ := getJSON(ctx, openapi+"/api/v1/userinfo",
 		map[string]string{"Authorization": "Bearer " + token, "User-Agent": "Go-http-client/2.0"}); ui != nil {
 		t.name = strVal(ui, "name", "username")
@@ -658,10 +690,26 @@ func qoderPoll(ctx context.Context, provider string, session map[string]any, non
 		if oid := strVal(ui, "organization_id"); oid != "" {
 			t.extra["organizationId"] = oid
 		}
+		if uid == "" {
+			uid = qoderIDVal(ui, "id", "userId", "user_id")
+		}
 	}
+	if uid == "" {
+		return t, fmt.Errorf("MISSING_UID: the Qoder connection has no user id; reconnect the Qoder account")
+	}
+	t.extra["userId"] = uid
+	// Persist a stable per-account machine id derived from the user id — the
+	// same derivation the COSY signer uses (executor.QoderDeriveMachineID) —
+	// instead of the fresh random UUID minted at device-start, which made every
+	// re-login a brand-new device.
+	t.extra["machineId"] = executor.QoderDeriveMachineID(uid)
+	// Persist the token lifetime the poll reports; a grant without expires_in
+	// still gets a bounded 30-day lifetime so a stale credential is eventually
+	// skipped on use instead of being dialled forever.
+	t.expiresIn = positiveIntOr(data, "expires_in", qoderDefaultTokenLifetimeSeconds)
 	// Upstream falls back to a stable synthetic email so a re-login updates the
 	// existing row instead of piling up "Account N" duplicates.
-	if t.email == "" && uid != "" {
+	if t.email == "" {
 		t.email = "qoder-user-" + uid
 	}
 	return t, nil

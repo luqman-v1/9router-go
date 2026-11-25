@@ -45,6 +45,21 @@ func succeed(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 }
 
+// abuseRefusalBody is the egress-level abuse flag. It carries the same
+// FreeTierError token as an ordinary refusal, which is why the retry layer
+// needs its own phrase check to tell them apart.
+const abuseRefusalBody = `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address."}}`
+
+// resetOpenCodeCooldown clears the process-global retry cooldown before and
+// after a test. Without it a test that ends on a refused replay leaks the
+// window into the next one, which then fails on the cooldown instead of the
+// behaviour it asserts.
+func resetOpenCodeCooldown(t *testing.T) {
+	t.Helper()
+	resetOpenCodeRetryCooldownForTest()
+	t.Cleanup(resetOpenCodeRetryCooldownForTest)
+}
+
 // send builds the closure the call sites pass to forwardOpenCode, dialing the
 // stub through the same request path the executors use.
 func send(srv *httptest.Server) func() (*http.Response, error) {
@@ -57,6 +72,7 @@ func send(srv *httptest.Server) func() (*http.Response, error) {
 // A refusal is the gate declining this egress, so the single repeat must go out
 // over the direct sender — and its response must be the one returned.
 func TestForwardOpenCodeReplaysRefusalOverDirectEgress(t *testing.T) {
+	resetOpenCodeCooldown(t)
 	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, gateRefusalBody)
 	})
@@ -81,6 +97,7 @@ func TestForwardOpenCodeReplaysRefusalOverDirectEgress(t *testing.T) {
 // The budget is one replay: a gate that refuses everything must be dialed twice,
 // not more. This is the property the reviewer asked for.
 func TestForwardOpenCodeStopsAfterOneRetry(t *testing.T) {
+	resetOpenCodeCooldown(t)
 	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, gateRefusalBody)
 	})
@@ -132,6 +149,7 @@ func TestForwardOpenCodeDoesNotRetryOtherForbidden(t *testing.T) {
 // A caller that forbade routing around its proxy must see the refusal, not a
 // silent direct replay that breaks its egress policy.
 func TestForwardOpenCodeSkipsDirectUnderStrictProxy(t *testing.T) {
+	resetOpenCodeCooldown(t)
 	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, gateRefusalBody)
 	})
@@ -177,6 +195,7 @@ func TestForwardOpenCodeLeavesOtherStatusesAlone(t *testing.T) {
 
 // A caller that has gone away must not be held for the retry.
 func TestForwardOpenCodeStopsOnCancelledContext(t *testing.T) {
+	resetOpenCodeCooldown(t)
 	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, gateRefusalBody)
 	})
@@ -231,6 +250,261 @@ func TestIsOpenCodeRefusal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isOpenCodeRefusal(tc.ue); got != tc.want {
 				t.Errorf("isOpenCodeRefusal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsOpenCodeTerminalRefusal(t *testing.T) {
+	cases := []struct {
+		name string
+		ue   *proxy.UpstreamError
+		want bool
+	}{
+		{"abuse detected phrasing", &proxy.UpstreamError{StatusCode: 403, Body: []byte(abuseRefusalBody)}, true},
+		{"abuse traffic phrasing", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Detect Abuse Traffic"}}`)}, true},
+		{"abuse of traffic phrasing", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"abuse of traffic from your network"}}`)}, true},
+		{"upper-case phrasing", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"DETECTED ABUSIVE TRAFFIC"}}`)}, true},
+		{"generic gate refusal is not terminal", &proxy.UpstreamError{StatusCode: 403, Body: []byte(gateRefusalBody)}, false},
+		// The gate also words the same verdict without the word "abuse":
+		// "free models aren't available ... from your current network".
+		{"network-abuse pair", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Free models aren't available for free users from your current network. Subscribe to OpenCode Go to keep going."}}`)}, true},
+		// Each half alone appears in benign prose, so neither may be terminal
+		// on its own: matching either would suppress a legitimate replay.
+		{"first half alone is not terminal", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Free models aren't available right now."}}`)}, false},
+		{"second half alone is not terminal", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"Requests from your current network are slow today."}}`)}, false},
+		// A body that merely mentions the word must still be retried: widening
+		// this to the handler's bare "abuse" match would discard a recovery.
+		{"anti-abuse near miss", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"type":"FreeTierError","message":"blocked by our anti-abuse filter"}}`)}, false},
+		{"quota 403", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`{"error":{"message":"insufficient credit"}}`)}, false},
+		{"429 carrying abuse prose", &proxy.UpstreamError{StatusCode: 429, Body: []byte(abuseRefusalBody)}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOpenCodeTerminalRefusal(tc.ue); got != tc.want {
+				t.Errorf("isOpenCodeTerminalRefusal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A refusal flagged as abusive traffic is terminal: the replay cannot clear an
+// egress-level flag, so it must not be dialled at all — and the retry sleep
+// must be skipped with it, or the caller waits 200ms for nothing.
+func TestForwardOpenCodeDoesNotReplayTerminalAbuseRefusal(t *testing.T) {
+	resetOpenCodeCooldown(t)
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		refuse(w, http.StatusForbidden, abuseRefusalBody)
+	})
+	directSrv, directCalls := gateStub(t, succeed)
+
+	start := time.Now()
+	resp, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv))
+	elapsed := time.Since(start)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a terminal abuse refusal must be reported")
+	}
+	if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+		t.Errorf("proxied egress saw %d attempts, want 1", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 0 {
+		t.Errorf("direct egress saw %d attempts, want 0 — an egress flag is not recoverable", got)
+	}
+	if elapsed >= openCodeRetryDelay {
+		t.Errorf("elapsed %v >= %v: the retry sleep must be skipped, not merely the call", elapsed, openCodeRetryDelay)
+	}
+}
+
+// After a replay is itself refused, the next request must not spend another
+// replay until the cooldown expires — but its own first attempt must still run.
+func TestForwardOpenCodeCooldownSuppressesOnlyTheReplay(t *testing.T) {
+	resetOpenCodeCooldown(t)
+	openCodeRetryCooldown = time.Minute
+	t.Cleanup(func() { openCodeRetryCooldown = 30 * time.Second })
+
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		refuse(w, http.StatusForbidden, gateRefusalBody)
+	})
+	directSrv, directCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		refuse(w, http.StatusForbidden, gateRefusalBody)
+	})
+
+	// First request: one attempt plus one refused replay, which arms the cooldown.
+	if _, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv)); err == nil {
+		t.Fatal("every attempt refused, so an error is required")
+	}
+	if got := atomic.LoadInt32(directCalls); got != 1 {
+		t.Fatalf("direct egress saw %d attempts, want 1", got)
+	}
+
+	// Second request: the first attempt still runs, the replay is skipped.
+	if _, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv)); err == nil {
+		t.Fatal("every attempt refused, so an error is required")
+	}
+	if got := atomic.LoadInt32(proxiedCalls); got != 2 {
+		t.Errorf("proxied egress saw %d attempts, want 2 — the first attempt is never suppressed", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 1 {
+		t.Errorf("direct egress saw %d attempts, want still 1 — the replay is cooling down", got)
+	}
+
+	// Once the window lapses the replay is available again.
+	openCodeRetryRefusedUntil = time.Now().Add(-time.Second)
+	if _, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv)); err == nil {
+		t.Fatal("every attempt refused, so an error is required")
+	}
+	if got := atomic.LoadInt32(directCalls); got != 2 {
+		t.Errorf("direct egress saw %d attempts, want 2 after expiry", got)
+	}
+}
+
+// The cooldown must not block the session rotation, which is a different
+// recovery: a 429 on a spent session is answered by rotating, not replaying.
+func TestForwardOpenCodeCooldownDoesNotBlockRotation(t *testing.T) {
+	resetOpenCodeCooldown(t)
+	openCodeRetryCooldown = time.Minute
+	t.Cleanup(func() { openCodeRetryCooldown = 30 * time.Second })
+	noteOpenCodeRetryRefused(time.Now())
+
+	attempts, rotations := 0, 0
+	resp, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, usageLimitErr()
+			}
+			return okResponse()
+		},
+		func() (*http.Response, error) { return nil, context.Canceled },
+		func() { rotations++ }, nil)
+	if err != nil {
+		t.Fatalf("expected the rotated replay to succeed, got %v", err)
+	}
+	resp.Body.Close()
+	if rotations != 1 || attempts != 2 {
+		t.Errorf("rotation must still run inside the refusal cooldown, got attempts=%d rotations=%d", attempts, rotations)
+	}
+}
+
+// Free-lane load shedding: the lane answers 429 "The inference service is
+// overloaded. Please try again later." once it is busy, and the official CLI
+// retries that rather than surfacing it (decolua/9router@989b1eecb). Only that
+// wording is retried — the quota 429 is reported without delay.
+func overloadErr() *proxy.UpstreamError {
+	return &proxy.UpstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"error":{"type":"server_error","message":"The inference service is overloaded. Please try again later."}}`),
+	}
+}
+
+func TestForwardOpenCodeRetriesOverload(t *testing.T) {
+	origBase, origMax := openCodeOverloadBaseDelay, openCodeOverloadMaxDelay
+	openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = time.Millisecond, 2*time.Millisecond
+	t.Cleanup(func() { openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = origBase, origMax })
+
+	attempts := 0
+	resp, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, overloadErr()
+			}
+			return okResponse()
+		},
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	if err != nil {
+		t.Fatalf("expected the overload retry to succeed, got %v", err)
+	}
+	resp.Body.Close()
+	if attempts != 3 {
+		t.Errorf("expected three attempts before success, got %d", attempts)
+	}
+}
+
+// The overload retry is bounded: a lane that sheds every attempt must answer
+// with the 429, not spin. The backoff budget is ~20s (8 attempts), so the test
+// shrinks the delays to keep the suite fast.
+func TestForwardOpenCodeStopsRetryingOverload(t *testing.T) {
+	origBase, origMax := openCodeOverloadBaseDelay, openCodeOverloadMaxDelay
+	openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = time.Millisecond, 2*time.Millisecond
+	t.Cleanup(func() { openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = origBase, origMax })
+
+	attempts := 0
+	_, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) { attempts++; return nil, overloadErr() },
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected the overload 429 to surface after the budget, got %v", err)
+	}
+	if attempts != openCodeOverloadAttempts {
+		t.Errorf("expected %d attempts (first try + retries), got %d", openCodeOverloadAttempts, attempts)
+	}
+}
+
+// A caller that went away must not be held for the backoff: the retry aborts
+// and answers with the upstream status.
+func TestForwardOpenCodeOverloadRetryStopsOnCancelledContext(t *testing.T) {
+	origBase, origMax := openCodeOverloadBaseDelay, openCodeOverloadMaxDelay
+	openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = time.Second, time.Second
+	t.Cleanup(func() { openCodeOverloadBaseDelay, openCodeOverloadMaxDelay = origBase, origMax })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	_, err := forwardOpenCodeRotating(ctx,
+		func() (*http.Response, error) {
+			attempts++
+			cancel()
+			return nil, overloadErr()
+		},
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	if err == nil {
+		t.Fatal("a cancelled request must not retry")
+	}
+	if attempts != 1 {
+		t.Errorf("expected the retry to abort on the first attempt, got %d", attempts)
+	}
+}
+
+// A quota 429 (FreeUsageLimitError) is an account verdict, not load shedding:
+// it must never enter the overload retry.
+func TestForwardOpenCodeDoesNotRetryQuota429(t *testing.T) {
+	attempts := 0
+	_, err := forwardOpenCodeRotating(context.Background(),
+		func() (*http.Response, error) { attempts++; return nil, usageLimitErr() },
+		func() (*http.Response, error) { return nil, context.Canceled },
+		nil, nil)
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected the quota 429 untouched, got %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("expected a single attempt, got %d", attempts)
+	}
+}
+
+func TestIsOpenCodeOverload(t *testing.T) {
+	cases := []struct {
+		name string
+		ue   *proxy.UpstreamError
+		want bool
+	}{
+		{"overload 429", &proxy.UpstreamError{StatusCode: 429, Body: []byte(`{"error":{"message":"The inference service is overloaded. Please try again later."}}`)}, true},
+		{"overload casing", &proxy.UpstreamError{StatusCode: 429, Body: []byte(`OVERLOADED`)}, true},
+		{"quota 429", usageLimitErr(), false},
+		{"overload text but 403", &proxy.UpstreamError{StatusCode: 403, Body: []byte(`overloaded`)}, false},
+		{"plain 429", &proxy.UpstreamError{StatusCode: 429, Body: []byte(`{"error":{"message":"too many requests"}}`)}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOpenCodeOverload(tc.ue); got != tc.want {
+				t.Errorf("isOpenCodeOverload = %v, want %v", got, tc.want)
 			}
 		})
 	}

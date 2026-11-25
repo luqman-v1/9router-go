@@ -59,3 +59,39 @@ func TestBuildResponsesBody_RepairMissingCallID(t *testing.T) {
 		t.Errorf("expected call_id 'call_xyz789', got %v", lastItem["call_id"])
 	}
 }
+
+// Codex accepts named results without a call_id (including client-supplied
+// tool context with no preceding call). Inventing an id makes the backend
+// look for a call that never existed instead of accepting the named result.
+func TestBuildResponsesBody_PreservesNamedFunctionOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "standalone named result"},
+		{name: "named result beside an unrelated call", prefix: `{"type":"function_call","call_id":"call_pending","name":"another_tool","arguments":"{}"},`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(`{"model":"gpt-6.1-sol","input":[` + tt.prefix +
+				`{"type":"function_call_output","name":"lookup_fixture","output":"synthetic fixture result"}]}`)
+			body, _, err := buildResponsesBody(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Input []map[string]any `json:"input"`
+			}
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatal(err)
+			}
+			output := got.Input[len(got.Input)-1]
+			if id, exists := output["call_id"]; exists {
+				t.Errorf("named output acquired call_id %v; backend will require a matching call", id)
+			}
+			if output["name"] != "lookup_fixture" || output["output"] != "synthetic fixture result" {
+				t.Errorf("named result changed: %v", output)
+			}
+		})
+	}
+}

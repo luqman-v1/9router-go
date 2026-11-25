@@ -22,7 +22,11 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 	// fitted name so the client could not dispatch the call.
 	decloaker := NewClaudeStreamDecloaker(req.ToolNameMap)
 
-	if req.TranslateResp {
+	// ClaudeClient, not TranslateResp: TranslateResp is false for a Chat
+	// Completions caller on a Claude-native provider (chat.go sets it false
+	// for claudeNative), so the old guard never translated for them — the
+	// OpenAI client got raw Claude events with no finish_reason and retried.
+	if req.ClaudeClient {
 		startTime := req.StartTime
 		if startTime.IsZero() {
 			startTime = time.Now()
@@ -30,33 +34,44 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 		defer hw.Close()
 		flusher := proxy.WriteSSEHeaders(hw)
-		writeFrame := func(payload []byte) {
-			if req.TTFT != nil && *req.TTFT == 0 {
-				*req.TTFT = time.Since(startTime).Milliseconds()
+		var streamUsage *translator.OpenAIUsage
+		writeFrame := func(evType string, payload []byte) {
+			markTTFT(req, startTime)
+			var frame []byte
+			if evType != "" {
+				frame = append([]byte("event: "+evType+"\ndata: "), payload...)
+			} else {
+				frame = append([]byte("data: "), payload...)
 			}
-			frame := append([]byte("data: "), payload...)
 			frame = append(frame, '\n', '\n')
 			if req.ResponseBuf != nil {
-				req.ResponseBuf.Write(frame)
+				_, _ = req.ResponseBuf.Write(frame)
 			}
 			_, _ = hw.Write(frame)
 			if flusher != nil {
 				flusher.Flush()
 			}
-			raw := append([]byte(`{"message":`), payload...)
-			raw = append(raw, '}')
-			if usage := translator.ParseClaudeUsage(raw); usage != nil {
-				translator.SetUsage(req.Ctx, usage)
+			if acc := translator.AccumulateClaudeStreamUsage(streamUsage, payload); acc != nil {
+				streamUsage = acc
+				translator.SetUsage(req.Ctx, streamUsage)
 			}
 		}
-		return proxy.ScanStream(upstream, func(payload []byte) {
-			if decloaker != nil {
-				for _, ev := range decloaker.Events(payload) {
-					writeFrame(ev.Payload)
-				}
-				return
+		return proxy.ScanStreamEvents(upstream, func(upstreamEv proxy.SSEEvent) bool {
+			if len(upstreamEv.Data) == 0 {
+				return true
 			}
-			writeFrame(payload)
+			if decloaker != nil {
+				for _, ev := range decloaker.Events(upstreamEv.Data) {
+					evType := ev.Type
+					if evType == "" {
+						evType = upstreamEv.Event
+					}
+					writeFrame(evType, ev.Payload)
+				}
+				return true
+			}
+			writeFrame(upstreamEv.Event, upstreamEv.Data)
+			return true
 		})
 	}
 
@@ -125,15 +140,9 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 			return
 		}
 
-		if req.TTFT != nil && *req.TTFT == 0 {
-			startTime := req.StartTime
-			if startTime.IsZero() {
-				startTime = time.Now()
-			}
-			*req.TTFT = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(req, req.StartTime)
 		if req.ResponseBuf != nil {
-			req.ResponseBuf.Write(out)
+			_, _ = req.ResponseBuf.Write(out)
 		}
 		if _, werr := hw.Write(out); werr != nil {
 			// Client went away mid-stream: stop feeding it and report the
@@ -216,7 +225,12 @@ func handleClaudeMessagesNonStream(w http.ResponseWriter, req *Request, upstream
 		body = DecloakClaudeResponseBody(body, req.ToolNameMap)
 	}
 
-	if req.TranslateResp {
+	// ClaudeClient is the client-format key, not TranslateResp: TranslateResp
+	// is false for a Chat Completions caller on a Claude-native provider
+	// (chat.go sets it false for claudeNative), so the old guard swallowed
+	// the translation and handed the OpenAI client a raw Claude body with
+	// no choices/finish_reason.
+	if req.ClaudeClient {
 		// Client requested Claude format, upstream is Claude format: pass through
 		return jsonResponse(req.Ctx, w, bytes.NewReader(body), false, req.ResponseBuf)
 	}

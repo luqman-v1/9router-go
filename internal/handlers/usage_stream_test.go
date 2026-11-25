@@ -143,23 +143,33 @@ func TestUsageStreamCarriesBreakerSnapshots(t *testing.T) {
 	})
 	tracker.TrackPending("m", "p", "c", true, false)
 	// SSE events are "data: ...\n\n": the blank line terminates each event.
-	// The broadcast is debounced by 50ms, so read only after that window —
-	// otherwise the reader blocks on a frame the tracker has not sent yet.
-	time.Sleep(150 * time.Millisecond)
-	// Event 2 is terminated by its own blank line.
-	if _, err := reader.ReadString('\n'); err != nil {
-		t.Fatalf("read event 2 terminator: %v", err)
-	}
-	line2, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read event 2 data: %v", err)
-	}
+	// The handler subscribes only after sending its initial state and the
+	// broadcast is a single debounced timer, so the very next frame can be a
+	// stale broadcast that predates the hook installed above. Skip frames
+	// until the snapshot actually arrives — a fixed sleep loses that race
+	// under CI load.
 	var update usagetracker.StreamPayload
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(line2), "data: ")), &update); err != nil {
-		t.Fatalf("unmarshal update: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		frame, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read update event: %v", err)
+		}
+		frame = strings.TrimSpace(frame)
+		if frame == "" || !strings.HasPrefix(frame, "data: ") {
+			continue
+		}
+		var payload usagetracker.StreamPayload
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(frame, "data: ")), &payload); err != nil {
+			t.Fatalf("unmarshal update: %v", err)
+		}
+		if len(payload.Breakers) == 1 {
+			update = payload
+			break
+		}
 	}
 	if len(update.Breakers) != 1 {
-		t.Fatalf("breakers = %d, want 1", len(update.Breakers))
+		t.Fatalf("breaker snapshot did not arrive within 2s")
 	}
 	b := update.Breakers[0]
 	if b.Name != "deepseek|pool-a" || b.State != "OPEN" || b.RetryAfterMs != 12345 {

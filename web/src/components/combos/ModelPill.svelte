@@ -24,6 +24,11 @@
   function handleClick() {
     onToggle(value)
   }
+
+  // The pill carries a boolean flag, so a cooled-down model reads as
+  // temporarily unavailable rather than permanently retired.
+  const deprecatedStatusTitle = $derived(deprecated ? 'Temporarily unavailable — cooling down' : '')
+  const deprecatedStatusLabel = $derived(deprecated ? 'Cooling down' : '')
 </script>
 
 <button
@@ -41,16 +46,20 @@
   {/if}
   <span class="truncate">{label}</span>
   {#if vision}
-    <Eye class={isAdded ? 'w-3 h-3 text-white/90 shrink-0' : 'w-3 h-3 text-blue-500 shrink-0'} title="Vision — Supports image input" />
+    <span class="inline-flex shrink-0" title="Vision — Supports image input">
+      <Eye class={isAdded ? 'w-3 h-3 text-white/90' : 'w-3 h-3 text-blue-500'} />
+    </span>
   {/if}
   {#if reasoning}
-    <Brain class={isAdded ? 'w-3 h-3 text-white/90 shrink-0' : 'w-3 h-3 text-amber-500 shrink-0'} title="Reasoning / Thinking" />
+    <span class="inline-flex shrink-0" title="Reasoning / Thinking">
+      <Brain class={isAdded ? 'w-3 h-3 text-white/90' : 'w-3 h-3 text-amber-500'} />
+    </span>
   {/if}
   {#if deprecated}
     <span
       class="material-symbols-outlined text-[13px] leading-none shrink-0 {isAdded ? 'text-white/90' : 'text-warning'}"
-      title="Deprecated — this model was retired by the provider and cannot serve a request"
-      aria-label="Deprecated"
+      title={deprecatedStatusTitle}
+      aria-label={deprecatedStatusLabel}
     >error</span>
   {/if}
 </button>

@@ -295,3 +295,49 @@ func TestNormalizeToolSchemasForProvider_StripsLookaround(t *testing.T) {
 		t.Errorf("expected valid regex pattern to be kept, got %s", string(raw))
 	}
 }
+
+func TestNormalizeToolSchemasForProvider_StripsAgentIsolation(t *testing.T) {
+	agentTool := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "Agent",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"prompt":      map[string]any{"type": "string"},
+						"description": map[string]any{"type": "string"},
+						"isolation": map[string]any{
+							"type": "string",
+							"enum": []any{"worktree", "remote"},
+						},
+					},
+					"required": []any{"prompt", "description"},
+				},
+			},
+		},
+	}
+
+	// Anthropic keeps tools untouched
+	toolsAnthropic, removedAnthropic := NormalizeToolSchemasForProvider("anthropic", agentTool)
+	if removedAnthropic != 0 {
+		t.Fatalf("expected 0 removed for anthropic, got %d", removedAnthropic)
+	}
+	rawAnthropic, _ := json.Marshal(toolsAnthropic)
+	if !bytes.Contains(rawAnthropic, []byte("isolation")) {
+		t.Errorf("anthropic should keep isolation property: %s", string(rawAnthropic))
+	}
+
+	// Codex / OpenAI strips isolation to prevent worktree probe recursion
+	toolsCodex, removedCodex := NormalizeToolSchemasForProvider("codex", agentTool)
+	if removedCodex != 1 {
+		t.Fatalf("expected 1 removed for codex, got %d", removedCodex)
+	}
+	rawCodex, _ := json.Marshal(toolsCodex)
+	if bytes.Contains(rawCodex, []byte("isolation")) {
+		t.Errorf("codex should strip isolation property: %s", string(rawCodex))
+	}
+	if !bytes.Contains(rawCodex, []byte("prompt")) || !bytes.Contains(rawCodex, []byte("description")) {
+		t.Errorf("codex should keep prompt and description: %s", string(rawCodex))
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 )
@@ -89,6 +90,9 @@ func providerNodeLiteralsForID(id string) []string {
 		(apiType == "chat" || apiType == "responses") {
 		return []string{"openai-compatible-" + apiType, "anthropic-compatible", "custom-embedding", "openai-compatible"}
 	}
+	if apiType, _, ok := strings.Cut(strings.TrimPrefix(id, "openai-compatible-"), "-"); ok && apiType == customjson.APIType {
+		return []string{"openai-compatible-" + customjson.APIType, "anthropic-compatible", "custom-embedding", "openai-compatible"}
+	}
 	return []string{"anthropic-compatible", "custom-embedding", "openai-compatible"}
 }
 
@@ -122,6 +126,11 @@ func providerNodeLiterals(nodeType, apiType string) (literal, defaultBaseURL str
 	case "custom-embedding":
 		return "custom-embedding", "https://api.openai.com/v1"
 	default:
+		// A custom JSON endpoint is a complete URL the operator must name;
+		// there is no default base URL to fall back to.
+		if apiType == customjson.APIType {
+			return "openai-compatible-" + apiType, ""
+		}
 		if apiType != "chat" && apiType != "responses" {
 			apiType = "chat"
 		}

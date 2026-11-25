@@ -86,6 +86,14 @@ func Resolve(raw string, now time.Time) Window {
 	case "today":
 		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		return bounded(now, midnight)
+	case "month":
+		// Month-to-date, not "the last 30 days": the window opens at local
+		// midnight on the 1st, so a calendar month and a rolling 30-day window
+		// stay distinguishable in the label the operator picked. Truncating to
+		// the day is not enough on the 1st — a request at 00:30 would otherwise
+		// reach back into the previous month — hence the explicit date.
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		return bounded(now, monthStart)
 	case "7d":
 		return since(now, 7*24*time.Hour)
 	case "30d":

@@ -1,10 +1,14 @@
 package proxy
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/kiroidentity"
 )
 
 // Upstream tries the Amazon surfaces before the Kiro IDE gateway
@@ -26,13 +30,32 @@ func TestKiroEndpointsOrdering(t *testing.T) {
 		}
 	})
 
-	t.Run("aws hosts follow the account region", func(t *testing.T) {
-		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "eu-west-1"})
-		if !strings.Contains(got[0], "q.eu-west-1.amazonaws.com") {
-			t.Errorf("expected the q host in eu-west-1, got %q", got[0])
+	t.Run("aws hosts follow the account region only when covered", func(t *testing.T) {
+		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "eu-central-1"})
+		if !strings.Contains(got[0], "q.eu-central-1.amazonaws.com") {
+			t.Errorf("expected the q host in eu-central-1, got %q", got[0])
 		}
-		if !strings.Contains(got[1], "codewhisperer.eu-west-1.amazonaws.com") {
-			t.Errorf("expected the codewhisperer host in eu-west-1, got %q", got[1])
+		if !strings.Contains(got[1], "codewhisperer.us-east-1.amazonaws.com") {
+			t.Errorf("expected codewhisperer to stay us-east-1 (only region served), got %q", got[1])
+		}
+	})
+
+	t.Run("never builds a host in a region that service does not serve", func(t *testing.T) {
+		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "ap-southeast-1"})
+		if !strings.Contains(got[0], "q.us-east-1.amazonaws.com") {
+			t.Errorf("expected q to stay us-east-1 for uncovered ap-southeast-1, got %q", got[0])
+		}
+		if !strings.Contains(got[1], "codewhisperer.us-east-1.amazonaws.com") {
+			t.Errorf("expected codewhisperer to stay us-east-1, got %q", got[1])
+		}
+	})
+
+	t.Run("refuses to splice an attacker-controlled region into hostname", func(t *testing.T) {
+		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "x.attacker.tld#"})
+		for _, u := range got {
+			if strings.Contains(u, "attacker") {
+				t.Errorf("hostile region leaked into endpoint %q", u)
+			}
 		}
 	})
 
@@ -80,5 +103,91 @@ func TestKiroEndpointFallbackStatus(t *testing.T) {
 		if kiroEndpointFallbackStatus(status) {
 			t.Errorf("expected %d to be terminal for kiro", status)
 		}
+	}
+}
+func TestKiroIdentity_FingerprintAndMachineID(t *testing.T) {
+	t.Run("stable machine id per clientId", func(t *testing.T) {
+		psd := map[string]any{"clientId": "client-12345"}
+		id1 := resolveKiroMachineID(psd, "")
+		id2 := resolveKiroMachineID(psd, "different-token")
+		if id1 != id2 {
+			t.Errorf("machine ID must be stable across token refreshes: %q != %q", id1, id2)
+		}
+		if len(id1) != 64 {
+			t.Errorf("expected 64-hex sha256 machine ID, got %d chars: %q", len(id1), id1)
+		}
+	})
+
+	t.Run("user agent carries KiroIDE version and machine id", func(t *testing.T) {
+		psd := map[string]any{"clientId": "client-test"}
+		ua, amzUA := kiroServiceUserAgent(psd, "token")
+		machineID := resolveKiroMachineID(psd, "token")
+
+		expectedSuffix := "KiroIDE-" + KiroIDEVersion + "-" + machineID
+		if !strings.HasSuffix(ua, expectedSuffix) {
+			t.Errorf("User-Agent must end with %q, got %q", expectedSuffix, ua)
+		}
+		if !strings.Contains(ua, "api/codewhispererstreaming#1.0.0") {
+			t.Errorf("User-Agent missing codewhispererstreaming surface, got %q", ua)
+		}
+		if amzUA != "aws-sdk-js/1.0.0 "+expectedSuffix {
+			t.Errorf("X-Amz-User-Agent = %q, want %q", amzUA, "aws-sdk-js/1.0.0 "+expectedSuffix)
+		}
+	})
+}
+
+func TestForwardKiro_TargetAndProfileArn(t *testing.T) {
+	var receivedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	psd := map[string]any{
+		"authMethod": "builder-id",
+		"clientId":   "test-client-id",
+	}
+
+	resp, err := ForwardKiro(context.Background(), srv.Client(), cfg, "sso-token", []byte(`{}`), false, psd)
+	if err != nil {
+		t.Fatalf("ForwardKiro failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// BaseURL does not contain codewhisperer -> X-Amz-Target must NOT be sent
+	if target := receivedHeaders.Get("X-Amz-Target"); target != "" {
+		t.Errorf("X-Amz-Target must not be sent for non-codewhisperer endpoints, got %q", target)
+	}
+
+	// Effective profileArn for builder-id must fall back to the default builder ID ARN
+	expectedArn := providers.KiroDefaultProfileARNBuilderID
+	if arn := receivedHeaders.Get("x-amzn-codewhisperer-profile-arn"); arn != expectedArn {
+		t.Errorf("x-amzn-codewhisperer-profile-arn = %q, want %q", arn, expectedArn)
+	}
+
+	// User-Agent must carry KiroIDE version
+	ua := receivedHeaders.Get("User-Agent")
+	if !strings.Contains(ua, "KiroIDE-"+KiroIDEVersion) {
+		t.Errorf("User-Agent missing KiroIDE version, got %q", ua)
+	}
+}
+
+// Upstream seed precedence includes the refresh token between clientId and
+// profileArn. The legacy two-arg helper keeps its behavior; the extended
+// helper is available to callers that have the refresh token in hand.
+func TestKiroMachineIDRefreshSeedPrecedence(t *testing.T) {
+	psd := map[string]any{"clientId": "cid", "profileArn": "arn"}
+	if got, want := resolveKiroMachineIDWithRefresh(psd, "rt", "at"), resolveKiroMachineID(psd, "at"); got != want {
+		t.Errorf("clientId must win: %q != %q", got, want)
+	}
+	noClient := map[string]any{"profileArn": "arn"}
+	got := resolveKiroMachineIDWithRefresh(noClient, "rt", "at")
+	if got == resolveKiroMachineIDWithRefresh(noClient, "", "at") {
+		t.Errorf("refreshToken must change the seed when clientId is absent")
+	}
+	if got != kiroidentity.MachineID("rt") {
+		t.Errorf("refreshToken seed mismatch: %q", got)
 	}
 }

@@ -40,6 +40,13 @@ type DashboardHandler struct {
 	// library. Nil means the production importer; a test points it at an
 	// httptest server.
 	jailbreakImport *jailbreakImporter
+	// jailbreakSync is the preset auto-sync worker: the standing subscription
+	// version of the GitHub import. Optional for the same reason Limiter and
+	// ModelHealth are — a handler built outside a boot has none, and the sync
+	// endpoints answer "not configured" rather than panicking. It is read per
+	// request because the router is built before the app's OnStart hook starts
+	// the worker.
+	jailbreakSync *jailbreakSync
 	// ModelHealth is the automatic model-health loop. It is optional for the
 	// same reason Limiter is: a handler built outside a boot has none, and the
 	// operator-action recording the disabled-models write performs is skipped
@@ -64,7 +71,22 @@ func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *Dashboa
 	if len(ts) > 0 && ts[0] != nil {
 		h.TokenSaver = ts[0]
 	}
+	// The preset auto-sync worker is resolved per request rather than stored
+	// (see syncStore): the loop is started once for the process by
+	// StartJailbreakSync, and a handler built outside a boot still answers the
+	// source endpoints by opening a store over the same repository.
 	return h
+}
+
+// SetJailbreakSync installs the running worker behind the sync endpoints. The
+// app calls it from OnStart, after the database is up and before the server
+// accepts traffic, so a "Sync now" press on a freshly booted gateway reaches a
+// live worker rather than a handler with no loop behind it.
+func (h *DashboardHandler) SetJailbreakSync(s *jailbreakSync) {
+	if h == nil || s == nil {
+		return
+	}
+	h.jailbreakSync = s
 }
 
 // importer returns the configured GitHub importer, or the production one.
@@ -115,6 +137,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 
 		// Provider Nodes (Custom Endpoints)
 		r.Get("/provider-nodes", h.HandleGetProviderNodes)
+		r.Post(AvailabilityRoutePath, h.HandleCheckProviderNodeAvailability)
 		r.Post("/provider-nodes", h.HandleCreateProviderNode)
 		r.Put("/provider-nodes/{id}", h.HandleUpdateProviderNode)
 		r.Post("/provider-nodes/validate", h.HandleValidateProviderNode)
@@ -156,6 +179,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/keys/{id}/rotate", h.HandleRotateApiKey)
 		r.Get("/keys/{id}/models", h.HandleGetApiKeyModels)
 		r.Put("/keys/{id}/models", h.HandleSetApiKeyModels)
+		r.Get("/keys/{id}/budget", h.HandleGetApiKeyBudget)
 		r.Put("/keys/{id}", h.HandleUpdateApiKey)
 
 		// F-3 Plans: reusable policy templates the keys inherit from.
@@ -188,6 +212,9 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/jailbreak/models", h.HandleListJailbreakModels)
 		r.Get("/jailbreak/models/catalog", h.HandleJailbreakModelCatalog)
 		r.Put("/jailbreak/models", h.HandleSetJailbreakModel)
+		r.Put("/jailbreak/keys/model", h.HandleSetJailbreakKeyModel)
+		r.Delete("/jailbreak/keys/model", h.HandleDeleteJailbreakKeyModel)
+		r.Get("/jailbreak/keys/bindings", h.HandleListJailbreakKeyBindings)
 		r.Delete("/jailbreak/models", h.HandleDeleteJailbreakModel)
 		r.Get("/jailbreak/excludes", h.HandleGetJailbreakExcludes)
 		r.Put("/jailbreak/excludes", h.HandlePutJailbreakExcludes)
@@ -197,6 +224,11 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/jailbreak/preview", h.HandlePreviewJailbreak)
 		r.Put("/jailbreak/presets/order", h.HandleReorderJailbreakPresets)
 		r.Post("/jailbreak/presets/upload", h.HandleUploadJailbreakPreset)
+		r.Get("/jailbreak/sync/sources", h.HandleListJailbreakSyncSources)
+		r.Put("/jailbreak/sync/sources", h.HandleSaveJailbreakSyncSources)
+		r.Post("/jailbreak/sync/run", h.HandleRunJailbreakSync)
+		r.Get("/jailbreak/github", h.HandleGetJailbreakGithub)
+		r.Put("/jailbreak/github/token", h.HandleSaveJailbreakGithubToken)
 
 		// Models
 		r.Get("/models/custom", h.HandleGetCustomModels)
@@ -219,6 +251,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/settings/database/prune", h.HandlePruneDatabase)
 		r.Post("/settings/database/prune-usage", h.HandlePruneUsageHistory)
 		r.Post("/settings/database/vacuum", h.HandleVacuumDatabase)
+		// Process control. Registered here and in SetupDashboardRoutes: this
+		// table is mounted by tests only, so a route added here alone 404s on
+		// the real server.
+		r.Post("/system/restart", h.HandleRestartGateway)
 		r.Post("/settings/proxy-test", h.HandleProxyTest)
 		// White-label logo upload: the file lands under DATA_DIR/uploads and
 		// appLogoUrl is rewritten to the path this gateway serves it from.
@@ -240,6 +276,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/tunnel/tailscale-check", h.HandleTailscaleCheck)
 		r.Post("/tunnel/tailscale-enable", h.HandleTailscaleEnable)
 		r.Post("/tunnel/tailscale-disable", h.HandleTailscaleDisable)
+		// Qoder daily-credit check-in state (read-only).
+		r.Get("/qoder/checkins", h.HandleGetQoderCheckins)
+		r.Get("/minimax/checkins", h.HandleGetMiniMaxCheckins)
+		r.Post("/minimax/checkins/{connectionId}", h.HandleMiniMaxCheckinNow)
 		// Usage & Quotas
 		r.Get("/usage/providers", h.HandleGetUsageProviders)
 		// Usage per client API key. Registered before the {connectionId}
@@ -257,13 +297,26 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/usage/{connectionId}/glm-reset-cards", h.HandleGetGLMResetCards)
 		r.Post("/usage/{connectionId}/glm-reset-cards", h.HandleRedeemGLMResetCard)
 
+		// Claude reset credits (cedar_ember grants).
+		r.Get("/usage/{connectionId}/claude-reset-credits", h.HandleListClaudeResetCredits)
+		r.Post("/usage/{connectionId}/claude-reset-credits/consume", h.HandleConsumeClaudeResetCredit)
+
 		// Cache Analytics & Management
 		r.Get("/resilience", h.HandleGetResilience)
 		r.Post("/resilience/reset", h.HandleResetResilience)
+
+		// Per-model circuit breaker (one provider/model pair, distinct from the
+		// provider breaker above). Static before the parameterised reset so a
+		// request to reset everything is not read as a reset of the model named
+		// "reset".
+		r.Get("/model-breakers", h.HandleGetModelBreakers)
+		r.Post("/model-breakers/reset", h.HandleResetAllModelBreakers)
+		r.Post("/model-breakers/{provider}/{model}/reset", h.HandleResetModelBreaker)
 		r.Get("/cache", h.HandleGetCache)
 		r.Delete("/cache", h.HandleDeleteCache)
 		r.Get("/cache/entries", h.HandleGetCacheEntries)
 		r.Delete("/cache/entries", h.HandleDeleteCacheEntry)
+		r.Post("/cache/semantic/invalidate", h.HandleInvalidateSemanticCache)
 
 		// Compression Analytics
 		r.Get("/analytics/compression", h.HandleGetCompressionAnalytics)

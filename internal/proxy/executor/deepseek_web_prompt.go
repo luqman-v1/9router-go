@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -192,7 +193,7 @@ func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int, tra
 	// turn's prompt shorter than the last and unusable as an extension of it.
 	if transcript {
 		parts = append(parts, deepSeekRenderTranscript(conversation))
-		return strings.Join(parts, "\n\n")
+		return deepSeekStripImages(strings.Join(parts, "\n\n"))
 	}
 
 	window := historyWindow
@@ -210,7 +211,18 @@ func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int, tra
 		parts = append(parts, lastUser)
 	}
 
-	return strings.Join(parts, "\n\n")
+	return deepSeekStripImages(strings.Join(parts, "\n\n"))
+}
+
+// deepSeekMarkdownImage is a markdown image reference, which this upstream's
+// prompt format has no way to render — the model reads the link syntax as
+// noise around the alt text.
+var deepSeekMarkdownImage = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
+
+// deepSeekStripImages removes markdown image references from prompt text,
+// mirroring upstream's `replace(/!\[.*?\]\(.*?\)/g, "")` in messagesToPrompt.
+func deepSeekStripImages(text string) string {
+	return deepSeekMarkdownImage.ReplaceAllString(text, "")
 }
 
 // deepSeekRenderTranscript renders replayed turns with the role labels the web
@@ -266,13 +278,39 @@ type deepSeekRequestEnvelope struct {
 	// Tools are carried only so the executor can tell a tool-calling request
 	// from an ordinary one; they never reach the upstream as a parameter,
 	// because this endpoint has no field for them.
-	Tools           []deepSeekToolSpec `json:"tools"`
-	ThinkingEnabled bool               `json:"thinking_enabled"`
-	Thinking        bool               `json:"thinking"`
-	ReasoningEffort string             `json:"reasoning_effort"`
-	SearchEnabled   bool               `json:"search_enabled"`
-	Search          bool               `json:"search"`
-	WebSearch       bool               `json:"web_search"`
+	Tools           []deepSeekToolSpec   `json:"tools"`
+	ThinkingEnabled bool                 `json:"thinking_enabled"`
+	Thinking        deepSeekThinkingFlag `json:"thinking"`
+	ReasoningEffort string               `json:"reasoning_effort"`
+	SearchEnabled   bool                 `json:"search_enabled"`
+	Search          bool                 `json:"search"`
+	WebSearch       bool                 `json:"web_search"`
+}
+
+// deepSeekThinkingFlag accepts both encodings of the `thinking` request
+// field: a plain bool (`"thinking": true`) and the anthropic-style object
+// the thinking pass injects (`{"type":"enabled","budget_tokens":10000}` /
+// `{"type":"disabled"}`). An object enables thinking unless its type is
+// "disabled".
+type deepSeekThinkingFlag bool
+
+func (f *deepSeekThinkingFlag) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '{' {
+		var obj struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return err
+		}
+		*f = deepSeekThinkingFlag(!strings.EqualFold(obj.Type, "disabled"))
+		return nil
+	}
+	var b bool
+	if err := json.Unmarshal(data, &b); err != nil {
+		return err
+	}
+	*f = deepSeekThinkingFlag(b)
+	return nil
 }
 
 // deepSeekModelOptions is how a requested model maps onto this upstream's two
@@ -297,7 +335,7 @@ func resolveDeepSeekModelOptions(model string, body deepSeekRequestEnvelope) dee
 		thinking: strings.Contains(name, "r1") ||
 			strings.Contains(name, "think") ||
 			strings.Contains(name, "reason") ||
-			body.ThinkingEnabled || body.Thinking || body.ReasoningEffort != "",
+			body.ThinkingEnabled || bool(body.Thinking) || body.ReasoningEffort != "",
 		search: strings.Contains(name, "search") ||
 			body.SearchEnabled || body.Search || body.WebSearch,
 	}

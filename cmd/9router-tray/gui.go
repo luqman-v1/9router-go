@@ -15,9 +15,13 @@ package main
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -27,6 +31,48 @@ import (
 
 //go:embed tray.ico
 var trayIcon []byte
+
+// trayBranding carries the two settings the tray renders: the menu/tooltip
+// title and the icon it was told to use. Both fall back to the project's own,
+// because a tray that shows nothing is worse than one that shows the default.
+type trayBranding struct {
+	Title string
+}
+
+// loadTrayBranding reads trayAppName from the gateway's settings row.
+//
+// The gateway is the only place the setting lives, and this process may start
+// before it, so every failure path is the default title rather than an empty
+// one: a missing port, an unreachable gateway, or an unreadable body all mean
+// "9Router Go". C5 applies — an unreadable state renders the default, never
+// nothing.
+//
+// The icon is not fetched: tray.ico stays embedded, so a local file or a
+// broken URL can never leave the tray with no mark at all.
+func loadTrayBranding(port int) trayBranding {
+	if port <= 0 {
+		return trayBranding{Title: defaultTrayTitle}
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/settings", port))
+	if err != nil {
+		return trayBranding{Title: defaultTrayTitle}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return trayBranding{Title: defaultTrayTitle}
+	}
+	var settings struct {
+		TrayAppName string `json:"trayAppName"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&settings); err != nil {
+		return trayBranding{Title: defaultTrayTitle}
+	}
+	if strings.TrimSpace(settings.TrayAppName) == "" {
+		return trayBranding{Title: defaultTrayTitle}
+	}
+	return trayBranding{Title: settings.TrayAppName}
+}
 
 // menu holds the items once they are built. systray has no "menu about to
 // open" callback, so the menu is created once and then refreshed in place:
@@ -38,11 +84,17 @@ type menu struct {
 	autostart *systray.MenuItem
 }
 
+// defaultTrayTitle is the tooltip and menu title the tray uses before the
+// gateway answers its settings read. trayAppName overrides it; an unreadable
+// setting means the default, never an empty title bar.
+const defaultTrayTitle = "9Router Go"
+
 func runGUI(actions tray.Actions, port int) error {
 	systray.Run(func() {
 		systray.SetIcon(trayIcon)
-		systray.SetTitle("9Router Go")
-		go runMenu(actions, port)
+		branding := loadTrayBranding(port)
+		systray.SetTitle(branding.Title)
+		go runMenu(actions, port, branding.Title)
 	}, func() {
 		// Quit Tray: release the icon and return. Deliberately empty — C4 says
 		// quitting the tray must not touch the gateway, and the daemon has
@@ -59,9 +111,9 @@ func runGUI(actions tray.Actions, port int) error {
 // One second is fast enough that a user who starts the gateway from the CLI
 // sees the menu agree before they can open it, and cheap enough that reading a
 // pid file plus a non-blocking service probe costs nothing.
-func runMenu(actions tray.Actions, port int) {
+func runMenu(actions tray.Actions, port int, title string) {
 	m := &menu{
-		status: systray.AddMenuItem("9Router Go", ""),
+		status: systray.AddMenuItem(title, ""),
 		start:  systray.AddMenuItem("Start Gateway", ""),
 		stop:   systray.AddMenuItem("Stop Gateway", ""),
 		// A real checkbox rather than a "✓ " prefix: the prefix is a picture of
@@ -151,15 +203,6 @@ func refresh(m *menu, actions tray.Actions) {
 	} else {
 		m.autostart.Uncheck()
 	}
-}
-
-// report surfaces a failure without ever printing a credential (C6): errors
-// from the actions carry a command and its output, never a token.
-func report(err error) {
-	if err == nil {
-		return
-	}
-	fmt.Println(err)
 }
 
 func openDashboard(port int) {

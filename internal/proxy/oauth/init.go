@@ -27,6 +27,7 @@ func RegisterAll() {
 var accessTokenOnlyProviders = map[string]bool{
 	"antigravity": true,
 	"gemini-cli":  true,
+	"agy-acp":     true,
 }
 
 // IsAccessTokenOnlyProvider reports whether a provider's apiKey field is only

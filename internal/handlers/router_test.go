@@ -515,3 +515,166 @@ func TestSetupServerRouter_CodexResetCreditsAreLive(t *testing.T) {
 		t.Errorf("anonymous status = %d, want 401", rec.Code)
 	}
 }
+
+// TestSetupServerRouter_CORSPreflightOptionsRoutes pins the preflights a browser
+// sends before the CORS-bearing public reads. They are registered outside the
+// API-key group on purpose: an OPTIONS request never carries credentials, so a
+// blanket passthrough in RequireApiKey was the wrong fix — it opened every
+// protected route. Per-path registration keeps the surface at these four.
+func TestSetupServerRouter_CORSPreflightOptionsRoutes(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, path := range []string{"/health", "/api/health", "/api/tags", "/tags"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, path, nil))
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("OPTIONS %s status = %d, want 204", path, rec.Code)
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Errorf("OPTIONS %s Access-Control-Allow-Origin = %q, want *", path, got)
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "OPTIONS") {
+				t.Errorf("OPTIONS %s Access-Control-Allow-Methods = %q, want OPTIONS included", path, got)
+			}
+		})
+	}
+
+	// The public GET half has to carry the same headers, or a cross-origin read
+	// fails even though its preflight passed. /api/tags and /tags sit inside the
+	// API-key group, so an anonymous GET there is a 401 and its CORS headers are
+	// irrelevant — only the preflight is pinned for them above.
+	for _, path := range []string{"/health", "/api/health"} {
+		t.Run("GET "+path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Errorf("GET %s Access-Control-Allow-Origin = %q, want *", path, got)
+			}
+		})
+	}
+}
+
+// The per-path preflights must not become a general bypass: an OPTIONS on a
+// route that is not one of those four still goes through RequireApiKey.
+func TestSetupServerRouter_OptionsDoesNotBypassApiKeyElsewhere(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, "/chat/completions", nil))
+	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("OPTIONS /chat/completions status = %d, want 401 (auth still enforced) or 405", rec.Code)
+	}
+}
+
+// TestSetupServerRouter_SSOLoginRoutesArePublic pins that the SSO browser flows
+// and SP metadata answer an anonymous caller even when requireLogin is on.
+// Mounting them under RequireDashboardAuth 401'd the browser at the one moment
+// they are needed, so the gate has to be asserted by route identity — "not
+// 401" alone passes for a no-op handler or a route that was never registered.
+func TestSetupServerRouter_SSOLoginRoutesArePublic(t *testing.T) {
+	t.Setenv("JWT_SECRET", "router-test-secret")
+
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, tc := range []struct {
+		name         string
+		method, path string
+		wantStatus   int
+		assertMarker func(t *testing.T, rec *httptest.ResponseRecorder)
+	}{
+		{
+			name:       "saml metadata carries an EntityDescriptor",
+			method:     http.MethodGet,
+			path:       "/api/auth/saml/metadata",
+			wantStatus: http.StatusOK,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				if !strings.Contains(rec.Body.String(), "<md:EntityDescriptor") {
+					t.Errorf("expected <md:EntityDescriptor in body, got: %s", rec.Body.String())
+				}
+			},
+		},
+		{
+			name:       "oidc start redirects to the login page when unconfigured",
+			method:     http.MethodGet,
+			path:       "/api/auth/oidc/start",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				loc := rec.Header().Get("Location")
+				if !strings.Contains(loc, "login?error=oidc_not_configured") {
+					t.Errorf("expected Location with oidc_not_configured, got: %s", loc)
+				}
+			},
+		},
+		{
+			name:       "oidc callback redirects with an error rather than 404",
+			method:     http.MethodGet,
+			path:       "/api/auth/oidc/callback",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				if loc := rec.Header().Get("Location"); !strings.Contains(loc, "login?error=") {
+					t.Errorf("expected Location redirect, got: %s", loc)
+				}
+			},
+		},
+		{
+			name:       "saml start redirects to the login page when unconfigured",
+			method:     http.MethodGet,
+			path:       "/api/auth/saml/start",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				loc := rec.Header().Get("Location")
+				if !strings.Contains(loc, "login?error=saml_not_configured") {
+					t.Errorf("expected Location with saml_not_configured, got: %s", loc)
+				}
+			},
+		},
+		{
+			name:       "saml acs answers the browser rather than 401",
+			method:     http.MethodPost,
+			path:       "/api/auth/saml/acs",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				if loc := rec.Header().Get("Location"); !strings.Contains(loc, "login?error=") {
+					t.Errorf("expected Location redirect, got: %s", loc)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code == http.StatusUnauthorized {
+				t.Fatalf("anonymous %s %s was blocked with 401, want public access", tc.method, tc.path)
+			}
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			tc.assertMarker(t, rec)
+		})
+	}
+
+	// The settings probes are admin reads and must stay behind the gate.
+	for _, path := range []string{"/api/auth/oidc/test", "/api/auth/saml/test"} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("anonymous POST %s status = %d, want 401 (admin read stays gated)", path, rec.Code)
+		}
+	}
+}

@@ -136,7 +136,7 @@ func TestDeepSeekToolTurnAbortsWithoutPanic(t *testing.T) {
 			`eck","status":1}]}}}` + "\n" +
 			`{"p":"response/fragments/-1/content","o":"APPEND","v":"eck that"}` + "\n")
 
-	err := deepSeekToolTurnToClient(rec, req, upstream, env, newDeepSeekStreamAccumulator(env.Model))
+	_, err := deepSeekToolTurnToClient(rec, req, upstream, env, newDeepSeekStreamAccumulator(env.Model), "", nil)
 	if err == nil {
 		t.Fatal("a cut-off tool turn must return an error, not a completion")
 	}
@@ -186,7 +186,7 @@ func TestDeepSeekToolTurnStreamsWhenAsked(t *testing.T) {
 			req := &Request{IsStream: true, Ctx: context.Background()}
 			rec := httptest.NewRecorder()
 
-			if err := deepSeekToolTurnToClient(rec, req, upstream, env, newDeepSeekStreamAccumulator(env.Model)); err != nil {
+			if _, err := deepSeekToolTurnToClient(rec, req, upstream, env, newDeepSeekStreamAccumulator(env.Model), "", nil); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 
@@ -224,7 +224,7 @@ func TestDeepSeekToolTurnNonStreamingStaysJSON(t *testing.T) {
 	req := &Request{IsStream: false, Ctx: context.Background()}
 	rec := httptest.NewRecorder()
 
-	if err := deepSeekToolTurnToClient(rec, req, newSignedOffTurn(t, "Hi there!"), env, newDeepSeekStreamAccumulator(env.Model)); err != nil {
+	if _, err := deepSeekToolTurnToClient(rec, req, newSignedOffTurn(t, "Hi there!"), env, newDeepSeekStreamAccumulator(env.Model), "", nil); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 

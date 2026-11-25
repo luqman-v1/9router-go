@@ -76,8 +76,8 @@ func wantAbsent(t *testing.T, field string, got *int) {
 func TestHandleModels_ComboPublishesSmallestSeatContext(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// 131072 for deepseek/deepseek-chat and 200000 for anthropic/claude-sonnet-4-6
-	// per the ports' capability tables; the combo must publish the smaller.
+	// 128000 for deepseek/deepseek-chat (upstream *deepseek-chat* row) and
+	// 1000000 for anthropic/claude-sonnet-4-6; the combo must publish the smaller.
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
 		('c-limits', 'limits-combo', 'llm', '["deepseek/deepseek-chat","anthropic/claude-sonnet-4-6"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("seed combo: %v", err)
@@ -88,7 +88,7 @@ func TestHandleModels_ComboPublishesSmallestSeatContext(t *testing.T) {
 	if entry.OwnedBy != "combo" {
 		t.Fatalf("owned_by = %q, want \"combo\"", entry.OwnedBy)
 	}
-	wantLimit(t, "context_length", entry.ContextLength, 131072)
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
 }
 
@@ -97,7 +97,7 @@ func TestHandleModels_ComboPublishesSmallestSeatContext(t *testing.T) {
 func TestHandleModels_NestedComboPublishesSmallestLeafLimit(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// inner holds the two windows (200000 for anthropic/claude-sonnet-4-6 and
+	// inner holds the two windows (1000000 for anthropic/claude-sonnet-4-6 and
 	// 128000 for openai/gpt-4o); outer adds groq/llama-3-70b at its own 4096
 	// max output, so the tree minimum is the inner pair's 128000 window with
 	// outer's 4096 output — the numbers only line up if the nested seats are
@@ -120,7 +120,7 @@ func TestHandleModels_NestedComboPublishesSmallestLeafLimit(t *testing.T) {
 	wantLimit(t, "outer context_length", outer.ContextLength, 128000)
 	wantLimit(t, "outer max_completion_tokens", outer.MaxCompletionTokens, 4096)
 	wantLimit(t, "inner context_length", inner.ContextLength, 128000)
-	wantLimit(t, "inner max_completion_tokens", inner.MaxCompletionTokens, 8192)
+	wantLimit(t, "inner max_completion_tokens", inner.MaxCompletionTokens, 16384)
 }
 
 // A combo that (transitively) lists itself has no defined seat set. Listing
@@ -149,7 +149,7 @@ func TestHandleModels_SelfReferencingComboTerminates(t *testing.T) {
 	entries := comboModelsResponse(t, NewChatHandler(db.NewRepo(database)))
 
 	// The concrete leaf beside the recursive seat still sets the window.
-	wantLimit(t, "self-combo context_length", comboEntry(t, entries, "self-combo").ContextLength, 131072)
+	wantLimit(t, "self-combo context_length", comboEntry(t, entries, "self-combo").ContextLength, 128000)
 	// loop-combo reaches mutual-combo, whose own concrete seat is still
 	// reachable across the cycle: cutting it must not swallow that leaf.
 	wantLimit(t, "loop-combo context_length", comboEntry(t, entries, "loop-combo").ContextLength, 128000)
@@ -192,8 +192,30 @@ func TestHandleModels_WebSeatDoesNotDragMinimumDown(t *testing.T) {
 
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "mixed-combo")
 
-	wantLimit(t, "context_length", entry.ContextLength, 131072)
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
+}
+
+// A thinking suffix like "(max)" on a combo seat is not part of the model id:
+// comboSeatCapabilities strips it before the capability lookup, so the seat
+// publishes the bare model's own block instead of the floor capability.
+func TestHandleModels_ComboSeatThinkingSuffixStrippedBeforeCaps(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// opencode's deepseek-v4.1-flash-free declares 330000 context_length and
+	// 128000 max_completion_tokens (providerCapabilities["opencode"]). A seat
+	// that kept the "(max)" suffix missed that row and fell through to the
+	// pattern-table default, so the suffixed seat must publish the bare
+	// model's own block.
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+			('c-think', 'thinking-combo', 'llm', '["oc/deepseek-v4.1-flash-free(max)"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "thinking-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 330000)
+	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 128000)
 }
 
 func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T) {
@@ -212,4 +234,89 @@ func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T)
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "alias-combo")
 	wantLimit(t, "context_length", entry.ContextLength, 128000)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 16384)
+}
+
+// max mode advertises the widest seat window instead of the narrowest, so a
+// fallback chain that can fail past a small-window seat still advertises its
+// full window.
+func TestHandleModels_ComboMaxModeAdvertisesWidestWindow(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("max-combo", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeMax,
+	}); err != nil {
+		t.Fatalf("set combo strategy: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-max', 'max-combo', 'llm', '["anthropic/claude-sonnet-4-6","deepseek/deepseek-chat"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "max-combo")
+	// min would publish 128000 (deepseek-chat's narrower window);
+	// max publishes 1000000 from claude-sonnet-4-6.
+	wantLimit(t, "context_length", entry.ContextLength, 1000000)
+}
+
+// custom mode advertises the operator-declared window regardless of what the
+// seats report.
+func TestHandleModels_ComboCustomModeAdvertisesDeclaredWindow(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("custom-combo", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeCustom,
+		ContextWindow:     1000000,
+	}); err != nil {
+		t.Fatalf("set combo strategy: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-custom', 'custom-combo', 'llm', '["deepseek/deepseek-chat","groq/llama-3-70b"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "custom-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 1000000)
+}
+
+// custom mode without a declared window falls back to min rather than
+// advertising a guess.
+func TestHandleModels_ComboCustomModeWithoutWindowFallsBackToMin(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("custom-combo", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeCustom,
+	}); err != nil {
+		t.Fatalf("set combo strategy: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-custom', 'custom-combo', 'llm', '["deepseek/deepseek-chat","groq/llama-3-70b"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "custom-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
+}
+
+// Invalid mode strings resolve to min instead of publishing a bogus window.
+func TestHandleModels_ComboInvalidModeResolvesToMin(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?)`,
+		`{"comboStrategies":{"bad-mode-combo":{"contextWindowMode":"bogus"}}}`); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-bad', 'bad-mode-combo', 'llm', '["deepseek/deepseek-chat"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "bad-mode-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
 }

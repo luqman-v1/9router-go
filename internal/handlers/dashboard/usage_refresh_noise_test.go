@@ -226,3 +226,48 @@ func TestHandleGetConnectionUsage_NoRefreshCallWithoutRefresher(t *testing.T) {
 		t.Errorf("a provider with no refresher must not park the account: %v", stored)
 	}
 }
+
+// An account already parked for a dead grant must not be refreshed on the
+// usage path either: re-spending the single-use refresh token answers
+// invalid_grant again and bumps the failure counter behind a request the
+// caller must not make. This is the minimax-code-global incident: the usage
+// route force-refreshed a parked account, logged "oauth grant dead" again,
+// and minutes later chat paid a guaranteed 401 for it.
+func TestHandleGetConnectionUsage_SkipsRefreshForParkedDeadGrant(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+
+	const provider = "usage-parked-grant-provider"
+	var attempts int
+	registerStubRefresher(t, provider, func(_ context.Context, _ *oauth.Params) (*oauth.TokenResult, error) {
+		attempts++
+		return nil, &providers.OAuthRefreshError{
+			Status: http.StatusBadRequest,
+			Body:   `{"error":"invalid_grant","error_description":"Invalid or unknown refresh token"}`,
+		}
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"token expired"}`))
+	}))
+	t.Cleanup(srv.Close)
+	stubOllamaUsage(t, srv.URL+"/api/usage", srv.URL+"/api/me")
+
+	expired := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	future := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	payload := `{"accessToken":"dead","apiKey":"dead","refreshToken":"rt","expiresAt":"` + expired + `","oauthLockedUntil":"` + future + `","testStatus":"reauth_required"}`
+	if err := repo.CreateProviderConnectionFull("conn-parked", provider, "oauth", "Parked", nil, payload); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	setupTestRouter(repo).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/usage/conn-parked", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if attempts != 0 {
+		t.Errorf("refresh attempts = %d, want 0 for a reauth_required account", attempts)
+	}
+}

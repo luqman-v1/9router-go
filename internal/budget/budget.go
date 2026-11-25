@@ -236,3 +236,84 @@ func FormatMicros(micros int64) string {
 // so a caller holding a raw key does not have to import the handler utility to
 // ask the same question the engine asks.
 func Masked(rawKey string) string { return handlerutil.MaskAPIKey(rawKey) }
+
+// Status is the operator-facing state of a budget, reported by the dashboard
+// read endpoint. The values are the three states the engine can be in for a
+// configured budget: under the alert threshold, past it but still served, and
+// refused.
+type Status string
+
+const (
+	// StatusOK is spend below the alert threshold (or no threshold set).
+	StatusOK Status = "ok"
+	// StatusApproaching is spend past the alert threshold but not yet at the
+	// ceiling: the engine still serves, with a warning header.
+	StatusApproaching Status = "approaching"
+	// StatusExhausted is spend at or past a ceiling with a hard cutoff, where
+	// the engine refuses with 402.
+	StatusExhausted Status = "exhausted"
+)
+
+// Assessment is the operator's view of one key's budget: the resolved limits,
+// the measured spend in the current window, the remaining headroom, the state
+// the engine is in right now, and when the window rolls.
+type Assessment struct {
+	// Limits is the resolved budget that the engine enforces for this key.
+	Limits Limits
+	// Spend is what the key has consumed in the current window.
+	Spend Spend
+	// RemainingMicros is what the cost axis still allows. Zero when the axis
+	// is unset or already spent.
+	RemainingMicros int64
+	// RemainingTokens is the token-axis counterpart.
+	RemainingTokens int64
+	// Status is StatusOK, StatusApproaching or StatusExhausted.
+	Status Status
+	// ResetAt is when the window rolls, empty for total.
+	ResetAt string
+}
+
+// Assess measures one key's spend in its window and reports the operator's
+// view of the budget. It reuses the same window resolution and decision as
+// the request path, so what the dashboard reports and what the engine
+// enforces are the same numbers: a key the dashboard shows as "ok" is served,
+// and one it shows as "exhausted" is refused with 402. A read failure is
+// reported, not swallowed: the operator would rather see "the spend could
+// not be read" than a zero that reads as a fresh key.
+func Assess(ctx context.Context, r Reader, rawKey string, limits Limits, now time.Time) (Assessment, error) {
+	out := Assessment{Limits: limits}
+	if !limits.Armed() {
+		return out, nil
+	}
+	w := ResolveWindow(limits.Period, now)
+	spend, err := SpendFor(ctx, r, rawKey, w)
+	if err != nil {
+		return out, err
+	}
+	out.Spend = spend
+	if w.ResetAt != (time.Time{}) {
+		out.ResetAt = w.ResetAt.UTC().Format(time.RFC3339)
+	}
+	if limits.LimitMicros > 0 {
+		out.RemainingMicros = limits.LimitMicros - spend.Micros
+		if out.RemainingMicros < 0 {
+			out.RemainingMicros = 0
+		}
+	}
+	if limits.LimitTokens > 0 {
+		out.RemainingTokens = limits.LimitTokens - spend.Tokens
+		if out.RemainingTokens < 0 {
+			out.RemainingTokens = 0
+		}
+	}
+	d := decide(spend, limits, w.ResetAt)
+	switch {
+	case d.Refuse:
+		out.Status = StatusExhausted
+	case d.Alerting:
+		out.Status = StatusApproaching
+	default:
+		out.Status = StatusOK
+	}
+	return out, nil
+}

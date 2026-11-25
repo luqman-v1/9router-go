@@ -3,6 +3,7 @@ package chat
 import (
 	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 	"bytes"
 	"context"
@@ -42,11 +43,27 @@ var (
 	// served roster from fetchAvailableModels. Bundled catalog rows that
 	// the account does not serve must be blocked before routing, or every
 	// request to them 404s at Cloud Code.
-	agRosterMu      sync.RWMutex
-	agRosterCache   = make(map[string]map[string]struct{}) // connectionID -> served model id set
-	agLastRefreshAt = make(map[string]time.Time)           // connectionID -> last refresh timestamp
-	agInflightMu    sync.Mutex
-	agInflight      = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
+	agRosterMu    sync.RWMutex
+	agRosterCache = make(map[string]map[string]struct{}) // connectionID -> served model id set
+	// agRosterMissBlocked records (connection, model) pairs the upstream itself
+	// answered 404 for. The discovery roster is ADVISORY: a tiered account can
+	// serve a model the RPC never lists — gemini-4-carbon answered 200 on
+	// daily-cloudcode-pa for an account whose fetchAvailableModels omits it —
+	// and trusting the roster alone parked a working model until the process
+	// restarted. Absence from the roster now costs one request; only an actual
+	// 404 parks the pair.
+	agRosterMissMu       sync.RWMutex
+	agRosterMissBlocked  = make(map[string]time.Time) // connectionID|model -> blockUntil
+	agRosterMissBlockTTL = 6 * time.Hour
+	// The model half of that key comes from the request, so a caller naming
+	// model after model could otherwise grow the map without bound. Sized for
+	// the models one account can plausibly be refused, and the write path
+	// sweeps expired rows before it refuses anything.
+	agRosterMissMaxEntries  = 512
+	agRosterMissMaxModelLen = 128
+	agLastRefreshAt         = make(map[string]time.Time) // connectionID -> last refresh timestamp
+	agInflightMu            sync.Mutex
+	agInflight              = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
 
 	// MinAntigravityQuotaRefreshInterval prevents hammering quota API during 429 bursts.
 	MinAntigravityQuotaRefreshInterval = 30 * time.Second
@@ -113,6 +130,9 @@ func ClearAntigravityQuotaCache() {
 	agRosterMu.Lock()
 	agRosterCache = make(map[string]map[string]struct{})
 	agRosterMu.Unlock()
+	agRosterMissMu.Lock()
+	agRosterMissBlocked = make(map[string]time.Time)
+	agRosterMissMu.Unlock()
 
 	agWeeklyMu.Lock()
 	agWeeklyCache = make(map[string]map[string]AntigravityWeeklyQuota)
@@ -170,12 +190,68 @@ func IsAntigravityModelServed(connectionID, model string) bool {
 	return false
 }
 
+// NoteAntigravityModelNotFound parks a (connection, model) pair the upstream
+// answered 404 for, which is the only evidence that the account truly does not
+// serve it. See agRosterMissBlocked for why the roster alone is not enough.
+func NoteAntigravityModelNotFound(connectionID, model string) {
+	if connectionID == "" || model == "" || len(model) > agRosterMissMaxModelLen {
+		return
+	}
+	key := connectionID + "|" + model
+	now := time.Now().UTC()
+	agRosterMissMu.Lock()
+	if _, parked := agRosterMissBlocked[key]; !parked && len(agRosterMissBlocked) >= agRosterMissMaxEntries {
+		sweepAgRosterMissLocked(now)
+		if len(agRosterMissBlocked) >= agRosterMissMaxEntries {
+			// Fail open: parking is an optimisation, and a full map must never
+			// be the reason a request is refused.
+			agRosterMissMu.Unlock()
+			log.Warn("ag_quota", "model 404 not parked: table full", "connection", shortConnID(connectionID), "model", model)
+			return
+		}
+	}
+	agRosterMissBlocked[key] = now.Add(agRosterMissBlockTTL)
+	agRosterMissMu.Unlock()
+	log.Warn("ag_quota", "upstream does not serve model", "connection", shortConnID(connectionID), "model", model)
+}
+
+// sweepAgRosterMissLocked drops parks whose window has passed. The caller holds
+// the write lock.
+func sweepAgRosterMissLocked(now time.Time) {
+	for key, until := range agRosterMissBlocked {
+		if !until.After(now) {
+			delete(agRosterMissBlocked, key)
+		}
+	}
+}
+
+// antigravityModelNotServed reports whether the upstream has already answered
+// 404 for this (connection, model) pair within the block window.
+func antigravityModelNotServed(connectionID, model string) bool {
+	agRosterMissMu.RLock()
+	until, ok := agRosterMissBlocked[connectionID+"|"+model]
+	agRosterMissMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if until.After(time.Now().UTC()) {
+		return true
+	}
+	agRosterMissMu.Lock()
+	delete(agRosterMissBlocked, connectionID+"|"+model)
+	agRosterMissMu.Unlock()
+	return false
+}
+
 // IsAntigravityModelBlocked reports whether connectionID has an exhausted quota for model until resetAt.
 func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if connectionID == "" || model == "" {
 		return false
 	}
-	if !IsAntigravityModelServed(connectionID, model) {
+	// A model the discovery RPC omits is not proof the account cannot serve it:
+	// the roster is advisory and the upstream 404 is the only verdict. Block
+	// only after one real attempt told us so.
+	if !IsAntigravityModelServed(connectionID, model) && antigravityModelNotServed(connectionID, model) {
 		return true
 	}
 
@@ -194,6 +270,24 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if model == "gemini-4-argon" {
 		checkModels = append(checkModels, "gemini-4-argon-high", "gemini-4-argon-medium")
 	}
+	if model == "gemini-4-carbon" {
+		checkModels = append(checkModels, "gemini-4-carbon-high", "gemini-4-carbon-medium")
+	}
+	if model == "gemini-4-neon" {
+		checkModels = append(checkModels, "gemini-4-neon-high", "gemini-4-neon-medium")
+	}
+	if model == "claude-sonnet-5-5-max" {
+		checkModels = append(checkModels, "claude-sonnet-5-5-max")
+	}
+	if model == "claude-opus-5-5-max" {
+		checkModels = append(checkModels, "claude-opus-5-5-max")
+	}
+	if model == "claude-sonnet-5-5" {
+		checkModels = append(checkModels, "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high")
+	}
+	if model == "claude-opus-5-5" {
+		checkModels = append(checkModels, "claude-opus-5-5-medium", "claude-opus-5-5-high")
+	}
 
 	now := time.Now().UTC()
 	for _, m := range checkModels {
@@ -209,11 +303,25 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	// decolua/9router#4209: session exhaustion blocks the family even when
 	// weekly remains).
 	if strings.Contains(model, "argon") {
-		for _, key := range []string{"argon_weekly", "argon_session"} {
+		hasArgonSummary := false
+		for _, key := range []string{"gemini_argon_weekly", "argon_weekly", "gemini_argon_session", "argon_session"} {
 			if wq, exists := modelsMap[key]; exists {
+				hasArgonSummary = true
 				if quotaEntryExhausted(wq, now) {
 					agQuotaMu.RUnlock()
 					return true
+				}
+			}
+		}
+		// On Ultra plans where Argon shares the main Gemini bucket (no separate argon summary),
+		// fall back to the shared Gemini summary buckets (parity with upstream decolua/9router#8a833631).
+		if !hasArgonSummary {
+			for _, key := range []string{"gemini_weekly", "gemini_session"} {
+				if wq, exists := modelsMap[key]; exists {
+					if quotaEntryExhausted(wq, now) {
+						agQuotaMu.RUnlock()
+						return true
+					}
 				}
 			}
 		}
@@ -312,8 +420,9 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
@@ -632,7 +741,7 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			key := "gemini_weekly"
 			dName := "Gemini (Weekly)"
 			if isArgon {
-				key = "argon_weekly"
+				key = "gemini_argon_weekly"
 				dName = "Gemini 4 Argon (Weekly)"
 			} else if isClaudeGPT {
 				key = "claude_gpt_weekly"
@@ -640,7 +749,7 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			}
 			if !isWeekly {
 				if isArgon {
-					key = "argon_session"
+					key = "gemini_argon_session"
 					dName = "Gemini 4 Argon (5h)"
 				} else if strings.HasPrefix(key, "gemini") {
 					key = "gemini_session"
@@ -654,12 +763,19 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			// First matching bucket per type wins (no break: one group can
 			// yield both a weekly and a session bucket).
 			if _, exists := result[key]; !exists {
-				result[key] = AntigravityWeeklyQuota{
+				entry := AntigravityWeeklyQuota{
 					Used:                used,
 					Total:               total,
 					RemainingPercentage: frac * 100,
 					ResetAt:             resetAt,
 					DisplayName:         dName,
+				}
+				result[key] = entry
+				switch key {
+				case "gemini_argon_weekly":
+					result["argon_weekly"] = entry
+				case "gemini_argon_session":
+					result["argon_session"] = entry
 				}
 			}
 		}
@@ -703,9 +819,9 @@ func FetchAntigravityWeeklyQuota(ctx context.Context, client *http.Client, acces
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	req.Header.Set("X-Client-Name", "antigravity")
-	req.Header.Set("X-Client-Version", "0.1.0")
+	req.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}

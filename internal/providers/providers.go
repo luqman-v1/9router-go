@@ -9,6 +9,7 @@ import (
 // ProviderConfig describes how to reach an upstream provider.
 type ProviderConfig struct {
 	BaseURL       string
+	ValidateURL   string            // endpoint used to validate credentials/models
 	AuthHeader    string            // "Authorization" or "x-api-key"
 	AuthScheme    string            // "bearer" or "raw"
 	NoAuth        bool              // true = no API key required
@@ -55,6 +56,13 @@ type ProviderConfig struct {
 	// LocalByDesign marks a provider whose upstream endpoint is intended to run on the
 	// local host or loopback network (e.g. ollama-local on localhost:11434).
 	LocalByDesign bool
+
+	// BindsConversations marks a provider that ties a conversation to the
+	// ACCOUNT that opened it and refuses a later turn arriving from a different
+	// one. The gateway must then keep a conversation on one connection: a
+	// mid-conversation account switch is rejected upstream no matter which
+	// session id is presented, because the verdict is about the account.
+	BindsConversations bool
 
 	// Hidden keeps a provider out of the lists a person scans — the provider
 	// pickers, the quota page — while leaving it fully reachable: connections
@@ -142,7 +150,11 @@ func BedrockModelFamily(providerID, model string) (ok bool, hint string) {
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
-func (p *ProviderConfig) IsGeminiNative() bool { return p.Format == "gemini-native" }
+func (p *ProviderConfig) IsGeminiNative() bool {
+	// Cloud Code Assist speaks the same Gemini envelope with a different
+	// wrapper, so it routes through the same native handler.
+	return p.Format == "gemini-native" || p.Format == "gemini-cli"
+}
 
 // IsGeminiOpenAICompat returns true if provider is Gemini behind an
 // OpenAI-compatible endpoint whose tool schema validation is as strict as the
@@ -190,6 +202,10 @@ func WithoutStaticHeader(cfg *ProviderConfig, name string) *ProviderConfig {
 // It is the same set upstream wires into PROVIDER_MODELS_CONFIG
 // (src/app/api/providers/[id]/models/route.js, v0.5.91).
 var modelsListURL = map[string]string{
+	// free-pi publishes its catalog at /client-version rather than the standard
+	// /v1/models shape. The suggested-models handler has a "free-pi" filter that
+	// reads the `models` array from this response.
+	"free-pi":     "https://api.freepi.ai/client-version",
 	"tokenharbor": "https://tokenharbor.ai/v1/models",
 	"dahl":        "https://inference.dahl.global/v1/models",
 	"atria":       "https://api.atria-asi.ai/v1/models",
@@ -211,6 +227,12 @@ var modelsListURL = map[string]string{
 	// registry catalog is a fixed 22-model list, so without this entry the
 	// dashboard cannot discover anything the snapshot predates.
 	"commandcode": "https://api.commandcode.ai/provider/v1/models",
+	// The documented Provider API entry reads the same keyless feed. It lists
+	// every id the provider serves (97 at the 2026-11-11 snapshot), which is
+	// what the generated catalogue in commandcode_goat_catalog.go was built
+	// from; the live fetch is what keeps a new release discoverable.
+	"commandcode-goat": "https://api.commandcode.ai/provider/v1/models",
+	"cmc-goat":         "https://api.commandcode.ai/provider/v1/models",
 	// Five more providers whose catalogue is reachable without a valid
 	// credential, so the discovery path that fixed commandcode covers them
 	// unchanged: "Check Latest Models", "Import from /models" and "Sync Models"
@@ -553,6 +575,27 @@ var KnownProviders = map[string]ProviderConfig{
 			"User-Agent":        "opencode/1.19.4",
 		},
 	},
+	// Open Design OpenDesign Cloud (open-design.ai) / AMR:
+	// https://open-design.ai/amr. Two planes on two hosts: model traffic rides
+	// the runtime key (`sk-amr-…`) at https://amr-link.open-design.ai/v1 on the
+	// lane each model declares (chat completions default; Responses for
+	// claude-haiku-5.5 / deepseek-v4-pro; Claude Messages for glm-5.3-flash),
+	// while plan/wallet/allowance read from https://amr-api.open-design.ai on the
+	// control key (`vela_ctrl_…`). ConnectionData.APIKey holds whichever
+	// credential was pasted; a pasted `vela_ctrl_…` value is a control key and
+	// rides no model request. The control key (PSD `controlKey`) and the read
+	// workspace id travel in ProviderSpecificData.
+	"opendesign": {
+		BaseURL:    "https://amr-link.open-design.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		// Quota reads live on the control plane, not the model plane: the
+		// dashboard fetcher builds it from the control host explicitly (it is
+		// never derived from this BaseURL).
+		StaticHeaders: map[string]string{
+			"User-Agent": "9router-go",
+		},
+	},
 	"gemini": {
 		BaseURL:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 		AuthHeader: "Authorization",
@@ -645,11 +688,28 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		ImageURL:   "https://token.sensenova.cn/v1/images/generations",
 	},
+	"sensenova-intl": {
+		// International site host (upstream registry/sensenova-intl.js
+		// transport + imageConfig). China keys answer 401 here and vice versa.
+		BaseURL:    "https://token.sensenova.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		ImageURL:   "https://token.sensenova.ai/v1/images/generations",
+	},
+	"synthetic": {
+		// Upstream registry/synthetic.js transport. /openai/v1/models is public,
+		// so validation must hit /v2/quotas (validate.go case "synthetic"), not
+		// the derived /models URL.
+		BaseURL:    "https://api.synthetic.new/openai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"cloudflare-ai": {
 		BaseURL:        "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions",
 		AuthHeader:     "Authorization",
 		AuthScheme:     "bearer",
 		ThinkingFormat: "openai",
+		SystemoneURL:   "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}",
 	},
 	"mimo-free": {
 		BaseURL:       "https://api.xiaomimimimo.com/api/free-ai/openai/chat",
@@ -686,7 +746,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"opencode-go": {
-		BaseURL:    "https://opencode.ai/zen/go/v1/chat/completions",
+		BaseURL:    "https://opencode.ai/inference/go/openai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -823,12 +883,25 @@ var KnownProviders = map[string]ProviderConfig{
 		ThinkingFormat: "openai",
 		Hidden:         true,
 	},
+	"kenari": {
+		BaseURL:    "https://kenari.id/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"alitp-intl": {
 		// Token Plan is served from the .maas host under the compatible-mode
 		// path, not the bare /v1 path (upstream registry/alitp-intl.js:23).
 		BaseURL:              "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
 		AuthHeader:           "Authorization",
 		AuthScheme:           "bearer",
+		PreserveCacheControl: true,
+	},
+	"qwencloud": {
+		BaseURL:              "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1/chat/completions",
+		ValidateURL:          "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1/models",
+		AuthHeader:           "Authorization",
+		AuthScheme:           "bearer",
+		Format:               "openai",
 		PreserveCacheControl: true,
 	},
 	"fish-audio": {
@@ -884,12 +957,30 @@ var KnownProviders = map[string]ProviderConfig{
 			"x-taste-learning":       "false",
 		},
 	},
+	// Command Code's documented Provider API (commandcode.ai/docs/provider):
+	// standard OpenAI Chat/Responses and Anthropic Messages lanes on one bearer,
+	// no CLI identity spoofing. It is a separate entry from `commandcode`
+	// because both product surfaces exist on the same host and key, but only
+	// this one follows the published schemas. The executor picks the lane from
+	// the model's supported_endpoints (commandcode_goat_catalog.go); BaseURL is
+	// the shared /provider/v1 prefix.
+	"commandcode-goat": {
+		BaseURL:       "https://api.commandcode.ai/provider/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		SystemoneURL:  "https://api.commandcode.ai/provider/v1/systemone",
+		SystemonePath: "/systemone",
+	},
 	"ollama-local": {
 		BaseURL:       "http://localhost:11434/v1/chat/completions",
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
 		LocalByDesign: true,
-		SystemoneURL:  "http://localhost:11434/v1/systemone",
+		// Phonon speech synthesis: the OpenAI-compatible /v1/audio/speech
+		// endpoint on the local daemon (upstream ollama-local.js ttsConfig,
+		// commit 31a9d262). Used when the connection has no custom base URL.
+		TTSURL:       "http://localhost:11434/v1/audio/speech",
+		SystemoneURL: "http://localhost:11434/v1/systemone",
 		// Saved host (providerSpecificData.baseUrl) is joined with this path.
 		SystemonePath: "/v1/systemone",
 	},
@@ -949,9 +1040,9 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "raw",
 		StaticHeaders: map[string]string{
 			"anthropic-version":                         "2023-06-01",
-			"Anthropic-Beta":                            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
+			"Anthropic-Beta":                            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,extended-cache-ttl-2025-04-11,thinking-display-updates-2026-08-18,inline-tools-2026-09-15,context-1m-2025-08-07,web-search-2025-03-05,tool-search-tool-2025-10-19,task-budgets-2026-03-13,cache-keepalive-2026-09-03,thinking-resumption-2026-07-17,thinking-token-count-2026-05-13,afk-mode-2026-01-31,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07,files-api-2025-04-14,environments-2025-11-01,tool-provenance-2026-10-26,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,server-side-fallback-2026-06-01,program-use-case-ids-2026-09-17,server-side-fallback-2026-07-01,fallback-credit-2026-06-01,auto-mode-classifier-2026-07-16,claude-code-side-query-2026-09-29,dangerous-tool-use-2026-09-03,thinking-binding-controls-2026-08-01,message-threads-2026-08-12,mid-conversation-system-clear-at-2026-08-21",
 			"Anthropic-Dangerous-Direct-Browser-Access": "true",
-			"User-Agent":                                "claude-cli/2.1.280 (external, sdk-cli)",
+			"User-Agent":                                "claude-cli/2.1.322 (external, sdk-cli)",
 			"X-App":                                     "cli",
 			"X-Stainless-Helper-Method":                 "stream",
 			"X-Stainless-Retry-Count":                   "0",
@@ -1161,6 +1252,16 @@ var KnownProviders = map[string]ProviderConfig{
 		SearchURL:    "https://api.search.tinyfish.ai",
 		SearchMethod: "GET",
 	},
+	"keenable": {
+		BaseURL:      "https://api.keenable.ai",
+		AuthHeader:   "X-API-Key",
+		AuthScheme:   "raw",
+		NoAuth:       true,
+		FetchURL:     "https://api.keenable.ai/v1/fetch",
+		FetchMethod:  "GET",
+		SearchURL:    "https://api.keenable.ai/v1/search",
+		SearchMethod: "POST",
+	},
 	"runwayml": {
 		BaseURL:    "https://api.dev.runwayml.com/v1",
 		AuthHeader: "Authorization",
@@ -1318,9 +1419,15 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"gemini-cli": {
-		BaseURL:    "https://daily-cloudcode-pa.googleapis.com/v1internal",
+		// Cloud Code Assist speaks the Gemini envelope: the body is
+		// {project, model, request} and the path is :generateContent on the
+		// v1internal root. Without the format marker a request fell through to
+		// ForwardOpenAI and POSTed an OpenAI body at cloudcode-pa, which that
+		// endpoint cannot answer.
+		BaseURL:    "https://cloudcode-pa.googleapis.com/v1internal",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Format:     "gemini-cli",
 	},
 	"google-pse": {
 		BaseURL:      "https://www.googleapis.com/customsearch/v1",
@@ -1367,6 +1474,13 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 	"devin-cli": {
 		BaseURL:    "devin://acp/stdio",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	// agy-acp: no HTTP endpoint — the executor spawns the official agy CLI
+	// and speaks ACP over stdio. Kept separate from antigravity (HTTP).
+	"agy-acp": {
+		BaseURL:    "agy-acp://acp/stdio",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -1450,6 +1564,29 @@ var KnownProviders = map[string]ProviderConfig{
 			"content-type": "application/json",
 		},
 	},
+	// Free-pi — the free, ad-funded distribution of the `pi` coding agent
+	// (dennisonbertram/free-pi-cli). Its upstream is plain [OI] Chat
+	// Completions behind a Bearer JWT, so the transport looks ordinary; what
+	// is not ordinary is session identity. Every request must carry a stable
+	// `x-session-id`, and the account tolerates only a handful of concurrent
+	// sessions (hungkevin/free-pi-cli-proxy server.mjs:958 pins the cap at 4;
+	// we deliberately occupy one — see internal/proxy/executor/free_pi.go).
+	//
+	// Neither header can live in StaticHeaders: x-session-id is derived per
+	// account and x-client-version is refreshed from GET /client-version, so
+	// both are applied by the executor rather than the shared passthrough.
+	// The auth pair is the ordinary bearer one, which is what makes the JWT a
+	// drop-in credential for the existing connection store.
+	"free-pi": {
+		BaseURL:    "https://api.freepi.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		// free-pi binds a conversation to the account that opened it: a later
+		// turn from another account is refused with "This conversation belongs
+		// to another free-pi account." Rotating the session id cannot help —
+		// the account itself is what is different.
+		BindsConversations: true,
+	},
 	"atmorouter": {
 		BaseURL:    "https://atmorouter.dev/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -1457,6 +1594,15 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 	"runcrate": {
 		BaseURL:    "https://api.runcrate.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	// DeepRelay — pay-per-token serverless inference (api.deeprelay.ai/v1).
+	// Chat completions, embeddings, image and video are all OpenAI-shaped on
+	// /v1, so ForwardOpenAI serves them. The wallet sits on
+	// GET /v1/billing/balance (used by the usage fetcher and the key probe).
+	"deeprelay": {
+		BaseURL:    "https://api.deeprelay.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -1473,11 +1619,47 @@ var RetryableStatusCodes = map[int]bool{
 	http.StatusGatewayTimeout:     true, // 504
 }
 
+// RetryModelScopedError reports whether a failure outside
+// RetryableStatusCodes still carries a model-scoped verdict that the caller
+// must act on: lock this provider/model pair and leave the credential alone.
+// NVIDIA NIM answers 400 "degraded" for an unhealthy cluster behind one model
+// (upstream decolua@2275bc0d) — a 400 is otherwise request-scoped, so without
+// this the degraded model is re-dialled on every request and the account is
+// never told the cluster is sick. Keyed off the rule table, not off a
+// provider literal, so any provider-scoped modelScoped rule gets the same
+// handling.
+func RetryModelScopedError(statusCode int, errorText, provider string) bool {
+	return ClassifyErrorForProvider(statusCode, errorText, 0, provider).ModelScoped
+}
+
 // PreservesCacheControl reports whether a provider keeps the cache_control
 // markers on its content blocks (upstream's quirks.preserveCacheControl).
 func PreservesCacheControl(provider string) bool {
 	if cfg, ok := KnownProviders[provider]; ok {
 		return cfg.PreserveCacheControl
+	}
+	return false
+}
+
+// StrictReasoningRemoving reports whether a provider rejects unknown
+// assistant-message reasoning fields echoed on history (upstream
+// paramSupport dropMessageFields): groq, mistral, and cerebras answer 400
+// or 422 on reasoning_content/reasoning/reasoning_details replayed by
+// reasoning clients (e.g. Hermes).
+func StrictReasoningRemoving(provider string) bool {
+	switch provider {
+	case "groq", "mistral", "cerebras":
+		return true
+	}
+	return false
+}
+
+// BindsConversations reports whether a provider ties a conversation to the
+// account that opened it, so routing must not move a live conversation to a
+// different connection.
+func BindsConversations(provider string) bool {
+	if cfg, ok := KnownProviders[provider]; ok {
+		return cfg.BindsConversations
 	}
 	return false
 }
@@ -1499,4 +1681,25 @@ func (c *ProviderConfig) ResolveStallTimeout(defaultTimeout time.Duration) time.
 		return time.Duration(c.StallTimeoutMs) * time.Millisecond
 	}
 	return defaultTimeout
+}
+
+// WithAnthropicBeta sets the beta header under a single canonical key, dropping
+// any case variant already in the map.
+//
+// Two keys for one header is not a harmless duplicate: the map is copied into
+// http.Header by iterating it, so whichever key lands last wins, and an
+// "anthropic-beta" left beside "Anthropic-Beta" can silently discard the flags
+// merged into the other one — including every flag the client asked for.
+func WithAnthropicBeta(headers map[string]string, value string) map[string]string {
+	res := make(map[string]string, len(headers)+1)
+	for k, v := range headers {
+		if strings.EqualFold(k, "Anthropic-Beta") {
+			continue
+		}
+		res[k] = v
+	}
+	if value != "" {
+		res["Anthropic-Beta"] = value
+	}
+	return res
 }

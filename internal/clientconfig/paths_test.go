@@ -86,7 +86,13 @@ func TestPathResolution(t *testing.T) {
 				if !filepath.IsAbs(f.Path) {
 					t.Errorf("file %d: %q is not absolute", i, f.Path)
 				}
-				for _, bad := range []string{"~", "$HOME", "%USERPROFILE%", "${"} {
+				// Windows 8.3 short temp dirs (e.g. HYPEAM~1) carry '~', so only reject
+				// '~' at the start of the path or inside the adapter-supplied suffix.
+				suffix := strings.TrimPrefix(f.Path, home)
+				if strings.HasPrefix(f.Path, "~") || strings.Contains(suffix, "~") {
+					t.Errorf("file %d: %q still holds %q", i, f.Path, "~")
+				}
+				for _, bad := range []string{"$HOME", "%USERPROFILE%", "${"} {
 					if strings.Contains(f.Path, bad) {
 						t.Errorf("file %d: %q still holds %q", i, f.Path, bad)
 					}
