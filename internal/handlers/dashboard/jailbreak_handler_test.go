@@ -729,7 +729,7 @@ func TestJailbreakKeyModelDelete(t *testing.T) {
 		rec = httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
-		t.Errorf("%s: DELETE status = %d, want 400", name, rec.Code)
+			t.Errorf("%s: DELETE status = %d, want 400", name, rec.Code)
 		}
 	}
 }
