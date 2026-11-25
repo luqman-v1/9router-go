@@ -157,6 +157,23 @@ describe('dashboard API authentication and errors', () => {
     expect(seenUrl).toBe('/api/oauth/callback-result?state=state-123')
   })
 
+  it('sends proxy=1 when requesting an OAuth authorize URL behind a reverse proxy', async () => {
+    const originalFetch = globalThis.fetch
+    const seenUrls: string[] = []
+    globalThis.fetch = async (input) => {
+      seenUrls.push(String(input))
+      return Response.json({ url: 'https://accounts.google.test/auth', state: 'state-123', redirectUri: 'http://localhost:20130/callback' })
+    }
+    try {
+      await api.getAGYACPAuthorizeUrl('http://localhost:80/callback', true)
+      await api.getAntigravityAuthorizeUrl('http://localhost:80/callback', false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    expect(seenUrls[0]).toBe('/api/oauth/agy-acp/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcallback&proxy=1')
+    expect(seenUrls[1]).toBe('/api/oauth/antigravity/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcallback')
+  })
+
   it('triggers onUnauthorized and clears storage on 401 responses', async () => {
     const originalFetch = globalThis.fetch
     localStorage.setItem('9router_auth', 'true')

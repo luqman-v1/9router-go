@@ -72,6 +72,7 @@ func TestHandleAntigravityAuthorize(t *testing.T) {
 }
 
 func TestGetAntigravityRedirectURI(t *testing.T) {
+	t.Setenv("PORT", "20130")
 	tests := []struct {
 		name     string
 		request  *http.Request
@@ -80,6 +81,11 @@ func TestGetAntigravityRedirectURI(t *testing.T) {
 		{
 			name:     "explicit loopback callback wins",
 			request:  httptest.NewRequest(http.MethodGet, "/?redirect_uri=http%3A%2F%2Flocalhost%3A20130%2Fcallback", nil),
+			expected: "http://localhost:20130/callback",
+		},
+		{
+			name:     "reverse proxy pins callback to the gateway listener",
+			request:  httptest.NewRequest(http.MethodGet, "/?proxy=1&redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcallback", nil),
 			expected: "http://localhost:20130/callback",
 		},
 		{
@@ -94,6 +100,34 @@ func TestGetAntigravityRedirectURI(t *testing.T) {
 				t.Fatalf("getAntigravityRedirectURI() = %q, expected %q", got, test.expected)
 			}
 		})
+	}
+}
+
+func TestHandleAntigravityAuthorizeProxyRedirect(t *testing.T) {
+	t.Setenv("PORT", "20130")
+	handler := NewOAuthHandler(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/oauth/antigravity/authorize?proxy=1&redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcallback&state=proxy-state", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleAntigravityAuthorize(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var body struct {
+		AuthURL     string `json:"authUrl"`
+		RedirectURI string `json:"redirectUri"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.RedirectURI != "http://localhost:20130/callback" {
+		t.Fatalf("redirectUri = %q", body.RedirectURI)
+	}
+	authURL, err := url.Parse(body.AuthURL)
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	if got := authURL.Query().Get("redirect_uri"); got != "http://localhost:20130/callback" {
+		t.Fatalf("auth redirect_uri = %q", got)
 	}
 }
 
