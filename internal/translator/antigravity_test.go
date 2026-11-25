@@ -214,6 +214,69 @@ func TestAntigravityImageModelAndConfig(t *testing.T) {
 	}
 }
 
+func TestWrapForAntigravity_AntigravityIdentity(t *testing.T) {
+	// No system instruction provided: identity injected as first part.
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	inner := unwrapInnerRequest(t, wrapped)
+	si, _ := inner["systemInstruction"].(map[string]any)
+	if si == nil {
+		t.Fatal("systemInstruction missing")
+	}
+	parts, _ := si["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatal("parts missing")
+	}
+	p0, _ := parts[0].(map[string]any)
+	if txt, _ := p0["text"].(string); txt != translator.AntigravityDefaultSystem {
+		t.Errorf("first part not identity: %q", txt)
+	}
+
+	// User custom system instruction: identity prepended at 0, user prompt at 1.
+	geminiBody2 := []byte(`{"systemInstruction":{"role":"user","parts":[{"text":"USER_PROMPT"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	wrapped2, err := translator.WrapForAntigravity(geminiBody2, "proj-1", "gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	inner2 := unwrapInnerRequest(t, wrapped2)
+	si2, _ := inner2["systemInstruction"].(map[string]any)
+	parts2, _ := si2["parts"].([]any)
+	if len(parts2) < 2 {
+		t.Fatalf("expected >=2 parts, got %d", len(parts2))
+	}
+	p02, _ := parts2[0].(map[string]any)
+	p12, _ := parts2[1].(map[string]any)
+	if txt, _ := p02["text"].(string); txt != translator.AntigravityDefaultSystem {
+		t.Errorf("first part not identity: %q", txt)
+	}
+	if txt, _ := p12["text"].(string); txt != "USER_PROMPT" {
+		t.Errorf("second part not user prompt: %q", txt)
+	}
+
+	// Already contains identity: not duplicated.
+	geminiBody3 := []byte(`{"systemInstruction":{"role":"user","parts":[{"text":"You are Antigravity Agent, a powerful agentic AI coding assistant designed by the Google engineering team.\nextra"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	wrapped3, err := translator.WrapForAntigravity(geminiBody3, "proj-1", "gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	inner3 := unwrapInnerRequest(t, wrapped3)
+	si3, _ := inner3["systemInstruction"].(map[string]any)
+	parts3, _ := si3["parts"].([]any)
+	count := 0
+	for _, pp := range parts3 {
+		pm, _ := pp.(map[string]any)
+		if txt, _ := pm["text"].(string); strings.Contains(txt, "You are Antigravity Agent") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected identity not duplicated, count=%d", count)
+	}
+}
+
 func TestWrapForAntigravity_OmitsAgentRequestType(t *testing.T) {
 	// Port of decolua/9router#3986: requestType="agent" triggers a false
 	// upstream 429 bucket on OMP harness payloads, so it must be omitted.
@@ -731,7 +794,7 @@ func TestWrapForAntigravity_NormalizesTriggerSystemPrompt(t *testing.T) {
 	if len(parts) == 0 {
 		t.Fatal("systemInstruction.parts missing")
 	}
-	part, _ := parts[0].(map[string]any)
+	part, _ := parts[1].(map[string]any)
 	text, _ := part["text"].(string)
 	if strings.Contains(text, "system-conventions") {
 		t.Errorf("expected trigger tag normalized, got %q", text)
