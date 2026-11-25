@@ -217,13 +217,6 @@ func (l *PerModelRateLimiter) prune(bucket *perModelBucket, now time.Time, windo
 	bucket.times = bucket.times[i:]
 }
 
-// reset empties the table (tests).
-func (l *PerModelRateLimiter) reset() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.buckets = make(map[perModelBucketKey]*perModelBucket)
-}
-
 // perModelScope derives the bucket scope for one request: the client session
 // id when there is one, else a hashed router API key, else the shared bucket.
 func perModelScope(sessionID, apiKey string) string {

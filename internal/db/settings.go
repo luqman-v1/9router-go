@@ -142,9 +142,9 @@ type PerModelRateLimitSettings struct {
 	// Enabled gates the whole feature. Nil means "on" — the limit only ever
 	// applies to custom providers, and the default is generous enough that an
 	// operator who never touched this should not notice it.
-	Enabled *bool   `json:"enabled,omitempty"`
-	Limit   int     `json:"limit,omitempty"`
-	WindowMs int    `json:"windowMs,omitempty"`
+	Enabled  *bool `json:"enabled,omitempty"`
+	Limit    int   `json:"limit,omitempty"`
+	WindowMs int   `json:"windowMs,omitempty"`
 	// Overrides keys by provider id, or by "provider/model" for a single model.
 	Overrides map[string]*PerModelRateLimitOverride `json:"overrides,omitempty"`
 }
@@ -152,9 +152,9 @@ type PerModelRateLimitSettings struct {
 // PerModelRateLimitOverride narrows or widens the limit for one provider or one
 // provider+model. A nil field inherits from the enclosing block.
 type PerModelRateLimitOverride struct {
-	Enabled  *bool  `json:"enabled,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
-	WindowMs int    `json:"windowMs,omitempty"`
+	Enabled  *bool `json:"enabled,omitempty"`
+	Limit    int   `json:"limit,omitempty"`
+	WindowMs int   `json:"windowMs,omitempty"`
 }
 
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
@@ -224,11 +224,11 @@ type SettingsData struct {
 	// PerModelRateLimit caps requests per model on CUSTOM providers, so one hot
 	// model cannot drain a shared endpoint's quota. Nil means "not configured",
 	// which the resolver reads as the built-in default.
-	PerModelRateLimit *PerModelRateLimitSettings `json:"perModelRateLimit,omitempty"`
-	EnableObservability        bool                            `json:"enableObservability"`
-	ObservabilityMode          string                          `json:"observabilityMode,omitempty"`
-	RetentionDays              int                             `json:"retentionDays,omitempty"`
-	MaxRequestRecords          int                             `json:"maxRequestRecords,omitempty"`
+	PerModelRateLimit   *PerModelRateLimitSettings `json:"perModelRateLimit,omitempty"`
+	EnableObservability bool                       `json:"enableObservability"`
+	ObservabilityMode   string                     `json:"observabilityMode,omitempty"`
+	RetentionDays       int                        `json:"retentionDays,omitempty"`
+	MaxRequestRecords   int                        `json:"maxRequestRecords,omitempty"`
 	// UsageHistoryRetentionDays bounds how far back the usage ledger is kept.
 	// It is a separate knob from RetentionDays on purpose: that one governs
 	// requestDetails, which is diagnostics nothing bills from, while this one
