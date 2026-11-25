@@ -173,18 +173,21 @@
       class="size-3.5 shrink-0 accent-brand-500 cursor-pointer"
       aria-label="Select every model matching the current filter"
     />
-    <span class="text-sm font-semibold text-text-main">
+    <!-- The title is the panel's own count label, so it must never wrap or be
+         squeezed by the controls beside it: a two-line title reads as if the
+         count changed when only the layout did. -->
+    <span class="shrink-0 whitespace-nowrap text-sm font-semibold text-text-main">
       Preview Fetch Models ({filtered.length}{search.trim() ? ` of ${models.length}` : ''})
     </span>
-    <div class="relative ml-auto">
+    <div class="relative ml-auto min-w-0 flex-1 max-w-64">
       <span class="material-symbols-outlined pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-text-muted">search</span>
       <input
         type="text"
         bind:this={searchInput}
         value={search}
         oninput={(e) => onSearch((e.target as HTMLInputElement).value)}
-        placeholder="Search model name (e.g. dee, flash)..."
-        class="h-7 w-56 rounded-md border border-border bg-background pl-7 pr-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
+        placeholder="Search models (e.g. dee, flash)..."
+        class="h-7 w-full rounded-md border border-border bg-background pl-7 pr-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
       />
     </div>
     <select
