@@ -123,10 +123,11 @@
     status = ''
     error = ''
     try {
-      // Turning a binding off is the stored state the global list also uses:
-      // the row stays listed, and the only thing scoped to this key is which
-      // model id it resolves for.
-      await api.setJailbreakKeyModel(keyId, id, 'off', false)
+      // The per-key delete drops the row outright. Turning it off instead would
+      // leave a presetId-less row behind that the list's orphan cleanup deletes
+      // on the next reload, and a later toggle-on would remap it to a preset
+      // that may not exist — so the only correct "remove" is a real delete.
+      await api.deleteJailbreakKeyModel(keyId, id)
       await reload()
       onchanged?.()
     } catch (e) {

@@ -290,6 +290,39 @@ func (h *DashboardHandler) HandleSetJailbreakKeyModel(w http.ResponseWriter, r *
 	})
 }
 
+// HandleDeleteJailbreakKeyModel removes one key-scoped binding outright.
+// Turning a binding off is a stored state the operator toggles back; this is
+// the only path that drops the row, which is what the dashboard's per-key
+// delete button calls. The same model's global binding is left untouched.
+func (h *DashboardHandler) HandleDeleteJailbreakKeyModel(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req struct {
+		KeyID string `json:"keyId"`
+		ID    string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.KeyID == "" || len(req.KeyID) > 100 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid api key id")
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" || len(req.ID) > 300 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid model id")
+		return
+	}
+	if err := h.Repo.DeleteJailbreakKeyModel(req.KeyID, req.ID); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "keyId": req.KeyID, "id": req.ID})
+}
+
 // HandleListJailbreakKeyBindings returns the key-scoped bindings for one API
 // key, already filtered to that key. The map is keyed by the bare model id.
 func (h *DashboardHandler) HandleListJailbreakKeyBindings(w http.ResponseWriter, r *http.Request) {
