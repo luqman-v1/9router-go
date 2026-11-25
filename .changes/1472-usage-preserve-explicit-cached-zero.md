@@ -13,7 +13,3 @@ direct upstream API.
 - Absent counters still omit the field entirely.
 - Adds `explicit cached_tokens zero` and `no cached counter at all` cases to
   `TestParseResponsesUsage`.
-
-Ports OmniRoute `278eb1ae1` (#20493 / #20600).
-
-Closes #1470
