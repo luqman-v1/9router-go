@@ -15,9 +15,12 @@ import (
 //     (a 2,000-char prefix fails; caller instructions appended after the full
 //     preamble pass);
 //   - the built-in tool names must be declared: a request whose declarations
-//     omit them entirely is refused (429 FreeUsageLimitError), while a
-//     foreign-named tool alongside them answers 400 "Request validation
-//     failed";
+//     omit them entirely is refused (429 FreeUsageLimitError), and the built-in
+//     definitions themselves must stay the verbatim CLI 2.x text — a stubbed
+//     description answers 400 "Request validation failed" / 403 FreeTierError.
+//     Caller declarations carried alongside them are accepted;
+//   - two declarations sharing a name answer a server error, so a caller tool
+//     that reuses a built-in name must replace it rather than join it;
 //   - tool CALLS are not constrained: history may carry calls to undeclared
 //     names and the model may emit them.
 //
@@ -272,7 +275,7 @@ func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, orig
 	if identityNote != "" {
 		suffix += "\n\n" + identityNote
 	}
-	injectPreambleSuffix(request, flat, claude, preamble, suffix)
+	replacePreambleSuffix(request, flat, claude, preamble, suffix)
 }
 
 // injectOpenCodeHarnessSuffix prepends the full harness preamble and appends
@@ -282,6 +285,32 @@ func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, orig
 // in suffix.
 func injectOpenCodeHarnessSuffix(request map[string]any, flat, claude bool, suffix string) {
 	injectPreambleSuffix(request, flat, claude, openCodeHarnessSystem, suffix)
+}
+
+// replacePreambleSuffix sets the system prompt to preamble+suffix, discarding
+// whatever caller text the request carried. The stripped path already carries
+// that text inside suffix, so prepending the original as well would send it
+// twice — doubling every caller system prompt on the wire.
+func replacePreambleSuffix(request map[string]any, flat, claude bool, preamble, suffix string) {
+	switch {
+	case claude:
+		request["system"] = preamble + suffix
+	case flat:
+		request["instructions"] = preamble + suffix
+	default:
+		replaceChatSystem(request, preamble, suffix)
+	}
+}
+
+func replaceChatSystem(request map[string]any, preamble, suffix string) {
+	messages, ok := request["messages"].([]any)
+	if ok && len(messages) > 0 {
+		if first, ok := messages[0].(map[string]any); ok && first["role"] == "system" {
+			first["content"] = preamble + suffix
+			return
+		}
+	}
+	request["messages"] = append([]any{map[string]any{"role": "system", "content": preamble + suffix}}, messages...)
 }
 
 func injectPreambleSuffix(request map[string]any, flat, claude bool, preamble, suffix string) {

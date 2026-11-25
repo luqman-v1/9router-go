@@ -272,3 +272,67 @@ func TestConcealOpenCodeV2ModelIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestConcealOpenCodeV2SendsCallerSystemTextOnce guards a regression the review
+// caught on an earlier head: the stripped path carries the caller's text in the
+// suffix, and the injector prepended the original again, so every shaped
+// request sent the caller system prompt twice — doubled tokens and latency on
+// the large Claude Code prompts #1024 is about.
+func TestConcealOpenCodeV2SendsCallerSystemTextOnce(t *testing.T) {
+	const sentinel = "SENTINEL-XYZZY"
+	cases := []struct {
+		name string
+		flat bool
+		body string
+	}{
+		{"chat string", false, `{"model":"m","messages":[{"role":"system","content":"` + sentinel + `"},{"role":"user","content":"hi"}]}`},
+		{"chat array", false, `{"model":"m","messages":[{"role":"system","content":[{"type":"text","text":"` + sentinel + `"}]},{"role":"user","content":"hi"}]}`},
+		{"claude string", false, `{"model":"m","system":"` + sentinel + `","messages":[{"role":"user","content":"hi"}]}`},
+		{"claude array", false, `{"model":"m","system":[{"type":"text","text":"` + sentinel + `"}],"messages":[{"role":"user","content":"hi"}]}`},
+		{"responses", true, `{"model":"m","instructions":"` + sentinel + `","input":[]}`},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			out, _ := ConcealOpenCodeV2FingerprintTools([]byte(tt.body), tt.flat, false)
+			if n := strings.Count(string(out), sentinel); n != 1 {
+				t.Fatalf("caller system text appears %d times, want exactly 1", n)
+			}
+		})
+	}
+}
+
+// TestConcealOpenCodeV2BuiltinNamedCallerToolIsNotDuplicated covers the review's
+// collision case: two declarations sharing a name answer a server error on the
+// gate, so a caller tool that reuses a built-in name replaces it — each built-in
+// name stays declared exactly once.
+func TestConcealOpenCodeV2BuiltinNamedCallerToolIsNotDuplicated(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"read","description":"caller read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}`)
+	out, _ := ConcealOpenCodeV2FingerprintTools(body, false, false)
+	m := decodeShaped(t, out)
+	tools, _ := m["tools"].([]any)
+	seen := map[string]int{}
+	var readDesc string
+	for _, tool := range tools {
+		tm := tool.(map[string]any)
+		fn := tm["function"].(map[string]any)
+		name := fn["name"].(string)
+		seen[name]++
+		if name == "read" {
+			readDesc, _ = fn["description"].(string)
+		}
+	}
+	if seen["read"] != 1 {
+		t.Fatalf("built-in name read declared %d times, want exactly 1", seen["read"])
+	}
+	if readDesc != "caller read" {
+		t.Fatalf("the caller's own read tool must win the name, got %q", readDesc)
+	}
+	if len(tools) != len(openCodeGenuineToolNames) {
+		t.Fatalf("total declarations = %d, want %d (caller read folded into the built-in slot)", len(tools), len(openCodeGenuineToolNames))
+	}
+	for _, name := range openCodeGenuineToolNames {
+		if seen[name] != 1 {
+			t.Fatalf("built-in %q declared %d times, want exactly 1", name, seen[name])
+		}
+	}
+}

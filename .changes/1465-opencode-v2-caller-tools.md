@@ -16,7 +16,13 @@
   tool-preference bullets, followed by the caller's own text, a note stating
   the built-in declarations are inert and the caller's tools are called
   directly by name, and the model-identity note. The preamble's opening stays
-  byte-exact: it is the gate's body fingerprint.
+  byte-exact: it is the gate's body fingerprint. The stripped path sets the
+  system field outright instead of letting the preamble injector prepend the
+  original again, so the caller's text is sent exactly once per lane (sending
+  it twice would double every caller system prompt on the wire).
+- A built-in name a caller tool already declares is skipped rather than
+  appended: two declarations sharing a name answer a server error on the gate,
+  so each built-in name stays declared exactly once.
 - `tool_choice` handling is unchanged; a forced choice naming a caller tool
   still cannot travel and becomes `required`.
 
