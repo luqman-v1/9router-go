@@ -32,6 +32,7 @@ since: 1.9.14
 | Compare with upstream 9Router | [Parity](parity.html) |
 | See what was ported, and from where | [Advanced Features](advanced-features.html) |
 | See what was ported from new-api | [New-API Ports](new-api-ports.html) |
+| A model keeps failing — hold it back without hurting its siblings | [Advanced Features](advanced-features.html#model-breakers) |
 | Every CLI command and env var | [CLI](cli.html) |
 | Contribute | [Contributing](contributing.html) |
 | Browse screenshots | [Screenshots](screenshots.html) |
