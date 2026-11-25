@@ -50,7 +50,7 @@ const (
 	// Per-key caps on the stored slices, so one hot key cannot grow the map's
 	// memory without bound.
 	maxInFlightPerKey = 64
-	maxErrorsPerKey    = 32
+	maxErrorsPerKey   = 32
 )
 
 // leastBusyEntry is one key's load. pickedAt holds one timestamp per
@@ -168,13 +168,6 @@ func (t *LeastBusyTracker) order(conns []*models.ProviderConnection) []*models.P
 		out[i] = r.conn
 	}
 	return out
-}
-
-// reset empties the table (tests).
-func (t *LeastBusyTracker) reset() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.entries = make(map[string]*leastBusyEntry)
 }
 
 // entryFor returns the entry for id, creating it and evicting an idle one when
