@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
@@ -31,11 +32,24 @@ const restartConfirm = "restart"
 
 // HandleRestartGateway handles POST /api/system/restart.
 func (h *DashboardHandler) HandleRestartGateway(w http.ResponseWriter, r *http.Request) {
+	// The confirm word is only meaningful when the caller could set a JSON body.
+	// A cross-site form post cannot, so requiring the media type makes the
+	// promise real instead of incidental, and the trailing-bytes check stops a
+	// second document riding along behind the confirm object.
+	if ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))); !strings.HasPrefix(ct, "application/json") {
+		handlerutil.WriteJSONError(w, http.StatusUnsupportedMediaType, "application/json body required")
+		return
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
 	var req struct {
 		Confirm string `json:"confirm"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil || req.Confirm != restartConfirm {
+	if err := dec.Decode(&req); err != nil || req.Confirm != restartConfirm {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, `send {"confirm":"`+restartConfirm+`"} to restart the gateway`)
+		return
+	}
+	if dec.More() {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unexpected trailing data")
 		return
 	}
 	restart, err := planRestart()
@@ -64,7 +78,11 @@ func (h *DashboardHandler) HandleRestartGateway(w http.ResponseWriter, r *http.R
 // nobody supervises replaces itself. Spawning a replacement under a supervisor
 // would start a second process that races the one the supervisor starts.
 func planRestart() (func(), error) {
-	if info, ok := serviceStatus(); ok && supervisorRestartsOnExit(info.Backend) {
+	// The supervisor branch needs a supervisor that is actually running: a unit
+	// file on disk proves nothing. With the unit installed but inactive, asking
+	// for a stop would leave the gateway down, so an inactive or unknown state
+	// falls through to the self-restart.
+	if info, ok := serviceStatus(); ok && info.Active && !info.ActiveUnknown && supervisorRestartsOnExit(info.Backend) {
 		return requestStop, nil
 	}
 	if err := restartSelfSupported(); err != nil {

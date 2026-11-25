@@ -32,7 +32,7 @@ func TestHandleRestartGateway(t *testing.T) {
 		restartSelfSupported = func() error { return nil }
 		if supervised {
 			serviceStatus = func() (service.Info, bool) {
-				return service.Info{Backend: service.BackendSystemdUser}, true
+				return service.Info{Backend: service.BackendSystemdUser, Active: true}, true
 			}
 		} else {
 			serviceStatus = func() (service.Info, bool) { return service.Info{}, false }
@@ -60,7 +60,9 @@ func TestHandleRestartGateway(t *testing.T) {
 	}
 	post := func(body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		(&DashboardHandler{}).HandleRestartGateway(rec, httptest.NewRequest(http.MethodPost, "/api/system/restart", strings.NewReader(body)))
+		req := httptest.NewRequest(http.MethodPost, "/api/system/restart", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		(&DashboardHandler{}).HandleRestartGateway(rec, req)
 		return rec
 	}
 
@@ -101,6 +103,66 @@ func TestHandleRestartGateway(t *testing.T) {
 			t.Fatal("the process asked to stop with no supervisor to restart it")
 		default:
 		}
+	})
+
+	t.Run("refuses a non-JSON body", func(t *testing.T) {
+		s := stub(false)
+		defer expectIdle(t, s)
+
+		for _, tt := range []struct{ ct, body string }{
+			{"text/plain", `{"confirm":"restart"}`},
+			{"application/x-www-form-urlencoded", "confirm=restart"},
+		} {
+			req := httptest.NewRequest(http.MethodPost, "/api/system/restart", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.ct)
+			rec := httptest.NewRecorder()
+			(&DashboardHandler{}).HandleRestartGateway(rec, req)
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Errorf("%s: status = %d, want %d", tt.ct, rec.Code, http.StatusUnsupportedMediaType)
+			}
+		}
+	})
+
+	t.Run("refuses trailing data", func(t *testing.T) {
+		s := stub(false)
+		defer expectIdle(t, s)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/system/restart",
+			strings.NewReader(`{"confirm":"restart"} {"confirm":"restart"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		(&DashboardHandler{}).HandleRestartGateway(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("an installed-but-inactive supervisor does not own the restart", func(t *testing.T) {
+		s := stub(false)
+		defer expectIdle(t, s)
+		// A unit file on disk is not a running supervisor: with the service not
+		// active, a stop request would leave the gateway down.
+		serviceStatus = func() (service.Info, bool) {
+			return service.Info{Backend: service.BackendSystemdUser, Active: false}, true
+		}
+
+		if rec := post(`{"confirm":"restart"}`); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		expectSignal(t, s.self, "a self restart")
+	})
+
+	t.Run("an unknown active state does not own the restart", func(t *testing.T) {
+		s := stub(false)
+		defer expectIdle(t, s)
+		serviceStatus = func() (service.Info, bool) {
+			return service.Info{Backend: service.BackendSystemdUser, Active: true, ActiveUnknown: true}, true
+		}
+
+		if rec := post(`{"confirm":"restart"}`); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		expectSignal(t, s.self, "a self restart")
 	})
 
 	t.Run("refuses when the binary cannot be re-exec'd", func(t *testing.T) {
