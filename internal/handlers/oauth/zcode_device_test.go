@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"context"
+
 	"encoding/json"
 	"testing"
 
@@ -16,7 +18,7 @@ func TestSaveDeviceConnectionZcode_reusesAccountRowAndIdentity(t *testing.T) {
 	defer cleanup()
 	handler := NewOAuthHandler(db.NewRepo(database))
 
-	first := handler.saveDeviceConnection("zcode", deviceTokens{
+	first := handler.saveDeviceConnection(context.Background(), "zcode", deviceTokens{
 		access: "plan-jwt-one",
 		email:  "user@example.com",
 		extra: map[string]any{
@@ -29,7 +31,7 @@ func TestSaveDeviceConnectionZcode_reusesAccountRowAndIdentity(t *testing.T) {
 		t.Fatal("first login inserted no connection")
 	}
 
-	second := handler.saveDeviceConnection("zcode", deviceTokens{
+	second := handler.saveDeviceConnection(context.Background(), "zcode", deviceTokens{
 		access: "plan-jwt-two",
 		email:  "user@example.com",
 		extra: map[string]any{
@@ -80,8 +82,8 @@ func TestSaveDeviceConnectionZcode_separateAccountsStaySeparate(t *testing.T) {
 	defer cleanup()
 	handler := NewOAuthHandler(db.NewRepo(database))
 
-	a := handler.saveDeviceConnection("zcode", deviceTokens{access: "jwt-a", email: "a@example.com"})
-	b := handler.saveDeviceConnection("zcode", deviceTokens{access: "jwt-b", email: "b@example.com"})
+	a := handler.saveDeviceConnection(context.Background(), "zcode", deviceTokens{access: "jwt-a", email: "a@example.com"})
+	b := handler.saveDeviceConnection(context.Background(), "zcode", deviceTokens{access: "jwt-b", email: "b@example.com"})
 	if a.id == "" || b.id == "" || a.id == b.id {
 		t.Fatalf("expected two distinct rows, got %q and %q", a.id, b.id)
 	}

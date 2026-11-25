@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"bytes"
 	json "encoding/json/v2"
 	"net/http"
@@ -14,7 +16,7 @@ func TestHandleUpdateConnection_MediaPoolSeparation(t *testing.T) {
 	router := setupTestRouter(repo)
 
 	connID := "conn-media-toggle-test"
-	if err := repo.CreateProviderConnection(connID, "codex", "oauth", "Codex Pro", "token-pro"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), connID, "codex", "oauth", "Codex Pro", "token-pro"); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -24,7 +26,7 @@ func TestHandleUpdateConnection_MediaPoolSeparation(t *testing.T) {
 			"chatgptPlanType": "pro"
 		}
 	}`
-	if err := repo.UpdateConnectionData(connID, initialData); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), connID, initialData); err != nil {
 		t.Fatalf("failed to initialize connection data: %v", err)
 	}
 
@@ -81,11 +83,11 @@ func TestHandleUpdateConnection_MediaPoolSeparation(t *testing.T) {
 
 	t.Run("updating disabledKinds preserves chat active status", func(t *testing.T) {
 		connKindID := "conn-disabled-kinds-test"
-		if err := repo.CreateProviderConnection(connKindID, "codex", "oauth", "Codex Kinds", "token-kinds"); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), connKindID, "codex", "oauth", "Codex Kinds", "token-kinds"); err != nil {
 			t.Fatalf("failed to create connection: %v", err)
 		}
 		kindData := `{"accessToken":"token-kinds","mediaEnabled":true}`
-		if err := repo.UpdateConnectionData(connKindID, kindData); err != nil {
+		if err := repo.UpdateConnectionData(context.Background(), connKindID, kindData); err != nil {
 			t.Fatalf("failed to init connection data: %v", err)
 		}
 

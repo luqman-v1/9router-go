@@ -186,7 +186,7 @@ func (r *Repo) ClearConnectionModelLocks(ctx context.Context, connID string) err
 	if err != nil {
 		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
 	}
-	return r.UpdateConnectionData(connID, string(encoded))
+	return r.UpdateConnectionData(ctx, connID, string(encoded))
 }
 
 // IsConnectionModelLocked checks whether the given connection has an active

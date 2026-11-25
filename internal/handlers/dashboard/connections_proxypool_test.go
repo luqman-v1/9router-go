@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"bytes"
 	json "encoding/json/v2"
 	"net/http"
@@ -33,7 +35,7 @@ func TestHandleUpdateConnection_ProxyPoolBinding(t *testing.T) {
 
 	router := setupTestRouter(repo)
 	const connID = "conn-proxy-binding"
-	if err := repo.CreateProviderConnectionFull(connID, "openai", "apikey", "OpenAI", nil, `{"apiKey":"sk-test"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "openai", "apikey", "OpenAI", nil, `{"apiKey":"sk-test"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 

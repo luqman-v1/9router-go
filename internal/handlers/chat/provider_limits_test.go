@@ -178,7 +178,7 @@ func TestAcquireProviderAttempt_FailsOpenWhenThePolicyCannotBeRead(t *testing.T)
 func TestRecordProviderLimit_DebugTrailWithoutACooldown(t *testing.T) {
 	handler, repo := newProviderLimitHandler(t)
 	seedLimitedProviderNode(t, repo, "node-nara", db.ProviderLimits{RPM: 1})
-	if err := repo.CreateProviderConnectionFull("conn-nara", "node-nara", "apikey", "Nara",
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-nara", "node-nara", "apikey", "Nara",
 		nil, `{"apiKey":"sk-test-nara"}`); err != nil {
 		t.Fatalf("CreateProviderConnectionFull: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestProviderNodeBlocked_FailsOpenWhenUsageCannotBeRead(t *testing.T) {
 // rather than an anonymous "no active connections".
 func TestGetBestConnection_SkipsAnUnusableNode(t *testing.T) {
 	handler, repo := newProviderLimitHandler(t)
-	if err := repo.CreateProviderConnectionFull("conn-nara", "node-nara", "apikey", "Nara",
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-nara", "node-nara", "apikey", "Nara",
 		nil, `{"apiKey":"sk-test-nara"}`); err != nil {
 		t.Fatalf("CreateProviderConnectionFull: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestGetBestConnection_SkipsAnUnusableNode(t *testing.T) {
 // active connections for provider: <prefix>" and the real reason never surfaces.
 func TestResolveModel_UnusableNodeStillResolvesToTheNode(t *testing.T) {
 	handler, repo := newProviderLimitHandler(t)
-	if err := repo.CreateProviderConnectionFull("conn-nara", "node-nara", "apikey", "Nara",
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-nara", "node-nara", "apikey", "Nara",
 		new(1), `{"apiKey":"sk-nara"}`); err != nil {
 		t.Fatalf("CreateProviderConnectionFull: %v", err)
 	}

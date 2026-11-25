@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,7 +26,7 @@ func TestCodexClassicParallelToolsThroughRouter(t *testing.T) {
 	})
 	priority := 1
 	data := fmt.Sprintf(`{"apiKey":"sk-codex","baseUrl":%q}`, up.URL+"/responses")
-	if err := env.Repo.CreateProviderConnectionFull("conn-codex-classic", "codex", "apikey", "Codex", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-codex-classic", "codex", "apikey", "Codex", &priority, data); err != nil {
 		t.Fatalf("create Codex connection: %v", err)
 	}
 	stored, err := env.Repo.GetProviderConnectionByID("conn-codex-classic")

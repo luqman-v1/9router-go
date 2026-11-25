@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"os"
 	"strings"
 	"testing"
@@ -49,7 +51,7 @@ func nvidiaGateway(t *testing.T) (*Env, *recordingProxy) {
 	}
 	priority := 1
 	connData := `{"apiKey":"sk-through-proxy","baseUrl":"` + proxy.URL + `","providerSpecificData":{"apiType":"chat"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-nvidia-live", nodeID, "apikey", "NVIDIA Live", &priority, connData); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-nvidia-live", nodeID, "apikey", "NVIDIA Live", &priority, connData); err != nil {
 		t.Fatalf("create NVIDIA connection: %v", err)
 	}
 	// The gateway's parity default User-Agent is undici's "node"; the live

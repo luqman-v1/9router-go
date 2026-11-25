@@ -42,7 +42,7 @@ func TestResolveACPCredentialsFromStoredRow(t *testing.T) {
 		"expiresAt":    expiry,
 		"apiKey":       "stored-access",
 	})
-	if err := repo.CreateProviderConnectionFull("agcpy-own", "agy-acp", "oauth", "own", nil, string(data)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "agcpy-own", "agy-acp", "oauth", "own", nil, string(data)); err != nil {
 		t.Fatal(err)
 	}
 	// Exactly what fallback.go hands down: ConnectionData minus refreshToken.
@@ -77,7 +77,7 @@ func TestResolveACPCredentialsReferenceMode(t *testing.T) {
 		"expiresAt":    expiry,
 		"apiKey":       "source-access",
 	})
-	if err := repo.CreateProviderConnectionFull("ag-source", "antigravity", "oauth", "source", nil, string(data)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "ag-source", "antigravity", "oauth", "source", nil, string(data)); err != nil {
 		t.Fatal(err)
 	}
 	// Source has a non-expired token so no network refresh is attempted.
@@ -100,7 +100,7 @@ func TestResolveACPCredentialsWrongProvider(t *testing.T) {
 	repo := db.NewRepo(database)
 	h := &ChatHandler{Repo: repo}
 	data, _ := json.Marshal(map[string]any{"accessToken": "a", "refreshToken": "r"})
-	if err := repo.CreateProviderConnectionFull("other", "openai", "oauth", "other", nil, string(data)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "other", "openai", "oauth", "other", nil, string(data)); err != nil {
 		t.Fatal(err)
 	}
 	_, _, _, err := h.resolveACPCredentials(context.Background(), map[string]any{"sourceConnection": "other"}, "agcpy-2")

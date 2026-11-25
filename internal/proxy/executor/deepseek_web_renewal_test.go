@@ -188,7 +188,7 @@ func deepSeekRenewalFixture(t *testing.T) (*db.Repo, *models.ProviderConnection)
 	}
 	repo := db.NewRepo(sqldb)
 	conn := &models.ProviderConnection{ID: "conn-1", Provider: "deepseek-web"}
-	if err := repo.CreateProviderConnectionFull(conn.ID, conn.Provider, "cookie", "renewal-test", nil, "{}"); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), conn.ID, conn.Provider, "cookie", "renewal-test", nil, "{}"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,7 +203,7 @@ func deepSeekRenewalFixture(t *testing.T) (*db.Repo, *models.ProviderConnection)
 func deepSeekRenewalSetData(t *testing.T, repo *db.Repo, conn *models.ProviderConnection, data string) {
 	t.Helper()
 	conn.Data = data
-	if err := repo.UpdateConnectionData(conn.ID, data); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), conn.ID, data); err != nil {
 		t.Fatalf("write the connection's data: %v", err)
 	}
 }

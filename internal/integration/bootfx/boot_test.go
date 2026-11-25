@@ -3,6 +3,8 @@
 package bootfx
 
 import (
+	"context"
+
 	"9router/proxy/internal/db"
 	"fmt"
 	"io"
@@ -39,7 +41,7 @@ func TestRealApplicationBootAndServesTraffic(t *testing.T) {
 	}
 	priority := 1
 	data := fmt.Sprintf(`{"apiKey":"sk-bootfx-upstream","baseUrl":%q}`, upstream.URL+"/chat/completions")
-	if err := repo.CreateProviderConnectionFull("bootfx-conn", "deepseek", "apikey", "BootFX DeepSeek", &priority, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "bootfx-conn", "deepseek", "apikey", "BootFX DeepSeek", &priority, data); err != nil {
 		t.Fatalf("seed provider connection: %v", err)
 	}
 

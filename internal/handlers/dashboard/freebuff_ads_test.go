@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -93,7 +95,7 @@ func newFreebuffAdsTestEnv(t *testing.T, ads *fakeFreebuffAdsServer) (*Dashboard
 	connID := "fb-conn-ads-1"
 	connData := fmt.Sprintf(`{"authToken":"fb-secret-token","baseUrl":"%s"}`, ads.srv.URL)
 	priority := 1
-	if err := repo.CreateProviderConnectionFull(connID, "freebuff", "oauth",
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "freebuff", "oauth",
 		"Freebuff Ads Test", &priority, connData); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}

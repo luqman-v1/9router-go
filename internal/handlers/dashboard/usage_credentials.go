@@ -262,12 +262,12 @@ func (h *DashboardHandler) refreshUsageCredentials(ctx context.Context, conn *mo
 	if result == nil || result.AccessToken == "" {
 		return nil, nil
 	}
-	h.persistUsageTokens(conn, creds.raw, result)
+	h.persistUsageTokens(ctx, conn, creds.raw, result)
 	return result, nil
 }
 
 // persistUsageTokens stores the refreshed token material back on the row.
-func (h *DashboardHandler) persistUsageTokens(conn *models.ProviderConnection, raw map[string]any, result *oauth.TokenResult) {
+func (h *DashboardHandler) persistUsageTokens(ctx context.Context, conn *models.ProviderConnection, raw map[string]any, result *oauth.TokenResult) {
 	// Kiro writes its OAuth token into both fields on login (HandleKiroAPIKey,
 	// HandleKiroImport), so apiKey mirrors accessToken there. Rotating only
 	// accessToken would leave the stale copy in place for every reader that takes
@@ -289,7 +289,7 @@ func (h *DashboardHandler) persistUsageTokens(conn *models.ProviderConnection, r
 		raw["projectId"] = result.ProjectID
 	}
 	if encoded, err := json.Marshal(raw); err == nil {
-		_ = h.Repo.UpdateConnectionData(conn.ID, string(encoded))
+		_ = h.Repo.UpdateConnectionData(ctx, conn.ID, string(encoded))
 	}
 }
 

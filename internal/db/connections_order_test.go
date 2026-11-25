@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+
 	"path/filepath"
 	"testing"
 )
@@ -42,7 +44,7 @@ func TestGetProviderConnectionsOrdersByPriorityThenMostRecentUpdate(t *testing.T
 	}
 	for _, row := range seed {
 		priority := row.priority
-		if err := repo.CreateProviderConnectionFull(
+		if err := repo.CreateProviderConnectionFull(context.Background(),
 			row.id, "tie-order", "apikey", row.id, &priority, `{"apiKey":"sk-tie"}`,
 		); err != nil {
 			t.Fatalf("seed %s: %v", row.id, err)
