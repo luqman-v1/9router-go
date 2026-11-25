@@ -186,93 +186,150 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 	}
 
 	// A "content" frame is not proof of an answer: Antigravity reports an
-	// upstream fault as ordinary assistant text on HTTP 200. Hold the stream
-	// open while the text so far is banner-shaped (or still a prefix of a
-	// banner lead-in) so the turn can be retried instead of showing the client
-	// an error message as if it were the reply. Real text outgrows the banner
-	// shape on the next frame and commits normally, and Finish fails open if
-	// the stream never resolves either way.
+	// upstream fault as ordinary assistant text on HTTP 200. The decision is
+	// made on COMPLETE frames only, because the two questions it needs have
+	// different answers mid-frame:
 	//
-	// A frame SPLIT across writes must be held too: HasSSEContent matches a
-	// substring, so the first half of a banner frame ("...\"content\":\"Agent exec")
-	// reads as content while ExtractSSEText yields nothing, because the JSON is
-	// not parseable yet. Committing there would relay the banner — the whole
-	// failure this peeker exists to stop. The bytes are therefore classified
-	// only once the frame parses, which the next write completes; the tail of
-	// a split frame matches no per-line content heuristic at all, so a held
-	// buffer makes this write a continuation and the joined bytes are what is
-	// read.
-	//
-	// The common case is one write per complete frame: parse `b` alone, and
-	// the only cost over the pre-banner behaviour is one ExtractSSEText per
-	// content write. The join path below runs only when a frame is actually
-	// split, which is the exception the first branch exists to catch.
-	if HasSSEContent(b) && !p.heldContent {
-		text := ExtractSSEText(b)
-		if text != "" && !IsBannerSuspect(text) {
-			p.sawContent = true
-			p.bannerText = text
-			// Commit before relaying: the peeker's own header map and status
-			// code are only applied there, and every later write short-circuits
-			// on `committed` — which is also what keeps the banner decision off
-			// the rest of the stream (one classification per turn, not per
-			// frame).
-			p.commitLocked()
-			return p.ResponseWriter.Write(b)
-		}
-		// Two cases reach here with no text: a banner, and a frame whose JSON
-		// is still arriving (the content substring matched but nothing parsed
-		// yet). A THIRD does too, and it must not be held: a complete frame
-		// that simply carries no prose — an Anthropic content_block_start for
-		// thinking/redacted_thinking, a signature_delta. Holding those starves
-		// the first-output gate and times out a healthy stream, so a frame
-		// that parses is relayed.
-		if text == "" && FrameParses(b) {
-			p.sawContent = true
-			p.commitLocked()
-			return p.ResponseWriter.Write(b)
-		}
+	//   - does the frame parse? An unparseable write is the first half of a
+	//     frame still arriving. Hold it, regardless of what heuristics see:
+	//     a banner frame split BEFORE the `content` field matches nothing at
+	//     all (HasSSEContent reads substrings of a JSON that is not there
+	//     yet) and would otherwise be relayed unclassified. The held bytes
+	//     are classified when the next write completes the frame.
+	//   - does the frame carry an answer? A complete frame whose text is
+	//     banner-shaped is held so the turn can be retried; one whose text is
+	//     an answer commits; a complete frame with NO text is structural
+	//     (Anthropic thinking / signature_delta) and commits, because
+	//     holding those starves the first-output gate — but a frame with no
+	//     text AND no structural markers (role-only, finish-only) is the
+	//     zero-content turn the caller retries, so it is dropped.
+	if p.heldContent {
+		return p.writeHeld(b)
+	}
+	if !FrameParses(b) {
+		return p.writeIncomplete(b)
+	}
+
+	// One or more complete frames. The banner scan is a byte scan over the
+	// front of the frame, not a JSON decode: a healthy frame costs ~0.2 µs
+	// instead of ~1.8 µs, and only a frame whose text actually looks like a
+	// banner reaches the regex verdict.
+	if text, suspect := chunkNeedsBannerCheck(b); suspect {
+		// A complete frame whose whole text is still banner-shaped (or a
+		// prefix of a lead-in): hold so the next frame can either complete
+		// the banner or outgrow it.
 		p.heldContent = true
 		p.bannerText = text
 		p.buf.Write(b)
 		return len(b), nil
 	}
-	// A continuation: the tail of a split frame matches no per-line content
-	// heuristic at all, so the joined bytes are what is read. `text` is
-	// assigned, never accumulated — the held bytes are re-parsed as part of
-	// the join, and reading them twice would duplicate every held frame
-	// ("Agent execution Agent execution ..."), which is no longer
-	// banner-shaped and would commit the turn.
-	if p.heldContent {
-		chunk := append(append([]byte(nil), p.buf.Bytes()...), b...)
-		text := ExtractSSEText(chunk)
-		if text == "" && len(chunk) < bannerHoldLimit && !FrameParses(chunk) {
-			p.buf.Write(b)
-			return len(b), nil
-		}
-		p.bannerText = text
-		if !IsBannerSuspect(text) {
-			p.sawContent = true
-			// The held bytes are the earlier half of this answer: append and
-			// let the commit relay the whole frame, so the client receives it
-			// byte for byte instead of starting mid-JSON.
-			p.buf.Write(b)
-			p.heldContent = false
-			p.commitLocked()
-			return len(b), nil
-		}
+	// A frame with no text and no structural marker is not content: a
+	// role-only or finish-only frame is the zero-content turn the caller
+	// retries, and committing it would answer 200 with nothing.
+	if !HasSSEContent(b) {
+		return len(b), nil
+	}
+	p.sawContent = true
+	// Commit before relaying: the peeker's own header map and status code are
+	// only applied there, and every later write short-circuits on `committed`
+	// — one classification per turn, not per frame.
+	p.commitLocked()
+	return p.ResponseWriter.Write(b)
+}
+
+// writeIncomplete handles a write that holds no complete frame: the first
+// half of a split frame (hold it — the next write completes it), or a
+// keep-alive/[DONE]-only write (drop it — holding it would leave bytes that
+// Finish would relay as if they were content).
+func (p *StreamContentPeeker) writeIncomplete(b []byte) (int, error) {
+	if !hasOpenFrame(b) {
+		// No data frame is even started: keep-alives, comments, [DONE]. They
+		// are never a banner and never content.
+		return len(b), nil
+	}
+	if p.buf.Len()+len(b) >= bannerHoldLimit {
+		// The budget is spent: relay rather than buffer an unbounded stream
+		// for an upstream that never completes a frame.
+		p.sawContent = true
 		p.buf.Write(b)
+		p.commitLocked()
+		return len(b), nil
+	}
+	p.heldContent = true
+	p.buf.Write(b)
+	return len(b), nil
+}
+
+// writeHeld appends b to the held buffer and classifies the join. It is the
+// only path a split frame takes, whichever half the split lands in.
+func (p *StreamContentPeeker) writeHeld(b []byte) (int, error) {
+	chunk := append(p.buf.Bytes(), b...)
+	p.buf.Reset()
+
+	// Still no complete frame: keep holding, bounded.
+	if !FrameParses(chunk) {
+		if !hasOpenFrame(chunk) {
+			// The held bytes were keep-alives after all; drop them.
+			p.heldContent = false
+			return len(b), nil
+		}
+		if len(chunk) < bannerHoldLimit {
+			p.heldContent = true
+			p.buf.Write(chunk)
+			return len(b), nil
+		}
+		// The budget is spent: relay rather than buffer an unbounded stream.
+		p.heldContent = false
+		p.sawContent = true
+		p.buf.Write(chunk)
+		p.commitLocked()
 		return len(b), nil
 	}
 
-	// A keep-alive, a [DONE], or a role-only frame after the turn already
-	// committed: nothing to hold. The buffer must not carry preamble into the
-	// commit — it would be relayed as if it were answer content.
-	if p.sawContent {
-		p.buf.Reset()
+	text := ExtractSSEText(chunk)
+	switch {
+	case text != "" && IsBannerSuspect(text):
+		// The complete text is still banner-shaped (or a prefix of a lead-in):
+		// hold the completed frames and wait for the next one.
+		p.heldContent = true
+		p.bannerText = text
+		p.buf.Write(chunk)
+		return len(b), nil
+	case text == "" && !HasSSEContent(chunk):
+		// Zero-content turn: the held bytes carried no prose and no
+		// structural marker. Drop them; Finish fails the turn.
+		p.heldContent = false
+		return len(b), nil
+	default:
+		// An answer or a structural frame: relay everything held byte for
+		// byte, then commit.
+		p.heldContent = false
+		p.sawContent = true
+		p.bannerText = text
+		p.buf.Write(chunk)
+		p.commitLocked()
+		return len(b), nil
 	}
-	p.buf.Write(b)
-	return len(b), nil
+}
+
+// hasOpenFrame reports whether b holds a `data:` line that started a JSON
+// object which has not finished — the first half of a split frame. A write
+// whose data lines are all [DONE], or that has none, has nothing to hold.
+func hasOpenFrame(b []byte) bool {
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(trimmed[len("data:"):])
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		if len(payload) > 0 && payload[0] == '{' && !frameComplete(payload) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *StreamContentPeeker) commitLocked() {

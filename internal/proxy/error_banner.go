@@ -118,11 +118,80 @@ func IsErrorBannerText(text string) bool {
 	return false
 }
 
+// fastBannerText pulls the first assistant-text string out of a raw SSE chunk
+// without decoding JSON. It returns ok=false when the chunk needs the full
+// parser (an escaped string, or no recognisable text key), so the caller falls
+// back rather than guessing.
+//
+// The banner decision runs on every content write of every streaming turn, and
+// the JSON decode measured ~1.7 µs against ~0.18 µs for this scan. The scan is
+// only a PREFILTER: a hit is not a verdict, it only means "worth classifying".
+func fastBannerText(chunk []byte) ([]byte, bool) {
+	for _, key := range bannerTextKeys {
+		j := bytes.Index(chunk, key)
+		if j < 0 {
+			continue
+		}
+		rest := chunk[j+len(key):]
+		end := bytes.IndexByte(rest, '"')
+		if end < 0 {
+			return nil, false
+		}
+		val := rest[:end]
+		if bytes.IndexByte(val, '\\') >= 0 {
+			return nil, false
+		}
+		return val, true
+	}
+	return nil, false
+}
+
+// bannerTextKeys are the opening delimiters of every text-bearing field the
+// banner shapes use: OpenAI content/reasoning, Anthropic text, the Responses
+// bare delta, and bare text.
+var bannerTextKeys = [][]byte{
+	[]byte(`"content":"`),
+	[]byte(`"text":"`),
+	[]byte(`"delta":"`),
+	[]byte(`"reasoning":"`),
+	[]byte(`"reasoning_content":"`),
+	[]byte(`"thinking":"`),
+}
+
+// chunkNeedsBannerCheck reports whether a complete SSE frame might carry a
+// banner, and the text to classify when it does. It is the peeker's fast path:
+// a frame whose text cannot be a banner returns false without any JSON decode.
+func chunkNeedsBannerCheck(chunk []byte) (string, bool) {
+	raw, ok := fastBannerText(chunk)
+	if !ok {
+		// Escaped or unrecognised: fall back to the full extractor.
+		text := ExtractSSEText(chunk)
+		if text == "" {
+			return "", false
+		}
+		return text, IsBannerSuspect(text)
+	}
+	// The verdict only needs the leading bytes: a banner is short, and
+	// IsBannerSuspect rejects on the first letter before normalizing.
+	if !startsWithBannerLetter(string(raw)) {
+		return "", false
+	}
+	text := string(raw)
+	return text, IsBannerSuspect(text)
+}
+
 // IsBannerSuspect reports whether text might still turn out to be a banner and
 // the stream should not be committed yet: it either already matches a banner or
 // is a strict prefix of one. The second half is what a split frame needs — the
 // first frame reads "Agent execution" and must not be shown as the answer.
 func IsBannerSuspect(text string) bool {
+	// Cheap reject before any allocation: every banner shape and every lead-in
+	// begins with one of a handful of letters, and a real answer almost never
+	// does. The normalized pass below costs two allocations per call, and this
+	// runs once per content frame of every streaming turn.
+	if !startsWithBannerLetter(text) {
+		return false
+	}
 	text = normalizeBannerText(text)
 	if text == "" {
 		return false
@@ -135,6 +204,26 @@ func IsBannerSuspect(text string) bool {
 		if strings.HasPrefix(lead, lower) {
 			return true
 		}
+	}
+	return false
+}
+
+// startsWithBannerLetter reports whether the first letter of text (skipping
+// whitespace and an opening quote/bracket) can begin a banner shape or a
+// banner lead-in. The set is the union of the first letters in
+// errorBannerPatterns and bannerLeadIns: a, r, f, q, c, p, s, i, b, g, u, t,
+// e, m, d, 5, 4, 3.
+func startsWithBannerLetter(text string) bool {
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' || c == '[' || c == '{' {
+			continue
+		}
+		switch c | 0x20 { // fold ASCII case
+		case 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'i', 'm', 'p', 'q', 'r', 's', 't', 'u':
+			return true
+		}
+		return c == '3' || c == '4' || c == '5'
 	}
 	return false
 }
@@ -178,19 +267,74 @@ func ExtractSSEText(chunk []byte) string {
 // that finished without text (a structural Anthropic frame such as a thinking
 // or signature_delta block — relay it; holding it would starve the
 // first-output gate and time out a healthy stream).
+//
+// It runs on every write of every streaming turn, so it is a brace scan, not a
+// decode: the scan measured ~0.13 µs per frame against ~4.7 µs for unmarshal
+// into any. The scan counts braces outside strings; a string that opens and
+// never closes means the frame is still arriving, which is the case the peeker
+// holds on.
 func FrameParses(chunk []byte) bool {
-	for _, line := range bytes.Split(chunk, []byte("\n")) {
+	// Line scanning without bytes.Split: it allocates a slice-of-slices per
+	// call, and this runs on every write of every streaming turn.
+	for len(chunk) > 0 {
+		var line []byte
+		if i := bytes.IndexByte(chunk, '\n'); i >= 0 {
+			line, chunk = chunk[:i], chunk[i+1:]
+		} else {
+			line, chunk = chunk, nil
+		}
 		trimmed := bytes.TrimSpace(line)
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		if len(trimmed) < 5 || trimmed[0] != 'd' || !bytes.HasPrefix(trimmed, dataPrefix) {
 			continue
 		}
-		payload := bytes.TrimSpace(trimmed[len("data:"):])
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		payload := bytes.TrimSpace(trimmed[len(dataPrefix):])
+		if len(payload) == 0 || bytes.Equal(payload, doneMarker) {
 			continue
 		}
-		var v any
-		if json.Unmarshal(payload, &v, handlerutil.UpstreamBody) == nil {
+		if frameComplete(payload) {
 			return true
+		}
+	}
+	return false
+}
+
+var (
+	dataPrefix = []byte("data:")
+	doneMarker = []byte("[DONE]")
+)
+
+// frameComplete reports whether payload holds one balanced JSON object. A
+// string still open, or braces still open, means the frame is mid-arrival.
+func frameComplete(payload []byte) bool {
+	depth := 0
+	inStr, esc := false, false
+	started := false
+	for i := 0; i < len(payload); i++ {
+		c := payload[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			if depth > 0 {
+				inStr = true
+			}
+		case '{':
+			depth++
+			started = true
+		case '}':
+			depth--
+			if started && depth == 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -231,6 +375,7 @@ func appendJSONText(sb *strings.Builder, payload []byte) {
 	}
 	for _, choice := range frame.Choices {
 		appendContentText(sb, choice.Delta.Content)
+		appendContentText(sb, choice.Delta.ReasoningContent)
 		appendContentText(sb, choice.Message.Content)
 	}
 	appendContentText(sb, frame.ContentBlock.Text)

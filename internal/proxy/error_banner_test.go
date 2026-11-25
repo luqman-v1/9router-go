@@ -287,3 +287,70 @@ func TestPeekerRelaysThinkingStream(t *testing.T) {
 		t.Errorf("expected the committed response to contain the answer, got %q", rec.Body.String())
 	}
 }
+
+// The reviewer's SPLITEARLY probe: a 245-byte OpenAI frame split at byte 60,
+// which lands inside the JSON header — before the `content` field. The first
+// half matches no content heuristic at all, so a hold that depends on
+// HasSSEContent never engages and the banner is relayed verbatim. The split
+// point is the whole point of the case, so it is pinned explicitly.
+func TestPeekerHoldsSplitBeforeContentField(t *testing.T) {
+	frame := "data: {\"id\":\"chatcmpl-0123456789abcdef\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gemini-3-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Agent execution terminated due to error: upstream 502\"},\"finish_reason\":null}]}\n\n"
+	const split = 60
+	if len(frame) <= split {
+		t.Fatalf("fixture is %d bytes, the split needs more than %d", len(frame), split)
+	}
+
+	rec := httptest.NewRecorder()
+	p := NewStreamContentPeeker(rec)
+
+	first := frame[:split]
+	second := frame[split:]
+	// The premise: the first half is invisible to the content heuristic and
+	// does not parse. If either changes, this test no longer exercises the bug.
+	if HasSSEContent([]byte(first)) {
+		t.Log("note: the first half now matches the content heuristic; the split still must be held")
+	}
+	if FrameParses([]byte(first)) {
+		t.Fatal("fixture split must land inside the JSON, not after it")
+	}
+
+	if _, err := p.Write([]byte(first)); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("nothing may be relayed before the frame completes, wrote %q", rec.Body.String())
+	}
+	if _, err := p.Write([]byte(second)); err != nil {
+		t.Fatalf("write second: %v", err)
+	}
+
+	err := p.Finish()
+	if err == nil {
+		t.Fatal("a banner turn split before its content field must fail at Finish so the caller can retry")
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("the banner must never reach the client, wrote %q", rec.Body.String())
+	}
+}
+
+// The same split on a REAL answer must be relayed byte for byte: the hold is
+// about classification, not about dropping bytes.
+func TestPeekerRelaysSplitRealAnswer(t *testing.T) {
+	frame := "data: {\"id\":\"chatcmpl-0123456789abcdef\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gemini-3-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Here is a real answer that runs long enough to outgrow any banner shape.\"},\"finish_reason\":null}]}\n\n"
+	const split = 60
+
+	rec := httptest.NewRecorder()
+	p := NewStreamContentPeeker(rec)
+	if _, err := p.Write([]byte(frame[:split])); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	if _, err := p.Write([]byte(frame[split:])); err != nil {
+		t.Fatalf("write second: %v", err)
+	}
+	if err := p.Finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if got := rec.Body.String(); got != frame {
+		t.Errorf("split answer must be relayed byte for byte\ngot:  %q\nwant: %q", got, frame)
+	}
+}

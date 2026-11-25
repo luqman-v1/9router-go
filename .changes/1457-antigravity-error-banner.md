@@ -21,29 +21,26 @@
   into a retry, and the four reviewer probes are now negative tests.
 - A banner split across frames is held open while the text is still a prefix of
   a known lead-in ("Agent execution" → …), so the client never sees half a fault
-  message as the answer. A frame split across WRITES is held too: the first
-  half of a banner frame reads as content to the substring heuristics while its
-  JSON is still unparseable, so committing there would relay the banner. An
-  upstream that stops mid-frame fails open at `Finish` and relays the bytes.
-  A stream that starts with `Error` and turns into a real answer commits on the
-  next frame, and tests pin both.
-- Measured on the healthy-stream path (`BenchmarkHealthyStreamPeeker`, 3-frame
-  stream, one write per frame): 5,170 ns/op, 1,527 B/op, 23 allocs, versus
-  8,310 ns/op, 2,491 B/op, 33 allocs on the reviewed base — the peek is cheaper
-  than the base because the banner classification commits the peeker once and
-  every later write short-circuits on `committed`. `ExtractSSEText` reads a
-  typed struct instead of `map[string]any`: 1,793 ns / 6 allocs per frame
-  against 3,829 ns / 16 for the map shape. `IsBannerSuspect` on a 1,650-char
-  text is 58 µs / 5 allocs and only runs while the text is still
-  banner-shaped — a real answer outgrows the shape on the first frame.
-- **A structural frame is relayed, not held.** The hold-until-it-parses rule
-  above had no way to tell "JSON still arriving" from "JSON complete, no prose
-  in it", so Anthropic's `content_block_start` for `thinking` /
-  `redacted_thinking` and its `signature_delta` were held as if they were the
-  first half of a split banner. They carry no text, so the hold never resolved,
-  the first-output gate was never satisfied, and a healthy thinking stream timed
-  out (`TestComboResponseTimeout_ClaudeThinkingSatisfiesGate`, red on CI). A
-  frame that parses and yields no text is now relayed and commits the peek;
-  only an unparseable frame is held. `FrameParses` decides that, and two tests
-  pin it: the table of structural frames, and a full thinking stream that must
-  commit and deliver its text.
+  message as the answer. A frame split across WRITES is held too, and that hold
+  no longer depends on a content heuristic firing on the first half: a 245-byte
+  banner frame split at byte 60 lands inside the JSON header, before `content`
+  exists, so `HasSSEContent` sees nothing there. Holding only when the first
+  write looked like content therefore relayed that banner verbatim — the exact
+  failure this layer exists to stop. Any write that ends mid-frame is now held
+  (bounded at 64 KiB) and the joined bytes are classified when the frame
+  completes; `TestPeekerHoldsSplitBeforeContentField` pins that split position
+  and `TestPeekerRelaysSplitRealAnswer` pins that a real answer split the same
+  way is relayed byte for byte. An upstream that stops mid-frame fails open at
+  `Finish` and relays the bytes.
+- Measured on the healthy path with `BenchmarkStreamContentPeekerHealthy`
+  (committed; three frames, one write per frame, a counting writer so the
+  recorder's own ~1.5 µs does not swamp the result), `-benchtime=2s -count=4`:
+  base 695-805 ns, head 899-947 ns, 384 → 400 B, 6 → 6 allocs. The honest
+  reading is **+0.15-0.2 µs per streamed turn and no new allocation** for
+  classifying the first frame — not the "cheaper than the base" an earlier
+  draft of this fragment claimed from benchmarks that carried the recorder's
+  setup cost. The supporting costs, measured the same way: `FrameParses` 200 ns
+  / 0 allocs per frame (line scan, no `bytes.Split`), the prefilter 126 ns / 1
+  alloc, and `IsBannerSuspect` 5 ns on an answer because it rejects on the first
+  letter before normalizing. `ExtractSSEText` (the full JSON decode, only
+  reached by a frame whose prefilter hit) is 1.7 µs / 6 allocs.
