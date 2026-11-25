@@ -198,6 +198,38 @@ dispatch allows — a client cannot list a model its key may not call.
 
 ---
 
+## Playground — one chat turn from the dashboard
+
+**Since:** v1.9.17 · **PR:** [#1466](https://github.com/luqman-v1/9router-go/pull/1466)
+
+### What it does
+
+A **Playground** tab sends one chat turn from the dashboard against any model the
+gateway routes, without an engine key. It is the fastest way to answer "does this
+connection, combo or model actually answer?" before wiring a client.
+
+The turn is a synthetic request through the engine's own `HandleChatCompletions` —
+the same in-process path the Gemini surface uses — so routing, combo fallback,
+persona injection, the limiter and usage accounting are the production code, not a
+second implementation. The reply panel shows what a client would receive: the
+message, the model the gateway resolved to, the token count and the finish reason.
+
+### How to use it
+
+1. Open **Playground** in the sidebar.
+2. Optionally pick an **API key**. The turn is then attributed to it: its usage row
+   names it as the client, its budget is spent, and its model allowlist is enforced
+   by the same gate the public lane uses. No key picked is the global scope.
+3. Type a **model** (`provider/model` or a combo name) and a prompt, then **Send**.
+
+The body is rebuilt deterministically for the same input, so an identical turn
+produces identical bytes and can hit the prompt cache.
+
+**Related:** the page was inspired by new-api's Playground, but it is not a parity
+port — the mechanism here is a synthetic request through this gateway's own engine.
+
+---
+
 ## What was considered and not ported
 
 - **Provider/request plugin marketplace** (300 files, one commit) — an architecture

@@ -7,8 +7,7 @@
    * The Playground: one chat turn from the dashboard against any model the
    * gateway routes, through the engine's own dispatch.
    *
-   * Port of QuantumNous/new-api's Playground (web/src/features/playground):
-   * an operator picks a model, types a turn, and reads the reply without
+   * An operator picks a model, types a turn, and reads the reply without
    * minting or pasting an engine key. The reply is the gateway's own Chat
    * Completions response, so the panel shows the message, the model the
    * gateway resolved to, the token usage and the finish reason — the same

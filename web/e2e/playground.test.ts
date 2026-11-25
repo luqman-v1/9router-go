@@ -17,6 +17,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 
 import { startDashboard, type Dashboard } from './harness'
@@ -24,6 +26,8 @@ import { startDashboard, type Dashboard } from './harness'
 const PORT = 20501
 const UPSTREAM_PORT = 20502
 const SLOW = 60_000
+const SHOTS = join(resolve(import.meta.dirname, '..', '..'), 'docs', 'screenshots')
+const CAPTURE = process.env.CAPTURE_SCREENSHOTS === '1'
 
 /** The canned completion the fake upstream answers with. */
 const UPSTREAM_REPLY = 'upstream reply'
@@ -131,6 +135,14 @@ describe('playground', () => {
       const panel = await page.evaluate(() => document.body.innerText)
       expect(panel).toContain('deepseek-chat')
       expect(panel).toContain('stop')
+
+      if (CAPTURE) {
+        mkdirSync(SHOTS, { recursive: true })
+        // The page itself, reply card included: the element that changed.
+        await page.locator('main').screenshot({ path: join(SHOTS, '1466-playground-after.png') })
+        // The sidebar entry a new tab adds, captured from the same page load.
+        await page.locator('aside').screenshot({ path: join(SHOTS, '1466-playground-nav-after.png') })
+      }
     },
     SLOW,
   )

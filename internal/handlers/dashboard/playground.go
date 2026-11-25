@@ -15,15 +15,13 @@ import (
 // The operator's playground: one chat turn from the dashboard against a model
 // the gateway routes, without an engine API key.
 //
-// Port of QuantumNous/new-api controller/playground.go (that project mints a
-// temp token onto the relay context). The Go gateway has no token/user row to
-// fake, so this keeps the contract — a dashboard caller sends
-// {model, messages, temperature?, maxTokens?, keyId?} and gets the same Chat
-// Completions JSON the public lane would return — and reaches it the way the
-// Gemini surface already does (chat/gemini_v1beta.go): a synthetic request
-// through the engine's own HandleChatCompletions. Routing, combo fallback,
-// persona injection, the limiter and usage accounting are therefore the
-// production paths, not a second implementation that can drift.
+// A dashboard caller sends {model, messages, temperature?, maxTokens?, keyId?}
+// and gets the same Chat Completions JSON the public lane would return. The
+// turn reaches it the way the Gemini surface already does
+// (chat/gemini_v1beta.go): a synthetic request through the engine's own
+// HandleChatCompletions. Routing, combo fallback, persona injection, the
+// limiter and usage accounting are therefore the production paths, not a
+// second implementation that can drift.
 //
 // Attribution: the picked key travels on the synthetic request's context, the
 // same place RequireApiKey puts it, so the usage row names the key as the
@@ -41,7 +39,7 @@ func (h *DashboardHandler) HandlePlaygroundChat(w http.ResponseWriter, r *http.R
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req struct {
 		Model       string `json:"model"`
@@ -85,7 +83,9 @@ func (h *DashboardHandler) HandlePlaygroundChat(w http.ResponseWriter, r *http.R
 	if req.Temperature != nil {
 		payload["temperature"] = *req.Temperature
 	}
-	encoded, err := json.Marshal(payload)
+	// Deterministic: chat.go hashes the raw body for the prompt cache, so the
+	// same turn must always produce the same bytes to hit it.
+	encoded, err := json.Marshal(payload, json.Deterministic(true))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to encode request")
 		return
