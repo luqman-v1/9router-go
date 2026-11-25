@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/auth"
 )
@@ -103,4 +104,103 @@ func TestPasswordChangeBumpsEpochPerChange(t *testing.T) {
 
 	change("pw-one", "pw-two")
 	change("pw-two", "pw-three")
+}
+
+// The epoch is the one setting a client must never be able to write: doing so
+// resurrects every token a password change revoked.
+func TestTokenVersionIsNotWritable(t *testing.T) {
+	authTestEnv(t)
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	auth.SetSessionEpoch(0, "")
+	t.Cleanup(func() { auth.SetSessionEpoch(0, "") })
+
+	h := NewDashboardHandler(repo)
+	storePassword(t, repo, "pw-one")
+	if err := h.changeDashboardPassword("pw-one", "pw-two"); err != nil {
+		t.Fatalf("setup change: %v", err)
+	}
+
+	cases := []struct{ name, body string }{
+		{"direct write", `{"tokenVersion":0}`},
+		{"write beside a password change", `{"currentPassword":"pw-two","newPassword":"pw-three","tokenVersion":0}`},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := repo.GetSettingsRaw()
+			if err != nil {
+				t.Fatalf("read settings: %v", err)
+			}
+			before := auth.SessionTokenVersion(raw)
+			beforeHash, _ := raw["password"].(string)
+
+			rec := httptest.NewRecorder()
+			h.HandleUpdateSettings(rec, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(tt.body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+
+			raw, err = repo.GetSettingsRaw()
+			if err != nil {
+				t.Fatalf("read settings: %v", err)
+			}
+			if got := auth.SessionTokenVersion(raw); got != before {
+				t.Errorf("tokenVersion = %d, want unchanged (%d)", got, before)
+			}
+			// The rejection must land before the password write, or a failed
+			// request would still have revoked every session.
+			if after, _ := raw["password"].(string); after != beforeHash {
+				t.Error("a rejected mixed payload must not change the password")
+			}
+		})
+	}
+}
+
+// Changing a password must not turn an SSO operator into a password user.
+func TestPasswordChangeKeepsSSOClaims(t *testing.T) {
+	authTestEnv(t)
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	auth.SetSessionEpoch(0, "")
+	t.Cleanup(func() { auth.SetSessionEpoch(0, "") })
+
+	h := NewDashboardHandler(repo)
+	storePassword(t, repo, "pw-one")
+
+	sso, err := auth.SignWith(auth.Secret(), time.Now(), auth.SessionClaims{
+		Oidc:      true,
+		OidcName:  "Alice",
+		OidcEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("sign sso token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings",
+		strings.NewReader(`{"currentPassword":"pw-one","newPassword":"pw-two"}`))
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: sso})
+	rec := httptest.NewRecorder()
+	h.HandleUpdateSettings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	fresh := authCookieValue(t, rec)
+	if fresh == "" {
+		t.Fatal("the change must re-issue the cookie")
+	}
+	// Decode the re-issued token through the same claim reader the dashboard
+	// uses, so the assertion covers what /api/auth/status would render.
+	check := httptest.NewRequest(http.MethodGet, "/", nil)
+	check.AddCookie(&http.Cookie{Name: auth.CookieName, Value: fresh})
+	claims := auth.SessionClaimSet(check)
+	if claims == nil {
+		t.Fatal("the re-issued cookie must verify")
+	}
+	if !claims.Oidc || claims.OidcEmail != "alice@example.com" {
+		t.Errorf("claims = %+v, want the OIDC identity preserved", claims)
+	}
+	if claims.TV != 1 {
+		t.Errorf("tv = %d, want the new epoch", claims.TV)
+	}
 }

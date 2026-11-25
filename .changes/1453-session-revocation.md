@@ -15,3 +15,16 @@
   refreshed on the change, so authorization adds no database read per request.
 - The local CLI token (`x-9r-cli-token`) is a separate credential and is
   unaffected.
+
+Two properties the first cut missed, both fixed here:
+
+- **`tokenVersion` is read-only over the API.** It is not in `protectedSettingKeys`,
+  so any session could `PUT {"tokenVersion":0}` and resurrect every token a
+  password change revoked. The protected-key check now runs **before** anything
+  is applied, so a payload carrying both `newPassword` and `tokenVersion` is
+  refused whole instead of changing the password and then reporting 400.
+- **An SSO operator stays an SSO operator after changing the password.** The
+  re-issued cookie is signed from the caller's existing claim set rather than as
+  a bare password session, so an OIDC/SAML operator does not silently become a
+  "Password user" in the dashboard. The claims are read before the change: the
+  change bumps the epoch, which invalidates the very token they come from.
