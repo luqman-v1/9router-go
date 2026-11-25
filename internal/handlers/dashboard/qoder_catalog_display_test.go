@@ -41,7 +41,7 @@ func TestFetchQoderCatalogModelsAdvertisesDisplayNames(t *testing.T) {
 		t.Fatalf("fetchQoderCatalogModels: %v", err)
 	}
 
-	want := []string{"qfmodel", "dmodel", "auto", "deep-seek-v4-pro", "qwen3.8-flash"}
+	want := []string{"qfmodel", "dmodel", "auto", "hidden", "deep-seek-v4-pro", "hidden-model", "qwen3.8-flash"}
 	got := qoderModelIDs(models)
 	if len(got) != len(want) {
 		t.Fatalf("ids = %v, want %v", got, want)
@@ -91,5 +91,36 @@ func TestFetchQoderCatalogModelsNameCollisions(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("ids[%d] = %q, want %q (full list %v)", i, got[i], want[i], got)
 		}
+	}
+}
+
+// A full fetch must keep hidden (enable:false) models and carry Qoder's own
+// is_free flag through, so the dashboard can badge new free models without a
+// shipped static catalogue entry.
+func TestFetchQoderCatalogModelsKeepsHiddenAndFreeFlag(t *testing.T) {
+	stubQoderProbe(t, `{"chat":[
+		{"key":"qfmodel","enable":true,"display_name":"Qwen3.8-Flash","is_free":false},
+		{"key":"dfmodel","enable":false,"display_name":"DeepSeek-Flash","is_free":true}
+	]}`)
+
+	models, err := fetchQoderCatalogModels(context.Background(), "qoder", "dt-token", map[string]any{"userId": "u1"})
+	if err != nil {
+		t.Fatalf("fetchQoderCatalogModels: %v", err)
+	}
+	byID := make(map[string]QoderModel, len(models))
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if len(byID) < 2 {
+		t.Fatalf("models = %v, want both the visible and the hidden key", qoderModelIDs(models))
+	}
+	if byID["dfmodel"].Hidden != true {
+		t.Errorf("hidden entry = %+v, want Hidden=true", byID["dfmodel"])
+	}
+	if byID["dfmodel"].IsFree != true {
+		t.Errorf("free entry = %+v, want IsFree=true", byID["dfmodel"])
+	}
+	if byID["qfmodel"].IsFree != false {
+		t.Errorf("paid entry = %+v, want IsFree=false", byID["qfmodel"])
 	}
 }

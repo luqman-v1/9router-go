@@ -2968,11 +2968,18 @@
       for (const m of models) {
         const modelId = typeof m === 'string' ? m : (m.id || m.name || m.model || '')
         if (!modelId || compatibleRows.some((r) => r.id === modelId)) continue
-        if (freeOnly && !isFreeTierModelId(modelId)) continue
+        const providerFree =
+          typeof m === 'object' && m !== null && 'isFree' in m && m.isFree === true
+        if (freeOnly && !isFreeTierModelId(modelId) && !providerFree) continue
         pending.push({
           id: modelId,
           key: customModelKeyFor(storageAlias, modelId),
-          value: { id: modelId, providerAlias: storageAlias, type: inferModelKind(modelId) },
+          value: {
+            id: modelId,
+            providerAlias: storageAlias,
+            type: inferModelKind(modelId),
+            ...(providerFree ? { caps: { free: true } } : {}),
+          },
         })
       }
       const outcome = await importCustomModelsBestEffort(pending, api.saveCustomModel)
@@ -3027,14 +3034,23 @@
         const alreadyBuiltin = builtInModels.some((b) => b.id === modelId)
         const alreadyCustom = providerCustomModels.some((c) => c.id === modelId)
         if (alreadyBuiltin || alreadyCustom) continue
-        const caps =
+        let caps =
           typeof m === 'object' &&
           m !== null &&
           'capabilities' in m &&
           m.capabilities &&
           typeof m.capabilities === 'object'
-            ? (m.capabilities as { vision?: boolean; reasoning?: boolean })
+            ? (m.capabilities as { vision?: boolean; reasoning?: boolean; free?: boolean })
             : undefined
+        // Qoder does not suffix free models with "-free"; its catalog carries
+        // an is_free flag instead. Carry it into caps so /api/models/caps can
+        // badge an imported model the same way it badges OpenCode's -free ids.
+        const providerFree =
+          typeof m === 'object' && m !== null && 'isFree' in m && m.isFree === true
+        if (providerFree) {
+          if (caps) caps.free = true
+          else caps = { free: true }
+        }
         // An endpoint that reports its own limits is the authoritative source;
         // saving them means /v1/models keeps publishing them after the row
         // outlives this import. OpenRouter-style feeds spell them snake_case

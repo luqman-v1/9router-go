@@ -14,10 +14,15 @@ import (
 // decoded caps map keyed by model id.
 func fetchCaps(t *testing.T, provider string) (int, map[string]modelCaps) {
 	t.Helper()
+	return fetchCapsWithRepo(t, setupTestRepoForCaps(t), provider)
+}
+
+func fetchCapsWithRepo(t *testing.T, repo *db.Repo, provider string) (int, map[string]modelCaps) {
+	t.Helper()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/models/caps?provider="+provider, nil)
 	rec := httptest.NewRecorder()
-	setupTestRouter(setupTestRepoForCaps(t)).ServeHTTP(rec, req)
+	setupTestRouter(repo).ServeHTTP(rec, req)
 
 	var body struct {
 		Caps map[string]modelCaps `json:"caps"`
@@ -35,6 +40,29 @@ func setupTestRepoForCaps(t *testing.T) *db.Repo {
 	repo, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	return repo
+}
+
+// A Qoder free model has an opaque id and no price row, so the only signal
+// that it is free is the is_free flag carried over from the account's live
+// catalog into the custom row's caps. The /api/models/caps endpoint has to
+// surface that flag or the dashboard cannot badge a newly released model.
+func TestHandleGetModelCaps_ProviderFreeFlag(t *testing.T) {
+	repo := setupTestRepoForCaps(t)
+	if err := repo.SetKV("customModels", "qoder|hungerg|llm",
+		`{"providerAlias":"qoder","id":"hungerg","type":"llm","caps":{"free":true}}`); err != nil {
+		t.Fatalf("seed custom model: %v", err)
+	}
+	code, caps := fetchCapsWithRepo(t, repo, "qoder")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	got, ok := caps["hungerg"]
+	if !ok {
+		t.Fatalf("hungerg missing from caps: %v", caps)
+	}
+	if !got.Free {
+		t.Errorf("hungerg Free = false, want true")
+	}
 }
 
 // TestHandleGetModelCaps_CommandCode covers what the provider detail page

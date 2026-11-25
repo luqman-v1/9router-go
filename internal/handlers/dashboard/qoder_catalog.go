@@ -28,6 +28,7 @@ type qoderCatalogEntry struct {
 	MaxOutputTokens any    `json:"max_output_tokens"`
 	IsVL            bool   `json:"is_vl"`
 	IsReasoning     bool   `json:"is_reasoning"`
+	IsFree          bool   `json:"is_free"`
 	// Enable is a pointer because upstream only hides a model when the field is
 	// explicitly false; a missing field means "show it".
 	Enable      *bool  `json:"enable"`
@@ -43,13 +44,22 @@ type QoderModel struct {
 	IsReasoning     bool   `json:"isReasoning"`
 	MaxOutputTokens int    `json:"maxOutputTokens"`
 	Description     string `json:"description"`
+	// Hidden marks an enable:false catalog entry. Upstream keeps these
+	// routable even though the IDE picker hides them, so a full fetch must
+	// advertise them instead of dropping them.
+	Hidden bool `json:"hidden,omitempty"`
+	// IsFree is Qoder's own is_free flag from model_config. The dashboard
+	// cannot infer it from the opaque id the way it does for OpenCode's
+	// "-free" models.
+	IsFree bool `json:"isFree,omitempty"`
 }
 
 // qoderDefaultContextLength matches upstream's fallback when an entry omits
 // max_input_tokens.
 const qoderDefaultContextLength = 131_072
 
-// fetchQoderCatalogModels returns the enabled models for a Qoder connection.
+// fetchQoderCatalogModels returns every model for a Qoder connection, including
+// enable:false entries that the IDE hides but the chat endpoint still routes.
 // token is the stored credential (dt-…, jt-… or pt-…); psd is the
 // connection's providerSpecificData, which carries the signing user id.
 //
@@ -107,22 +117,19 @@ func fetchQoderCatalogModels(ctx context.Context, provider, token string, psd ma
 		return nil, fmt.Errorf("Qoder model list was not JSON")
 	}
 
-	enabled := make([]qoderCatalogEntry, 0, len(parsed.Chat))
-	for _, entry := range parsed.Chat {
-		if entry.Key == "" {
-			continue
-		}
-		// Upstream caches the config for every key but surfaces only the ones
-		// the account has enabled.
-		if entry.Enable != nil && !*entry.Enable {
-			continue
-		}
-		enabled = append(enabled, entry)
-	}
+	// Upstream keeps enable:false entries in the catalog: they are hidden in
+	// the IDE picker but still routable by the chat endpoint. Dropping them
+	// here made "fetch all models" return only the visible subset, so a new
+	// model that arrives hidden never showed up at all. Advertise every key
+	// and mark the hidden ones instead.
+	enabled := parsed.Chat
 
 	models := make([]QoderModel, 0, len(enabled)*2)
 	used := make(map[string]bool, len(enabled)*2)
 	for _, entry := range enabled {
+		if entry.Key == "" {
+			continue
+		}
 		models = append(models, qoderModelFromEntry(entry, entry.Key))
 		used[entry.Key] = true
 	}
@@ -160,6 +167,8 @@ func qoderModelFromEntry(entry qoderCatalogEntry, id string) QoderModel {
 		IsReasoning:     entry.IsReasoning,
 		MaxOutputTokens: qoderIntOr(entry.MaxOutputTokens, 0),
 		Description:     entry.Description,
+		Hidden:          entry.Enable != nil && !*entry.Enable,
+		IsFree:          entry.IsFree,
 	}
 }
 
