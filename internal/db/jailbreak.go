@@ -53,6 +53,11 @@ type JailbreakDoc struct {
 	// Position: legacy rows keep behaving exactly as they did before mode
 	// existed.
 	Mode string `json:"mode,omitempty"`
+	// Enabled is the explicit on/off switch for this preset. Nil means no
+	// choice has been made: a synced preset then stays off until the operator
+	// turns it on, while a hand-written preset keeps the legacy active
+	// behaviour. An explicit value always wins.
+	Enabled *bool `json:"enabled,omitempty"`
 	// Order is the operator's arrangement position in the preset list. Zero
 	// means "unsorted" and falls back to id order, so a preset written by an
 	// older build (or by import) keeps its place without a migration.
@@ -70,6 +75,19 @@ type JailbreakDoc struct {
 	// an operator finds the preset they just edited in a long library.
 	CreatedAt string `json:"createdAt,omitempty"`
 	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+// EffectiveEnabled reports whether a preset may inject. Explicit choices win;
+// a synced preset with no choice stays inert until the operator enables it,
+// and a hand-written one keeps the behaviour it had before the switch existed.
+func (d *JailbreakDoc) EffectiveEnabled() bool {
+	if d == nil {
+		return false
+	}
+	if d.Enabled != nil {
+		return *d.Enabled
+	}
+	return d.SyncOrigin == ""
 }
 
 // JailbreakModelConfig holds the binding between a model and a preset.

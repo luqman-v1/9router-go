@@ -832,6 +832,9 @@ func importJailbreakDocument(repo *db.Repo, filePath, source, text string, claim
 		Source:   source,
 		Kind:     jailbreakImportKind(stem),
 		Keywords: jailbreakImportKeywords(stem, claimed),
+		// An imported preset joins the library, but it does not inject until
+		// the operator turns it on. Keep that choice explicit.
+		Enabled: new(false),
 	}
 	if err := repo.SaveJailbreakPreset(doc); err != nil {
 		return nil, err

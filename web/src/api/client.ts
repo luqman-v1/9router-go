@@ -1185,6 +1185,8 @@ export interface JailbreakDoc {
   keywords?: JailbreakKeyword[]
   /** Models matching one of these rules never get this preset. */
   excludes?: JailbreakKeyword[]
+  /** Explicit on/off switch. An absent value on a synced preset means off. */
+  enabled?: boolean
   /** Operator arrangement position in the preset list. */
   order?: number
   /**
@@ -3064,6 +3066,7 @@ export const api = {
     name: string
     prompt: string
     geminiSafety: boolean
+    enabled: boolean
     source?: string
     kind?: string
     keywords?: JailbreakKeyword[]
