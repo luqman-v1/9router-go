@@ -440,7 +440,7 @@ func (h *OAuthHandler) completePKCEExchange(ctx context.Context, ex *pkceExchang
 	}
 	connName := connectionDisplayName(ex.provider, ex.name, email, ex.cfg.display)
 	connID := ex.cfg.connPrefix + shortHash(tokens.AccessToken)
-	if err := h.persistConnection(connID, ex.provider, connName, dataMap, tokens.RefreshToken); err != nil {
+	if err := h.persistConnection(ctx, connID, ex.provider, connName, dataMap, tokens.RefreshToken); err != nil {
 		return pkceExchangeResult{}, exchangeFail(http.StatusInternalServerError, "failed to save connection: %v", err)
 	}
 	return pkceExchangeResult{ConnectionID: connID, Name: connName, Email: email}, nil
@@ -449,7 +449,7 @@ func (h *OAuthHandler) completePKCEExchange(ctx context.Context, ex *pkceExchang
 // persistConnection upserts a connection row, keeping the stored refresh token
 // when the provider's response omitted one (Codex only rotates it on the
 // first exchange).
-func (h *OAuthHandler) persistConnection(connID, provider, connName string, dataMap map[string]any, refreshToken string) error {
+func (h *OAuthHandler) persistConnection(ctx context.Context, connID, provider, connName string, dataMap map[string]any, refreshToken string) error {
 	if h.Repo == nil || h.Repo.RawDB() == nil {
 		return nil
 	}
@@ -478,7 +478,7 @@ func (h *OAuthHandler) persistConnection(connID, provider, connName string, data
 	} else {
 		priority := 1
 		if h.Repo != nil {
-			priority = h.Repo.ResolveDefaultPriority(provider)
+			priority = h.Repo.ResolveDefaultPriority(ctx, provider)
 		}
 		_, err = h.Repo.RawDB().Exec(
 			"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",

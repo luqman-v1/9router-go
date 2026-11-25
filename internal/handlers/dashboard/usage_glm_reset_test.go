@@ -43,7 +43,7 @@ func TestHandleGetGLMResetCards_Success(t *testing.T) {
 
 	// Create a GLM connection using the full method
 	connID := "test-glm-conn-1"
-	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestHandleGetGLMResetCards_NotGLM(t *testing.T) {
 
 	// Create a non-GLM connection
 	connID := "test-claude-conn-1"
-	if err := repo.CreateProviderConnectionFull(connID, "claude", "oauth", "Test Claude", nil, `{"accessToken":"test-claude-token"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "claude", "oauth", "Test Claude", nil, `{"accessToken":"test-claude-token"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestHandleGetGLMResetCards_Unauthorized(t *testing.T) {
 
 	router := setupTestRouterForGLM(repo)
 	connID := "test-glm-conn-2"
-	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestHandleRedeemGLMResetCard_Validation(t *testing.T) {
 
 			router := setupTestRouterForGLM(repo)
 			connID := "test-glm-conn-3"
-			if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+			if err := repo.CreateProviderConnectionFull(context.Background(), connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
 				t.Fatalf("failed to create connection: %v", err)
 			}
 
@@ -624,7 +624,7 @@ func TestHandleRedeemGLMResetCard_InFlightLock(t *testing.T) {
 
 	router := setupTestRouterForGLM(repo)
 	connID := "test-glm-conn-inflight"
-	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -718,7 +718,7 @@ func TestHandleRedeemGLMResetCard_ExpiredCard(t *testing.T) {
 
 	router := setupTestRouterForGLM(repo)
 	connID := "test-glm-conn-expired"
-	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -768,7 +768,7 @@ func TestHandleRedeemGLMResetCard_UncertainFailures(t *testing.T) {
 	router := setupTestRouterForGLM(repo)
 
 	connID := "test-glm-conn-uncertain"
-	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM Uncertain", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "glm", "api_key", "Test GLM Uncertain", nil, `{"apiKey":"test-glm-key"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 

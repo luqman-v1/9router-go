@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +41,7 @@ func addOpenCodeConnection(t *testing.T, env *Env, id string, up *httptest.Serve
 	t.Helper()
 	priority := 1
 	data := fmt.Sprintf(`{"apiKey":"public","baseUrl":%q}`, up.URL+"/inference/v1/chat/completions")
-	if err := env.Repo.CreateProviderConnectionFull(id, "opencode", "apikey", "OpenCode", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), id, "opencode", "apikey", "OpenCode", &priority, data); err != nil {
 		t.Fatalf("create connection %s: %v", id, err)
 	}
 }

@@ -727,7 +727,7 @@ func (h *MediaHandler) withUcSession(ctx context.Context, fn func(*ucSession) (s
 	}
 	if next := ucWithRotatedClient(cookieHeader, session.rotatedClient); next != "" && conn != nil && h.Repo != nil {
 		if data := updateUcCookieHeader(conn.Data, next); data != "" {
-			_ = h.Repo.UpdateConnectionData(conn.ID, data)
+			_ = h.Repo.UpdateConnectionData(ctx, conn.ID, data)
 		}
 	}
 	if h.Repo != nil && conn != nil {

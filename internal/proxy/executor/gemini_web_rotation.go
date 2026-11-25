@@ -182,7 +182,7 @@ func geminiWebRotateConnection(ctx context.Context, repo *db.Repo, conn *models.
 		log.Warn("gemini-web", "rotation could not encode the new credential", "conn", conn.ID, "error", err)
 		return
 	}
-	if err := repo.UpdateConnectionData(conn.ID, string(encoded)); err != nil {
+	if err := repo.UpdateConnectionData(ctx, conn.ID, string(encoded)); err != nil {
 		log.Warn("gemini-web", "rotation could not store the new credential", "conn", conn.ID, "error", err)
 		return
 	}

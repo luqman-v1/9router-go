@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"context"
+
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -152,7 +154,7 @@ func TestFindLeaseConnectionDistinguishesAuthType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := h.Repo.CreateProviderConnectionFull(
+	if err := h.Repo.CreateProviderConnectionFull(context.Background(), 
 		"minimax-code-key-1", "minimax-code", "api_key", "Stored Key", nil, string(keyData),
 	); err != nil {
 		t.Fatalf("seed key connection: %v", err)
@@ -164,7 +166,7 @@ func TestFindLeaseConnectionDistinguishesAuthType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := h.Repo.CreateProviderConnectionFull(
+	if err := h.Repo.CreateProviderConnectionFull(context.Background(), 
 		"minimax-code-lease-1", "minimax-code", "mcode-lease", "Desktop App", nil, string(leaseData),
 	); err != nil {
 		t.Fatalf("seed lease connection: %v", err)

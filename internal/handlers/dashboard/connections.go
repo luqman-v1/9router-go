@@ -672,7 +672,7 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 		}
 	}
 
-	if err := h.Repo.CreateProviderConnectionFull(req.ID, req.Provider, req.AuthType, name, req.Priority, dataStr); err != nil {
+	if err := h.Repo.CreateProviderConnectionFull(r.Context(), req.ID, req.Provider, req.AuthType, name, req.Priority, dataStr); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

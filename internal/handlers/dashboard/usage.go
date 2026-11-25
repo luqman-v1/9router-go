@@ -149,7 +149,7 @@ func (h *DashboardHandler) HandleGetConnectionUsage(w http.ResponseWriter, r *ht
 		}
 	}
 	if ok {
-		h.syncCodexPlanFromUsage(conn, data, res.plan)
+		h.syncCodexPlanFromUsage(r.Context(), conn, data, res.plan)
 		handlerutil.WriteJSON(w, http.StatusOK, res.toResponse())
 		return
 	}

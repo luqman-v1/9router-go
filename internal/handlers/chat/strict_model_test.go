@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	"strings"
 	"testing"
 
@@ -96,10 +98,10 @@ func TestGetBestConnection_StrictAssignmentIntegration(t *testing.T) {
 
 	// Create 2 connections for test-strict
 	// Conn A: assignedModel: "model-a"
-	if err := repo.CreateProviderConnection("conn-a", "test-strict", "apikey", "Conn A", "key-a"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), "conn-a", "test-strict", "apikey", "Conn A", "key-a"); err != nil {
 		t.Fatalf("failed to create conn-a: %v", err)
 	}
-	if err := repo.UpdateConnectionData("conn-a", `{"apiKey":"key-a","assignedModel":"model-a"}`); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), "conn-a", `{"apiKey":"key-a","assignedModel":"model-a"}`); err != nil {
 		t.Fatalf("failed to update conn-a data: %v", err)
 	}
 	if err := repo.SetConnectionPriority("conn-a", 10); err != nil {
@@ -107,10 +109,10 @@ func TestGetBestConnection_StrictAssignmentIntegration(t *testing.T) {
 	}
 
 	// Conn B: providerSpecificData.assignedModel: "model-b"
-	if err := repo.CreateProviderConnection("conn-b", "test-strict", "apikey", "Conn B", "key-b"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), "conn-b", "test-strict", "apikey", "Conn B", "key-b"); err != nil {
 		t.Fatalf("failed to create conn-b: %v", err)
 	}
-	if err := repo.UpdateConnectionData("conn-b", `{"apiKey":"key-b","providerSpecificData":{"assignedModel":"model-b"}}`); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), "conn-b", `{"apiKey":"key-b","providerSpecificData":{"assignedModel":"model-b"}}`); err != nil {
 		t.Fatalf("failed to update conn-b data: %v", err)
 	}
 	if err := repo.SetConnectionPriority("conn-b", 5); err != nil {

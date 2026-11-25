@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -60,7 +62,7 @@ func TestHandleSystemone_Opencode_Mock(t *testing.T) {
 	defer cleanup()
 	repo := db.NewRepo(sqlDB)
 	p := 1
-	err := repo.CreateProviderConnectionFull("conn-oc-1", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
+	err := repo.CreateProviderConnectionFull(context.Background(), "conn-oc-1", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
 	if err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}

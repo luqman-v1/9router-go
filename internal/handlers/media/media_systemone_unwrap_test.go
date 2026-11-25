@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +25,7 @@ func TestHandleSystemone_CloudflareUnwrap(t *testing.T) {
 	defer cleanup()
 	repo := db.NewRepo(sqlDB)
 	p := 1
-	err := repo.CreateProviderConnectionFull("conn-oc-1", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
+	err := repo.CreateProviderConnectionFull(context.Background(), "conn-oc-1", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
 	if err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
@@ -64,7 +66,7 @@ func TestHandleSystemone_NormalPassthrough(t *testing.T) {
 	defer cleanup()
 	repo := db.NewRepo(sqlDB)
 	p := 1
-	err := repo.CreateProviderConnectionFull("conn-oc-2", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
+	err := repo.CreateProviderConnectionFull(context.Background(), "conn-oc-2", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
 	if err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}

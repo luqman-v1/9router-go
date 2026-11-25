@@ -73,7 +73,7 @@ func (h *DashboardHandler) resolveClaudeResetTarget(w http.ResponseWriter, r *ht
 			}
 			data["providerSpecificData"] = psd
 			if updatedData, err := json.Marshal(data); err == nil && h.Repo != nil {
-				_ = h.Repo.UpdateConnectionData(conn.ID, string(updatedData))
+				_ = h.Repo.UpdateConnectionData(r.Context(), conn.ID, string(updatedData))
 			}
 		}
 	}

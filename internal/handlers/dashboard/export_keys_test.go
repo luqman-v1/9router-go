@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -17,13 +19,13 @@ func TestHandleExportProviderKeys(t *testing.T) {
 
 	p1 := 1
 	p2 := 2
-	if err := repo.CreateProviderConnectionFull("conn-1", "anthropic", "apikey", "Key 1", &p1, `{"apiKey":"sk-ant-12345"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-1", "anthropic", "apikey", "Key 1", &p1, `{"apiKey":"sk-ant-12345"}`); err != nil {
 		t.Fatalf("failed to seed conn-1: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull("conn-2", "anthropic", "oauth", "OAuth 1", &p2, `{"accessToken":"tok-ant-67890"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-2", "anthropic", "oauth", "OAuth 1", &p2, `{"accessToken":"tok-ant-67890"}`); err != nil {
 		t.Fatalf("failed to seed conn-2: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull("conn-3", "openai", "apikey", "OpenAI Key", &p1, `{"apiKey":"sk-oai-99999"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-3", "openai", "apikey", "OpenAI Key", &p1, `{"apiKey":"sk-oai-99999"}`); err != nil {
 		t.Fatalf("failed to seed conn-3: %v", err)
 	}
 

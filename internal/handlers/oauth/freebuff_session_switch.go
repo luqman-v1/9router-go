@@ -187,7 +187,7 @@ func (h *OAuthHandler) HandleFreebuffSessionSwitch(w http.ResponseWriter, r *htt
 	}
 
 	log.Info("oauth", "freebuff model switched", "conn", conn.ID, "model", model, "refund", result.FreebucksRefund)
-	updateConnectionFreebuffModel(h.Repo, conn, model)
+	updateConnectionFreebuffModel(r.Context(), h.Repo, conn, model)
 	resp := map[string]any{
 		"status":       "active",
 		"currentModel": result.Model,

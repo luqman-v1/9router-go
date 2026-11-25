@@ -20,17 +20,17 @@ func TestSelectMediaConnections(t *testing.T) {
 	p3 := 3
 
 	// conn1: chat only (mediaEnabled: false)
-	if err := database.CreateProviderConnectionFull("conn-text-only", "openai", "apikey", "Text Only", &p1, `{"apiKey":"sk-1","mediaEnabled":false}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "conn-text-only", "openai", "apikey", "Text Only", &p1, `{"apiKey":"sk-1","mediaEnabled":false}`); err != nil {
 		t.Fatalf("failed to create conn1: %v", err)
 	}
 
 	// conn2: media enabled
-	if err := database.CreateProviderConnectionFull("conn-media-only", "openai", "apikey", "Media Only", &p2, `{"apiKey":"sk-2","mediaEnabled":true}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "conn-media-only", "openai", "apikey", "Media Only", &p2, `{"apiKey":"sk-2","mediaEnabled":true}`); err != nil {
 		t.Fatalf("failed to create conn2: %v", err)
 	}
 
 	// conn3: image disabled via disabledKinds
-	if err := database.CreateProviderConnectionFull("conn-image-disabled", "openai", "apikey", "Video Only", &p3, `{"apiKey":"sk-3","providerSpecificData":{"disabledKinds":["image"]}}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "conn-image-disabled", "openai", "apikey", "Video Only", &p3, `{"apiKey":"sk-3","providerSpecificData":{"disabledKinds":["image"]}}`); err != nil {
 		t.Fatalf("failed to create conn3: %v", err)
 	}
 
@@ -75,12 +75,12 @@ func TestMediaPoolVsChatRouting(t *testing.T) {
 	p2 := 2
 
 	// conn-text: priority 1, mediaEnabled: false
-	if err := database.CreateProviderConnectionFull("conn-text-only", "custom-media-prov", "apikey", "Text Conn", &p1, `{"apiKey":"sk-text","mediaEnabled":false}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "conn-text-only", "custom-media-prov", "apikey", "Text Conn", &p1, `{"apiKey":"sk-text","mediaEnabled":false}`); err != nil {
 		t.Fatalf("failed to create conn-text: %v", err)
 	}
 
 	// conn-media: priority 2, mediaEnabled: true
-	if err := database.CreateProviderConnectionFull("conn-media-only", "custom-media-prov", "apikey", "Media Conn", &p2, `{"apiKey":"sk-media","mediaEnabled":true}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "conn-media-only", "custom-media-prov", "apikey", "Media Conn", &p2, `{"apiKey":"sk-media","mediaEnabled":true}`); err != nil {
 		t.Fatalf("failed to create conn-media: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestMediaPoolVsChatRouting(t *testing.T) {
 
 	t.Run("provider with only media-disabled connections returns no active connections for media", func(t *testing.T) {
 		pOnly := 1
-		if err := database.CreateProviderConnectionFull("conn-chat-only-provider", "text-only-provider", "apikey", "Chat Only", &pOnly, `{"apiKey":"sk-alone","mediaEnabled":false}`); err != nil {
+		if err := database.CreateProviderConnectionFull(context.Background(), "conn-chat-only-provider", "text-only-provider", "apikey", "Chat Only", &pOnly, `{"apiKey":"sk-alone","mediaEnabled":false}`); err != nil {
 			t.Fatalf("failed to create connection: %v", err)
 		}
 
