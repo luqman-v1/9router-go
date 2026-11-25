@@ -1,6 +1,0 @@
-### Fixed
-
-- **Preserve Claude `cache_control` breakpoints for OpenRouter Anthropic models** — A `/v1/messages` request routed to an OpenRouter model under the `anthropic/` prefix now carries its `cache_control` markers through the Claude→OpenAI translation instead of having them stripped, so Anthropic's own API still sees the breakpoints a Claude Code caller sent (upstream OmniRoute #19755 parity). The OpenAI filter keeps the markers only for this lane; every other target still drops them.
-- **Preserve system block cache_control** — System blocks that carry `cache_control` are now kept as a content-block slice on the converted OpenAI system message instead of being flattened to a plain string, so the system-level breakpoint survives to the upstream. These markers count toward the four-breakpoint budget.
-- **Cap preserved markers at Anthropic's four-breakpoint limit** — A preserved request that carried more than four `cache_control` markers is capped to the last four, because Anthropic answers a larger request with a 400. Tool markers and message markers share the one budget.
-- **Enforce four-marker cap on direct OpenAI-format requests** — `FilterToOpenAIFormatJSON` with `PreserveCacheControl: true` now caps the total `cache_control` markers across system, messages and tools at four before sending upstream.

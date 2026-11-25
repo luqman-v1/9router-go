@@ -1,4 +1,0 @@
-### fix(zcode): resolve `glm-5.4` context window from the coding-plan catalog
-- **Catalog alias** (`internal/providers/catalog_sync.go`): map the `zcode` provider to `zai-coding-plan` for models.dev limit lookups. Previously `GetCatalogLimits("zcode", "glm-5.4")` missed the feed entry published under the coding-plan provider id.
-- **Static fallback** (`internal/providers/capabilities.go`): register `glm-5.4` in `providerCapabilities["zcode"]` with a 1,000,000-token window, 131,072 max output, and the same zai thinking flags as `glm-5.3`. Without this, the model fell through to the upstream `*glm-5*` 200k / 128k pattern whenever no catalog was loaded.
-- **Tests** (`internal/providers/zcode_glm54_limits_test.go`): cover the catalog alias, the static fallback, and feed precedence. Verified against the local models.dev catalog: `zcode/glm-5.4` now resolves to 1,000,000 / 131,072 instead of 200,000 / 128,000.
