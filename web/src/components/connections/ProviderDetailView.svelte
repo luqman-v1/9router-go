@@ -653,7 +653,7 @@
   // the first failure.
   async function handlePreviewRemoveAll(modelIds: string[]) {
     if (isImportPreviewLoading || modelIds.length === 0) return
-    if (!confirm(`Hapus ${modelIds.length} model dari ${displayAlias()}? Tindakan ini tidak bisa dibatalkan.`)) return
+    if (!confirm(`Remove ${modelIds.length} model(s) from ${displayAlias()}? This cannot be undone.`)) return
     isImportPreviewLoading = true
     const failures: string[] = []
     try {

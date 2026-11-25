@@ -27,8 +27,8 @@ export function filterImportPreviewModels(
 /**
  * The chip-state rule: a chip renders as "Ada" (green, removable) exactly when
  * its id is on the node's active list. The set spans the three sources a row
- * can come from — the compatible rows (custom + legacy alias), the custom
- * models of a registered provider, and the ids that ship with the build —
+ * can come from: the compatible rows (custom + legacy alias), the custom
+ * models of a registered provider, and the ids that ship with the build, and
  * because the panel serves both sections.
  */
 export function buildImportPreviewActiveIds(
@@ -46,8 +46,8 @@ export type ImportPreviewSort = 'az' | 'za' | 'latency-asc' | 'latency-desc'
 export const IMPORT_PREVIEW_SORTS: ReadonlyArray<{ value: ImportPreviewSort; label: string }> = [
   { value: 'az', label: 'A–Z' },
   { value: 'za', label: 'Z–A' },
-  { value: 'latency-asc', label: 'Latency terendah' },
-  { value: 'latency-desc', label: 'Latency tertinggi' },
+  { value: 'latency-asc', label: 'Latency: fastest' },
+  { value: 'latency-desc', label: 'Latency: slowest' },
 ]
 
 /**
@@ -98,7 +98,7 @@ export function importPreviewSelectionState(
 /**
  * Next selection after the header checkbox is clicked: everything filtered
  * when turning on, nothing filtered when turning off. Ids outside the current
- * search are preserved on purpose — an operator who selected a set, then
+ * search are preserved on purpose: an operator who selected a set, then
  * narrowed the search, still has that set selected.
  */
 export function toggleImportPreviewSelectAll(

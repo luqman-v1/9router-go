@@ -1,7 +1,7 @@
 <script lang="ts">
   // Staging panel for "Import from /models": fetches a provider's catalog
   // without writing any rows, lets the operator search, sort, select, test and
-  // add or remove models — one chip at a time, or as a batch.
+  // add or remove models, one chip at a time, or as a batch.
   //
   // Two operations are deliberately kept apart:
   //   - Selection is free and reversible: clicking a chip's body toggles it in
@@ -74,7 +74,7 @@
   // Render ceiling. A 460-model catalog draws ~3,000 DOM nodes if every chip
   // mounts at once, which is a phone-unfriendly first paint on the small box
   // this dashboard serves from. The search is the way to reach the rest: it
-  // filters the full list client-side, so nothing is unreachable — the tail
+  // filters the full list client-side, so nothing is unreachable: the tail
   // is one query away.
   const CHIP_RENDER_LIMIT = 60
   let visibleCount = $state(CHIP_RENDER_LIMIT)
@@ -114,7 +114,7 @@
     const done = Object.values(testStatuses).filter((s) => s !== 'testing')
     const ok = done.filter((s) => s === 'ok').length
     const failed = done.filter((s) => s === 'error' || s === 'blocked').length
-    return `${ok} lulus, ${failed} gagal dari ${done.length} model dites`
+    return `${ok} passed, ${failed} failed of ${done.length} tested`
   })
 
   let searchInput = $state<HTMLInputElement | null>(null)
@@ -169,9 +169,9 @@
       checked={selection.allSelected}
       indeterminate={selection.indeterminate}
       onchange={(e) => (selectedIds = toggleImportPreviewSelectAll(selectedIds, filtered, (e.target as HTMLInputElement).checked))}
-      title="Pilih semua hasil filter"
+      title="Select every model matching the current filter"
       class="size-3.5 shrink-0 accent-brand-500 cursor-pointer"
-      aria-label="Pilih semua hasil filter"
+      aria-label="Select every model matching the current filter"
     />
     <span class="text-sm font-semibold text-text-main">
       Preview Fetch Models ({filtered.length}{search.trim() ? ` of ${models.length}` : ''})
@@ -183,15 +183,15 @@
         bind:this={searchInput}
         value={search}
         oninput={(e) => onSearch((e.target as HTMLInputElement).value)}
-        placeholder="Cari nama model (mis. dee, flash)..."
+        placeholder="Search model name (e.g. dee, flash)..."
         class="h-7 w-56 rounded-md border border-border bg-background pl-7 pr-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
       />
     </div>
     <select
       value={sort}
       onchange={(e) => (sort = (e.target as HTMLSelectElement).value as ImportPreviewSort)}
-      title="Urutkan daftar"
-      aria-label="Urutkan daftar"
+      title="Sort the list"
+      aria-label="Sort the list"
       class="h-7 rounded-md border border-border bg-background px-1.5 text-xs text-text-main focus:border-primary focus:outline-none cursor-pointer"
     >
       {#each IMPORT_PREVIEW_SORTS as opt (opt.value)}
@@ -201,7 +201,7 @@
     <button
       type="button"
       onclick={onClose}
-      title="Tutup panel preview"
+      title="Close the preview panel"
       class="rounded p-1 text-text-muted hover:bg-sidebar hover:text-text-main cursor-pointer"
     >
       <span class="material-symbols-outlined text-base">close</span>
@@ -211,29 +211,29 @@
        stays quiet in the common one-chip-at-a-time case. -->
   {#if selection.selected > 0}
     <div class="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5">
-      <span class="text-xs font-medium text-text-main">{selection.selected} dipilih</span>
+      <span class="text-xs font-medium text-text-main">{selection.selected} selected</span>
       <button
         type="button"
         onclick={() => onTestSelected(selectedList)}
         disabled={testing || busy}
-        title="Test semua model terpilih — tiap probe memakai kuota akun"
+        title="Test every selected model; each probe consumes account quota"
         class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface-2 px-2 text-xs font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer"
       >
         <span class="material-symbols-outlined text-sm" style={testing ? 'animation: spin 1s linear infinite' : undefined}>
           {testing ? 'progress_activity' : 'science'}
         </span>
-        {testing ? 'Menguji...' : `Test terpilih (${selectedList.length})`}
+        {testing ? 'Testing...' : `Test selected (${selectedList.length})`}
       </button>
       {#if selectedAddable.length > 0}
         <button
           type="button"
           onclick={() => onAddAll(selectedAddable)}
           disabled={busy}
-          title="Tambah {selectedAddable.length} model terpilih ke daftar"
+          title="Add the {selectedAddable.length} selected models to the list"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2 text-xs font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
         >
           <span class="material-symbols-outlined text-sm">library_add</span>
-          Tambah terpilih ({selectedAddable.length})
+          Add selected ({selectedAddable.length})
         </button>
       {/if}
       {#if selectedRemovable.length > 0}
@@ -241,11 +241,11 @@
           type="button"
           onclick={() => onRemoveAll(selectedRemovable)}
           disabled={busy}
-          title="Hapus {selectedRemovable.length} model terpilih dari daftar"
+          title="Remove the {selectedRemovable.length} selected models from the list"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
         >
           <span class="material-symbols-outlined text-sm">delete_sweep</span>
-          Hapus terpilih ({selectedRemovable.length})
+          Remove selected ({selectedRemovable.length})
         </button>
       {/if}
       <button
@@ -255,7 +255,7 @@
         title="Kosongkan pilihan"
       >
         <span class="material-symbols-outlined text-sm">deselect</span>
-        Bersihkan
+        Clear
       </button>
     </div>
   {/if}
@@ -270,11 +270,11 @@
           type="button"
           onclick={() => onAddAll(addableIds)}
           disabled={busy}
-          title="Tambah semua {addableIds.length} model hasil filter ke daftar"
+          title="Add all {addableIds.length} models matching the filter to the list"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2.5 text-xs font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
         >
           <span class="material-symbols-outlined text-sm">library_add</span>
-          Tambah semua ({addableIds.length})
+          Add all ({addableIds.length})
         </button>
       {/if}
       {#if removableIds.length > 0}
@@ -282,18 +282,18 @@
           type="button"
           onclick={() => onRemoveAll(removableIds)}
           disabled={busy}
-          title="Hapus semua {removableIds.length} model hasil filter dari daftar"
+          title="Remove all {removableIds.length} models matching the filter from the list"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
         >
           <span class="material-symbols-outlined text-sm">delete_sweep</span>
-          Hapus semua ({removableIds.length})
+          Remove all ({removableIds.length})
         </button>
       {/if}
     </div>
   {/if}
   <p class="sr-only" aria-live="polite">{testSummary}</p>
   {#if filtered.length === 0}
-    <p class="py-8 text-center text-xs text-text-muted">Model tidak ditemukan</p>
+    <p class="py-8 text-center text-xs text-text-muted">No models found</p>
   {:else}
     <div class="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto">
       {#each visible as m (m.id)}
@@ -316,7 +316,7 @@
             type="button"
             onclick={() => toggleChip(m.id)}
             class="flex min-w-0 items-center gap-1 cursor-pointer"
-            title={isSelected ? 'Batalkan pilihan model' : 'Pilih model ini'}
+            title={isSelected ? 'Deselect this model' : 'Select this model'}
             aria-pressed={isSelected}
           >
             <span class="material-symbols-outlined text-sm {isActive ? 'text-green-500' : 'text-text-muted'}">{kindIcon(m.id)}</span>
@@ -332,13 +332,13 @@
             >{latency >= 1000 ? `${(latency / 1000).toFixed(1)}s` : `${latency}ms`}</span>
           {/if}
           {#if isActive}
-            <span class="rounded-full bg-green-500/20 px-1.5 text-[10px] font-sans font-semibold text-green-600 dark:text-green-400">Ada</span>
+            <span class="rounded-full bg-green-500/20 px-1.5 text-[10px] font-sans font-semibold text-green-600 dark:text-green-400">Added</span>
           {/if}
           <button
             type="button"
             onclick={() => onTest(m.id)}
             disabled={status === 'testing' || busy}
-            title="Test model — sends a real completion and consumes account quota"
+            title="Test model; sends a real completion and consumes account quota"
             class="rounded-full p-0.5 text-text-muted hover:text-primary cursor-pointer disabled:cursor-wait"
           >
             <span class="material-symbols-outlined text-sm" style={status === 'testing' ? 'animation: spin 1s linear infinite' : undefined}>
@@ -350,7 +350,7 @@
               type="button"
               onclick={() => onRemove(m.id)}
               disabled={busy}
-              title="Hapus dari daftar"
+              title="Remove from the list"
               class="rounded-full p-0.5 text-red-500 hover:bg-red-500/10 cursor-pointer"
             >
               <span class="material-symbols-outlined text-sm">delete</span>
@@ -360,7 +360,7 @@
               type="button"
               onclick={() => onAdd(m.id)}
               disabled={busy}
-              title="Tambah ke daftar"
+              title="Add to the list"
               class="rounded-full p-0.5 text-text-muted hover:bg-brand-500/10 hover:text-brand-500 cursor-pointer"
             >
               <span class="material-symbols-outlined text-sm">add</span>
@@ -372,10 +372,10 @@
         <button
           type="button"
           onclick={() => (visibleCount += CHIP_RENDER_LIMIT)}
-          title="Tampilkan {hiddenCount} model lagi"
+          title="Show {hiddenCount} more models"
           class="rounded-full border border-dashed border-border px-3 py-1 text-xs text-text-muted hover:border-primary hover:text-primary cursor-pointer"
         >
-          Tampilkan {Math.min(CHIP_RENDER_LIMIT, hiddenCount)} lagi ({hiddenCount} tersisa)
+          Show {Math.min(CHIP_RENDER_LIMIT, hiddenCount)} more ({hiddenCount} left)
         </button>
       {/if}
     </div>
