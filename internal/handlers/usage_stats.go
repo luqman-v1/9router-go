@@ -56,6 +56,13 @@ func resolveUsagePeriod(raw string, now time.Time) usagePeriod {
 		return usagePeriod{since: day, shape: anchoredShape(day)}
 	case "24h":
 		return usagePeriod{since: now.Add(-24 * time.Hour), shape: slidingShape(24 * time.Hour)}
+	case "month":
+		// Month-to-date: the window opens at local midnight on the 1st, so it
+		// answers "this calendar month" and stays distinguishable from 30d. Raw
+		// history rather than the daily rollup, because the window includes
+		// today and the rollup cannot express the part of a day.
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		return usagePeriod{since: monthStart, shape: anchoredShape(monthStart)}
 	case "all":
 		return usagePeriod{daily: true, days: allUsageDays}
 	}

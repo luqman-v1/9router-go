@@ -179,6 +179,11 @@ func parseChartPeriod(raw string) (kind string, count int) {
 		return raw, 24
 	case "all":
 		return "all", 0
+	case "month":
+		// Month-to-date, with its own kind: a day count of 0 already means
+		// "from the earliest row" (the `all` preset), so reusing it here would
+		// silently widen the chart to the whole ledger.
+		return "month", 0
 	case "30d":
 		return "daily", 30
 	case "60d":
@@ -212,6 +217,9 @@ func HandleUsageChart(repo *db.Repo) http.HandlerFunc {
 			buckets = hourlyChartBuckets(repo, start, count)
 		case "24h", "hourly":
 			buckets = hourlyChartBuckets(repo, now.Add(-time.Duration(count)*time.Hour), count)
+		case "month":
+			// One bucket per day elapsed in the calendar month, including today.
+			buckets = dailyChartBuckets(repo, now, now.Day())
 		default:
 			buckets = dailyChartBuckets(repo, now, count)
 		}
