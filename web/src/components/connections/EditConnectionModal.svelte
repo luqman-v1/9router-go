@@ -8,6 +8,7 @@
   // (issue #154).
   import { onMount } from 'svelte'
   import { api, type ProviderConnection } from '../../api/client'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
   import {
     credentialPlaceholder,
     credentialUpdate,
@@ -62,15 +63,9 @@
     testSpinner = true
   }: Props = $props()
 
-  // Upstream Modal parity: Escape dismisses, backdrop click dismisses.
-  $effect(() => {
-    if (typeof window === 'undefined') return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  })
+  // Upstream Modal parity: Escape dismisses, backdrop click dismisses. Escape
+  // goes through the shared stack so only the topmost dialog closes.
+  $effect(() => pushEscapeHandler(onClose))
 
   // Seeded masked when privacy masking is on, so screen sharing does not
   // reveal the account email in the form. `originalName` keeps the untouched

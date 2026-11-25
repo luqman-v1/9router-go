@@ -8,6 +8,7 @@
   import type { ProviderCatalogItem } from '../../lib/providers'
   import Badge from '../../lib/ui/Badge.svelte'
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
   import { type MediaKind, MEDIA_KIND_INFO } from './mediaTypes'
   import NoAuthProxyCard from './NoAuthProxyCard.svelte'
   import TtsExampleCard from './TtsExampleCard.svelte'
@@ -109,6 +110,11 @@
   // Connections state
   let providerConns = $derived(connections.filter((c) => c.provider === provider.id))
   let showAddConnModal = $state(false)
+  // Escape on the shared stack, so a dialog opened over this one closes first.
+  $effect(() => {
+    if (!showAddConnModal) return
+    return pushEscapeHandler(() => (showAddConnModal = false))
+  })
   let newConnKey = $state('')
   let newConnName = $state('')
   let newConnError = $state('')
