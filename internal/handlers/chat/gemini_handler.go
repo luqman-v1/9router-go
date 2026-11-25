@@ -64,6 +64,8 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	metrics *streamMetrics,
 	// httpClient is the connection's client, proxy pool included.
 	httpClient *http.Client,
+	// start is when the request reached the handler; see handleGeminiStream.
+	start time.Time,
 ) error {
 	// Extract model
 	var reqMeta struct {
@@ -229,7 +231,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		}
 		stallReader := proxy.NewStallReaderWithFirstEvent(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), firstEventTimeout, provider)
 		defer func() { _ = stallReader.Close() }()
-		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
+		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics, start)
 	}
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
 }
@@ -756,7 +758,13 @@ func buildContinuationRequest(body []byte, token string) (string, error) {
 
 // handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
 // The stream drops the first SSE line (model metadata), then translates each content block SSE.
-func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
+//
+// start is when the request reached the handler, not when this function runs:
+// it is called after the upstream answered with headers, which on this lane can
+// be 30s later. Measuring TTFT from here reported single-digit milliseconds for
+// a request whose first byte took half a minute, and the client's tokens/s —
+// completion over (total - ttft) — came out an order of magnitude too low.
+func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics, start time.Time) error {
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
@@ -766,7 +774,6 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 		}
 		return ""
 	}()}
-	start := time.Now()
 	// A /v1/responses client is one hop further out: Gemini events become
 	// OpenAI chunks here and those chunks become Responses events, so the
 	// bridge consumes this branch's output instead of the raw writer.
