@@ -569,30 +569,20 @@ func (h *OAuthHandler) saveDeviceConnection(ctx context.Context, provider string
 		// from a stale timestamp.
 		dataMap["expiresAt"] = nil
 	}
-	if h.Repo != nil && h.Repo.RawDB() != nil {
-		now := currentTimestamp()
+	if h.Repo != nil {
 		if provider == "muse" {
-			// The minted Model API key rotates on every login, so without
-			// this each re-login would pile up another active row for the
-			// same account. Keep only the newest connection active.
+			now := currentTimestamp()
 			_, _ = h.Repo.RawDB().Exec(
 				"UPDATE providerConnections SET isActive = 0, updatedAt = ? WHERE provider = ? AND id != ? AND isActive = 1",
 				now, provider, id)
 		}
 		raw, _ := json.Marshal(dataMap)
-		var existing string
-		err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", id).Scan(&existing)
-		if err == nil && existing != "" {
-			_, _ = h.Repo.RawDB().Exec(
-				"UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?", name, string(raw), now, id)
+		existing, _ := h.Repo.GetProviderConnectionByID(id)
+		if existing != nil {
+			_ = h.Repo.ReplaceProviderConnectionPayload(ctx, id, name, string(raw))
 		} else {
-			priority := 1
-			if h.Repo != nil {
-				priority = h.Repo.ResolveDefaultPriority(ctx, provider)
-			}
-			_, _ = h.Repo.RawDB().Exec(
-				"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",
-				id, provider, name, priority, string(raw), now, now)
+			priority := h.Repo.ResolveDefaultPriority(ctx, provider)
+			_ = h.Repo.CreateProviderConnectionFull(ctx, id, provider, "oauth", name, &priority, string(raw))
 		}
 	}
 	return savedConn{id, name, email}
