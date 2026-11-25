@@ -3,6 +3,7 @@ package dashboard
 import (
 	"net/http"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/middleware"
@@ -61,7 +62,6 @@ type DashboardHandler struct {
 	ModelHealth *modelhealth.Loop
 }
 
-// NewDashboardHandler initializes a DashboardHandler with the provided Repo.
 func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *DashboardHandler {
 	h := &DashboardHandler{
 		Repo:              repo,
@@ -76,6 +76,15 @@ func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *Dashboa
 	// StartJailbreakSync, and a handler built outside a boot still answers the
 	// source endpoints by opening a store over the same repository.
 	return h
+}
+
+// refreshSessionEpoch reinstalls the in-memory revocation state from the stored
+// settings, the way boot does. Every handler that writes a password outside
+// `changeDashboardPassword` — the reset that clears the hash, the setup wizard
+// that writes the first one — must call this, or a token captured before the
+// write keeps verifying against the stale fingerprint until a restart.
+func (h *DashboardHandler) refreshSessionEpoch() {
+	auth.LoadSessionEpoch(h.Repo)
 }
 
 // SetJailbreakSync installs the running worker behind the sync endpoints. The

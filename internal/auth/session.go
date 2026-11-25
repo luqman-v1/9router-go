@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"math"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	json "encoding/json/v2"
@@ -72,6 +74,83 @@ type SessionClaims struct {
 	SamlEmail     string `json:"samlEmail,omitempty"`
 	Iat           int64  `json:"iat"`
 	Exp           int64  `json:"exp"`
+	// TV is the revocation epoch the token was issued at; PH is a fingerprint
+	// of the stored password hash. A password change bumps the epoch and
+	// changes the fingerprint, so every token issued before it stops verifying.
+	// Tokens minted before this check carry neither and are read as epoch 0, so
+	// deploying the check alone logs nobody out.
+	TV int    `json:"tv,omitempty"`
+	PH string `json:"ph,omitempty"`
+}
+
+// sessionEpoch is the revocation state a token is issued and checked against.
+// It is installed once at boot from the stored settings and refreshed when the
+// password changes, so verifying a token costs no database read.
+type sessionEpoch struct {
+	version     int
+	fingerprint string
+}
+
+var currentSessionEpoch atomic.Pointer[sessionEpoch]
+
+// SetSessionEpoch installs the revocation state the next token is stamped with
+// and every later token is checked against.
+func SetSessionEpoch(version int, fingerprint string) {
+	currentSessionEpoch.Store(&sessionEpoch{version: version, fingerprint: fingerprint})
+}
+
+func sessionEpochNow() sessionEpoch {
+	if e := currentSessionEpoch.Load(); e != nil {
+		return *e
+	}
+	return sessionEpoch{}
+}
+
+// PasswordFingerprint is what a token carries so that ANY password change
+// invalidates it — including a reset that writes a new hash without bumping
+// the epoch. Hashed, never hashed-and-reversible: the token never reveals the
+// stored hash.
+func PasswordFingerprint(hash string) string {
+	sum := sha256.Sum256([]byte(hash))
+	return hex.EncodeToString(sum[:])
+}
+
+// SessionTokenVersion reads the stored revocation epoch from settings.
+func SessionTokenVersion(raw map[string]any) int {
+	if v, ok := raw["tokenVersion"].(float64); ok && v >= 0 {
+		return int(v)
+	}
+	return 0
+}
+
+// LoadSessionEpoch installs the epoch from the stored settings. Called once at
+// boot, before the router serves; a settings row it cannot read leaves the
+// legacy epoch in place (0, ""), which is what every token minted before this
+// check carries.
+func LoadSessionEpoch(repo *db.Repo) {
+	if repo == nil {
+		return
+	}
+	raw, err := repo.GetSettingsRaw()
+	if err != nil || raw == nil {
+		return
+	}
+	hash, _ := raw["password"].(string)
+	SetSessionEpoch(SessionTokenVersion(raw), PasswordFingerprint(hash))
+}
+
+// claimsCurrent reports whether a verified token is still inside the current
+// revocation epoch. A token without PH (minted before the fingerprint existed)
+// is judged by its epoch alone, exactly like upstream's legacy fallback.
+func claimsCurrent(c *SessionClaims) bool {
+	epoch := sessionEpochNow()
+	if c.TV != epoch.version {
+		return false
+	}
+	if c.PH != "" && c.PH != epoch.fingerprint {
+		return false
+	}
+	return true
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -86,6 +165,7 @@ func SignWith(secret string, now time.Time, extra SessionClaims) (string, error)
 	if secret == "" {
 		return "", errors.New("no jwt secret available")
 	}
+	epoch := sessionEpochNow()
 	payload, err := json.Marshal(SessionClaims{
 		Authenticated: true,
 		Oidc:          extra.Oidc,
@@ -96,6 +176,8 @@ func SignWith(secret string, now time.Time, extra SessionClaims) (string, error)
 		SamlEmail:     extra.SamlEmail,
 		Iat:           now.Unix(),
 		Exp:           now.Add(TokenTTL).Unix(),
+		TV:            epoch.version,
+		PH:            epoch.fingerprint,
 	})
 	if err != nil {
 		return "", err
@@ -136,7 +218,7 @@ func Verify(token, secret string) bool {
 	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
 		return false
 	}
-	return true
+	return claimsCurrent(&claims)
 }
 
 // SessionValid reports whether the request carries a valid session cookie.
@@ -184,6 +266,9 @@ func decodeClaims(token, secret string) *SessionClaims {
 		return nil
 	}
 	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
+		return nil
+	}
+	if !claimsCurrent(&claims) {
 		return nil
 	}
 	return &claims

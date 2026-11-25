@@ -39,7 +39,10 @@ const (
 
 // protectedSettingKeys may never be written by the dashboard client — matches
 // Next's PROTECTED_SETTING_KEYS (the hashed password lives in settings too).
-var protectedSettingKeys = []string{"password", "mitmSudoEncrypted"}
+// tokenVersion is the session revocation epoch: a client that could write it
+// could resurrect every token a password change revoked, which is the one
+// property the epoch exists to guarantee.
+var protectedSettingKeys = []string{"password", "tokenVersion", "mitmSudoEncrypted"}
 
 // writePlainError answers with Next's flat { error: "message" } shape instead of
 // the OpenAI-style envelope, because the dashboard UI reads data.error as text.
@@ -81,6 +84,17 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		updates = map[string]any{}
 	}
 
+	// A protected key is refused before anything is applied. Rejecting it after
+	// the password block (where it used to sit) meant a payload carrying both
+	// newPassword and tokenVersion changed the password, revoked every session,
+	// and only then answered 400 — a failed request with a lasting effect.
+	for _, key := range protectedSettingKeys {
+		if _, ok := updates[key]; ok {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "setting "+key+" is read-only")
+			return
+		}
+	}
+
 	// Password change carries current/new instead of a direct `password` write.
 	if _, wantsPasswordChange := updates["newPassword"]; wantsPasswordChange {
 		newPassword, _ := updates["newPassword"].(string)
@@ -91,20 +105,26 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "newPassword is required")
 			return
 		}
+		// Read the caller's identity BEFORE the change. The change bumps the
+		// epoch, which invalidates the very token this claim set comes from, so
+		// reading it afterwards would always come back empty and turn an SSO
+		// operator into a "Password user".
+		extra := auth.SessionClaims{}
+		if claims := auth.SessionClaimSet(r); claims != nil {
+			extra = *claims
+		}
 		if err := h.changeDashboardPassword(currentPassword, newPassword); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
+		// The change revoked every session, the caller's included: re-issue the
+		// cookie so the operator who made the change stays signed in.
+		if token, signErr := auth.SignWith(auth.Secret(), time.Now(), extra); signErr == nil {
+			auth.SetCookie(w, r, token)
+		}
 	} else {
 		delete(updates, "currentPassword")
 		delete(updates, "newPassword")
-	}
-
-	for _, key := range protectedSettingKeys {
-		if _, ok := updates[key]; ok {
-			handlerutil.WriteJSONError(w, http.StatusBadRequest, "setting "+key+" is read-only")
-			return
-		}
 	}
 
 	if err := validateProviderThinking(updates["providerThinking"]); err != nil {
@@ -378,7 +398,18 @@ func (h *DashboardHandler) changeDashboardPassword(currentPassword, newPassword 
 	if err != nil {
 		return err
 	}
-	return h.Repo.UpdateSettingsRaw(map[string]any{"password": string(hashed)})
+	// The epoch rides in the same write as the password: a stored password the
+	// tokens still match, with an epoch that says otherwise, is the one state
+	// that must never be observable.
+	next := auth.SessionTokenVersion(raw) + 1
+	if err := h.Repo.UpdateSettingsRaw(map[string]any{
+		"password":     string(hashed),
+		"tokenVersion": next,
+	}); err != nil {
+		return err
+	}
+	auth.SetSessionEpoch(next, auth.PasswordFingerprint(string(hashed)))
+	return nil
 }
 
 // verifyDashboardPassword mirrors Next's verifyDashboardPassword: a stored

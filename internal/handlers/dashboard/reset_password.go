@@ -196,5 +196,9 @@ func (h *DashboardHandler) HandleResetPassword(w http.ResponseWriter, r *http.Re
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The stored fingerprint is gone, so a token carrying the old one must stop
+	// verifying now, not at the next restart: re-read the epoch from the store
+	// the way boot does.
+	h.refreshSessionEpoch()
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/clientconfig"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
@@ -236,6 +237,9 @@ func SetupRoutes(r interface {
 // browser session, a valid API key or the local CLI token through when login is
 // enabled (upstream dashboardGuard).
 func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) {
+	// Install the session revocation epoch before any token is issued: a token
+	// minted against a stale epoch would be refused on its very next request.
+	auth.LoadSessionEpoch(repo)
 	var ts *TokenSaverConfig
 	if chatH != nil {
 		ts = chatH.TokenSaver
