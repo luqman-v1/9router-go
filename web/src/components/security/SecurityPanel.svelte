@@ -7,7 +7,7 @@
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
   import Toggle from '../../lib/ui/Toggle.svelte'
-  import { Activity, AlertTriangle, KeyRound, Lock, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-svelte'
+  import { Activity, AlertTriangle, KeyRound, Lock, Pencil, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-svelte'
 
   type BadgeTone = 'default' | 'neutral' | 'primary' | 'success' | 'warning' | 'danger' | 'error' | 'info' | 'outline'
 
@@ -53,6 +53,7 @@
   let formDetectors = $state<string[]>(['pii'])
   let formAction = $state('log_only')
   let isCreating = $state(false)
+  let editingPolicy = $state<GuardrailPolicy | null>(null)
 
   let formCustomPatterns = $state<Array<{ name: string; regex: string; replacement?: string }>>([])
   let customName = $state('')
@@ -123,13 +124,25 @@
     }
   }
 
-  function openEditor() {
-    formName = ''
-    formScope = scopeFilter === 'all' ? 'global' : scopeFilter
-    formScopeId = ''
-    formDetectors = ['pii']
-    formAction = 'log_only'
-    formCustomPatterns = []
+  function openEditor(policy: GuardrailPolicy | null = null) {
+    if (policy) {
+      const cfg = parseConfig(policy.config)
+      editingPolicy = policy
+      formName = policy.name
+      formScope = policy.scope
+      formScopeId = policy.scopeId
+      formDetectors = cfg.detectors
+      formAction = cfg.action
+      formCustomPatterns = cfg.customPatterns.map((p) => ({ ...p }))
+    } else {
+      editingPolicy = null
+      formName = ''
+      formScope = scopeFilter === 'all' ? 'global' : scopeFilter
+      formScopeId = ''
+      formDetectors = ['pii']
+      formAction = 'log_only'
+      formCustomPatterns = []
+    }
     customName = ''
     customRegex = ''
     customReplacement = ''
@@ -167,7 +180,7 @@
     formCustomPatterns = formCustomPatterns.filter((_, i) => i !== index)
   }
 
-  async function createPolicy() {
+  async function savePolicy() {
     error = null
     notice = null
     if (!formName.trim()) {
@@ -198,14 +211,25 @@
       if (formDetectors.includes('custom') && formCustomPatterns.length > 0) {
         config.customPatterns = formCustomPatterns
       }
-      await api.createGuardrailPolicy({
-        name: formName.trim(),
-        scope: formScope,
-        scopeId: formScope === 'global' ? '' : formScopeId.trim(),
-        config: JSON.stringify(config)
-      })
+      if (editingPolicy) {
+        await api.updateGuardrailPolicy(editingPolicy.id, {
+          name: formName.trim(),
+          scope: formScope,
+          scopeId: formScope === 'global' ? '' : formScopeId.trim(),
+          enabled: editingPolicy.enabled,
+          config: JSON.stringify(config)
+        })
+        notice = `Updated ${formName.trim()}`
+      } else {
+        await api.createGuardrailPolicy({
+          name: formName.trim(),
+          scope: formScope,
+          scopeId: formScope === 'global' ? '' : formScopeId.trim(),
+          config: JSON.stringify(config)
+        })
+        notice = 'Policy created'
+      }
       isEditorOpen = false
-      notice = 'Policy created'
       await load()
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
@@ -452,7 +476,7 @@
           <RefreshCw size={15} />
           Refresh
         </Button>
-        <Button variant="primary" size="md" onclick={openEditor}>
+        <Button variant="primary" size="md" onclick={() => openEditor()}>
           <Plus size={16} />
           New policy
         </Button>
@@ -511,7 +535,16 @@
                   {formatWhen(policy.createdAt)}
                 </td>
                 <td class="px-4 py-3">
-                  <div class="flex items-center justify-end">
+                  <div class="flex items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      onclick={() => openEditor(policy)}
+                      title="Edit policy"
+                      aria-label={`Edit ${policy.name}`}
+                      class="rounded-lg p-1.5 text-text-muted transition-colors cursor-pointer hover:bg-brand-500/10 hover:text-brand-500"
+                    >
+                      <Pencil size={15} />
+                    </button>
                     <button
                       type="button"
                       onclick={() => (pendingDelete = policy)}
@@ -581,10 +614,10 @@
   </div>
 </div>
 
-<!-- Create policy -->
+<!-- Create / edit policy -->
 <Modal
   isOpen={isEditorOpen}
-  title="New guardrail policy"
+  title={editingPolicy ? 'Edit guardrail policy' : 'New guardrail policy'}
   size="md"
   onClose={() => (isEditorOpen = false)}
 >
@@ -593,7 +626,7 @@
     class="space-y-4"
     onsubmit={(e) => {
       e.preventDefault()
-      createPolicy()
+      savePolicy()
     }}
   >
     <Input
@@ -731,9 +764,9 @@
       variant="primary"
       loading={isCreating}
       disabled={isCreating}
-      onclick={createPolicy}
+      onclick={savePolicy}
     >
-      Create policy
+      {editingPolicy ? 'Save changes' : 'Create policy'}
     </Button>
   {/snippet}
 </Modal>

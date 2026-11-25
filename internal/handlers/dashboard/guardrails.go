@@ -67,7 +67,14 @@ func (h *DashboardHandler) HandleUpdateGuardrailPolicy(w http.ResponseWriter, r 
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	handlerutil.WriteJSON(w, http.StatusOK, p)
+	// Re-read the row so the response carries the stored timestamps and
+	// tenant id, not the (timestamp-less) request body.
+	updated, err := h.Repo.GetGuardrailPolicy(id)
+	if err != nil || updated == nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "policy updated but could not be read back")
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, updated)
 }
 
 // HandleGetGuardrailPolicies handles GET /api/guardrails/policies.
