@@ -543,11 +543,17 @@
     if (isImportPreviewLoading) return
     const active = providerConnections.find((c) => c.isActive !== 0)
     if (!active) return
+    // Open first, fill second. The panel appears on the click, showing its
+    // loading state, instead of the button sitting inert for the length of an
+    // upstream fetch (2.6 s for a 460-model catalogue). isImportPreviewLoading
+    // drives that state, and the fetch below replaces it with chips.
     isImportPreviewLoading = true
+    showImportPreview = true
     try {
       const res = await api.getConnectionModels(active.id)
       const models = res.models || []
       if (models.length === 0) {
+        closeImportPreview()
         alert('No models returned from /models.')
         return
       }
@@ -578,8 +584,8 @@
       }
       list.sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: 'base' }))
       importPreviewModels = list
-      showImportPreview = true
     } catch (err) {
+      closeImportPreview()
       alert(err instanceof Error ? err.message : 'Failed to fetch models')
     } finally {
       isImportPreviewLoading = false

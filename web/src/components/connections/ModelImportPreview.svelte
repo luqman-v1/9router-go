@@ -292,7 +292,15 @@
     </div>
   {/if}
   <p class="sr-only" aria-live="polite">{testSummary}</p>
-  {#if filtered.length === 0}
+  {#if busy && models.length === 0}
+    <!-- The panel opens before the fetch resolves, so the wait is a skeleton
+         inside it rather than an inert button outside it. -->
+    <div class="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto" aria-busy="true" aria-label="Fetching models">
+      {#each Array(12) as _, i (i)}
+        <span class="h-5 w-36 animate-pulse rounded-full bg-surface-3" style="opacity: {1 - i * 0.06}"></span>
+      {/each}
+    </div>
+  {:else if filtered.length === 0}
     <p class="py-8 text-center text-xs text-text-muted">No models found</p>
   {:else}
     <div class="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto">
