@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/translator"
@@ -397,7 +398,7 @@ func TestHandleGeminiStream_ResponsesClient(t *testing.T) {
 	ctx := translator.WithResponsesBridge(translator.WithClientFormat(context.Background(), translator.ClientFormatResponses))
 	metrics := &streamMetrics{}
 
-	if err := (&ChatHandler{}).handleGeminiStream(ctx, rec, strings.NewReader(upstream), false, metrics); err != nil {
+	if err := (&ChatHandler{}).handleGeminiStream(ctx, rec, strings.NewReader(upstream), false, metrics, time.Now().Add(-30*time.Second)); err != nil {
 		t.Fatalf("handleGeminiStream: %v", err)
 	}
 
@@ -410,6 +411,13 @@ func TestHandleGeminiStream_ResponsesClient(t *testing.T) {
 	}
 	if !strings.Contains(out, `"text":"Hello"`) {
 		t.Errorf("answer text did not survive the two hops:\n%s", out)
+	}
+	// TTFT is measured from the request start this function is handed. The
+	// upstream answers with headers long before its first event, so a handler
+	// that stamped its own clock here reported single-digit milliseconds and
+	// made the client's tokens/s an order of magnitude too low.
+	if metrics.TTFT < int64(30*time.Second/time.Millisecond) {
+		t.Errorf("TTFT = %dms, want it measured from the supplied start (~30s)", metrics.TTFT)
 	}
 }
 
