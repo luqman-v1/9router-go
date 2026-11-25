@@ -134,7 +134,7 @@ func miniMaxCodeDeadline(data map[string]any, now time.Time) int {
 	if !ok {
 		return miniMaxCodeSignInSeconds
 	}
-	if raw < 1e12 {
+	if int64(raw) < int64(1e12) {
 		return raw
 	}
 	remaining := time.UnixMilli(int64(raw)).Sub(now)

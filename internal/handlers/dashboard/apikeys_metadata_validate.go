@@ -26,7 +26,7 @@ const maxAPIKeyMetadataBytes = 2048
 const (
 	maxMetadataCustomerIDLen = 128
 	maxMetadataTextLen       = 500
-	maxMetadataPriceCents    = 100_000_000_000
+	maxMetadataPriceCents    int64 = 100_000_000_000
 )
 
 // metadataBillingCycles is the accepted vocabulary for a contract's billing
@@ -102,7 +102,7 @@ func metadataPriceCents(value any) error {
 	if !ok || math.IsNaN(cents) || math.IsInf(cents, 0) || math.Trunc(cents) != cents {
 		return errValue("must be a whole number of cents")
 	}
-	if cents < 0 || cents > maxMetadataPriceCents {
+	if cents < 0 || cents > float64(maxMetadataPriceCents) {
 		return errValue(fmt.Sprintf("must be between 0 and %d", maxMetadataPriceCents))
 	}
 	return nil
