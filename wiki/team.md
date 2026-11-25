@@ -45,7 +45,7 @@ score.
     <img src="https://avatars.githubusercontent.com/u/20932301?v=4&s=200" alt="Helmi Amirudin" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/helmiau">Helmi Amirudin</a></p>
     <p class="contrib-login">@helmiau</p>
-    <p class="contrib-count">94 commits</p>
+    <p class="contrib-count">97 commits</p>
   </div>
 
   <div class="contrib-card">
@@ -77,6 +77,13 @@ score.
   </div>
 
   <div class="contrib-card">
+    <img src="https://avatars.githubusercontent.com/u/108579846?v=4&s=200" alt="Ahmad Ghozali" loading="lazy" decoding="async" width="64" height="64" />
+    <p class="contrib-name"><a href="https://github.com/ghozali25">Ahmad Ghozali</a></p>
+    <p class="contrib-login">@ghozali25</p>
+    <p class="contrib-count">5 commits</p>
+  </div>
+
+  <div class="contrib-card">
     <img src="https://avatars.githubusercontent.com/u/5910636?v=4&s=200" alt="fajar" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/jhonoryza">fajar</a></p>
     <p class="contrib-login">@jhonoryza</p>
@@ -87,13 +94,6 @@ score.
     <img src="https://avatars.githubusercontent.com/u/66246006?v=4&s=200" alt="Yi Zheng Wu" loading="lazy" decoding="async" width="64" height="64" />
     <p class="contrib-name"><a href="https://github.com/forggy0113">Yi Zheng Wu</a></p>
     <p class="contrib-login">@forggy0113</p>
-    <p class="contrib-count">4 commits</p>
-  </div>
-
-  <div class="contrib-card">
-    <img src="https://avatars.githubusercontent.com/u/108579846?v=4&s=200" alt="Ahmad Ghozali" loading="lazy" decoding="async" width="64" height="64" />
-    <p class="contrib-name"><a href="https://github.com/ghozali25">Ahmad Ghozali</a></p>
-    <p class="contrib-login">@ghozali25</p>
     <p class="contrib-count">4 commits</p>
   </div>
 
