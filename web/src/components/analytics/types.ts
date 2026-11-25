@@ -1,7 +1,7 @@
 import { PROVIDER_CATALOG } from '../../lib/providers'
 
 export type MainTab = 'overview' | 'details'
-export type PeriodPreset = 'today' | '24h' | '7d' | '30d' | '60d' | 'all'
+export type PeriodPreset = 'today' | '24h' | '7d' | 'month' | '30d' | '60d' | 'all'
 // A custom entry is "<n>d" or "<n>h"; the server parses both, so the selector is
 // not limited to the presets below.
 export type Period = PeriodPreset | (string & {})
@@ -157,6 +157,7 @@ export const PERIODS: { value: PeriodPreset; label: string }[] = [
   { value: 'today', label: 'Today' },
   { value: '24h', label: 'Last 24 hours' },
   { value: '7d', label: 'Last 7 days' },
+  { value: 'month', label: 'This month' },
   { value: '30d', label: 'Last 30 days' },
   { value: '60d', label: 'Last 60 days' },
   { value: 'all', label: 'All time' },
@@ -184,6 +185,7 @@ export function normalizeCustomPeriod(input: string): PeriodPreset | null {
   const match = PERIOD_PATTERN.exec(text)
   if (match && Number(match[1]) > 0) return `${Number(match[1])}${match[2]}` as PeriodPreset
   if (text === 'all') return 'all'
+  if (text === 'month') return 'month'
   return null
 }
 
