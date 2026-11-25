@@ -32,20 +32,19 @@ func Key(provider, model string) string {
 // CountsTowardBreaker reports whether an upstream error is the model's own
 // fault, which is the only case this layer may charge.
 //
-// The rule is errclass's Scope, not the status code: ScopeModel means the
-// model itself is gone or the prompt does not fit it, and that is what a
-// per-model breaker exists to catch. ScopeProvider (5xx, transport) is the
-// provider breaker's job — charging it here would put every model of a
-// briefly-down provider into cooldown and then disable all of them after
-// three cycles. ScopeAccount (429, quota, auth) is the connection-rotation
-// layer's job for the same reason. ScopeRequest cools nothing.
+// The rule is errclass's Scope plus its Kind: only an availability failure
+// (KindModelUnavailable) counts. A context-window overflow is ScopeModel too,
+// but it is produced by the caller's own prompt, so charging it lets any
+// caller open the breaker for a provider/model pair and 503 every other
+// tenant after five oversized requests (#1450). ScopeProvider (5xx,
+// transport) is the provider breaker's job — charging it here would put
+// every model of a briefly-down provider into cooldown and then disable all
+// of them after three cycles. ScopeAccount (429, quota, auth) is the
+// connection-rotation layer's job for the same reason. ScopeRequest cools
+// nothing.
 func CountsTowardBreaker(class errclass.Classification) bool {
-	switch class.EffectiveScope() {
-	case errclass.ScopeModel:
-		return true
-	default:
-		return false
-	}
+	return class.EffectiveScope() == errclass.ScopeModel &&
+		class.Kind == errclass.KindModelUnavailable
 }
 
 // Classify turns an upstream status plus body into the classification this
