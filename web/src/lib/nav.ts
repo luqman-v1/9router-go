@@ -74,6 +74,7 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'main',
     entries: [
       { kind: 'link', id: 'endpoint', label: 'Endpoint & Key', icon: 'api' },
+      { kind: 'link', id: 'playground', label: 'Playground', icon: 'play_circle' },
       { kind: 'link', id: 'connections', label: 'Providers', icon: 'dns' },
       { kind: 'link', id: 'combos', label: 'Combo & Vision Adapter', icon: 'layers' },
       { kind: 'link', id: 'analytics', label: 'Usage', icon: 'bar_chart' },

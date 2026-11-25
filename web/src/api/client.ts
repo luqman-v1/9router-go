@@ -1820,6 +1820,26 @@ export const api = {
       >
     }>('/api/models/meta'),
 
+  /**
+   * Playground: one chat turn taken through the gateway's own dispatch, from
+   * the dashboard session rather than an engine key. `keyId` scopes the turn
+   * to that key (its model allowlist, budget and usage attribution) and is
+   * omitted for the global scope. Returns the Chat Completions JSON unchanged,
+   * or throws an ApiError carrying the gateway's status and message.
+   */
+  playgroundChat: (payload: {
+    model: string
+    messages: { role: string; content: string }[]
+    stream?: boolean
+    temperature?: number
+    maxTokens?: number
+    keyId?: string
+  }) =>
+    request<any>('/api/playground/chat', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   // API Keys
   getApiKeys: () => request<APIKey[]>('/api/keys'),
   createApiKey: (payload: {
