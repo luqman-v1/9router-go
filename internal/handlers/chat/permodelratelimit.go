@@ -101,12 +101,18 @@ type PerModelLimit struct {
 // is optional; precedence is per-model override, then per-provider override,
 // then the global value, then the defaults. `enabled: false` or `limit: 0`
 // turns the limiter off for that scope, and the values are clamped so a typo
-// cannot wedge chat. A nil block means "not configured" and reads as the
-// built-in default.
+// cannot wedge chat.
+//
+// A nil block means "never configured", and that is OFF. This is net-new quota
+// semantics with no upstream counterpart, so it may not change the behaviour of
+// a deployment that never asked for it: the operator opts in by writing the
+// block, the same way every other net-new switch here defaults off
+// (CavemanEnabled, PonytailEnabled, ADHDEnabled, SystemPromptEnabled). Once the
+// block exists the cap applies unless it is explicitly disabled.
 func resolvePerModelRateLimit(cfg *db.PerModelRateLimitSettings, provider, model string) PerModelLimit {
 	off := PerModelLimit{WindowMs: perModelDefaultWindowMs}
 	if cfg == nil {
-		return PerModelLimit{Enabled: true, Limit: perModelDefaultLimit, WindowMs: perModelDefaultWindowMs}
+		return off
 	}
 	scoped := cfg.Overrides[provider+"/"+model]
 	if scoped == nil {
@@ -128,12 +134,17 @@ func resolvePerModelRateLimit(cfg *db.PerModelRateLimitSettings, provider, model
 		}
 	}
 
-	if enabled != nil && !*enabled {
+	// Opt-in is explicit. A block the operator wrote without an enabled flag
+	// is OFF for the same reason an absent block is: a half-written config
+	// must not silently start refusing requests, and `enabled: true` is one
+	// keystroke away.
+	if enabled == nil || !*enabled {
 		return off
 	}
-	if limit == 0 {
-		return off
-	}
+	// `enabled: false` is the single switch that disables a scope. A limit the
+	// parser never saw, or one outside the clamp, falls back to the built-in
+	// default rather than to "zero requests allowed": a half-written number
+	// must not wedge chat.
 	if limit <= 0 {
 		limit = perModelDefaultLimit
 	}

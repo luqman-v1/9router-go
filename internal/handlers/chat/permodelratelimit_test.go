@@ -14,13 +14,25 @@ func newTestLimiter(now *time.Time) *PerModelRateLimiter {
 }
 
 func TestPerModelLimitDefaultsAndClamp(t *testing.T) {
-	limit := resolvePerModelRateLimit(nil, "openai-compatible-x", "m")
+	// An absent block is OFF: this is net-new semantics, so a deployment that
+	// never configured it must behave exactly as before.
+	if limit := resolvePerModelRateLimit(nil, "openai-compatible-x", "m"); limit.Enabled {
+		t.Fatalf("an unconfigured block must not enable the limiter, got %+v", limit)
+	}
+
+	// Opting in is explicit: enabled:true with no numbers applies the generous
+	// default rather than an unbounded cap, and the same block with
+	// enabled:false stays off.
+	if off := resolvePerModelRateLimit(&db.PerModelRateLimitSettings{Enabled: new(false)}, "openai-compatible-x", "m"); off.Enabled {
+		t.Fatalf("enabled:false must stay off, got %+v", off)
+	}
+	limit := resolvePerModelRateLimit(&db.PerModelRateLimitSettings{Enabled: new(true)}, "openai-compatible-x", "m")
 	if !limit.Enabled || limit.Limit != perModelDefaultLimit || limit.WindowMs != perModelDefaultWindowMs {
-		t.Fatalf("defaults = %+v, want enabled with the built-in default", limit)
+		t.Fatalf("configured defaults = %+v, want enabled with the built-in default", limit)
 	}
 
 	// A typo cannot wedge chat: the limit clamps instead of rejecting.
-	huge := &db.PerModelRateLimitSettings{Limit: 99_999_999, WindowMs: 1}
+	huge := &db.PerModelRateLimitSettings{Enabled: new(true), Limit: 99_999_999, WindowMs: 1}
 	limit = resolvePerModelRateLimit(huge, "p", "m")
 	if limit.Limit != perModelMaxLimit {
 		t.Errorf("limit = %d, want clamped to %d", limit.Limit, perModelMaxLimit)
@@ -36,15 +48,18 @@ func TestPerModelLimitDisabled(t *testing.T) {
 		t.Error("enabled:false must turn the limiter off")
 	}
 
-	zero := &db.PerModelRateLimitSettings{Limit: 0}
-	if got := resolvePerModelRateLimit(zero, "p", "m"); got.Enabled {
-		t.Error("limit:0 must turn the limiter off")
+	// A missing or out-of-range limit falls back to the built-in default
+	// instead of refusing every request; `enabled:false` is the off switch.
+	zero := &db.PerModelRateLimitSettings{Enabled: new(true), Limit: 0}
+	if got := resolvePerModelRateLimit(zero, "p", "m"); !got.Enabled || got.Limit != perModelDefaultLimit {
+		t.Errorf("limit:0 = %+v, want the built-in default, not an empty cap", got)
 	}
 }
 
 func TestPerModelLimitOverridePrecedence(t *testing.T) {
 	settings := &db.PerModelRateLimitSettings{
-		Limit: 100,
+		Enabled: new(true),
+		Limit:   100,
 		Overrides: map[string]*db.PerModelRateLimitOverride{
 			"prov":         {Limit: 50},
 			"prov/model-a": {Limit: 5},
