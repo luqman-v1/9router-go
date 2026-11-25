@@ -621,6 +621,65 @@
     }
   }
 
+  // Bulk add for the filtered set: one request for the whole list so a refused
+  // id cannot stop the ones after it, and the response names what landed.
+  async function handlePreviewAddAll(modelIds: string[]) {
+    if (isImportPreviewLoading || modelIds.length === 0) return
+    isImportPreviewLoading = true
+    try {
+      const out = await api.saveCustomModelsBulk({
+        providerAlias: storageAlias,
+        models: modelIds.map((id) => ({ id, type: inferModelKind(id) })),
+      })
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+      if (out.skipped.length > 0) {
+        alert(
+          `Added ${out.added.length} of ${modelIds.length}.\n\nNot added:\n` +
+            out.skipped.map((s) => `${s.id} — ${s.reason}`).join('\n'),
+        )
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to add models')
+    } finally {
+      isImportPreviewLoading = false
+    }
+  }
+
+  // Bulk remove for the filtered set. Each id is its own row (or legacy alias),
+  // so the deletes are collected and reported together rather than aborting on
+  // the first failure.
+  async function handlePreviewRemoveAll(modelIds: string[]) {
+    if (isImportPreviewLoading || modelIds.length === 0) return
+    if (!confirm(`Hapus ${modelIds.length} model dari ${displayAlias()}? Tindakan ini tidak bisa dibatalkan.`)) return
+    isImportPreviewLoading = true
+    const failures: string[] = []
+    try {
+      for (const id of modelIds) {
+        const row = compatibleRows.find((r) => r.id === id)
+        try {
+          if (row?.source === 'legacyAlias' && row.alias) {
+            await api.deleteModelAlias(row.alias)
+          } else {
+            await api.deleteCustomModel(customModelKeyFor(storageAlias, id, row?.kind))
+          }
+        } catch (err) {
+          failures.push(`${id} — ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      await pruneDeletedFromDisabled(
+        compatibleRows.filter((r) => r.source === 'custom' && modelIds.includes(r.id)).map((r) => r.id)
+      )
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+      if (failures.length > 0) {
+        alert(`Removed ${modelIds.length - failures.length} of ${modelIds.length}.\n\nNot removed:\n` + failures.join('\n'))
+      }
+    } finally {
+      isImportPreviewLoading = false
+    }
+  }
+
   // Same probe as the row-level Test button, but the verdict is stored in the
   // panel's own maps so it survives a chip moving between state A and B.
   async function handlePreviewTest(modelId: string) {
@@ -5355,6 +5414,8 @@
     onAdd={handlePreviewAdd}
     onRemove={handlePreviewRemove}
     onTest={handlePreviewTest}
+    onAddAll={handlePreviewAddAll}
+    onRemoveAll={handlePreviewRemoveAll}
     onClose={closeImportPreview}
   />
 {/if}
