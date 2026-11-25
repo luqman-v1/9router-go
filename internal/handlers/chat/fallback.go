@@ -73,6 +73,14 @@ func (h *ChatHandler) handleAccountFallback(
 	if FallbackAttemptRecorderFrom(ctx) == nil {
 		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
 	}
+	// Per-model admission for custom providers, before any connection is
+	// dialled: one hot model on a shared endpoint must fail over (or answer
+	// 429) instead of draining the endpoint's quota for every other model. A
+	// refusal carries Local=true, so failover moves on without cooling the
+	// credential — it was never exercised.
+	if err := h.admitPerModel(ctx, provider, model); err != nil {
+		return err
+	}
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)

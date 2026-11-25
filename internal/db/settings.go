@@ -135,6 +135,28 @@ type CapacityAdapterEntry struct {
 	Models     []string `json:"models"`
 }
 
+// PerModelRateLimitSettings is the stored configuration for per-model caps on
+// custom providers. Every field is optional; an absent block means "not
+// configured", which the resolver reads as its built-in default.
+type PerModelRateLimitSettings struct {
+	// Enabled gates the whole feature. Nil means "on" — the limit only ever
+	// applies to custom providers, and the default is generous enough that an
+	// operator who never touched this should not notice it.
+	Enabled *bool   `json:"enabled,omitempty"`
+	Limit   int     `json:"limit,omitempty"`
+	WindowMs int    `json:"windowMs,omitempty"`
+	// Overrides keys by provider id, or by "provider/model" for a single model.
+	Overrides map[string]*PerModelRateLimitOverride `json:"overrides,omitempty"`
+}
+
+// PerModelRateLimitOverride narrows or widens the limit for one provider or one
+// provider+model. A nil field inherits from the enclosing block.
+type PerModelRateLimitOverride struct {
+	Enabled  *bool  `json:"enabled,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	WindowMs int    `json:"windowMs,omitempty"`
+}
+
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
 	RTKEnabled              bool            `json:"rtkEnabled"`
@@ -199,6 +221,10 @@ type SettingsData struct {
 	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
 	ProviderOverrides          map[string]ProviderOverrides    `json:"providerOverrides,omitempty"`
+	// PerModelRateLimit caps requests per model on CUSTOM providers, so one hot
+	// model cannot drain a shared endpoint's quota. Nil means "not configured",
+	// which the resolver reads as the built-in default.
+	PerModelRateLimit *PerModelRateLimitSettings `json:"perModelRateLimit,omitempty"`
 	EnableObservability        bool                            `json:"enableObservability"`
 	ObservabilityMode          string                          `json:"observabilityMode,omitempty"`
 	RetentionDays              int                             `json:"retentionDays,omitempty"`
