@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -118,8 +119,8 @@ func TestPeekRefusesBannerOnlyStream(t *testing.T) {
 	if err == nil {
 		t.Fatal("a banner-only stream must be refused so the combo falls through")
 	}
-	ue, ok := err.(*UpstreamError)
-	if !ok {
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("error = %T, want a retryable UpstreamError", err)
 	}
 	if ue.StatusCode != 502 {
