@@ -145,6 +145,7 @@
   // model reads; suffix is its last word, which is what survives a turn of
   // untrusted content.
   let systemPromptEnabled = $state(false)
+  let reaAllowEnabled = $state(false)
   let systemPromptPrefix = $state('')
   let systemPromptSuffix = $state('')
   let semanticCacheEnabled = $state(false)
@@ -293,6 +294,7 @@
       if (typeof settings.adhdEnabled === 'boolean') adhdEnabled = settings.adhdEnabled
       if (typeof settings.adhdLevel === 'string' && settings.adhdLevel) adhdLevel = settings.adhdLevel
       if (typeof settings.systemPromptEnabled === 'boolean') systemPromptEnabled = settings.systemPromptEnabled
+      if (typeof settings.reaAllowEnabled === 'boolean') reaAllowEnabled = settings.reaAllowEnabled
       if (typeof settings.systemPromptPrefix === 'string') systemPromptPrefix = settings.systemPromptPrefix
       if (typeof settings.systemPromptSuffix === 'string') systemPromptSuffix = settings.systemPromptSuffix
       if (typeof settings.semanticCacheEnabled === 'boolean') semanticCacheEnabled = settings.semanticCacheEnabled
@@ -786,6 +788,11 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
   function handleToggleSystemPrompt(value: boolean) {
     systemPromptEnabled = value
     patchSetting({ systemPromptEnabled: value })
+  }
+
+  function handleToggleReaAllow(value: boolean) {
+    reaAllowEnabled = value
+    patchSetting({ reaAllowEnabled: value })
   }
 
   function saveSystemPrompt() {
@@ -2001,6 +2008,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         </div>
       </div>
     {/if}
+
+    <!-- REA allow toggle -->
+    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+      <div class="min-w-0 flex-1">
+        <p class="font-medium">
+          REA allow{' '}
+          <a
+            href="https://github.com/morluto/rea"
+            target="_blank"
+            rel="noreferrer"
+            class="text-xs font-normal text-primary underline hover:opacity-80"
+          >
+            morluto/rea
+          </a>
+        </p>
+        <p class="text-sm text-text-muted">
+          Replaces the built-in security-policy paragraphs with REA reverse-engineering guidance and injects it into requests that carry none
+        </p>
+      </div>
+      <Toggle
+        checked={reaAllowEnabled}
+        onChange={() => handleToggleReaAllow(!reaAllowEnabled)}
+      />
+    </div>
 
     <!-- 7. Prompt & Response Cache -->
     <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">

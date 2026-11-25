@@ -122,6 +122,9 @@ func applyPromptSettings(s *SettingsData, raw map[string]any) {
 	if v := handlerutil.GetString(raw, "systemPromptSuffix"); v != "" {
 		s.SystemPromptSuffix = v
 	}
+	if v, ok := raw["reaAllowEnabled"].(bool); ok {
+		s.ReaAllowEnabled = v
+	}
 }
 
 func applyHeadroomSettings(s *SettingsData, raw map[string]any) {

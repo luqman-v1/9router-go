@@ -179,6 +179,7 @@ type SettingsData struct {
 	HeadroomCodeAware       bool   `json:"headroomCodeAware"`
 	HeadroomKompress        bool   `json:"headroomKompress"`
 	HeadroomTimeoutMs       int    `json:"headroomTimeoutMs"`
+	ReaAllowEnabled         bool   `json:"reaAllowEnabled"`
 	SemanticCacheEnabled    bool   `json:"semanticCacheEnabled"`
 	SemanticCacheTTL        int    `json:"semanticCacheTTL,omitempty"`
 	SemanticCacheMaxEntries int    `json:"semanticCacheMaxEntries,omitempty"`
