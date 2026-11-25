@@ -860,8 +860,8 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Color:        "#8B3DFE",
 		Icon:         "cloud",
 		ServiceKinds: []string{"llm"},
-		Website:      "https://token-plan.maas.qwencloudapi.com",
-		Notice:       &Notice{APIKeyURL: "https://token-plan.maas.qwencloudapi.com"},
+		Website:      "https://www.qwencloud.com",
+		Notice:       &Notice{APIKeyURL: "https://home.qwencloud.com/api-keys"},
 	},
 	"anthropic": {
 		ID:            "anthropic",
