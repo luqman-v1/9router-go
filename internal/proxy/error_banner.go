@@ -5,7 +5,10 @@ import (
 	"regexp"
 	"strings"
 
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // An upstream fault can arrive as HTTP 200 whose ONLY content is a status
@@ -16,31 +19,45 @@ import (
 // it were the model's reply.
 //
 // The bar is deliberately narrow: the WHOLE accumulated text must be
-// banner-shaped — short, and matching a fault phrase. A real answer that
-// mentions "capacity" or "timeout" mid-text never matches, because the match
-// must cover the entire text. A banner split across frames is held open while
-// the text is still a prefix of a known lead-in, so the stream is not committed
-// on the first fragment.
+// banner-shaped — short, and one of the exact banner shapes below. Each pattern
+// is anchored at BOTH ends: a real answer that merely STARTS with a fault
+// phrase ("Quota exceeded is the phrase you asked about; ...") must never
+// classify as a banner, because that turns a legitimate short answer into a
+// retry — the exact false positive this layer exists to avoid. A banner split
+// across frames is held open while the text is still a prefix of a known
+// lead-in, so the stream is not committed on the first fragment.
 
 // errorBannerMaxChars bounds "short". A fault banner is a sentence or two; an
 // answer is longer. Keeping the cap small is what stops the matcher from ever
 // classifying a real reply as a banner.
 const errorBannerMaxChars = 2000
 
-// errorBannerPatterns are the upstream fault phrases seen in a 200 body.
+// bannerTail is what a banner may continue with after its opening phrase: a
+// status code, a short reason, punctuation, a model id, a retry hint. The
+// continuation may not introduce a new sentence (". A" / "? The" / "! We" /
+// "; This") — that is the shape of a real answer that merely OPENS with the
+// fault phrase, and it must not classify.
+//
+// The first character may be punctuation (": upstream 502", "- retry after
+// 60s", "(model gpt-6)"), which the rest-of-run class excludes, so the tail is
+// split into one optional leading separator plus a run of sentence-free text.
+const bannerTail = `(?:\s*[:;,(\-]\s*|\s+)?[^.!?;]*$`
+
+// errorBannerPatterns are the exact banner shapes seen in a 200 body. Each is
+// anchored at both ends: the text must BE the banner, not merely open with one.
 var errorBannerPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)^agent\s+(execution\s+)?terminated\s+due\s+to\s+error`),
-	regexp.MustCompile(`(?i)^agent\s+(execution\s+)?terminated`),
-	regexp.MustCompile(`(?i)^(request\s+)?(failed|refused)\s*(due\s+to|because|:)`),
-	regexp.MustCompile(`(?i)^(authentication|authorization|permission)\s+(failed|denied|required)`),
-	regexp.MustCompile(`(?i)^(quota|rate\s*limit|capacity)\s+(exceeded|exhausted|reached|limit)`),
-	regexp.MustCompile(`(?i)^(policy|content\s+policy|safety)\s+(violation|blocked|denied)`),
-	regexp.MustCompile(`(?i)^(502|503|504|429)\b`),
-	regexp.MustCompile(`(?i)^(service|upstream|gateway)\s+(unavailable|error|failed)`),
-	regexp.MustCompile(`(?i)^(internal\s+)?server\s+error`),
-	regexp.MustCompile(`(?i)^(bad\s+gateway|gateway\s+timeout)`),
-	regexp.MustCompile(`(?i)^(an?\s+)?(unexpected\s+)?error\s+occurred`),
-	regexp.MustCompile(`(?i)^(the\s+)?(model|upstream)\s+(is\s+)?(currently\s+)?(overloaded|unavailable)`),
+	regexp.MustCompile(`(?i)^agent\s+(execution\s+)?terminated\s+due\s+to\s+error` + bannerTail),
+	regexp.MustCompile(`(?i)^agent\s+(execution\s+)?terminated$`),
+	regexp.MustCompile(`(?i)^(request\s+)?(failed|refused)\s*(due\s+to|because|:)` + bannerTail),
+	regexp.MustCompile(`(?i)^(authentication|authorization|permission)\s+(failed|denied|required)` + bannerTail),
+	regexp.MustCompile(`(?i)^(quota|rate\s*limit|capacity)\s+(exceeded|exhausted|reached|limit)` + bannerTail),
+	regexp.MustCompile(`(?i)^(policy|content\s+policy|safety)\s+(violation|blocked|denied)` + bannerTail),
+	regexp.MustCompile(`(?i)^(502|503|504|429)\b` + bannerTail),
+	regexp.MustCompile(`(?i)^(service|upstream|gateway)\s+(unavailable|error|failed)` + bannerTail),
+	regexp.MustCompile(`(?i)^(internal\s+)?server\s+error$`),
+	regexp.MustCompile(`(?i)^(bad\s+gateway|gateway\s+timeout)$`),
+	regexp.MustCompile(`(?i)^(an?\s+)?(unexpected\s+)?error\s+occurred` + bannerTail),
+	regexp.MustCompile(`(?i)^(the\s+)?(model|upstream)\s+(is\s+)?(currently\s+)?(overloaded|unavailable)` + bannerTail),
 }
 
 // bannerLeadIns are the prefixes a split banner may arrive in. A frame whose
@@ -155,63 +172,89 @@ func ExtractSSEText(chunk []byte) string {
 	return sb.String()
 }
 
+// bannerFrame is the typed view of one SSE frame the banner decision needs.
+// A struct instead of map[string]any: the decision runs on every content write
+// of every streaming request, and the map shape measured 1.2 us / 16 allocs per
+// frame against 0.4 us / 5 for the struct (the reviewer's finding), for exactly
+// the same answer. Fields the three wire shapes use: OpenAI choices and their
+// delta/message, Anthropic's delta/content_block text, and the Responses API's
+// bare-string `delta` / `text`.
+type bannerFrame struct {
+	Choices []struct {
+		Delta struct {
+			Content          jsontext.Value `json:"content"`
+			ReasoningContent jsontext.Value `json:"reasoning_content"`
+		} `json:"delta"`
+		Message struct {
+			Content jsontext.Value `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	// Delta is read as raw bytes and reinterpreted: the Responses API sends a
+	// bare string, Anthropic an object with `text`. One field, because two
+	// struct fields cannot both bind `delta`.
+	Delta        jsontext.Value `json:"delta"`
+	ContentBlock struct {
+		Text jsontext.Value `json:"text"`
+	} `json:"content_block"`
+	Text *string `json:"text"`
+}
+
 // appendJSONText walks the text-bearing fields of one JSON frame.
 func appendJSONText(sb *strings.Builder, payload []byte) {
-	var frame map[string]any
-	if err := json.Unmarshal(payload, &frame); err != nil {
+	var frame bannerFrame
+	if err := json.Unmarshal(payload, &frame, handlerutil.UpstreamBody); err != nil {
 		return
 	}
-	// OpenAI chat completions: choices[].delta.content / message.content.
-	if choices, ok := frame["choices"].([]any); ok {
-		for _, raw := range choices {
-			choice, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			for _, holder := range []string{"delta", "message"} {
-				if m, ok := choice[holder].(map[string]any); ok {
-					appendContentText(sb, m["content"])
-				}
-			}
-		}
+	for _, choice := range frame.Choices {
+		appendContentText(sb, choice.Delta.Content)
+		appendContentText(sb, choice.Message.Content)
 	}
-	// Anthropic: content_block_delta.delta.text (and content_block_start.text).
-	if m, ok := frame["delta"].(map[string]any); ok {
-		if s, ok := m["text"].(string); ok {
+	appendContentText(sb, frame.ContentBlock.Text)
+	// `delta` is a string on the Responses API and an object with `text` on
+	// Anthropic; the bytes decide which.
+	trimmedDelta := bytes.TrimSpace(frame.Delta)
+	switch {
+	case len(trimmedDelta) > 0 && trimmedDelta[0] == '"':
+		var s string
+		if err := json.Unmarshal(trimmedDelta, &s, handlerutil.UpstreamBody); err == nil {
 			sb.WriteString(s)
 		}
-	}
-	if m, ok := frame["content_block"].(map[string]any); ok {
-		if s, ok := m["text"].(string); ok {
-			sb.WriteString(s)
+	case len(trimmedDelta) > 0 && trimmedDelta[0] == '{':
+		var delta struct {
+			Text jsontext.Value `json:"text"`
+		}
+		if err := json.Unmarshal(trimmedDelta, &delta, handlerutil.UpstreamBody); err == nil {
+			appendContentText(sb, delta.Text)
 		}
 	}
-	// Responses API: output_text.delta carries a bare string `delta`, and the
-	// done variant carries `text`.
-	if s, ok := frame["delta"].(string); ok {
-		sb.WriteString(s)
-	}
-	if s, ok := frame["text"].(string); ok {
-		sb.WriteString(s)
+	if frame.Text != nil {
+		sb.WriteString(*frame.Text)
 	}
 }
 
 // appendContentText handles a content value that is either a string or an array
 // of `{type:"text", text:"..."}` parts. Tool-call content contributes nothing:
 // a tool call is an answer even when it carries no prose.
-func appendContentText(sb *strings.Builder, content any) {
-	switch v := content.(type) {
-	case string:
-		sb.WriteString(v)
-	case []any:
-		for _, raw := range v {
-			part, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if part["type"] == "text" {
-				if s, ok := part["text"].(string); ok {
-					sb.WriteString(s)
+func appendContentText(sb *strings.Builder, content jsontext.Value) {
+	trimmed := bytes.TrimSpace(content)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s, handlerutil.UpstreamBody); err == nil {
+			sb.WriteString(s)
+		}
+	case '[':
+		var parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(trimmed, &parts, handlerutil.UpstreamBody); err == nil {
+			for _, part := range parts {
+				if part.Type == "text" {
+					sb.WriteString(part.Text)
 				}
 			}
 		}

@@ -33,6 +33,12 @@ func (e *inbandFinishError) Error() string {
 
 func (e *inbandFinishError) Unwrap() error { return ErrStreamingInbandError }
 
+// bannerHoldLimit bounds how many bytes the peeker holds while waiting for a
+// split frame to complete. A frame that never parses within this budget is
+// committed rather than buffered: the peeker's job is to protect the turn, not
+// to hold an unbounded buffer for an upstream that writes broken JSON.
+const bannerHoldLimit = 64 * 1024
+
 // HasSSEContent reports whether an SSE chunk carries client-visible assistant content
 // (visible text, reasoning/thinking, or tool calls).
 // Delta role, empty reasoning/thinking, and empty finish frames do not count as content.
@@ -122,9 +128,13 @@ type StreamContentPeeker struct {
 	// bannerText accumulates the assistant text of frames held open because
 	// they look like an upstream fault banner (see IsBannerSuspect).
 	bannerText string
-	buf        bytes.Buffer
-	header     http.Header
-	statusCode int
+	// heldContent marks that the buffer holds an unparsed content frame rather
+	// than preamble (role, finish_reason, [DONE]). Only the former is relayed
+	// on Finish: preamble alone is a zero-content turn.
+	heldContent bool
+	buf         bytes.Buffer
+	header      http.Header
+	statusCode  int
 }
 
 func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
@@ -175,24 +185,84 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 		}
 	}
 
-	if HasSSEContent(b) {
-		// A "content" frame is not proof of an answer: Antigravity reports an
-		// upstream fault as ordinary assistant text on HTTP 200. Hold the
-		// stream open while the text so far is banner-shaped (or still a prefix
-		// of a banner lead-in) so the turn can be retried instead of showing
-		// the client an error message as if it were the reply. Real text
-		// outgrows the banner shape on the next frame and commits normally, and
-		// Finish fails open if the stream never resolves either way.
-		p.bannerText += ExtractSSEText(b)
-		if !IsBannerSuspect(p.bannerText) {
+	// A "content" frame is not proof of an answer: Antigravity reports an
+	// upstream fault as ordinary assistant text on HTTP 200. Hold the stream
+	// open while the text so far is banner-shaped (or still a prefix of a
+	// banner lead-in) so the turn can be retried instead of showing the client
+	// an error message as if it were the reply. Real text outgrows the banner
+	// shape on the next frame and commits normally, and Finish fails open if
+	// the stream never resolves either way.
+	//
+	// A frame SPLIT across writes must be held too: HasSSEContent matches a
+	// substring, so the first half of a banner frame ("...\"content\":\"Agent exec")
+	// reads as content while ExtractSSEText yields nothing, because the JSON is
+	// not parseable yet. Committing there would relay the banner — the whole
+	// failure this peeker exists to stop. The bytes are therefore classified
+	// only once the frame parses, which the next write completes; the tail of
+	// a split frame matches no per-line content heuristic at all, so a held
+	// buffer makes this write a continuation and the joined bytes are what is
+	// read.
+	//
+	// The common case is one write per complete frame: parse `b` alone, and
+	// the only cost over the pre-banner behaviour is one ExtractSSEText per
+	// content write. The join path below runs only when a frame is actually
+	// split, which is the exception the first branch exists to catch.
+	if HasSSEContent(b) && !p.heldContent {
+		text := ExtractSSEText(b)
+		if text != "" && !IsBannerSuspect(text) {
 			p.sawContent = true
+			p.bannerText = text
+			// Commit before relaying: the peeker's own header map and status
+			// code are only applied there, and every later write short-circuits
+			// on `committed` — which is also what keeps the banner decision off
+			// the rest of the stream (one classification per turn, not per
+			// frame).
 			p.commitLocked()
 			return p.ResponseWriter.Write(b)
+		}
+		// Either a banner, or a frame whose JSON is incomplete (the content
+		// substring matched but nothing parsed). Both are held: the first so
+		// the turn can be retried, the second until the next write completes
+		// the frame.
+		p.heldContent = true
+		p.bannerText = text
+		p.buf.Write(b)
+		return len(b), nil
+	}
+	// A continuation: the tail of a split frame matches no per-line content
+	// heuristic at all, so the joined bytes are what is read. `text` is
+	// assigned, never accumulated — the held bytes are re-parsed as part of
+	// the join, and reading them twice would duplicate every held frame
+	// ("Agent execution Agent execution ..."), which is no longer
+	// banner-shaped and would commit the turn.
+	if p.heldContent {
+		chunk := append(append([]byte(nil), p.buf.Bytes()...), b...)
+		text := ExtractSSEText(chunk)
+		if text == "" && len(chunk) < bannerHoldLimit {
+			p.buf.Write(b)
+			return len(b), nil
+		}
+		p.bannerText = text
+		if !IsBannerSuspect(text) {
+			p.sawContent = true
+			// The held bytes are the earlier half of this answer: append and
+			// let the commit relay the whole frame, so the client receives it
+			// byte for byte instead of starting mid-JSON.
+			p.buf.Write(b)
+			p.heldContent = false
+			p.commitLocked()
+			return len(b), nil
 		}
 		p.buf.Write(b)
 		return len(b), nil
 	}
 
+	// A keep-alive, a [DONE], or a role-only frame after the turn already
+	// committed: nothing to hold. The buffer must not carry preamble into the
+	// commit — it would be relayed as if it were answer content.
+	if p.sawContent {
+		p.buf.Reset()
+	}
 	p.buf.Write(b)
 	return len(b), nil
 }
@@ -226,6 +296,21 @@ func (p *StreamContentPeeker) Finish() error {
 		return &inbandFinishError{msg: p.inbandMsg}
 	}
 	if !p.sawContent {
+		// A frame held because its JSON never completed: the upstream stopped
+		// mid-frame, so there is nothing to classify. The held bytes ARE the
+		// stream's content — an upstream that writes broken JSON still wrote
+		// something the client asked to see — so relay them rather than failing
+		// the turn. The zero-content verdict is for a stream that carried
+		// nothing at all (role + finish_reason only), which holds no bytes.
+		// Held bytes with no text that matched a banner are an unparsed frame:
+		// relay them. Held bytes whose text IS banner-shaped are a fault
+		// banner, and relaying it would show the client an error message as if
+		// it were the answer — that is the zero-content failure below.
+		if p.heldContent && p.buf.Len() > 0 && !IsBannerSuspect(p.bannerText) {
+			p.sawContent = true
+			p.commitLocked()
+			return nil
+		}
 		// A turn whose only content was a fault banner is a failure, not an
 		// answer: the caller retries it the same way it retries an empty turn.
 		return ErrStreamingZeroContent
