@@ -388,47 +388,6 @@ func hasReaPrompt(text string) bool {
 	return strings.Contains(text, REAAllowText)
 }
 
-func injectClaudeRea(req map[string]any) {
-	sys := req["system"]
-	switch v := sys.(type) {
-	case string:
-		if hasReaPrompt(v) {
-			return
-		}
-		if v == "" {
-			req["system"] = REAAllowText
-		} else {
-			req["system"] = v + reaSep + REAAllowText
-		}
-	case []any:
-		for _, b := range v {
-			if bm, ok := b.(map[string]any); ok {
-				if t, _ := bm["text"].(string); strings.Contains(t, REAAllowText) {
-					return
-				}
-			}
-		}
-		block := map[string]any{"type": "text", "text": REAAllowText}
-		lastCache := -1
-		for i, b := range v {
-			if bm, ok := b.(map[string]any); ok && bm["cache_control"] != nil {
-				lastCache = i
-			}
-		}
-		if lastCache >= 0 {
-			res := make([]any, 0, len(v)+1)
-			res = append(res, v[:lastCache]...)
-			res = append(res, block)
-			res = append(res, v[lastCache:]...)
-			req["system"] = res
-		} else {
-			req["system"] = append(v, block)
-		}
-	case nil:
-		req["system"] = REAAllowText
-	}
-}
-
 func injectGeminiRea(req map[string]any) {
 	target := req
 	if r, ok := req["request"].(map[string]any); ok {
@@ -492,10 +451,6 @@ func injectKiroRea(req map[string]any) {
 	} else {
 		target["content"] = content + reaSep + REAAllowText
 	}
-}
-
-func injectOpenAIRea(req map[string]any) {
-	// Delegated to InjectSystemPrompt after marshalling; nothing here.
 }
 
 func ApplyReaAllow(body []byte, format string) ([]byte, bool) {
