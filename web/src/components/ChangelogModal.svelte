@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '../api/client'
   import { marked } from 'marked'
+  import { pushEscapeHandler } from '../lib/ui/escapeStack'
 
   let {
     isOpen = false,
@@ -35,14 +36,11 @@
     }
   })
 
-  // Close on Escape key
+  // Escape closes only the topmost dialog, so a dialog opened over this one is
+  // dismissed without taking this one with it.
   $effect(() => {
     if (!isOpen) return
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return pushEscapeHandler(onClose)
   })
 
   // Lock body scroll while modal is open

@@ -4,6 +4,7 @@
   // Priority + Proxy Pool, provider-specific sub-forms (Azure, Cloudflare
   // Workers AI, Ollama host, Region) and Save/Cancel footer.
   import Button from '../../lib/ui/Button.svelte'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
   import { api, type CreateConnectionPayload, type ProxyPool } from '../../api/client'
   import { PROVIDER_CATALOG } from '../../lib/providers'
   import { planBulkAdd } from '../../lib/bulk-add'
@@ -170,14 +171,12 @@
     }
   })
 
-  // Upstream Modal parity: Escape closes, overlay click closes (see markup below).
+  // Upstream Modal parity: Escape closes, overlay click closes (see markup
+  // below). Escape goes through the shared stack, so a dialog opened over this
+  // one is dismissed first.
   $effect(() => {
-    if (!isOpen || typeof window === 'undefined') return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    if (!isOpen) return
+    return pushEscapeHandler(onClose)
   })
 
   function resetForm() {

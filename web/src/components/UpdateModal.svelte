@@ -2,6 +2,7 @@
   import { api, type SystemVersionInfo } from '../api/client'
   import { marked } from 'marked'
   import { copyToClipboard } from '../lib/clipboard'
+  import { pushEscapeHandler } from '../lib/ui/escapeStack'
 
   let {
     isOpen = $bindable(false),
@@ -84,17 +85,15 @@
     isOpen = false
   }
 
-  // Close on Escape key & lock scroll
+  // Close on Escape key & lock scroll. The stack keeps Escape on the topmost
+  // dialog, so this one does not close over a dialog opened above it.
   $effect(() => {
     if (!isOpen) return
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') dismiss()
-    }
-    window.addEventListener('keydown', handleKeyDown)
+    const releaseEscape = pushEscapeHandler(dismiss)
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
-      window.removeEventListener('keydown', handleKeyDown)
+      releaseEscape()
       document.body.style.overflow = prevOverflow
       clearShutdownTimer()
     }
