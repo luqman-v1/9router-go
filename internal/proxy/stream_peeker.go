@@ -119,9 +119,12 @@ type StreamContentPeeker struct {
 	sawContent     bool
 	sawInbandError bool
 	inbandMsg      string
-	buf            bytes.Buffer
-	header         http.Header
-	statusCode     int
+	// bannerText accumulates the assistant text of frames held open because
+	// they look like an upstream fault banner (see IsBannerSuspect).
+	bannerText string
+	buf        bytes.Buffer
+	header     http.Header
+	statusCode int
 }
 
 func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
@@ -173,9 +176,21 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 	}
 
 	if HasSSEContent(b) {
-		p.sawContent = true
-		p.commitLocked()
-		return p.ResponseWriter.Write(b)
+		// A "content" frame is not proof of an answer: Antigravity reports an
+		// upstream fault as ordinary assistant text on HTTP 200. Hold the
+		// stream open while the text so far is banner-shaped (or still a prefix
+		// of a banner lead-in) so the turn can be retried instead of showing
+		// the client an error message as if it were the reply. Real text
+		// outgrows the banner shape on the next frame and commits normally, and
+		// Finish fails open if the stream never resolves either way.
+		p.bannerText += ExtractSSEText(b)
+		if !IsBannerSuspect(p.bannerText) {
+			p.sawContent = true
+			p.commitLocked()
+			return p.ResponseWriter.Write(b)
+		}
+		p.buf.Write(b)
+		return len(b), nil
 	}
 
 	p.buf.Write(b)
@@ -211,6 +226,8 @@ func (p *StreamContentPeeker) Finish() error {
 		return &inbandFinishError{msg: p.inbandMsg}
 	}
 	if !p.sawContent {
+		// A turn whose only content was a fault banner is a failure, not an
+		// answer: the caller retries it the same way it retries an empty turn.
 		return ErrStreamingZeroContent
 	}
 	if !p.committed {

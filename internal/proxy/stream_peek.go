@@ -57,6 +57,9 @@ func PeekFirstStreamEvent(ctx context.Context, r io.Reader, maxBytes int) ([]byt
 
 	buf := &peekBuffer{limit: maxBytes}
 	lr := &peekReader{r: r, ctx: ctx, buf: buf}
+	// Banner text accumulated across frames. A fault banner can be split over
+	// several frames, so the decision cannot be made on one event alone.
+	bannerText := ""
 	err := ScanStreamEvents(lr, func(ev SSEEvent) bool {
 		// A failure can arrive as a labelled frame (`event: error`) or as a
 		// plain data frame whose payload carries an `error` object — OpenRouter
@@ -65,6 +68,19 @@ func PeekFirstStreamEvent(ctx context.Context, r io.Reader, maxBytes int) ([]byt
 		if ev.Event == "error" || inbandErrorCarried(ev.Data) {
 			buf.refuse(inbandEventError(ev))
 			return false
+		}
+		// A frame that "carries an answer" may be carrying an upstream fault
+		// banner instead: Antigravity reports a failure as ordinary assistant
+		// text on HTTP 200, which would otherwise commit the turn and stop the
+		// combo from falling through. Hold the peek open while the text is
+		// banner-shaped or still a banner prefix; a stream that ends with only
+		// a banner never sets `carried`, so the caller sees the same retryable
+		// failure as an empty turn.
+		if text := ExtractSSEText(ev.Data); text != "" {
+			bannerText += text
+			if IsBannerSuspect(bannerText) {
+				return true
+			}
 		}
 		return !buf.accept(ev)
 	})
