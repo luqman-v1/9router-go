@@ -1,9 +1,11 @@
 // Pure logic for the "Import from /models" preview panel. Kept out of the
-// .svelte file so the matching and chip-state rules are testable without a
-// component mount, and so the panel and the main list cannot drift apart:
-// the search here reuses the same matchesSearch the toolbar's ModelSearchBar
-// goes through, so the syntax an operator already types keeps working.
+// .svelte file so the matching, sorting and selection rules are testable
+// without a component mount, and so the panel and the main list cannot drift
+// apart: the search here reuses the same matchesSearch the toolbar's
+// ModelSearchBar goes through, and the sort reuses SortMode from
+// modelListFilter, so the two lists order the same way for the same pick.
 import { matchesSearch } from '../../lib/modelSearchFilter'
+import type { SortMode } from './modelListFilter'
 
 export interface ImportPreviewModel {
   id: string
@@ -36,3 +38,89 @@ export function buildImportPreviewActiveIds(
 ): Set<string> {
   return new Set([...rowIds, ...customIds, ...builtinIds])
 }
+
+/** The orders the panel offers. registry/A-Z are the same order here (the
+ *  fetch has no registry sequence), so the menu shows A-Z once. */
+export type ImportPreviewSort = 'az' | 'za' | 'latency-asc' | 'latency-desc'
+
+export const IMPORT_PREVIEW_SORTS: ReadonlyArray<{ value: ImportPreviewSort; label: string }> = [
+  { value: 'az', label: 'A–Z' },
+  { value: 'za', label: 'Z–A' },
+  { value: 'latency-asc', label: 'Latency terendah' },
+  { value: 'latency-desc', label: 'Latency tertinggi' },
+]
+
+/**
+ * Sort the fetched list for display. Mirrors sortRows in modelListFilter: an
+ * unmeasured model sorts last in both latency directions rather than reading
+ * as 0 ms, and ties keep the incoming order so the list is stable.
+ */
+export function sortImportPreviewModels(
+  models: ImportPreviewModel[],
+  sort: ImportPreviewSort,
+  latency: Record<string, number | undefined>
+): ImportPreviewModel[] {
+  const sorted = [...models]
+  if (sort === 'latency-asc' || sort === 'latency-desc') {
+    const measured = (m: ImportPreviewModel) => latency[m.id] ?? Number.POSITIVE_INFINITY
+    sorted.sort((a, b) => measured(a) - measured(b))
+    if (sort === 'latency-desc') {
+      // Reverse only the measured prefix: flipping the whole array would move
+      // the unmeasured rows to the front, the one place they must not be.
+      const count = sorted.filter((m) => latency[m.id] !== undefined).length
+      return [...sorted.slice(0, count).reverse(), ...sorted.slice(count)]
+    }
+    return sorted
+  }
+  sorted.sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: 'base' }))
+  if (sort === 'za') sorted.reverse()
+  return sorted
+}
+
+/**
+ * The header checkbox's state over the filtered set. `indeterminate` is what
+ * keeps the box from reading "all selected" while a third of the list is not.
+ */
+export function importPreviewSelectionState(
+  selectedIds: ReadonlySet<string>,
+  filtered: ImportPreviewModel[]
+): { selected: number; total: number; allSelected: boolean; indeterminate: boolean } {
+  const selected = filtered.filter((m) => selectedIds.has(m.id)).length
+  const total = filtered.length
+  return {
+    selected,
+    total,
+    allSelected: total > 0 && selected === total,
+    indeterminate: selected > 0 && selected < total,
+  }
+}
+
+/**
+ * Next selection after the header checkbox is clicked: everything filtered
+ * when turning on, nothing filtered when turning off. Ids outside the current
+ * search are preserved on purpose — an operator who selected a set, then
+ * narrowed the search, still has that set selected.
+ */
+export function toggleImportPreviewSelectAll(
+  selectedIds: ReadonlySet<string>,
+  filtered: ImportPreviewModel[],
+  selectAll: boolean
+): Set<string> {
+  const next = new Set(selectedIds)
+  for (const m of filtered) {
+    if (selectAll) next.add(m.id)
+    else next.delete(m.id)
+  }
+  return next
+}
+
+/** What a batch action runs on: the selected ids that are still filtered in. */
+export function importPreviewSelectedIds(
+  selectedIds: ReadonlySet<string>,
+  filtered: ImportPreviewModel[]
+): string[] {
+  return filtered.filter((m) => selectedIds.has(m.id)).map((m) => m.id)
+}
+
+/** SortMode is the main list's vocabulary; this keeps a shared pick honest. */
+export type { SortMode }

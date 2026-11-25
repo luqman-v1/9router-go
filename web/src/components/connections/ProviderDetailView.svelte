@@ -527,6 +527,7 @@
   let importPreviewTestStatuses = $state<Record<string, ModelTestStatus>>({})
   let importPreviewTestErrors = $state<Record<string, string | null>>({})
   let importPreviewTestLatency = $state<Record<string, number | undefined>>({})
+  let isImportPreviewTesting = $state(false)
 
   function closeImportPreview() {
     showImportPreview = false
@@ -535,6 +536,7 @@
     importPreviewTestStatuses = {}
     importPreviewTestErrors = {}
     importPreviewTestLatency = {}
+    isImportPreviewTesting = false
   }
 
   async function openImportPreview(freeOnly = false) {
@@ -677,6 +679,26 @@
       }
     } finally {
       isImportPreviewLoading = false
+    }
+  }
+
+  // Batch probe for the panel's selection. Bounded like Test all
+  // (COMPATIBLE_TEST_CONCURRENCY): each probe is a real completion that
+  // consumes account quota, so this does not fan out per selected chip.
+  async function handlePreviewTestSelected(modelIds: string[]) {
+    if (isImportPreviewTesting || modelIds.length === 0) return
+    const pid = providerId
+    isImportPreviewTesting = true
+    try {
+      let cursor = 0
+      const workers = Array.from({ length: Math.min(COMPATIBLE_TEST_CONCURRENCY, modelIds.length) }, async () => {
+        while (cursor < modelIds.length && pid === providerId) {
+          await handlePreviewTest(modelIds[cursor++])
+        }
+      })
+      await Promise.allSettled(workers)
+    } finally {
+      if (pid === providerId) isImportPreviewTesting = false
     }
   }
 
@@ -3224,6 +3246,7 @@
     importPreviewTestStatuses = {}
     importPreviewTestErrors = {}
     importPreviewTestLatency = {}
+    isImportPreviewTesting = false
     // The toolbar's filter and selection describe the previous provider's
     // rows; carrying them over would select ids that do not exist here and
     // hide the new provider's models behind a stale chip set.
@@ -5416,6 +5439,8 @@
     onTest={handlePreviewTest}
     onAddAll={handlePreviewAddAll}
     onRemoveAll={handlePreviewRemoveAll}
+    onTestSelected={handlePreviewTestSelected}
+    testing={isImportPreviewTesting}
     onClose={closeImportPreview}
   />
 {/if}

@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { buildImportPreviewActiveIds, filterImportPreviewModels } from './modelImportPreview'
+import {
+  buildImportPreviewActiveIds,
+  filterImportPreviewModels,
+  importPreviewSelectedIds,
+  importPreviewSelectionState,
+  sortImportPreviewModels,
+  toggleImportPreviewSelectAll,
+} from './modelImportPreview'
 
 describe('filterImportPreviewModels', () => {
   const models = [
@@ -35,37 +42,83 @@ describe('buildImportPreviewActiveIds', () => {
   })
 })
 
-// The header bulk buttons act on exactly the filtered set, split by whether
-// the model is already on the list. These mirror the derivation in the
-// component so a change to either side fails a test.
-function bulkIds(
-  models: Array<{ id: string }>,
-  activeIds: Set<string>
-): { addable: string[]; removable: string[] } {
-  return {
-    addable: models.filter((m) => !activeIds.has(m.id)).map((m) => m.id),
-    removable: models.filter((m) => activeIds.has(m.id)).map((m) => m.id),
-  }
-}
+describe('sortImportPreviewModels', () => {
+  const models = [{ id: 'b' }, { id: 'A' }, { id: 'c' }]
 
-describe('bulk header buttons', () => {
-  const models = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
-  const active = new Set(['b'])
-
-  test('addable excludes models already on the list', () => {
-    expect(bulkIds(models, active).addable).toEqual(['a', 'c'])
+  test('A–Z is case-insensitive', () => {
+    expect(sortImportPreviewModels(models, 'az', {}).map((m) => m.id)).toEqual(['A', 'b', 'c'])
   })
 
-  test('removable includes only models on the list', () => {
-    expect(bulkIds(models, active).removable).toEqual(['b'])
+  test('Z–A reverses it', () => {
+    expect(sortImportPreviewModels(models, 'za', {}).map((m) => m.id)).toEqual(['c', 'b', 'A'])
   })
 
-  test('a fully-added filter leaves the add button with nothing to do', () => {
-    const allActive = new Set(['a', 'b', 'c'])
-    expect(bulkIds(models, allActive).addable).toEqual([])
+  test('latency ascending puts the unmeasured rows last, not first', () => {
+    const latency = { b: 800, A: 2500 }
+    expect(sortImportPreviewModels(models, 'latency-asc', latency).map((m) => m.id)).toEqual([
+      'b',
+      'A',
+      'c',
+    ])
   })
 
-  test('an empty search adds the whole catalog', () => {
-    expect(bulkIds(models, new Set()).addable).toEqual(['a', 'b', 'c'])
+  test('latency descending reverses only the measured prefix', () => {
+    const latency = { b: 800, A: 2500 }
+    expect(sortImportPreviewModels(models, 'latency-desc', latency).map((m) => m.id)).toEqual([
+      'A',
+      'b',
+      'c',
+    ])
+  })
+
+  test('the input array is not mutated', () => {
+    const input = [{ id: 'b' }, { id: 'A' }]
+    sortImportPreviewModels(input, 'az', {})
+    expect(input.map((m) => m.id)).toEqual(['b', 'A'])
+  })
+})
+
+describe('selection', () => {
+  const filtered = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+
+  test('state reports none selected', () => {
+    expect(importPreviewSelectionState(new Set(), filtered)).toEqual({
+      selected: 0,
+      total: 3,
+      allSelected: false,
+      indeterminate: false,
+    })
+  })
+
+  test('state reports a partial selection as indeterminate', () => {
+    const state = importPreviewSelectionState(new Set(['b']), filtered)
+    expect(state.selected).toBe(1)
+    expect(state.allSelected).toBe(false)
+    expect(state.indeterminate).toBe(true)
+  })
+
+  test('state reports a full selection', () => {
+    const state = importPreviewSelectionState(new Set(['a', 'b', 'c']), filtered)
+    expect(state.allSelected).toBe(true)
+    expect(state.indeterminate).toBe(false)
+  })
+
+  test('select-all turns every filtered id on', () => {
+    expect([...toggleImportPreviewSelectAll(new Set(['outside']), filtered, true)].sort()).toEqual([
+      'a',
+      'b',
+      'c',
+      'outside',
+    ])
+  })
+
+  test('select-all off clears only the filtered ids, keeping the rest', () => {
+    const next = toggleImportPreviewSelectAll(new Set(['a', 'b', 'outside']), filtered, false)
+    expect([...next]).toEqual(['outside'])
+  })
+
+  test('selected ids are limited to what is still filtered in', () => {
+    const narrowed = [{ id: 'b' }]
+    expect(importPreviewSelectedIds(new Set(['a', 'b']), narrowed)).toEqual(['b'])
   })
 })

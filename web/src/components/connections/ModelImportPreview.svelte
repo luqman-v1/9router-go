@@ -1,16 +1,24 @@
 <script lang="ts">
   // Staging panel for "Import from /models": fetches a provider's catalog
-  // without writing any rows, lets the operator search it, test individual
-  // models and add or remove them from the active list one chip at a time —
-  // or in bulk with the header buttons, which act on exactly the filtered set
-  // the operator is looking at.
-  // Upstream parity: the fetch itself is GET /api/providers/[id]/models; the
-  // add/remove/test actions reuse the same API calls the two import buttons
-  // and the model rows below already use.
+  // without writing any rows, lets the operator search, sort, select, test and
+  // add or remove models — one chip at a time, or as a batch.
+  //
+  // Two operations are deliberately kept apart:
+  //   - Selection is free and reversible: clicking a chip's body toggles it in
+  //     a local set, and the batch bar acts on that set (test / add / remove).
+  //   - The chip's own + and trash buttons act on that one model immediately.
+  // Collapsing them would make a stray click on a model name write to the
+  // store, with no undo.
   import type { ModelTestStatus } from './modelCheckAll'
   import {
     filterImportPreviewModels,
+    sortImportPreviewModels,
+    importPreviewSelectionState,
+    toggleImportPreviewSelectAll,
+    importPreviewSelectedIds,
+    IMPORT_PREVIEW_SORTS,
     type ImportPreviewModel,
+    type ImportPreviewSort,
   } from './modelImportPreview'
 
   interface Props {
@@ -22,6 +30,8 @@
     testStatuses: Record<string, ModelTestStatus>
     testErrors: Record<string, string | null>
     testLatency: Record<string, number | undefined>
+    /** True while a batch probe is running, so the bar can show progress. */
+    testing?: boolean
     onSearch: (q: string) => void
     onClose: () => void
     onAdd: (id: string) => void
@@ -31,6 +41,8 @@
     onAddAll: (ids: string[]) => void
     /** Bulk-remove every currently filtered model that is on the list. */
     onRemoveAll: (ids: string[]) => void
+    /** Probe a batch of selected models. */
+    onTestSelected: (ids: string[]) => void
   }
 
   let {
@@ -41,6 +53,7 @@
     testStatuses,
     testErrors,
     testLatency,
+    testing = false,
     onSearch,
     onClose,
     onAdd,
@@ -48,9 +61,15 @@
     onTest,
     onAddAll,
     onRemoveAll,
+    onTestSelected,
   }: Props = $props()
 
-  let filtered = $derived(filterImportPreviewModels(models, search))
+  let sort = $state<ImportPreviewSort>('az')
+  let selectedIds = $state<Set<string>>(new Set())
+
+  let filtered = $derived(
+    sortImportPreviewModels(filterImportPreviewModels(models, search), sort, testLatency)
+  )
 
   // Render ceiling. A 460-model catalog draws ~3,000 DOM nodes if every chip
   // mounts at once, which is a phone-unfriendly first paint on the small box
@@ -62,15 +81,32 @@
   let visible = $derived(filtered.slice(0, visibleCount))
   let hiddenCount = $derived(filtered.length - visible.length)
 
-  // A new search or a reopened panel starts from the top of the list again.
+  // A new search, sort or catalog starts from the top of the list again.
   $effect(() => {
     void search
     void models
+    void sort
     visibleCount = CHIP_RENDER_LIMIT
   })
 
   let addableIds = $derived(filtered.filter((m) => !activeIds.has(m.id)).map((m) => m.id))
   let removableIds = $derived(filtered.filter((m) => activeIds.has(m.id)).map((m) => m.id))
+
+  let selection = $derived(importPreviewSelectionState(selectedIds, filtered))
+  let selectedList = $derived(importPreviewSelectedIds(selectedIds, filtered))
+  let selectedAddable = $derived(selectedList.filter((id) => !activeIds.has(id)))
+  let selectedRemovable = $derived(selectedList.filter((id) => activeIds.has(id)))
+
+  function toggleChip(id: string) {
+    const next = new Set(selectedIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    selectedIds = next
+  }
+
+  function clearSelection() {
+    selectedIds = new Set()
+  }
 
   // Verdict summary for screen readers: a probe finishes silently, so the
   // region re-announces the tally instead of leaving the result icon-only.
@@ -98,6 +134,12 @@
     return 'smart_toy'
   }
 
+  function latencyClass(ms: number): string {
+    if (ms < 1000) return 'text-green-600 dark:text-green-400'
+    if (ms < 3000) return 'text-amber-600 dark:text-amber-400'
+    return 'text-red-500'
+  }
+
   // Upstream Modal parity: Escape dismisses, backdrop click dismisses.
   $effect(() => {
     if (typeof window === 'undefined') return
@@ -122,6 +164,15 @@
     onkeydown={(e) => { if (e.key === 'Escape') onClose() }}
   >
   <div class="mb-2 flex items-center gap-2">
+    <input
+      type="checkbox"
+      checked={selection.allSelected}
+      indeterminate={selection.indeterminate}
+      onchange={(e) => (selectedIds = toggleImportPreviewSelectAll(selectedIds, filtered, (e.target as HTMLInputElement).checked))}
+      title="Pilih semua hasil filter"
+      class="size-3.5 shrink-0 accent-brand-500 cursor-pointer"
+      aria-label="Pilih semua hasil filter"
+    />
     <span class="text-sm font-semibold text-text-main">
       Preview Fetch Models ({filtered.length}{search.trim() ? ` of ${models.length}` : ''})
     </span>
@@ -136,6 +187,17 @@
         class="h-7 w-56 rounded-md border border-border bg-background pl-7 pr-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
       />
     </div>
+    <select
+      value={sort}
+      onchange={(e) => (sort = (e.target as HTMLSelectElement).value as ImportPreviewSort)}
+      title="Urutkan daftar"
+      aria-label="Urutkan daftar"
+      class="h-7 rounded-md border border-border bg-background px-1.5 text-xs text-text-main focus:border-primary focus:outline-none cursor-pointer"
+    >
+      {#each IMPORT_PREVIEW_SORTS as opt (opt.value)}
+        <option value={opt.value}>{opt.label}</option>
+      {/each}
+    </select>
     <button
       type="button"
       onclick={onClose}
@@ -145,11 +207,63 @@
       <span class="material-symbols-outlined text-base">close</span>
     </button>
   </div>
+  <!-- Selection bar: appears only when something is selected, so the header
+       stays quiet in the common one-chip-at-a-time case. -->
+  {#if selection.selected > 0}
+    <div class="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5">
+      <span class="text-xs font-medium text-text-main">{selection.selected} dipilih</span>
+      <button
+        type="button"
+        onclick={() => onTestSelected(selectedList)}
+        disabled={testing || busy}
+        title="Test semua model terpilih — tiap probe memakai kuota akun"
+        class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface-2 px-2 text-xs font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer"
+      >
+        <span class="material-symbols-outlined text-sm" style={testing ? 'animation: spin 1s linear infinite' : undefined}>
+          {testing ? 'progress_activity' : 'science'}
+        </span>
+        {testing ? 'Menguji...' : `Test terpilih (${selectedList.length})`}
+      </button>
+      {#if selectedAddable.length > 0}
+        <button
+          type="button"
+          onclick={() => onAddAll(selectedAddable)}
+          disabled={busy}
+          title="Tambah {selectedAddable.length} model terpilih ke daftar"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2 text-xs font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
+        >
+          <span class="material-symbols-outlined text-sm">library_add</span>
+          Tambah terpilih ({selectedAddable.length})
+        </button>
+      {/if}
+      {#if selectedRemovable.length > 0}
+        <button
+          type="button"
+          onclick={() => onRemoveAll(selectedRemovable)}
+          disabled={busy}
+          title="Hapus {selectedRemovable.length} model terpilih dari daftar"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
+        >
+          <span class="material-symbols-outlined text-sm">delete_sweep</span>
+          Hapus terpilih ({selectedRemovable.length})
+        </button>
+      {/if}
+      <button
+        type="button"
+        onclick={clearSelection}
+        class="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-text-muted hover:text-text-main cursor-pointer"
+        title="Kosongkan pilihan"
+      >
+        <span class="material-symbols-outlined text-sm">deselect</span>
+        Bersihkan
+      </button>
+    </div>
+  {/if}
   <!-- Bulk actions act on the filtered set, not the whole catalog: "add all"
        after a search adds what the search matched, which is the selective
        import this panel exists for. The whole-list case is just an empty
        search. -->
-  {#if filtered.length > 0}
+  {#if filtered.length > 0 && selection.selected === 0}
     <div class="mb-2 flex items-center gap-2">
       {#if addableIds.length > 0}
         <button
@@ -184,23 +298,36 @@
     <div class="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto">
       {#each visible as m (m.id)}
         {@const isActive = activeIds.has(m.id)}
+        {@const isSelected = selectedIds.has(m.id)}
         {@const status = testStatuses[m.id]}
         {@const err = testErrors[m.id]}
         {@const latency = testLatency[m.id]}
         <div
-          class="flex items-center gap-1 rounded-full border py-0.5 pl-2 pr-1 font-mono text-xs transition-colors {isActive
-            ? 'border-green-500/50 bg-green-500/10 text-text-main'
-            : 'border-border bg-background text-text-main'}"
+          class="flex items-center gap-1 rounded-full border py-0.5 pl-2 pr-1 font-mono text-xs transition-colors {isSelected
+            ? 'border-primary ring-1 ring-primary/40 bg-primary/5 text-text-main'
+            : isActive
+              ? 'border-green-500/50 bg-green-500/10 text-text-main'
+              : 'border-border bg-background text-text-main'}"
           title={err || (latency !== undefined ? `${latency} ms` : undefined)}
         >
-          <span class="material-symbols-outlined text-sm {isActive ? 'text-green-500' : 'text-text-muted'}">{kindIcon(m.id)}</span>
-          <span class="max-w-[240px] truncate">{m.id}</span>
+          <!-- The chip body toggles selection; the buttons inside it act on the
+               model, so a click on +/- never both selects and writes. -->
+          <button
+            type="button"
+            onclick={() => toggleChip(m.id)}
+            class="flex min-w-0 items-center gap-1 cursor-pointer"
+            title={isSelected ? 'Batalkan pilihan model' : 'Pilih model ini'}
+            aria-pressed={isSelected}
+          >
+            <span class="material-symbols-outlined text-sm {isActive ? 'text-green-500' : 'text-text-muted'}">{kindIcon(m.id)}</span>
+            <span class="max-w-[240px] truncate" class:font-bold={isSelected}>{m.id}</span>
+          </button>
           <!-- Latency is kept beside the id, the same number the latency sort
                orders by on the main list: a chip that reads "fast" only in a
                tooltip hides the one number the operator is choosing on. -->
           {#if latency !== undefined}
             <span
-              class="shrink-0 rounded-full bg-sidebar px-1.5 py-px font-sans text-[10px] font-semibold tabular-nums {latency < 1000 ? 'text-green-600 dark:text-green-400' : latency < 3000 ? 'text-amber-600 dark:text-amber-400' : 'text-red-500'}"
+              class="shrink-0 rounded-full bg-sidebar px-1.5 py-px font-sans text-[10px] font-semibold tabular-nums {latencyClass(latency)}"
               title="Round-trip {latency} ms"
             >{latency >= 1000 ? `${(latency / 1000).toFixed(1)}s` : `${latency}ms`}</span>
           {/if}
