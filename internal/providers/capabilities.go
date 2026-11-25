@@ -766,6 +766,24 @@ var providerCapabilities = map[string]map[string]Capabilities{
 	"commandcode": {
 		"claude-haiku-5-5": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "commandcode", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 128000},
 	},
+	"alitp-intl": {
+		"qwen4-max":            {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 393216},
+		"qwen4-max-preview":    {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 393216},
+		"qwen3.8-max":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"qwen3.8-flash":        {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"qwen3.7-max":          {Vision: false, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"qwen3.7-plus":         {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"deepseek-v4-pro-0813": {Reasoning: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 393216},
+	},
+	"qwencloud": {
+		"qwen4-max":            {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 393216},
+		"qwen4-max-preview":    {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 393216},
+		"qwen3.8-max":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"qwen3.8-flash":        {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"qwen3.7-max":          {Vision: false, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"qwen3.7-plus":         {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"deepseek-v4-pro-0813": {Reasoning: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 393216},
+	},
 }
 
 func init() {
