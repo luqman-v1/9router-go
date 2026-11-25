@@ -84,3 +84,54 @@ func TestParseResponsesUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestParseResponsesUsageExplicitZeroCachedTokens(t *testing.T) {
+	tests := []struct {
+		name                 string
+		body                 string
+		wantPromptDetailsNil bool
+		wantCached           int
+	}{
+		{
+			name:                 "explicit zero cached_tokens in input_tokens_details",
+			body:                 `{"type":"response.done","response":{"usage":{"input_tokens":6882,"output_tokens":14,"total_tokens":6896,"input_tokens_details":{"cached_tokens":0}}}}`,
+			wantPromptDetailsNil: false,
+			wantCached:           0,
+		},
+		{
+			name:                 "explicit zero cached_tokens in prompt_tokens_details",
+			body:                 `{"type":"response.done","response":{"usage":{"prompt_tokens":500,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":0}}}}`,
+			wantPromptDetailsNil: false,
+			wantCached:           0,
+		},
+		{
+			name:                 "absent cache tokens leaves PromptTokensDetails nil",
+			body:                 `{"type":"response.done","response":{"usage":{"input_tokens":100,"output_tokens":20}}}`,
+			wantPromptDetailsNil: true,
+			wantCached:           0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseResponsesUsage([]byte(tt.body))
+			if got == nil {
+				t.Fatal("expected usage, got nil")
+			}
+			if tt.wantPromptDetailsNil {
+				if got.PromptTokensDetails != nil {
+					t.Errorf("PromptTokensDetails = %+v, want nil", got.PromptTokensDetails)
+				}
+			} else {
+				if got.PromptTokensDetails == nil {
+					t.Fatal("expected PromptTokensDetails non-nil")
+				}
+				if got.PromptTokensDetails.CachedTokens != 0 {
+					t.Errorf("PromptTokensDetails.CachedTokens = %d, want 0", got.PromptTokensDetails.CachedTokens)
+				}
+			}
+			if got.CachedTokens != tt.wantCached {
+				t.Errorf("CachedTokens = %d, want %d", got.CachedTokens, tt.wantCached)
+			}
+		})
+	}
+}

@@ -45,19 +45,23 @@ func ParseResponsesUsage(body []byte) *OpenAIUsage {
 		PromptCacheIncluded: true,
 	}
 
-	cached := 0
-	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
-		cached = u.InputTokensDetails.CachedTokens
-	} else if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
-		cached = u.PromptTokensDetails.CachedTokens
+	var cached *int
+	if u.InputTokensDetails != nil {
+		c := u.InputTokensDetails.CachedTokens
+		cached = &c
+	} else if u.PromptTokensDetails != nil {
+		c := u.PromptTokensDetails.CachedTokens
+		cached = &c
 	} else if u.CachedTokens > 0 {
-		cached = u.CachedTokens
+		c := u.CachedTokens
+		cached = &c
 	} else if u.CacheReadInputTokens > 0 {
-		cached = u.CacheReadInputTokens
+		c := u.CacheReadInputTokens
+		cached = &c
 	}
-	if cached > 0 {
-		out.CachedTokens = cached
-		out.PromptTokensDetails = &PromptTokensDetails{CachedTokens: cached}
+	if cached != nil {
+		out.CachedTokens = *cached
+		out.PromptTokensDetails = &PromptTokensDetails{CachedTokens: *cached}
 	}
 
 	// Reasoning tokens are nested under output_tokens on the Responses wire but
