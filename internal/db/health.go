@@ -17,6 +17,6 @@ func IsProviderHealthy(ctx context.Context, database *sql.DB, provider, model st
 //   - provider="" and model="" → all connections
 //   - model="" → all connections for provider
 //   - both set → specific model on all connections for provider
-func ResetProviderHealth(database *sql.DB, provider, model string) error {
-	return NewRepo(database).ResetProviderHealth(provider, model)
+func ResetProviderHealth(ctx context.Context, database *sql.DB, provider, model string) error {
+	return NewRepo(database).ResetProviderHealth(ctx, provider, model)
 }
