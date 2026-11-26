@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   buildImportPreviewActiveIds,
   filterImportPreviewByState,
+  importPreviewPageCount,
+  importPreviewPageItems,
   filterImportPreviewModels,
   importPreviewSelectedIds,
   importPreviewSelectionState,
@@ -138,5 +140,44 @@ describe('filterImportPreviewByState', () => {
 
   test('available keeps only the ids missing from the active list', () => {
     expect(filterImportPreviewByState(models, 'available', active).map((m) => m.id)).toEqual(['a', 'c'])
+  })
+})
+
+describe('importPreviewPageCount', () => {
+  test('an empty list still has one page', () => {
+    expect(importPreviewPageCount(0)).toBe(1)
+  })
+
+  test('rounds up, so a partial last page exists', () => {
+    expect(importPreviewPageCount(460, 30)).toBe(16)
+    expect(importPreviewPageCount(61, 30)).toBe(3)
+  })
+})
+
+describe('importPreviewPageItems', () => {
+  test('every page shows while the list is short', () => {
+    expect(importPreviewPageItems(2, 5)).toEqual([1, 2, 3, 4, 5])
+  })
+
+  test('the current page is inside a window and both endpoints survive', () => {
+    const items = importPreviewPageItems(5, 20)
+    expect(items[0]).toBe(1)
+    expect(items.at(-1)).toBe(20)
+    expect(items).toContain(5)
+  })
+
+  test('elided runs are marked with a gap', () => {
+    expect(importPreviewPageItems(5, 20).filter((i) => i === 'gap').length).toBe(2)
+  })
+
+  test('the ends do not produce a leading or trailing gap', () => {
+    expect(importPreviewPageItems(1, 20)[1]).not.toBe('gap')
+    expect(importPreviewPageItems(20, 20).at(-2)).not.toBe('gap')
+  })
+
+  test('out-of-range input is clamped instead of producing an empty window', () => {
+    expect(importPreviewPageItems(0, 20)).toContain(2)
+    expect(importPreviewPageItems(999, 20).at(-1)).toBe(20)
+    expect(importPreviewPageItems(999, 20)).toContain(20)
   })
 })

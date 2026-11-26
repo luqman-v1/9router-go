@@ -150,3 +150,45 @@ export function filterImportPreviewByState(
   const wantAdded = state === 'added'
   return models.filter((m) => activeIds.has(m.id) === wantAdded)
 }
+
+/** Items per page in the preview body. */
+export const IMPORT_PREVIEW_PAGE_SIZE = 30
+
+/** Page count for a filtered list, always at least 1 so the control is never blank. */
+export function importPreviewPageCount(total: number, pageSize = IMPORT_PREVIEW_PAGE_SIZE): number {
+  return Math.max(1, Math.ceil(total / pageSize))
+}
+
+export type ImportPreviewPageItem = number | 'gap'
+
+/**
+ * The page buttons to draw, in order. Below `maxButtons` every page shows; above
+ * it the list keeps the first page, the last page and a window around the
+ * current one, with a `gap` marking each elided run. Keeping the endpoints means
+ * the last page of a 460-model catalogue is one click away, not one scroll.
+ */
+export function importPreviewPageItems(
+  current: number,
+  total: number,
+  maxButtons = 7
+): ImportPreviewPageItem[] {
+  const last = Math.max(1, total)
+  const clamped = Math.min(Math.max(1, current), last)
+  if (last <= maxButtons) return Array.from({ length: last }, (_, i) => i + 1)
+
+  // Reserve room for both endpoints and both gaps.
+  const inner = maxButtons - 4
+  const start = Math.max(2, Math.min(clamped - Math.floor(inner / 2), last - inner))
+  const end = start + inner - 1
+
+  const out: ImportPreviewPageItem[] = [1]
+  // A single hidden page is drawn as itself: a gap marker that elides exactly
+  // one number is longer to read than the number.
+  if (start === 3) out.push(2)
+  else if (start > 3) out.push('gap')
+  for (let p = start; p <= end; p++) out.push(p)
+  if (end === last - 2) out.push(last - 1)
+  else if (end < last - 2) out.push('gap')
+  out.push(last)
+  return out
+}

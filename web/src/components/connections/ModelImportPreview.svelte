@@ -18,6 +18,9 @@
     toggleImportPreviewSelectAll,
     IMPORT_PREVIEW_SORTS,
     IMPORT_PREVIEW_STATE_FILTERS,
+    IMPORT_PREVIEW_PAGE_SIZE,
+    importPreviewPageCount,
+    importPreviewPageItems,
     type ImportPreviewModel,
     type ImportPreviewSort,
     type ImportPreviewStateFilter,
@@ -83,23 +86,25 @@
   )
   let filtered = $derived(sortImportPreviewModels(searched, sort, testLatency))
 
-  // Render ceiling. A 460-model catalog draws ~3,000 DOM nodes if every chip
-  // mounts at once, which is a phone-unfriendly first paint on the small box
-  // this dashboard serves from. The search is the way to reach the rest: it
-  // filters the full list client-side, so nothing is unreachable: the tail
-  // is one query away.
-  const CHIP_RENDER_LIMIT = 60
-  let visibleCount = $state(CHIP_RENDER_LIMIT)
-  let visible = $derived(filtered.slice(0, visibleCount))
-  let hiddenCount = $derived(filtered.length - visible.length)
+  // Pagination, not a growing list: a 460-model catalog draws ~3,000 DOM nodes
+  // if every chip mounts at once, which is a phone-unfriendly first paint on
+  // the small box this dashboard serves from. The search, the state filter and
+  // the sort are the way to reach the rest, and the page numbers reach it too.
+  let page = $state(1)
+  let pageCount = $derived(importPreviewPageCount(filtered.length))
+  let pageItems = $derived(importPreviewPageItems(page, pageCount))
+  let visible = $derived(
+    filtered.slice((page - 1) * IMPORT_PREVIEW_PAGE_SIZE, page * IMPORT_PREVIEW_PAGE_SIZE)
+  )
 
-  // A new search, filter, sort or catalog starts from the top of the list.
+  // A new search, filter, sort or catalog starts from the first page, so the
+  // operator is never left on a page that no longer exists.
   $effect(() => {
     void search
     void models
     void sort
     void stateFilter
-    visibleCount = CHIP_RENDER_LIMIT
+    page = 1
   })
 
   let addableIds = $derived(filtered.filter((m) => !activeIds.has(m.id)).map((m) => m.id))
@@ -184,14 +189,15 @@
        controls must stay reachable without scrolling back to the top, and the
        footer is where the running totals belong. -->
   <div
-    class="relative flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-[14px] border border-border-subtle bg-surface shadow-[var(--shadow-elevated)] fade-in"
+    class="relative flex max-h-[96vh] w-full max-w-5xl flex-col overflow-hidden rounded-[14px] border border-border-subtle bg-surface shadow-[var(--shadow-elevated)] fade-in"
     role="dialog"
     aria-modal="true"
     aria-labelledby="import-preview-title"
     onkeydown={(e) => { if (e.key === 'Escape') onClose() }}
   >
-    <!-- Header: identity on the left, search + close on the right. -->
-    <header class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-4 py-3">
+    <!-- Header: identity only. The search owns the row below it, full width,
+         because it is the primary way through a catalogue this size. -->
+    <header class="flex shrink-0 items-center gap-2 border-b border-border-subtle px-4 py-2.5">
       <span class="material-symbols-outlined text-base text-brand-500">download_for_offline</span>
       <h2 id="import-preview-title" class="shrink-0 whitespace-nowrap text-sm font-semibold text-text-main">
         Preview Fetch Models
@@ -199,11 +205,21 @@
       <span class="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-text-muted">
         {models.length}
       </span>
-      <!-- On a narrow viewport the search takes a row of its own instead of
-           being squeezed to an icon: it is the primary control in a 460-model
-           panel, and a 60px box reads as decoration. -->
-      <div class="relative order-last w-full min-w-0 sm:order-none sm:ml-auto sm:w-auto sm:flex-1 sm:max-w-72">
-        <span class="material-symbols-outlined pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-text-muted">search</span>
+      <button
+        type="button"
+        onclick={onClose}
+        title="Close the preview panel"
+        aria-label="Close the preview panel"
+        class="ml-auto rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-main cursor-pointer"
+      >
+        <span class="material-symbols-outlined text-base">close</span>
+      </button>
+    </header>
+
+    <!-- Search: its own full-width row. -->
+    <div class="shrink-0 px-4 pt-3">
+      <div class="relative">
+        <span class="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-text-muted">search</span>
         <input
           type="text"
           bind:this={searchInput}
@@ -211,29 +227,21 @@
           oninput={(e) => onSearch((e.target as HTMLInputElement).value)}
           placeholder="Search models (e.g. dee, flash)..."
           aria-label="Search models by id"
-          class="h-8 w-full rounded-md border border-border bg-background pl-7 pr-7 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+          class="h-9 w-full rounded-md border border-border bg-background pl-8 pr-8 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
         />
         {#if search.trim()}
           <button
             type="button"
             onclick={() => onSearch('')}
             title="Clear the search"
-            class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text-main cursor-pointer"
+            aria-label="Clear the search"
+            class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text-main cursor-pointer"
           >
             <span class="material-symbols-outlined text-sm">close</span>
           </button>
         {/if}
       </div>
-      <button
-        type="button"
-        onclick={onClose}
-        title="Close the preview panel"
-        aria-label="Close the preview panel"
-        class="rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-main cursor-pointer"
-      >
-        <span class="material-symbols-outlined text-base">close</span>
-      </button>
-    </header>
+    </div>
 
     <!-- Toolbar: state split, sort, and the select-all control. -->
     <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-4 py-2">
@@ -258,7 +266,7 @@
         {/each}
       </div>
 
-      <label class="flex items-center gap-1 text-[11px] text-text-muted">
+      <label class="ml-auto flex items-center gap-1 text-[11px] text-text-muted">
         <span class="material-symbols-outlined text-sm">sort</span>
         <select
           value={sort}
@@ -347,17 +355,25 @@
           <span class="material-symbols-outlined text-sm">deselect</span>
           Clear
         </button>
-      {:else}
-        <span class="ml-auto text-[11px] text-text-muted">
-          Click a chip to select it, or use its + and trash buttons
-        </span>
       {/if}
     </div>
 
     <p class="sr-only" aria-live="polite">{testSummary}</p>
 
-    <!-- Body: the only scrolling region. -->
-    <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+    <!-- Body: the only scrolling region. The hint sits on top of the chips and
+         scrolls with them, so the sentence is read where it applies instead of
+         being parked at the far end of the action row where it read as a label
+         for whatever button preceded it. -->
+    <div class="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-2">
+      <p class="mb-2 flex items-center gap-1.5 rounded-md bg-surface-2/60 px-2 py-1.5 text-[11px] text-text-muted">
+        <span class="material-symbols-outlined text-sm shrink-0">tips_and_updates</span>
+        <span>
+          Click a chip's name to select it. Its
+          <span class="font-semibold text-text-main">+</span> adds it to the list,
+          <span class="font-semibold text-text-main">trash</span> removes it, and the
+          <span class="font-semibold text-text-main">flask</span> tests it.
+        </span>
+      </p>
       {#if busy && models.length === 0}
         <!-- The panel opens before the fetch resolves, so the wait is a skeleton
              inside it rather than an inert button outside it. -->
@@ -457,23 +473,14 @@
               {/if}
             </div>
           {/each}
-          {#if hiddenCount > 0}
-            <button
-              type="button"
-              onclick={() => (visibleCount += CHIP_RENDER_LIMIT)}
-              title="Show {hiddenCount} more models"
-              class="rounded-md border border-dashed border-border px-3 py-1 text-xs text-text-muted hover:border-primary hover:text-primary cursor-pointer"
-            >
-              Show {Math.min(CHIP_RENDER_LIMIT, hiddenCount)} more ({hiddenCount} left)
-            </button>
-          {/if}
         </div>
       {/if}
     </div>
 
-    <!-- Footer: the running totals, so the operator can see what the panel did
-         to the list without closing it. -->
-    <footer class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border-subtle bg-surface-2/40 px-4 py-2 text-[11px] text-text-muted">
+    <!-- Footer: running totals on the left, page control on the right. No Done
+         button: the header's X and Escape already close the panel, and a second
+         close control in the corner the eye lands on last was a duplicate. -->
+    <footer class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-border-subtle bg-surface-2/40 px-4 py-2 text-[11px] text-text-muted">
       <span><span class="font-semibold text-text-main tabular-nums">{filtered.length}</span> shown</span>
       <span><span class="font-semibold text-green-600 tabular-nums dark:text-green-400">{addedCount}</span> added</span>
       <span><span class="font-semibold text-text-main tabular-nums">{availableCount}</span> available</span>
@@ -483,13 +490,77 @@
           <span class="material-symbols-outlined ml-1 text-sm text-red-500">cancel</span>{failedCount}
         </span>
       {/if}
-      <button
-        type="button"
-        onclick={onClose}
-        class="ml-auto inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[11px] font-medium text-text-main hover:bg-surface-3 cursor-pointer"
-      >
-        Done
-      </button>
+
+      {#if pageCount > 1}
+        <nav class="ml-auto flex flex-wrap items-center gap-1" aria-label="Pagination">
+          <button
+            type="button"
+            onclick={() => (page = Math.max(1, page - 1))}
+            disabled={page <= 1}
+            title="Previous page"
+            aria-label="Previous page"
+            class="inline-flex h-7 items-center gap-0.5 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          >
+            <span class="material-symbols-outlined text-sm">chevron_left</span>
+            Prev
+          </button>
+
+          {#each pageItems as item, i (i)}
+            {#if item === 'gap'}
+              <span class="px-0.5 text-text-subtle" aria-hidden="true">…</span>
+            {:else}
+              <button
+                type="button"
+                onclick={() => (page = item as number)}
+                aria-current={page === item ? 'page' : undefined}
+                aria-label="Page {item}"
+                class="inline-flex h-7 min-w-7 items-center justify-center rounded-md border px-1.5 text-[11px] font-medium tabular-nums transition-colors cursor-pointer {page ===
+                item
+                  ? 'border-brand-500 bg-brand-500/15 text-brand-600 dark:text-brand-400'
+                  : 'border-border bg-surface text-text-main hover:bg-surface-3'}"
+              >
+                {item}
+              </button>
+            {/if}
+          {/each}
+
+          <button
+            type="button"
+            onclick={() => (page = Math.min(pageCount, page + 1))}
+            disabled={page >= pageCount}
+            title="Next page"
+            aria-label="Next page"
+            class="inline-flex h-7 items-center gap-0.5 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          >
+            Next
+            <span class="material-symbols-outlined text-sm">chevron_right</span>
+          </button>
+
+          <!-- Jump straight to a page: on an 8-page catalogue the window hides
+               middle pages, so typing the number is the direct route. -->
+          <label class="flex items-center gap-1 pl-1 text-[11px] text-text-muted">
+            <span class="hidden sm:inline">Page</span>
+            <input
+              type="number"
+              min="1"
+              max={pageCount}
+              value={page}
+              onchange={(e) => {
+                const n = Number((e.target as HTMLInputElement).value)
+                if (Number.isFinite(n)) page = Math.min(pageCount, Math.max(1, Math.trunc(n)))
+                ;(e.target as HTMLInputElement).value = String(page)
+              }}
+              aria-label="Go to page"
+              class="h-7 w-12 rounded-md border border-border bg-background px-1 text-center text-[11px] tabular-nums text-text-main focus:border-primary focus:outline-none"
+            />
+            <span class="tabular-nums">/ {pageCount}</span>
+          </label>
+        </nav>
+      {:else if filtered.length > 0}
+        <span class="ml-auto tabular-nums text-text-muted">
+          {IMPORT_PREVIEW_PAGE_SIZE} per page · 1 page
+        </span>
+      {/if}
     </footer>
   </div>
 </div>
