@@ -17,3 +17,7 @@
   The health check now appends `HealthPath` itself, so every caller probes the
   address `waitHealthy` polls and a foreign listener is not mistaken for the
   gateway.
+
+Provenance: operator feature from `9router-pro` `v0.5.109-pro.28`; no
+counterpart in `decolua/9router` (`git grep -i doctor origin/master` returns
+nothing). Pro-only reference, not upstream parity.
