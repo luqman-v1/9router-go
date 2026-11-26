@@ -169,15 +169,23 @@ func TestComboBudgetPruneStillCollectsExpiredEntries(t *testing.T) {
 // window elapses, which is what makes a restart-free gateway recover on its
 // own instead of staying capped forever.
 func TestComboBudgetWindowRecycles(t *testing.T) {
-	repo := budgetComboDB(t, `"cheap":{"budgetCalls":1,"budgetWindowMs":1}`)
+	// The window is wide (an hour, the default) rather than 1 ms: a 1 ms window
+	// made the first assertion a wall-clock race — under -race on a loaded CI
+	// runner more than a millisecond easily passes between the record call and
+	// the exhausted check, the window recycles, and the test fails as
+	// "combo must be capped immediately". The recycle half of the contract is
+	// driven deterministically by backdating WindowStart, the same way
+	// TestComboBudgetPruneExpiredWindows does it.
+	repo := budgetComboDB(t, `"cheap":{"budgetCalls":1,"budgetWindowMs":3600000}`)
 	h := &ChatHandler{Repo: repo}
 	h.recordComboBudgetCall("cheap")
 	if !h.comboBudgetExhausted("cheap") {
 		t.Fatal("combo must be capped immediately after the ceiling")
 	}
-	// A 1 ms window elapses before the next call observes it.
+	// The window elapses: the same backdating the prune test uses, so the
+	// recycle is observed without waiting for (or racing) a real timeout.
 	h.comboBudgetMu.Lock()
-	h.comboBudget["cheap"].WindowStart = h.comboBudget["cheap"].WindowStart.Add(-2_000_000_000)
+	h.comboBudget["cheap"].WindowStart = h.comboBudget["cheap"].WindowStart.Add(-2 * time.Hour)
 	h.comboBudgetMu.Unlock()
 	if h.comboBudgetExhausted("cheap") {
 		t.Fatal("expired window must admit the combo again")
