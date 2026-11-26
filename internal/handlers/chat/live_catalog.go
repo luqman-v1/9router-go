@@ -191,7 +191,6 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchQoderLiveCatalog(ctx, conn, connData, token)
 		}
-		}
 	case providers.ModelsListURL(providerID) != "" || providerHasModelsFetcher(providerID):
 		// Providers that publish an OpenAI-style models feed with per-model
 		// limits (nous, openrouter, tokenharbor, opencode zen/go, …). The feed
