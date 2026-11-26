@@ -145,7 +145,7 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 	if accessToken == "" {
 		accessToken = connData.APIKey
 	}
-	if accessToken == "" {
+	if accessToken == "" && providerID != "opencode" && providerID != "oc" {
 		return nil
 	}
 
@@ -175,6 +175,10 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		fetch = func(ctx context.Context, _ string) []LiveModel {
 			return h.fetchCompatibleNodeModels(ctx, conn, connData, providerID)
 		}
+	case providerID == "opencode" || providerID == "oc":
+		fetch = func(ctx context.Context, _ string) []LiveModel {
+			return h.fetchOpenCodeLiveCatalog(ctx, conn, connData)
+		}
 	case providerID == "anthropic":
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchAnthropicLiveCatalog(ctx, conn, connData, token)
@@ -186,6 +190,7 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		// ones that the IDE hides but /v1/chat/completions still routes.
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchQoderLiveCatalog(ctx, conn, connData, token)
+		}
 		}
 	case providers.ModelsListURL(providerID) != "" || providerHasModelsFetcher(providerID):
 		// Providers that publish an OpenAI-style models feed with per-model
