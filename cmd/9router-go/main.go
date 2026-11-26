@@ -237,6 +237,7 @@ func buildApp(self string) *cli.App {
 				Usage:  "Show whether the background gateway is running",
 				Action: statusDetached,
 			},
+			doctorCommand(),
 			{
 				Name:  "logs",
 				Usage: "Print the tail of the background run log",

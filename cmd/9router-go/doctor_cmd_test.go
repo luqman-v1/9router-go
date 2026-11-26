@@ -1,0 +1,179 @@
+package main
+
+import (
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"9router/proxy/internal/config"
+)
+
+func TestDoctorCheckFormat(t *testing.T) {
+	ok := DoctorCheck{Name: "port", OK: true, Detail: "free"}
+	if got := ok.Format(); strings.Contains(got, "FAIL") || strings.Contains(got, "fix:") {
+		t.Fatalf("passing check rendered a failure: %q", got)
+	}
+
+	bad := DoctorCheck{Name: "port", OK: false, Detail: "held", Fix: "kill <pid>"}
+	got := bad.Format()
+	if !strings.Contains(got, "FAIL") || !strings.Contains(got, "fix: kill <pid>") {
+		t.Fatalf("failing check lost its mark or fix: %q", got)
+	}
+}
+
+func TestPortReleaseHintNamesPlatformTool(t *testing.T) {
+	tests := []struct {
+		name    string
+		windows bool
+		want    []string
+		deny    string
+	}{
+		{name: "windows", windows: true, want: []string{"netstat -ano", "taskkill /PID", "20130"}, deny: "lsof"},
+		{name: "unix", windows: false, want: []string{"lsof -i :20130", "kill <pid>"}, deny: "taskkill"},
+	}
+
+	original := isWindows
+	t.Cleanup(func() { isWindows = original })
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isWindows = func() bool { return tt.windows }
+			got := portReleaseHint("http://127.0.0.1:20130")
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("hint %q missing %q", got, want)
+				}
+			}
+			if strings.Contains(got, tt.deny) {
+				t.Errorf("hint %q should not mention %q", got, tt.deny)
+			}
+		})
+	}
+}
+
+func TestCheckDataDirReportsWritability(t *testing.T) {
+	t.Run("missing directory fails", func(t *testing.T) {
+		t.Setenv("DATA_DIR", filepath.Join(t.TempDir(), "absent"))
+		got := checkDataDir(&config.Config{})
+		if got.OK {
+			t.Fatalf("missing data dir reported OK: %s", got.Detail)
+		}
+		if got.Fix == "" {
+			t.Error("failure carried no fix")
+		}
+	})
+
+	t.Run("writable directory passes and leaves no probe", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("DATA_DIR", dir)
+		if got := checkDataDir(&config.Config{}); !got.OK {
+			t.Fatalf("writable data dir failed: %s (%s)", got.Detail, got.Fix)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("write probe left behind: %v", entries)
+		}
+	})
+}
+
+func TestCheckDatabase(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("missing file fails", func(t *testing.T) {
+		got := checkDatabase(&config.Config{DatabasePath: filepath.Join(dir, "data.sqlite")})
+		if got.OK {
+			t.Fatalf("missing database reported OK: %s", got.Detail)
+		}
+	})
+
+	t.Run("existing file passes", func(t *testing.T) {
+		path := filepath.Join(dir, "present.sqlite")
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := checkDatabase(&config.Config{DatabasePath: path})
+		if !got.OK {
+			t.Fatalf("existing database failed: %s", got.Detail)
+		}
+	})
+
+	t.Run("postgres dsn is not a file", func(t *testing.T) {
+		got := checkDatabase(&config.Config{DatabasePath: "postgres://user:pass@localhost/db"})
+		if !got.OK || !strings.Contains(got.Detail, "postgres") {
+			t.Fatalf("postgres dsn handled as a file: %s (%v)", got.Detail, got.OK)
+		}
+	})
+}
+
+func TestCheckPortFreeDoesNotClaimForeignListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// A bare listener answers no /health, so it must be reported as held by
+	// something that is not the gateway rather than as a healthy gateway.
+	url := "http://" + ln.Addr().String()
+	got := checkPort(url)
+	if got.OK {
+		t.Fatalf("foreign listener reported OK: %s", got.Detail)
+	}
+	if got.Fix == "" {
+		t.Error("foreign listener failure carried no fix")
+	}
+}
+
+func TestCheckPortFreePasses(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "http://" + ln.Addr().String()
+	_ = ln.Close()
+
+	if got := checkPort(url); !got.OK {
+		t.Fatalf("closed port reported failure: %s (%s)", got.Detail, got.Fix)
+	}
+}
+
+func TestCheckPortReportsNonHealthAnswerAsForeign(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not the gateway", http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got := checkPort(srv.URL)
+	if got.OK {
+		t.Fatalf("server without /health reported as the gateway: %s", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "held by another process") {
+		t.Fatalf("detail lost the foreign-listener wording: %s", got.Detail)
+	}
+}
+
+func TestCheckPortReportsGatewayAsHealthy(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got := checkPort(srv.URL)
+	if !got.OK {
+		t.Fatalf("gateway answered /health but check failed: %s (%s)", got.Detail, got.Fix)
+	}
+	if !strings.Contains(got.Detail, "served by the gateway") {
+		t.Fatalf("detail lost the gateway wording: %s", got.Detail)
+	}
+}
