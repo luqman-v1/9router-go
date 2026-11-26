@@ -925,13 +925,12 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 				if imageModels := providers.ImageModelsForProvider(id); len(imageModels) > 0 {
 					for _, modelID := range imageModels {
 						data = append(data, map[string]any{
-							"id":         id + "/" + modelID,
-							"object":     "model",
-							"kind":       kind,
-							"owned_by":   id,
-							"endpoint":   kindEndpoint(kind),
-							"created":    now,
-							"capability": "image",
+							"id":       id + "/" + modelID,
+							"object":   "model",
+							"kind":     kind,
+							"owned_by": id,
+							"endpoint": kindEndpoint(kind),
+							"created":  now,
 						})
 					}
 					continue
@@ -939,13 +938,12 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 				// An ImageURL with no recognisable catalog entry (a relay, a
 				// user-defined node) still needs an addressable id.
 				data = append(data, map[string]any{
-					"id":         id + "/" + providers.DefaultImageModel(id),
-					"object":     "model",
-					"kind":       kind,
-					"owned_by":   id,
-					"endpoint":   kindEndpoint(kind),
-					"created":    now,
-					"capability": "image",
+					"id":       id + "/" + providers.DefaultImageModel(id),
+					"object":   "model",
+					"kind":     kind,
+					"owned_by": id,
+					"endpoint": kindEndpoint(kind),
+					"created":  now,
 				})
 				continue
 			}

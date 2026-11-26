@@ -28,10 +28,9 @@ func TestHandleModelsByKind_ImageEmitsResolvableIDs(t *testing.T) {
 	}
 	var resp struct {
 		Data []struct {
-			ID         string `json:"id"`
-			Kind       string `json:"kind"`
-			Endpoint   string `json:"endpoint"`
-			Capability string `json:"capability"`
+			ID       string `json:"id"`
+			Kind     string `json:"kind"`
+			Endpoint string `json:"endpoint"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -39,6 +38,33 @@ func TestHandleModelsByKind_ImageEmitsResolvableIDs(t *testing.T) {
 	}
 	if len(resp.Data) == 0 {
 		t.Fatal("expected at least one image model")
+	}
+
+	// The response is rebuilt through kindEntriesFromModelInfo after per-key
+	// filtering, which projects each entry onto a fixed field set. A field set
+	// here is therefore NOT necessarily a field on the wire: an earlier revision
+	// added `capability: "image"` to these maps and the projection dropped it
+	// silently, so the fragment advertised a response shape the endpoint never
+	// emitted. Pin the wire shape instead of the local map.
+	var raw struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("parse raw: %v", err)
+	}
+	allowed := map[string]bool{
+		"id": true, "object": true, "kind": true,
+		"owned_by": true, "endpoint": true, "created": true,
+	}
+	for i, entry := range raw.Data {
+		for key := range entry {
+			if !allowed[key] {
+				t.Errorf("entry %d (%v) carries field %q, which the kind "+
+					"projection does not preserve; either drop it from the "+
+					"producer or teach kindEntriesFromModelInfo to keep it",
+					i, resp.Data[i].ID, key)
+			}
+		}
 	}
 
 	checked := 0
