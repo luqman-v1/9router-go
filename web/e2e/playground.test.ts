@@ -52,7 +52,7 @@ function completionBody(): string {
  * The same answer as an SSE stream, in three deltas: the page has to render
  * text that arrives in pieces, which is the whole point of the streaming path.
  */
-function completionStream(): string {
+function completionStream(options: { reasoning?: boolean } = {}): string {
   const chunk = (delta: Record<string, unknown>, finish: string | null = null) =>
     `data: ${JSON.stringify({
       object: 'chat.completion.chunk',
@@ -61,6 +61,7 @@ function completionStream(): string {
     })}\n\n`
   return (
     chunk({ role: 'assistant' }) +
+    (options.reasoning ? chunk({ reasoning_content: 'checking the question first. ' }) : '') +
     chunk({ content: 'upstream ' }) +
     chunk({ content: 'reply' }) +
     `data: ${JSON.stringify({
@@ -88,7 +89,10 @@ beforeAll(async () => {
         const body = (await req.json()) as Record<string, unknown>
         upstreamBodies.push(body)
         if (body.stream === true) {
-          return new Response(completionStream(), {
+          // The first turn carries reasoning so the page's collapsible block is
+          // exercised; a follow-up answers plainly, which keeps the history the
+          // second request sends to exactly the assistant text asserted below.
+          return new Response(completionStream({ reasoning: upstreamBodies.length === 1 }), {
             status: 200,
             headers: { 'Content-Type': 'text/event-stream' },
           })
@@ -178,12 +182,8 @@ describe('playground', () => {
       expect(panel).toContain('deepseek-chat')
       expect(panel).toContain('stop')
       expect(panel).toContain('11 tok')
-
-      if (CAPTURE) {
-        mkdirSync(SHOTS, { recursive: true })
-        // The page itself, conversation included: the element that changed.
-        await page.locator('main').screenshot({ path: join(SHOTS, '1466-playground-after.png') })
-      }
+      // Reasoning the provider emitted is kept, in its own collapsible block.
+      expect(panel).toContain('Reasoning')
 
       // The upstream saw a stream request, not a buffered one.
       expect(upstreamBodies.at(-1)?.stream).toBe(true)
@@ -203,6 +203,15 @@ describe('playground', () => {
       expect(history[1].role).toBe('assistant')
       expect(history[1].content).toBe(UPSTREAM_REPLY)
       expect(history[2]).toEqual({ role: 'user', content: 'And now in one sentence.' })
+
+      if (CAPTURE) {
+        mkdirSync(SHOTS, { recursive: true })
+        // Captured after the follow-up: the log holds two exchanges, the
+        // reasoning block is open, and the controls the page now offers are all
+        // visible — the state a reviewer needs to see.
+        await page.getByText('Reasoning', { exact: true }).click()
+        await page.locator('main').screenshot({ path: join(SHOTS, '1466-playground-after.png') })
+      }
 
       // Nothing about the conversation is persisted.
       const stored = await page.evaluate(() => ({

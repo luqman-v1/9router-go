@@ -1821,30 +1821,14 @@ export const api = {
     }>('/api/models/meta'),
 
   /**
-   * Playground: one chat turn taken through the gateway's own dispatch, from
-   * the dashboard session rather than an engine key. `keyId` scopes the turn
-   * to that key (its model allowlist, budget and usage attribution) and is
-   * omitted for the global scope. Returns the Chat Completions JSON unchanged,
-   * or throws an ApiError carrying the gateway's status and message.
-   */
-  playgroundChat: (payload: {
-    model: string
-    messages: { role: string; content: string }[]
-    stream?: boolean
-    temperature?: number
-    maxTokens?: number
-    keyId?: string
-  }) =>
-    request<any>('/api/playground/chat', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-
-  /**
-   * Playground, streaming: same route and scoping as `playgroundChat`, but the
-   * gateway's Chat Completions stream is read as it arrives instead of being
-   * awaited whole. Each `data:` line is one upstream delta, so the caller can
-   * render tokens while the provider is still producing them.
+   * Playground: a turn taken through the gateway's own dispatch, from the
+   * dashboard session rather than an engine key. `keyId` scopes the turn to
+   * that key (its model allowlist, budget and usage attribution) and is
+   * omitted for the global scope.
+   *
+   * The gateway's Chat Completions stream is read as it arrives instead of
+   * being awaited whole: each `data:` line is one upstream delta, so the caller
+   * can render tokens while the provider is still producing them.
    *
    * `signal` is the Stop button: aborting closes the request, and the engine
    * cancels the upstream call it was making on this turn's behalf.
