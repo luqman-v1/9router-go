@@ -4964,20 +4964,8 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "kind": "systemone"
     },
     {
-      "id": "longcat-2.5-free",
-      "name": "longcat-2.5-free",
-      "supportedFormats": ["openai"],
-      "capabilities": ["reasoning"]
-    },
-    {
       "id": "iceman-free",
       "name": "iceman-free",
-      "supportedFormats": ["openai"],
-      "capabilities": ["reasoning"]
-    },
-    {
-      "id": "inkling-2-small-free",
-      "name": "inkling-2-small-free",
       "supportedFormats": ["openai"],
       "capabilities": ["reasoning"]
     },
@@ -5004,13 +4992,8 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "hy4-flash-free",
       "supportedFormats": ["openai"],
       "capabilities": ["reasoning"]
-    },
-    {
-      "id": "tidepool-alpha-free",
-      "name": "tidepool-alpha-free",
-      "supportedFormats": ["openai"],
-      "capabilities": ["reasoning"]
-    }],
+    }
+  ],
   "ocz": [
     {
       "id": "claude-fable-5",
