@@ -1429,7 +1429,10 @@
                     {@const tierLabel = planLabel(badge?.plan)}
                     {@const expiry = formatPlanExpiry(badge?.expiresAt)}
                     {#if tierLabel || expiry.absolute}
-                      <p class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-text-muted/80">
+                      <p
+                        data-plan-badge
+                        class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-text-muted/80"
+                      >
                         {#if tierLabel}
                           <span
                             class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-600 dark:text-violet-300"
