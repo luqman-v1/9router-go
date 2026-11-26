@@ -84,6 +84,7 @@ func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) (*chi.Mux, *cha
 	r.Use(middleware.MaxBodyByPath(jsonLimit, middleware.MediaBodyLimitRules()))
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(middleware.RequestLogger)
+	r.Use(middleware.EnforceBlockedIP(repo))
 
 	engineChatH := handlers.SetupServerRouter(r, repo, ts)
 	return r, engineChatH, nil

@@ -253,6 +253,11 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/jailbreak/github", h.HandleGetJailbreakGithub)
 		r.Put("/jailbreak/github/token", h.HandleSaveJailbreakGithubToken)
 
+		// Blocked IPs
+		r.Get("/blocked-ips", h.HandleListBlockedIPs)
+		r.Post("/blocked-ips", h.HandleBlockIP)
+		r.Delete("/blocked-ips", h.HandleUnblockIP)
+
 		// Models
 		r.Get("/models/custom", h.HandleGetCustomModels)
 		r.Get("/models/caps", h.HandleGetModelCaps)
