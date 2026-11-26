@@ -1254,3 +1254,35 @@ func TestJailbreakImportServesSecondPassFromCache(t *testing.T) {
 		t.Fatalf("presets = %+v, want one preset with the cached prompt", presets)
 	}
 }
+
+func TestHTMLToText_HeaderAndSelfClosingTagsDoNotSwallowBody(t *testing.T) {
+	tests := []struct {
+		name string
+		html string
+		want string
+	}{
+		{
+			name: "header_tag_does_not_match_head_skip",
+			html: `<html><head><title>Ignore</title></head><body><header>Nav</header><main><p>Follow these rules.</p></main></body></html>`,
+			want: "Nav\nFollow these rules.",
+		},
+		{
+			name: "self_closing_script_tag_does_not_swallow_body",
+			html: `<script src="bundle.js" /><p>Prompt body</p>`,
+			want: "Prompt body",
+		},
+		{
+			name: "closing_style_tag_with_trailing_space_exits_skip",
+			html: `<style>body{color:red}</style ><p>Visible text</p>`,
+			want: "Visible text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := htmlToText(tt.html); got != tt.want {
+				t.Fatalf("htmlToText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
