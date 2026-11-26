@@ -117,6 +117,13 @@ func fetchClaudeUsage(ctx context.Context, accessToken string) usageResult {
 		fetchURL += "?cedar_ember=1&skip_spend=1"
 	}
 
+	// The windows and the seat tier are two independent profile reads. Start the
+	// tier read now so the card waits for the slower of the two rather than for
+	// their sum, and buffer the channel so an early return below still lets the
+	// goroutine finish and exit.
+	planCh := make(chan string, 1)
+	go func() { planCh <- fetchClaudePlan(ctx, accessToken) }()
+
 	status, hdr, body, err := usageDo(ctx, http.MethodGet, fetchURL, map[string]string{
 		"Authorization":     "Bearer " + accessToken,
 		"Accept":            "application/json",
@@ -148,7 +155,7 @@ func fetchClaudeUsage(ctx context.Context, accessToken string) usageResult {
 	// The seat's tier is not in the usage document; it lives on oauth/profile.
 	// No expiry is attached because that profile reports none — see
 	// usage_claude_plan.go. A failed read leaves the badge off, never the rows.
-	if plan := fetchClaudePlan(ctx, accessToken); plan != "" {
+	if plan := <-planCh; plan != "" {
 		if res.extra == nil {
 			res.extra = map[string]any{}
 		}
