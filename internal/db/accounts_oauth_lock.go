@@ -98,12 +98,51 @@ func ConnectionRequiresReauth(rawData string) bool {
 	return status == providers.StatusReauthRequired
 }
 
+// ConnectionIgnoresRateLimit reports whether the operator flagged this
+// connection to keep serving while it is rate limited (the dashboard
+// "ignore rate limit" toggle). Only the account-scoped parks read through
+// ConnectionBlockedUntil honour it: a model lock, an OAuth reauth park and a
+// quota cache stay binding, because waiting those out cannot help — the
+// upstream answer is already known.
+func ConnectionIgnoresRateLimit(rawData string) bool {
+	raw, ok := parseConnData(rawData)
+	if !ok {
+		return false
+	}
+	v, ok := raw["ignoreRateLimit"].(bool)
+	return ok && v
+}
+
+// ConnectionAccountCooldownUntil returns the account-scoped rate-limit
+// cooldown only — the field LockConnectionRateLimit writes — so a caller that
+// must bypass exactly that park asks a narrower question than
+// ConnectionBlockedUntil.
+func ConnectionAccountCooldownUntil(rawData string) (time.Time, bool) {
+	raw, ok := parseConnData(rawData)
+	if !ok {
+		return time.Time{}, false
+	}
+	return readTimestampField(raw, "rateLimitedUntil")
+}
+
 // ConnectionBlockedUntil returns the earliest instant the account becomes
 // selectable again across the account-scoped cooldowns, so the selector can
 // ask one question instead of one per park.
+//
+// A connection carrying ignoreRateLimit reports "not blocked": the operator
+// asked for this account to keep serving while it is rate limited. The OAuth
+// park is read directly by callers that must stay binding (the forced-fallback
+// sweep and the pinned-probe check), and those callers consult
+// ConnectionIgnoresRateLimit themselves only for the quota cooldown.
 func ConnectionBlockedUntil(rawData string) (time.Time, bool) {
 	raw, ok := parseConnData(rawData)
 	if !ok {
+		return time.Time{}, false
+	}
+	// The operator's bypass: a flagged connection is never reported blocked by
+	// the account cooldowns below. Callers that need the underlying park read
+	// ConnectionAccountCooldownUntil / ConnectionOAuthLockUntil directly.
+	if v, ok := raw["ignoreRateLimit"].(bool); ok && v {
 		return time.Time{}, false
 	}
 	earliest, found := readTimestampField(raw, "rateLimitedUntil")

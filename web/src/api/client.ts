@@ -39,6 +39,8 @@ export interface ProviderConnection {
   mediaEnabled?: boolean
   isMediaActive?: boolean
   disabledKinds?: string[]
+  /** Operator flag: keep serving while the account-scoped rate-limit cooldown is active. */
+  ignoreRateLimit?: boolean
   providerSpecificData?: {
     assignedModel?: string | null
     disabledKinds?: string[]
@@ -652,6 +654,8 @@ export interface CreateConnectionPayload {
   testStatus?: 'active' | 'unknown' | string
   proxyPoolId?: string | null
   defaultModel?: string
+  /** Operator flag: keep serving while the rate-limit cooldown is active. */
+  ignoreRateLimit?: boolean
   providerSpecificData?: Record<string, unknown>
 }
 

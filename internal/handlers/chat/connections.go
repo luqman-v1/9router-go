@@ -499,7 +499,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				if boundConn != nil && !excludeSet[boundConn.ID] && codexAccountServesModel(boundConn, model) {
 					if serviceKind == "" || boundConn.IsMediaActive(serviceKind) {
 						if !h.connectionModelBlocked(boundConn, provider, model) {
-							if until, ok := db.ConnectionBlockedUntil(boundConn.Data); !ok || !until.After(now) {
+							if until, ok := accountParkBlocked(boundConn, now); !ok || !until.After(now) {
 								conn = boundConn
 							}
 						}
@@ -566,12 +566,23 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 					// dead accounts until a live 429/401 locked them, and a rejected
 					// grant cost a token-endpoint call on every request until the IP
 					// was rate limited. Upstream parity: filterAvailableAccounts.
-					if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
-						inCooldown = append(inCooldown, c)
-						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
-							cooldownUntil = until
+					//
+					// ignoreRateLimit shortens exactly the quota half of that park:
+					// a flagged account is handed out while rateLimitedUntil is
+					// still in the future, and the ride-out window is logged so an
+					// operator can see the bypass working. The OAuth half of
+					// ConnectionBlockedUntil stays binding above.
+					if until, ok := accountParkBlocked(c, now); ok && until.After(now) {
+						if ride := ignoredAccountPark(c, now); !ride.IsZero() {
+							log.Info("connections", "ignoring rate-limit cooldown on flagged connection",
+								"provider", provider, "conn", c.ID, "parkedUntil", ride.UTC().Format(time.RFC3339))
+						} else {
+							inCooldown = append(inCooldown, c)
+							if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+								cooldownUntil = until
+							}
+							continue
 						}
-						continue
 					}
 				}
 				conn = c
@@ -656,8 +667,19 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 // The lock fields are read from the blob the rotation loop already holds in
 // memory: a row fetch per check here ran 2N queries per rotation pass on an
 // N-connection pool, each re-reading the same row the loop is iterating.
+//
+// ignoreRateLimit also lifts the per-model lock and the quota cache for this
+// connection: on a custom endpoint the operator knows a model-scoped 429 is
+// the same upstream window as everything else, and waiting three lock windows
+// out is exactly what the toggle promises not to do. The provider quota cache
+// (antigravity/codex) is lifted too — it is the same category of
+// wait-the-window-out for this account. The OAuth reauth park stays binding;
+// a dead grant answers 401 until re-logged.
 func (h *ChatHandler) connectionModelBlocked(c *models.ProviderConnection, provider, model string) bool {
 	if model == "" {
+		return false
+	}
+	if ignoresRateLimit(c) {
 		return false
 	}
 	lockKey := canonicalLockModel(provider, model)
@@ -712,7 +734,7 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 			return true, "media disabled for " + kind
 		}
 	}
-	if until, ok := db.ConnectionBlockedUntil(conn.Data); ok && until.After(time.Now()) {
+	if until, ok := accountParkBlocked(conn, time.Now()); ok && until.After(time.Now()) {
 		return true, "account cooldown until " + until.UTC().Format(time.RFC3339)
 	}
 	if model == "" {
