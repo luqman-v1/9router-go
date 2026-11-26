@@ -25,6 +25,20 @@ func fetchCodexUsageFor(ctx context.Context, accessToken, accountID string) usag
 		return usageResult{message: "Codex access token not available. Please re-authorize the connection."}
 	}
 
+	// The windows and the plan are two independent upstream reads. Start the
+	// plan read first so the card waits for the slower of the two rather than
+	// for their sum; a buffered channel means an early return below leaves the
+	// goroutine able to finish and exit. The plan read is fail-open: a nil here
+	// only means no badge.
+	subCh := make(chan *codexquota.Subscription, 1)
+	go func() {
+		sub, subErr := codexquota.FetchSubscription(ctx, nil, accessToken, accountID)
+		if subErr != nil {
+			sub = nil
+		}
+		subCh <- sub
+	}()
+
 	usage, err := codexquota.Fetch(ctx, nil, accessToken)
 	if err != nil {
 		// Upstream returns a message with NO quotas key on a non-2xx, so the
@@ -55,9 +69,9 @@ func fetchCodexUsageFor(ctx context.Context, accessToken, accountID string) usag
 	// The plan tier and its end date come from accounts/check, not wham/usage:
 	// wham/usage reports rate-limit windows and never when the plan itself
 	// lapses. Both ride in extra so the dashboard draws them next to the
-	// windows; a failure here must not hide the quota rows that did load.
+	// windows; a failure there must not hide the quota rows that did load.
 	resetCreditsExtra := map[string]any{"resetCredits": map[string]any{"availableCount": usage.ResetCredits}}
-	if sub, subErr := codexquota.FetchSubscription(ctx, nil, accessToken, accountID); subErr == nil {
+	if sub := <-subCh; sub != nil {
 		// A zero time is "no expiry", not year 1: the dashboard would draw it.
 		var expiresAt any
 		if sub.HasExpiry() {
