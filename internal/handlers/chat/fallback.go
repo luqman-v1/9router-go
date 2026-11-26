@@ -368,7 +368,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
-			currentBackoffLevel := h.Repo.GetConnectionBackoffLevel(connObj.ID)
+			currentBackoffLevel := h.Repo.GetConnectionBackoffLevel(ctx, connObj.ID)
 			// Classify error to get dynamic cooldown; provider-scoped rules
 			// key off the canonical provider the request routed to.
 			classification := providers.ClassifyErrorForProvider(ue.StatusCode, errorText, currentBackoffLevel, provider, ue.Body)
@@ -378,9 +378,9 @@ func (h *ChatHandler) handleAccountFallback(
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
 			}
 			lockKey := canonicalLockModel(provider, model)
-			h.Repo.LockConnectionModel(connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(ctx, connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
 			if lockKey != model {
-				_ = h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
+				_ = h.Repo.LockConnectionModel(ctx, connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
 			}
 			// Account-scoped cooldown alongside the per-model locks, so the
 			// selector can skip this account before spending a request
@@ -389,7 +389,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// itself such as an NVIDIA NIM degraded cluster), so unrelated
 			// models stay available.
 			if classification.ModelScoped || isModelScopedError(ue.StatusCode, errorText, model, ue.Body) {
-				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+				if recErr := h.Repo.RecordConnectionScopedError(ctx, connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
 			} else {
@@ -404,7 +404,7 @@ func (h *ChatHandler) handleAccountFallback(
 					}
 				}
 				until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
+				if lockErr := h.Repo.LockConnectionRateLimit(ctx, connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
 					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
 				}
 				h.getSessionAffinity().EvictConnection(connObj.ID)
@@ -1440,16 +1440,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 		// Clear any existing model lock on success (matching Next.js clearAccountError).
 		lockKey := canonicalLockModel(provider, model)
-		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, lockKey); unlockErr != nil {
+		if unlockErr := h.Repo.UnlockConnectionModel(ctx, connectionID, lockKey); unlockErr != nil {
 			log.Warn("fallback", "unlock failed", "provider", provider, "model", lockKey, "error", unlockErr)
 		}
 		if lockKey != model {
-			_ = h.Repo.UnlockConnectionModel(connectionID, model)
+			_ = h.Repo.UnlockConnectionModel(ctx, connectionID, model)
 		}
 		// A served request also clears the account-scoped cooldown, so an
 		// account that recovered is not kept out of rotation until the
 		// cooldown expires on its own.
-		if clearErr := h.Repo.ClearConnectionRateLimit(connectionID); clearErr != nil {
+		if clearErr := h.Repo.ClearConnectionRateLimit(ctx, connectionID); clearErr != nil {
 			log.Warn("fallback", "rate limit clear failed", "conn", connectionID, "error", clearErr)
 		}
 		// A served request proves the account is usable again, so drop the

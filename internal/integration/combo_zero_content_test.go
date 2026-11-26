@@ -56,7 +56,7 @@ func TestComboFallsBackOnZeroContentResponse(t *testing.T) {
 	if until, ok := db.ConnectionCooldownUntil(conn.Data); ok {
 		t.Errorf("conn-zero should not have rateLimitedUntil set, got: %v", until)
 	}
-	if locked, _ := env.Repo.IsConnectionModelLocked("conn-zero", "deepseek-chat"); locked {
+	if locked, _ := env.Repo.IsConnectionModelLocked(context.Background(), "conn-zero", "deepseek-chat"); locked {
 		t.Error("conn-zero should not have modelLock set")
 	}
 

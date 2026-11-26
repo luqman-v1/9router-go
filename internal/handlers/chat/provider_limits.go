@@ -342,7 +342,7 @@ func (h *ChatHandler) recordProviderLimit(ctx context.Context, state *providerLi
 	// condition is "the operator let the contract lapse".
 	status := providerRefusalStatus(attempt.Axis)
 	message := providerRefusalMessage(provider, attempt)
-	if err := h.Repo.RecordConnectionScopedError(
+	if err := h.Repo.RecordConnectionScopedError(ctx,
 		connectionID, model, providerLimitScope, status, message, 0,
 	); err != nil {
 		log.Debug("providerlimit", "record refusal on connection failed", "conn", connectionID, "error", err)

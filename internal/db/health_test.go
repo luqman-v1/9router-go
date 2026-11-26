@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+
 	"testing"
 )
 
@@ -84,7 +86,7 @@ func TestIsProviderHealthy_WithModelLock(t *testing.T) {
 
 	insertTestConn(t, repo)
 
-	err := repo.LockConnectionModel("conn-1", "gpt-4", 3600, 1)
+	err := repo.LockConnectionModel(context.Background(), "conn-1", "gpt-4", 3600, 1)
 	if err != nil {
 		t.Fatalf("LockConnectionModel: %v", err)
 	}
@@ -100,7 +102,7 @@ func TestIsProviderHealthy_WithUnlockedConnection(t *testing.T) {
 
 	insertTestConns(t, repo, "conn-1", "conn-2")
 
-	err := repo.LockConnectionModel("conn-1", "gpt-4", 3600, 1)
+	err := repo.LockConnectionModel(context.Background(), "conn-1", "gpt-4", 3600, 1)
 	if err != nil {
 		t.Fatalf("LockConnectionModel: %v", err)
 	}
@@ -116,12 +118,12 @@ func TestResetProviderHealth_ClearsModelLocks(t *testing.T) {
 
 	insertTestConn(t, repo)
 
-	err := repo.LockConnectionModel("conn-1", "gpt-4", 3600, 1)
+	err := repo.LockConnectionModel(context.Background(), "conn-1", "gpt-4", 3600, 1)
 	if err != nil {
 		t.Fatalf("LockConnectionModel: %v", err)
 	}
 
-	err = repo.ResetProviderHealth("openai", "gpt-4")
+	err = repo.ResetProviderHealth(context.Background(), "openai", "gpt-4")
 	if err != nil {
 		t.Fatalf("ResetProviderHealth: %v", err)
 	}
@@ -141,7 +143,7 @@ func TestIsProviderAvailable_Repo(t *testing.T) {
 		t.Error("expected available=true when no lock")
 	}
 
-	repo.LockConnectionModel("conn-1", "gpt-4", 3600, 1)
+	repo.LockConnectionModel(context.Background(), "conn-1", "gpt-4", 3600, 1)
 
 	if repo.IsProviderAvailable(t.Context(), "openai", "gpt-4") {
 		t.Error("expected available=false when locked")

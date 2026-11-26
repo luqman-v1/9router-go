@@ -795,7 +795,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
 			provider := r.URL.Query().Get("provider")
 			model := r.URL.Query().Get("model")
-			if err := repo.ResetProviderHealth(provider, model); err != nil {
+			if err := repo.ResetProviderHealth(r.Context(), provider, model); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}

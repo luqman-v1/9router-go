@@ -265,7 +265,7 @@ func TestComboLockRetryable_OpencodeFreeUsageLimitDoesNotLock(t *testing.T) {
 		Body:       []byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`),
 	})
 
-	if locked, _ := repo.IsConnectionModelLocked("conn-open", "deepseek-v4.1-flash-free"); locked {
+	if locked, _ := repo.IsConnectionModelLocked(context.Background(), "conn-open", "deepseek-v4.1-flash-free"); locked {
 		t.Error("expected the free-tier 429 to NOT lock the model")
 	}
 	var rawData string

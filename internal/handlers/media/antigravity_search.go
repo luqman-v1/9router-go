@@ -308,15 +308,15 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 		// a request bug. Exclude it from rotation and try the next account.
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			lockModel := translator.NormalizeAntigravityModel(model)
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, lockModel, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, lockModel, cooldownSec, classification.NewBackoffLevel)
 			if lockModel != model {
-				_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+				_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 			}
 			log.Warn("search", "antigravity account locked, trying next", "conn", conn.ID[:min(8, len(conn.ID))], "status", resp.StatusCode, "cooldown_s", cooldownSec)
 		}
@@ -505,8 +505,8 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 		// Probes read production state; they never clear it (see
 		// tts_forward.go for the same reasoning on the failure path).
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
-			_ = h.Repo.UnlockConnectionModel(conn.ID, translator.NormalizeAntigravityModel(model))
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, translator.NormalizeAntigravityModel(model))
 		}
 	}
 	log.Info("request", "POST /v1/search", "provider", "antigravity", "model", model, "query", query, "results", len(results), "conn", conn.ID[:min(8, len(conn.ID))], "tokens", tokens)

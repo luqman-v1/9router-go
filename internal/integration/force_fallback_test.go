@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"testing"
 	"time"
@@ -24,7 +26,7 @@ func TestForceFallbackUsesAccountThatFreesUpFirst(t *testing.T) {
 
 		// Park the only account so the next request finds nothing selectable.
 		until := time.Now().UTC().Add(5 * time.Minute)
-		if err := env.Repo.LockConnectionRateLimit("conn-1", until, 1, http.StatusTooManyRequests, "quota exhausted"); err != nil {
+		if err := env.Repo.LockConnectionRateLimit(context.Background(), "conn-1", until, 1, http.StatusTooManyRequests, "quota exhausted"); err != nil {
 			t.Fatalf("park account: %v", err)
 		}
 
@@ -48,7 +50,7 @@ func TestForceFallbackUsesAccountThatFreesUpFirst(t *testing.T) {
 		park := func(connID string, d time.Duration) {
 			t.Helper()
 			until := time.Now().UTC().Add(d)
-			if err := env.Repo.LockConnectionRateLimit(connID, until, 1, http.StatusTooManyRequests, "quota exhausted"); err != nil {
+			if err := env.Repo.LockConnectionRateLimit(context.Background(), connID, until, 1, http.StatusTooManyRequests, "quota exhausted"); err != nil {
 				t.Fatalf("park %s: %v", connID, err)
 			}
 		}

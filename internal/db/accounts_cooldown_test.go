@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"testing"
 	"time"
@@ -25,7 +27,7 @@ func TestLockConnectionRateLimit_RoundTripsThroughCooldownUntil(t *testing.T) {
 	insertTestConn(t, repo)
 
 	until := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
-	if err := repo.LockConnectionRateLimit("conn-1", until, 2, 429, "quota exhausted"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), "conn-1", until, 2, 429, "quota exhausted"); err != nil {
 		t.Fatalf("LockConnectionRateLimit: %v", err)
 	}
 
@@ -43,7 +45,7 @@ func TestLockConnectionRateLimit_RecordsTheError(t *testing.T) {
 	defer cleanup()
 	insertTestConn(t, repo)
 
-	if err := repo.LockConnectionRateLimit("conn-1", time.Now().UTC().Add(time.Minute), 1, 401, "authentication expired"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), "conn-1", time.Now().UTC().Add(time.Minute), 1, 401, "authentication expired"); err != nil {
 		t.Fatalf("LockConnectionRateLimit: %v", err)
 	}
 
@@ -69,10 +71,10 @@ func TestClearConnectionRateLimit_PutsAccountBackInRotation(t *testing.T) {
 	defer cleanup()
 	insertTestConn(t, repo)
 
-	if err := repo.LockConnectionRateLimit("conn-1", time.Now().UTC().Add(5*time.Minute), 2, 429, "quota exhausted"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), "conn-1", time.Now().UTC().Add(5*time.Minute), 2, 429, "quota exhausted"); err != nil {
 		t.Fatalf("LockConnectionRateLimit: %v", err)
 	}
-	if err := repo.ClearConnectionRateLimit("conn-1"); err != nil {
+	if err := repo.ClearConnectionRateLimit(context.Background(), "conn-1"); err != nil {
 		t.Fatalf("ClearConnectionRateLimit: %v", err)
 	}
 
@@ -98,13 +100,13 @@ func TestClearConnectionRateLimit_KeepsModelLocks(t *testing.T) {
 	defer cleanup()
 	insertTestConn(t, repo)
 
-	if err := repo.LockConnectionModel("conn-1", "gpt-4", 600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "conn-1", "gpt-4", 600, 1); err != nil {
 		t.Fatalf("LockConnectionModel: %v", err)
 	}
-	if err := repo.ClearConnectionRateLimit("conn-1"); err != nil {
+	if err := repo.ClearConnectionRateLimit(context.Background(), "conn-1"); err != nil {
 		t.Fatalf("ClearConnectionRateLimit: %v", err)
 	}
-	if locked, err := repo.IsConnectionModelLocked("conn-1", "gpt-4"); err != nil || !locked {
+	if locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-1", "gpt-4"); err != nil || !locked {
 		t.Errorf("model lock was dropped by the account-cooldown clear (locked=%v err=%v)", locked, err)
 	}
 }
@@ -140,7 +142,7 @@ func TestRecordConnectionScopedError_StoresModelAndSource(t *testing.T) {
 	defer cleanup()
 	insertTestConn(t, repo)
 
-	if err := repo.RecordConnectionScopedError("conn-1", "mimo-v2.5-free", "chat", 401, "Model is not supported", 1); err != nil {
+	if err := repo.RecordConnectionScopedError(context.Background(), "conn-1", "mimo-v2.5-free", "chat", 401, "Model is not supported", 1); err != nil {
 		t.Fatalf("RecordConnectionScopedError: %v", err)
 	}
 
@@ -163,7 +165,7 @@ func TestRecordConnectionScopedError_StoresModelAndSource(t *testing.T) {
 		t.Errorf("lastError.message = %v, want Model is not supported", lastError["message"])
 	}
 	// Test that empty model and source are omitted from lastError map
-	if err := repo.RecordConnectionScopedError("conn-1", "", "", 401, "Invalid API key", 1); err != nil {
+	if err := repo.RecordConnectionScopedError(context.Background(), "conn-1", "", "", 401, "Invalid API key", 1); err != nil {
 		t.Fatalf("RecordConnectionScopedError with empty model: %v", err)
 	}
 	rawEmpty := readConnData(t, repo, "conn-1")

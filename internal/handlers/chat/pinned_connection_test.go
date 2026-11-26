@@ -73,7 +73,7 @@ func TestGetBestConnection_PinnedConditions(t *testing.T) {
 
 	// 4. A model lock on the pinned row pushes the request off it too.
 	lockKey := canonicalLockModel("pinned-test", "test-model")
-	if err := repo.LockConnectionModel("primary", lockKey, 300, 0); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "primary", lockKey, 300, 0); err != nil {
 		t.Fatalf("lock primary: %v", err)
 	}
 	conn, _, err = handler.getBestConnection("pinned-test", "primary", nil, "test-model")

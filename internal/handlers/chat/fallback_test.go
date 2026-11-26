@@ -200,7 +200,7 @@ func TestHandleAccountFallback_RetryableLocksModel(t *testing.T) {
 		t.Fatal("expected error after exhausting connections")
 	}
 
-	locked, lerr := repo.IsConnectionModelLocked("conn-429", "deepseek-chat")
+	locked, lerr := repo.IsConnectionModelLocked(context.Background(), "conn-429", "deepseek-chat")
 	if lerr != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", lerr)
 	}
@@ -250,7 +250,7 @@ func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T)
 		t.Errorf("expected 1 upstream hit (second combo model excluded), got %d", got)
 	}
 
-	locked, lerr := repo.IsConnectionModelLocked("conn-combo", "deepseek-chat")
+	locked, lerr := repo.IsConnectionModelLocked(context.Background(), "conn-combo", "deepseek-chat")
 	if lerr != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", lerr)
 	}
@@ -366,7 +366,7 @@ func TestHandleAccountFallback_503CapacityLocksCanonicalModel(t *testing.T) {
 	// locked. The 3.8 family is deliberately NOT tested here: upstream
 	// v0.5.99 gives each 3.8 tier its own backend id, so a capacity error on
 	// one tier says nothing about the others.
-	lockedCanonical, err := repo.IsConnectionModelLocked("conn-ag-cap", "gemini-3.7-flash-tiered")
+	lockedCanonical, err := repo.IsConnectionModelLocked(context.Background(), "conn-ag-cap", "gemini-3.7-flash-tiered")
 	if err != nil {
 		t.Fatalf("check canonical lock: %v", err)
 	}
