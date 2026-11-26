@@ -273,6 +273,23 @@ Full schema, operator contract, and multi-process limits: [`DATABASE.md`](DATABA
 
 Download from [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest), verify against `SHA256SUMS.txt`.
 
+### OpenWrt
+
+`9router-go` installs as an `opkg` package on **OpenWrt 18.06 and later**, with
+an optional LuCI page and a feed for upgrades:
+
+```sh
+echo "src/gz 9router-go https://luqman-v1.github.io/9router-go/openwrt/$(. /etc/openwrt_release && echo "$DISTRIB_ARCH")" \
+	>> /etc/opkg/customfeeds.conf
+opkg update && opkg install 9router-go luci-app-9router-go
+```
+
+Built for x86_64, i386, arm64 and armv7 targets. 32-bit MIPS routers are not
+covered: the pure-Go SQLite driver has no mips port.
+
+Full details, including self-update vs `opkg upgrade`, the database backup
+helper and tunnels, in [docs/OPENWRT.md](docs/OPENWRT.md).
+
 ### 🧪 Experimental builds
 
 Unreleased work also ships as **experimental** builds. They are published

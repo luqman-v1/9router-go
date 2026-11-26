@@ -134,7 +134,11 @@ func miniMaxCodeDeadline(data map[string]any, now time.Time) int {
 	if !ok {
 		return miniMaxCodeSignInSeconds
 	}
-	if raw < 1e12 {
+	// Compared as float64 against a float64 literal: `1e12` as an untyped
+	// constant truncated to int does not compile on a 32-bit target (armv7,
+	// mips), which are the router builds this ships to, and the value is far
+	// outside int32 range anyway.
+	if float64(raw) < 1e12 {
 		return raw
 	}
 	remaining := time.UnixMilli(int64(raw)).Sub(now)
