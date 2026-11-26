@@ -116,6 +116,21 @@
 
   let selection = $derived(importPreviewSelectionState(selectedIds, filtered))
 
+  // Selecting chips narrows every bulk action to them. Without this the
+  // selection only tinted rows: "Test selected" tested the whole filter and
+  // "Add all" ignored a hand-picked subset, so a click on a chip's name
+  // changed nothing an operator could act on.
+  let selectedAddable = $derived(addableIds.filter((id) => selectedIds.has(id)))
+  let selectedRemovable = $derived(removableIds.filter((id) => selectedIds.has(id)))
+  let hasSelection = $derived(selection.selected > 0)
+
+  let bulkAddIds = $derived(hasSelection ? selectedAddable : addableIds)
+  let bulkRemoveIds = $derived(hasSelection ? selectedRemovable : removableIds)
+  let bulkTestIds = $derived(
+    hasSelection ? filtered.filter((m) => selectedIds.has(m.id)).map((m) => m.id) : filtered.map((m) => m.id)
+  )
+  let bulkScope = $derived(hasSelection ? 'selected' : 'matching the current filter')
+
   let stateCounts = $derived<Record<ImportPreviewStateFilter, number>>({
     all: models.length,
     available: availableCount,
@@ -308,44 +323,44 @@
         <span class="tabular-nums opacity-60">{selection.selected > 0 ? `${selection.selected}/${filtered.length}` : `(${filtered.length})`}</span>
       </button>
 
-      {#if addableIds.length > 0}
+      {#if bulkAddIds.length > 0}
         <button
           type="button"
-          onclick={() => onAddAll(addableIds)}
+          onclick={() => onAddAll(bulkAddIds)}
           disabled={busy}
-          title="Add all {addableIds.length} models matching the current filter"
+          title="Add {bulkAddIds.length} models {bulkScope}"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2.5 text-[11px] font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
         >
           <span class="material-symbols-outlined text-sm">library_add</span>
-          Add all ({addableIds.length})
+          Add {hasSelection ? 'selected' : 'all'} ({bulkAddIds.length})
         </button>
       {/if}
 
-      {#if filtered.length > 0}
+      {#if bulkTestIds.length > 0}
         <button
           type="button"
-          onclick={() => onTestSelected(filtered.map((m) => m.id))}
+          onclick={() => onTestSelected(bulkTestIds)}
           disabled={testing || busy}
-          title="Test all {filtered.length} models matching the current filter; each probe consumes account quota"
+          title="Test {bulkTestIds.length} models {bulkScope}; each probe consumes account quota"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[11px] font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer"
         >
           <span class="material-symbols-outlined text-sm" style={testing ? 'animation: spin 1s linear infinite' : undefined}>
             {testing ? 'progress_activity' : 'science'}
           </span>
-          {testing ? 'Testing...' : `Test all (${filtered.length})`}
+          {testing ? 'Testing...' : `Test ${hasSelection ? 'selected' : 'all'} (${bulkTestIds.length})`}
         </button>
       {/if}
 
-      {#if removableIds.length > 0}
+      {#if bulkRemoveIds.length > 0}
         <button
           type="button"
-          onclick={() => onRemoveAll(removableIds)}
+          onclick={() => onRemoveAll(bulkRemoveIds)}
           disabled={busy}
-          title="Remove all {removableIds.length} models matching the current filter"
+          title="Remove {bulkRemoveIds.length} models {bulkScope}"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
         >
           <span class="material-symbols-outlined text-sm">delete_sweep</span>
-          Remove all ({removableIds.length})
+          Remove {hasSelection ? 'selected' : 'all'} ({bulkRemoveIds.length})
         </button>
       {/if}
 
