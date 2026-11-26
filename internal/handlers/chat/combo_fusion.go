@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/shutdown"
 )
@@ -16,6 +18,138 @@ import (
 type fusionAnswer struct {
 	model string
 	text  string
+}
+
+// fusionResult holds a single panel model's response.
+type fusionResult struct {
+	model string
+	body  []byte
+	ok    bool
+	err   error
+}
+
+// FusionTuning tunes parallel-collection behavior of combo fusion.
+// Matches JS FUSION_DEFAULTS in open-sse/services/combo.js.
+type FusionTuning struct {
+	MinPanel           int `json:"minPanel"`
+	StragglerGraceMs   int `json:"stragglerGraceMs"`
+	PanelHardTimeoutMs int `json:"panelHardTimeoutMs"`
+}
+
+var fusionDefaults = FusionTuning{
+	MinPanel:           2,
+	StragglerGraceMs:   8000,
+	PanelHardTimeoutMs: 90000,
+}
+
+// handleFusion implements combo fusion: parallel model fan-out + judge synthesis.
+// Matches JS handleFusionChat in combo.js.
+func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, customJudgeModel string) {
+	cw := newCommittedResponseWriter(w)
+	if h.Repo != nil {
+		avail := h.loadComboAvailability(ctx)
+		comboModels, _ = avail.filterModels(comboModels)
+		if len(comboModels) == 0 {
+			handlerutil.WriteJSONError(cw, http.StatusServiceUnavailable, "all fusion combo models are currently disabled or unavailable")
+			return
+		}
+		if customJudgeModel != "" && !avail.isEntryAvailable(customJudgeModel) {
+			customJudgeModel = ""
+		}
+	}
+	panel := h.ApplyComboStrategy(strategy, comboModels, comboName, stickyLimit)
+	if len(panel) == 0 {
+		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "fusion combo has no models")
+		return
+	}
+	if len(panel) == 1 {
+		h.handleComboFallback(ctx, cw, body, panel, "fallback", isStream, translateResponse, comboName, stickyLimit)
+		return
+	}
+
+	// Build panel body: strip tools → prose, force non-streaming
+	var panelBody map[string]any
+	if err := json.Unmarshal(body, &panelBody); err != nil {
+		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if msgs, ok := panelBody["messages"].([]any); ok {
+		panelBody["messages"] = flattenToolHistory(msgs)
+	}
+	panelBody["stream"] = false
+	delete(panelBody, "tools")
+	delete(panelBody, "tool_choice")
+	panelJSON, err := json.Marshal(panelBody)
+	if err != nil {
+		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal panel body")
+		return
+	}
+
+	// Fan-out panel calls (ctx aborts stragglers the panel moves on without).
+	ft := fusionDefaults
+	calls := make([]func(context.Context) *fusionResult, len(panel))
+	for i, entry := range panel {
+		calls[i] = h.makePanelCall(panelJSON, entry, comboName)
+	}
+
+	settled := collectPanel(ctx, calls, ft)
+
+	// Extract successful answers
+	var answers []fusionAnswer
+	judgeModel := panel[0] // default: first panel model
+	if customJudgeModel != "" {
+		judgeModel = customJudgeModel
+	}
+	for i, res := range settled {
+		if res == nil || !res.ok {
+			continue
+		}
+		text := extractPanelText(res.body)
+		if text == "" {
+			continue
+		}
+		answers = append(answers, fusionAnswer{model: panel[i], text: text})
+	}
+
+	// Degradation
+	if len(answers) == 0 {
+		handlerutil.WriteJSONError(cw, http.StatusServiceUnavailable, "all fusion panel models failed")
+		return
+	}
+	if len(answers) == 1 {
+		h.handleComboFallback(ctx, cw, body, []string{answers[0].model}, "fallback", isStream, translateResponse, comboName, stickyLimit)
+		return
+	}
+
+	// Judge synthesizes final answer
+	judgeBody := appendUserTurn(body, buildJudgePrompt(answers))
+
+	var ub map[string]any
+	if err := json.Unmarshal(judgeBody, &ub); err != nil {
+		log.Error("fusion", "unmarshal judge body failed", "error", err)
+		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to parse judge request")
+		return
+	}
+	ub["model"] = judgeModel
+	ctx = h.applyJailbreak(ctx, ub, comboName, judgeModel)
+	if isStream {
+		ub["stream"] = true
+	} else {
+		delete(ub, "stream")
+	}
+	judgeJSON, err := json.Marshal(ub)
+	if err != nil {
+		log.Error("combo", "marshal judge body failed", "error", err)
+		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal judge request")
+		return
+	}
+
+	modelInfo := h.resolveModelEntry(judgeModel)
+	if modelInfo == nil {
+		handlerutil.WriteJSONError(cw, http.StatusBadGateway, fmt.Sprintf("unresolved judge model: %s", judgeModel))
+		return
+	}
+	h.handleSingleModel(ctx, cw, judgeJSON, modelInfo, isStream, translateResponse)
 }
 
 // flattenToolHistory converts tool turns to prose so panel models keep context
