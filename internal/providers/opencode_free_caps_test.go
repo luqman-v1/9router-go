@@ -8,16 +8,13 @@ func TestOpenCodeFreeModelCaps(t *testing.T) {
 		cw    int
 		max   int
 	}{
-		{"longcat-2.5-free", 1000000, 262144},
 		{"iceman-free", 262144, 131072},
-		{"inkling-2-small-free", 1048576, 131072},
 		{"beam-free", 1048576, 131072},
 		{"flint-40b-free", 262144, 65536},
 		{"nemotron-3.5-super-vl-free", 1048576, 131072},
 		{"jev-1.13-free", 64000, 32000},
 		{"nemotron-3.5-lightning-free", 262144, 262144},
 		{"hy4-flash-free", 1048576, 65536},
-		{"tidepool-alpha-free", 1048576, 131072},
 	}
 	for _, p := range []string{"opencode", "oc"} {
 		for _, tt := range tests {
@@ -53,5 +50,35 @@ func TestOpenCodeFreeModelCapsDetailLanes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Dead free ids must not be advertised by the static tables.
+//
+// OpenCode rotates its free lane without notice, and a dead id is worse than a
+// missing one: the dashboard offers a model the chat endpoint then refuses, and
+// every such request burns a fallback attempt before reaching one that works.
+// Each id below answered 410 ModelDeprecated or a 400 upstream refusal on
+// POST https://opencode.ai/zen/v1/chat/completions with the literal key
+// "public", and none appears in either live feed (/zen/v1/models,
+// /inference/go/v1/models) — the check freemodels.go's catalogue comments
+// already demand before an id is seeded.
+func TestDeadOpenCodeFreeIdsAreNotAdvertised(t *testing.T) {
+	dead := map[string]string{
+		"longcat-2.5-free":     "410 ModelDeprecated",
+		"inkling-2-small-free": "410 ModelDeprecated",
+		"tidepool-alpha-free":  "400 Upstream request failed: Model is unavailable",
+	}
+	for _, provider := range []string{"oc", "opencode", "opencode-zen", "ocz"} {
+		for id, evidence := range dead {
+			t.Run(provider+"/"+id, func(t *testing.T) {
+				if _, ok := providerCapabilities[provider][id]; ok {
+					t.Errorf("capability row still advertises %s (%s)", id, evidence)
+				}
+				if _, ok := providerTokenLimits[provider][id]; ok {
+					t.Errorf("token limit row still advertises %s (%s)", id, evidence)
+				}
+			})
+		}
 	}
 }
