@@ -66,7 +66,7 @@ GOAMD64 ?= v1
 export CGO_ENABLED
 export GOAMD64
 
-.PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev changelog-merge ipk ipk-bins
+.PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev changelog-merge ipk ipk-bins audit-file-size
 
 ## web-build — build frontend static assets (Svelte/Vite) into web/dist
 #
@@ -417,6 +417,10 @@ ipk-bins:
 			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-armv7 ./cmd/9router-go/ ; \
 	fi
 
+## audit-file-size — report code files above THRESHOLD LOC (non-blocking review signal)
+audit-file-size:
+	@python3 scripts/audit-file-size.py --threshold $(or $(THRESHOLD),500) --exemptions .github/file-size-exemptions.txt
+
 ## clean — remove build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
@@ -432,3 +436,4 @@ help:
 	@echo "  make run DATA_DIR=/path/to/data  # optional; default is per-platform"
 	@echo "  make run CAVEMAN=true PONYTAIL=true AUTO_UPDATE=true"
 	@echo "  make run RTK=false"
+	@echo "  make audit-file-size THRESHOLD=500  # non-blocking; >500 is review signal, not forced cut"
