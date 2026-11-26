@@ -472,6 +472,9 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
         }
         break
 
+      // agy-acp reads the same Google quota RPCs as antigravity (usage.go),
+      // so its rows get the same family grouping.
+      case 'agy-acp':
       case 'antigravity':
         if (d.quotas) {
           const entries = Object.entries(d.quotas)

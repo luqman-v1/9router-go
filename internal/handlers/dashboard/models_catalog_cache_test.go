@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -203,7 +204,7 @@ func TestModelsCatalogInvalidatedByConnectionEditAndDelete(t *testing.T) {
 	router := setupTestRouter(repo) // starts with a cold cache
 
 	const connID = "conn-cache-invalidate"
-	if err := repo.CreateProviderConnectionFull(connID, "openai-compatible-chat-abc", "apikey", "Node", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "openai-compatible-chat-abc", "apikey", "Node", nil,
 		`{"apiKey":"sk-x","providerSpecificData":{"baseUrl":"https://api.example.com/v1"}}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}

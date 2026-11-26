@@ -145,7 +145,7 @@ const (
 // usageSupportedProviders mirrors upstream USAGE_SUPPORTED_PROVIDERS
 // (registry features.usage).
 var usageSupportedProviders = []string{
-	"antigravity", "claude", "clinepass", "cloudflare-ai", "codebuddy-cn", "codebuddy-intl", "codex",
+	"agy-acp", "antigravity", "claude", "clinepass", "cloudflare-ai", "codebuddy-cn", "codebuddy-intl", "codex",
 	"commandcode", "commandcode-goat", "deeprelay", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
 	"minimax-code-global", "ollama", "opendesign",
