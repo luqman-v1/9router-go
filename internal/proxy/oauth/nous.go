@@ -22,10 +22,7 @@ func refreshNous(ctx context.Context, p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("missing refresh token")
 	}
 
-	client := p.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := refreshHTTPClient(p.Client)
 
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -48,8 +45,8 @@ func refreshNous(ctx context.Context, p *Params) (*TokenResult, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("nous token refresh returned %d: %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBodyBytes))
+		return nil, fmt.Errorf("nous: %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)})
 	}
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

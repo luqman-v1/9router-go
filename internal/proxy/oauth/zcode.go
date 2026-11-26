@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"9router/proxy/internal/providers"
 )
 
 func init() {
@@ -62,6 +64,10 @@ func refreshZcodeJWT(ctx context.Context, p *Params, oauthBase string) (*TokenRe
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("zcode: %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)})
+	}
+
 	var out struct {
 		Data *struct {
 			Token string         `json:"token"`
@@ -76,8 +82,8 @@ func refreshZcodeJWT(ctx context.Context, p *Params, oauthBase string) (*TokenRe
 			} `json:"bigmodel"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &out); err != nil || out.Data == nil || resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("zcode: refresh rejected (re-login required): status=%d body=%s", resp.StatusCode, firstN(string(body), 300))
+	if err := json.Unmarshal(body, &out); err != nil || out.Data == nil {
+		return nil, fmt.Errorf("zcode: invalid refresh response: %s", truncateBody(body))
 	}
 
 	data := out.Data
@@ -107,11 +113,4 @@ func refreshZcodeJWT(ctx context.Context, p *Params, oauthBase string) (*TokenRe
 		RefreshToken: newRefresh,
 		Scope:        newAccess, // piggyback the OAuth access token here
 	}, nil
-}
-
-func firstN(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
