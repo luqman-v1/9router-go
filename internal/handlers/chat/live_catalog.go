@@ -23,6 +23,7 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 // Live model discovery for /v1/models, ported from the upstream
@@ -177,6 +178,14 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 	case providerID == "anthropic":
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchAnthropicLiveCatalog(ctx, conn, connData, token)
+		}
+	case providerID == "qoder" || providerID == "qoder-cn":
+		// Qoder signs its model list per account (COSY), so there is no
+		// anonymous /v1/models feed. Fetch the account's own list the same way
+		// the dashboard does, then publish every key — including enable:false
+		// ones that the IDE hides but /v1/chat/completions still routes.
+		fetch = func(ctx context.Context, token string) []LiveModel {
+			return h.fetchQoderLiveCatalog(ctx, conn, connData, token)
 		}
 	case providers.ModelsListURL(providerID) != "" || providerHasModelsFetcher(providerID):
 		// Providers that publish an OpenAI-style models feed with per-model
@@ -767,4 +776,160 @@ func parseAnthropicLiveModels(body []byte) []LiveModel {
 		out = append(out, LiveModel{ID: id})
 	}
 	return out
+}
+
+// fetchQoderLiveCatalog publishes the account's own Qoder model list on
+// /v1/models. Upstream's routableQoderModels is built from the same signed
+// catalog and keeps enable:false keys, because the IDE hides those keys but
+// the chat endpoint still accepts them. The gateway previously only shipped
+// static aliases here, so a newly released Qoder model never appeared until
+// someone shipped a code update.
+func (h *ChatHandler) fetchQoderLiveCatalog(ctx context.Context, conn *models.ProviderConnection, connData *shared.ConnectionData, token string) []LiveModel {
+	if token == "" {
+		return nil
+	}
+	psd := connData.ProviderSpecificData
+	userID := qoderLivePSDString(psd, "userId", "user_id", "id")
+	machineID := qoderLivePSDString(psd, "machineId", "machine_id")
+
+	alias := conn.Provider
+	if providers.ResolveAlias(alias) == "qoder-cn" {
+		alias = "qoder-cn"
+	}
+	endpoints := executor.QoderEndpointsFor(alias)
+	do := qoderLiveDoer()
+
+	if executor.IsQoderPAT(token) {
+		jobToken, err := executor.ExchangeQoderJobToken(ctx, do, endpoints.JobTokenExchangeURL, token)
+		if err != nil || jobToken == "" {
+			return nil
+		}
+		token = jobToken
+		if userID == "" {
+			userID = executor.FetchQoderUserID(ctx, do, endpoints.UserInfoURL, token)
+		}
+	}
+	if userID == "" {
+		return nil
+	}
+
+	modelListURL := endpoints.ModelListURLForToken(token)
+	creds := executor.QoderCosyCreds{UserID: userID, AuthToken: token, MachineID: machineID}
+	headers, err := executor.BuildQoderCosyHeaders(nil, modelListURL, creds)
+	if err != nil {
+		return nil
+	}
+	status, body, err := do(ctx, http.MethodGet, modelListURL, headers, nil)
+	if err != nil || status < 200 || status >= 300 {
+		return nil
+	}
+	var parsed struct {
+		Chat []struct {
+			Key             string `json:"key"`
+			DisplayName     string `json:"display_name"`
+			Enable          *bool  `json:"enable"`
+			MaxInputTokens  any    `json:"max_input_tokens"`
+			MaxOutputTokens any    `json:"max_output_tokens"`
+			IsVL            bool   `json:"is_vl"`
+			IsReasoning     bool   `json:"is_reasoning"`
+		} `json:"chat"`
+	}
+	if json.Unmarshal(body, &parsed) != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(parsed.Chat)+2)
+	out := make([]LiveModel, 0, len(parsed.Chat)+2)
+	add := func(id, name string, ctxLen, maxOutput int, vision, reasoning bool) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		if name == "" {
+			name = id
+		}
+		caps := &LiveCapabilities{Vision: vision, ContextWindow: ctxLen, MaxOutput: maxOutput}
+		if reasoning {
+			caps.ThinkingLevels = []string{"high"}
+		}
+		out = append(out, LiveModel{
+			ID:                  id,
+			Name:                name,
+			ContextLength:       ctxLen,
+			MaxOutput:           maxOutput,
+			Capabilities:        caps,
+			LimitsAuthoritative: ctxLen > 0 && maxOutput > 0,
+		})
+	}
+	for _, entry := range parsed.Chat {
+		if entry.Key == "" {
+			continue
+		}
+		add(entry.Key, entry.DisplayName,
+			qoderLiveIntOr(entry.MaxInputTokens, 131072),
+			qoderLiveIntOr(entry.MaxOutputTokens, 0),
+			entry.IsVL, entry.IsReasoning)
+	}
+	// Upstream keeps these two aliases routable even when the account's
+	// catalog omits them; they are not new models, only stable keys.
+	add("smodel", "Sonus", 131072, 0, false, false)
+	add("cmodel", "Cantus", 131072, 0, false, false)
+	return out
+}
+
+func qoderLivePSDString(psd map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, ok := psd[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func qoderLiveIntOr(v any, fallback int) int {
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return int(n)
+		}
+	case float32:
+		if n > 0 {
+			return int(n)
+		}
+	case int:
+		if n > 0 {
+			return n
+		}
+	case int64:
+		if n > 0 {
+			return int(n)
+		}
+	}
+	return fallback
+}
+
+func qoderLiveDoer() executor.QoderDoer {
+	return func(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (int, []byte, error) {
+		reqCtx, cancel := context.WithTimeout(ctx, liveCatalogFastHTTP)
+		defer cancel()
+		var reader io.Reader
+		if len(body) > 0 {
+			reader = strings.NewReader(string(body))
+		}
+		req, err := http.NewRequestWithContext(reqCtx, method, rawURL, reader)
+		if err != nil {
+			return 0, nil, err
+		}
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		client := &http.Client{Timeout: liveCatalogFastHTTP}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		data, err := io.ReadAll(resp.Body)
+		return resp.StatusCode, data, err
+	}
 }

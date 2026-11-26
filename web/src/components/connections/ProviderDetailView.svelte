@@ -562,11 +562,20 @@
       for (const m of models) {
         const modelId = typeof m === 'string' ? m : (m.id || m.name || m.model || '')
         if (!modelId) continue
-        if (freeOnly && !isFreeTierModelId(modelId)) continue
-        const caps =
+        const providerFree =
+          typeof m === 'object' && m !== null && 'isFree' in m && m.isFree === true
+        if (freeOnly && !isFreeTierModelId(modelId) && !providerFree) continue
+        let caps =
           typeof m === 'object' && m !== null && 'capabilities' in m && m.capabilities
-            ? (m.capabilities as { vision?: boolean; reasoning?: boolean })
+            ? ({ ...(m.capabilities as { vision?: boolean; reasoning?: boolean; free?: boolean }) })
             : undefined
+        // Qoder does not suffix free models with "-free"; its catalog carries
+        // an is_free flag instead. Carry it into caps so the staged add writes
+        // the flag /api/models/caps uses for the Free badge.
+        if (providerFree) {
+          if (caps) caps.free = true
+          else caps = { free: true }
+        }
         const obj = typeof m === 'object' && m !== null ? m : ({} as Record<string, unknown>)
         const ctxLen =
           typeof obj.context_length === 'number' ? obj.context_length

@@ -157,7 +157,10 @@ func (h *DashboardHandler) customModelCaps(provider, resolved string, staticMode
 			Jailbreak:     detail.Jailbreak,
 			ContextWindow: detail.ContextWindow,
 			MaxOutput:     detail.MaxOutput,
-			Free:          isModelFree(cm.ProviderAlias, cm.ID),
+			// A provider-owned free flag is the only way a free Qoder model
+			// can earn a badge: its opaque id carries no -free suffix and it
+			// has no price row, so the generic heuristic cannot see it.
+			Free: isModelFree(cm.ProviderAlias, cm.ID) || cm.Caps["free"],
 		}
 		if levels := providers.GetThinkingLevels(cm.ProviderAlias, cm.ID); levels != nil {
 			entry.ThinkingLevels = levels

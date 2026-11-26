@@ -11,7 +11,7 @@ export interface ImportPreviewModel {
   id: string
   contextWindow?: number
   maxOutput?: number
-  caps?: { vision?: boolean; reasoning?: boolean }
+  caps?: { vision?: boolean; reasoning?: boolean; free?: boolean }
 }
 
 /** Case-insensitive filter over the fetched catalog; an empty query lists everything. */
