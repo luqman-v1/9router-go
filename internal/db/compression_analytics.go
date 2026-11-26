@@ -766,10 +766,12 @@ WHERE data IS NOT NULL AND json_valid(data)
   AND CAST(COALESCE(CAST(json_extract(data, '$.tokens.saved_tokens') AS INTEGER), 0) AS INTEGER) > 0`
 
 	rows, err := db.QueryContext(ctx, rdQuery)
-	if err == nil {
-		defer rows.Close()
+	if err != nil {
+		return fmt.Errorf("BackfillCompressionAnalytics requestDetails query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
 
-		insertStmt, prepErr := db.Prepare(`
+	insertStmt, prepErr := db.PrepareContext(ctx, `
 INSERT INTO compressionAnalytics (
 	timestamp, provider, model, mode, originalTokens, compressedTokens, tokensSaved,
 	durationMs, requestId, actualPromptTokens, actualCompletionTokens,
@@ -777,38 +779,42 @@ INSERT INTO compressionAnalytics (
 )
 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ''
 WHERE NOT EXISTS (SELECT 1 FROM compressionAnalytics ca WHERE ca.requestId = ?)`)
-
-		if prepErr == nil {
-			defer insertStmt.Close()
-			for rows.Next() {
-				var (
-					id, ts, prov, mdl, data                    string
-					origTok, compTok, savedTok, durMs          int
-					promptTok, compTok2, cachedTok, cacheWrTok int
-				)
-				if scanErr := rows.Scan(
-					&id, &ts, &prov, &mdl, &data,
-					&origTok, &compTok, &savedTok, &durMs,
-					&promptTok, &compTok2, &cachedTok, &cacheWrTok,
-				); scanErr == nil {
-					mode := classifyHistoricalMode(data, savedTok)
-					totalTok := promptTok + compTok2
-					mp, _ := pricing.GetPricingForModel(prov, mdl)
-					rate := mp.InputPer1M
-					if rate <= 0 {
-						rate = defaultAvgInputPricePerMillion
-					}
-					estUsd := math.Round((float64(savedTok)/1_000_000.0)*rate*100) / 100
-					_, _ = insertStmt.Exec(
-						ts, prov, mdl, mode, origTok, compTok, savedTok,
-						durMs, id, promptTok, compTok2,
-						totalTok, cachedTok, cacheWrTok, estUsd,
-						id,
-					)
-				}
-			}
-			_ = rows.Err()
+	if prepErr != nil {
+		return fmt.Errorf("BackfillCompressionAnalytics prepare requestDetails insert: %w", prepErr)
+	}
+	defer func() { _ = insertStmt.Close() }()
+	for rows.Next() {
+		var (
+			id, ts, prov, mdl, data                    string
+			origTok, compTok, savedTok, durMs          int
+			promptTok, compTok2, cachedTok, cacheWrTok int
+		)
+		if err := rows.Scan(
+			&id, &ts, &prov, &mdl, &data,
+			&origTok, &compTok, &savedTok, &durMs,
+			&promptTok, &compTok2, &cachedTok, &cacheWrTok,
+		); err != nil {
+			return fmt.Errorf("BackfillCompressionAnalytics scan requestDetails row: %w", err)
 		}
+		mode := classifyHistoricalMode(data, savedTok)
+		totalTok := promptTok + compTok2
+		mp, _ := pricing.GetPricingForModel(prov, mdl)
+		rate := mp.InputPer1M
+		if rate <= 0 {
+			rate = defaultAvgInputPricePerMillion
+		}
+		estUsd := math.Round((float64(savedTok)/1_000_000.0)*rate*100) / 100
+		if _, err := insertStmt.ExecContext(ctx,
+			ts, prov, mdl, mode, origTok, compTok, savedTok,
+			durMs, id, promptTok, compTok2,
+			totalTok, cachedTok, cacheWrTok, estUsd,
+			id,
+		); err != nil {
+			return fmt.Errorf("BackfillCompressionAnalytics insert requestDetails row: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("BackfillCompressionAnalytics requestDetails rows: %w", err)
 	}
 
 	// 3. Fallback: also backfill from usageHistory for rows not covered by requestDetails
@@ -829,10 +835,12 @@ WHERE tokens IS NOT NULL AND json_valid(tokens)
   AND CAST(COALESCE(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER), 0) AS INTEGER) > 0`
 
 	uhRows, err := db.QueryContext(ctx, uhQuery)
-	if err == nil {
-		defer uhRows.Close()
+	if err != nil {
+		return fmt.Errorf("BackfillCompressionAnalytics usageHistory query: %w", err)
+	}
+	defer func() { _ = uhRows.Close() }()
 
-		uhInsertStmt, prepErr := db.Prepare(`
+	uhInsertStmt, prepErr := db.PrepareContext(ctx, `
 INSERT INTO compressionAnalytics (
 	timestamp, provider, model, mode, originalTokens, compressedTokens, tokensSaved,
 	durationMs, requestId, actualPromptTokens, actualCompletionTokens,
@@ -843,36 +851,40 @@ WHERE NOT EXISTS (
 	SELECT 1 FROM compressionAnalytics ca
 	WHERE ca.timestamp = ? AND ca.provider = ? AND ca.tokensSaved = ?
 )`)
-
-		if prepErr == nil {
-			defer uhInsertStmt.Close()
-			for uhRows.Next() {
-				var (
-					ts, prov, mdl                              string
-					origTok, compTok, savedTok                 int
-					promptTok, compTok2, cachedTok, cacheWrTok int
-				)
-				if scanErr := uhRows.Scan(
-					&ts, &prov, &mdl,
-					&origTok, &compTok, &savedTok,
-					&promptTok, &compTok2, &cachedTok, &cacheWrTok,
-				); scanErr == nil {
-					totalTok := promptTok + compTok2
-					mp, _ := pricing.GetPricingForModel(prov, mdl)
-					rate := mp.InputPer1M
-					if rate <= 0 {
-						rate = defaultAvgInputPricePerMillion
-					}
-					estUsd := math.Round((float64(savedTok)/1_000_000.0)*rate*100) / 100
-					_, _ = uhInsertStmt.Exec(
-						ts, prov, mdl, origTok, compTok, savedTok,
-						promptTok, compTok2, totalTok, cachedTok, cacheWrTok, estUsd,
-						ts, prov, savedTok,
-					)
-				}
-			}
-			_ = uhRows.Err()
+	if prepErr != nil {
+		return fmt.Errorf("BackfillCompressionAnalytics prepare usageHistory insert: %w", prepErr)
+	}
+	defer func() { _ = uhInsertStmt.Close() }()
+	for uhRows.Next() {
+		var (
+			ts, prov, mdl                              string
+			origTok, compTok, savedTok                 int
+			promptTok, compTok2, cachedTok, cacheWrTok int
+		)
+		if err := uhRows.Scan(
+			&ts, &prov, &mdl,
+			&origTok, &compTok, &savedTok,
+			&promptTok, &compTok2, &cachedTok, &cacheWrTok,
+		); err != nil {
+			return fmt.Errorf("BackfillCompressionAnalytics scan usageHistory row: %w", err)
 		}
+		totalTok := promptTok + compTok2
+		mp, _ := pricing.GetPricingForModel(prov, mdl)
+		rate := mp.InputPer1M
+		if rate <= 0 {
+			rate = defaultAvgInputPricePerMillion
+		}
+		estUsd := math.Round((float64(savedTok)/1_000_000.0)*rate*100) / 100
+		if _, err := uhInsertStmt.ExecContext(ctx,
+			ts, prov, mdl, origTok, compTok, savedTok,
+			promptTok, compTok2, totalTok, cachedTok, cacheWrTok, estUsd,
+			ts, prov, savedTok,
+		); err != nil {
+			return fmt.Errorf("BackfillCompressionAnalytics insert usageHistory row: %w", err)
+		}
+	}
+	if err := uhRows.Err(); err != nil {
+		return fmt.Errorf("BackfillCompressionAnalytics usageHistory rows: %w", err)
 	}
 
 	// 4. Mark migration done in _meta

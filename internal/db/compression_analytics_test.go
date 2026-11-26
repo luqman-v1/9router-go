@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -418,5 +420,65 @@ func TestCompressionAnalytics_SummarySurfacesRowErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "top savers") {
 		t.Errorf("GetCompressionAnalyticsSummary() error = %q, want it to name the top-savers breakdown", err)
+	}
+}
+
+// TestBackfillCompressionAnalytics_FailureLeavesRetryable pins that a backfill
+// which fails partway returns the error and does NOT write the done-marker.
+// Before the fix the insert and rows.Err() errors were discarded and the marker
+// was written unconditionally, so a half-finished backfill inserted a partial
+// set of rows and then permanently refused to run again — the compression
+// dashboard under-reported forever, with no error anywhere.
+func TestBackfillCompressionAnalytics_FailureLeavesRetryable(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := EnsureCoreSchema(database); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM _meta WHERE key = 'migration_compression_backfill_done'`); err != nil {
+		t.Fatalf("reset _meta: %v", err)
+	}
+
+	// One row that would backfill cleanly, so the insert is actually reached.
+	d := `{"id":"req-f1","latency":{"total":40},"tokens":{"original_input_tokens":1000,"compressed_input_tokens":600,"saved_tokens":400,"prompt_tokens":600,"completion_tokens":100},"request":{"messages":[{"role":"user","content":"hello"}]}}`
+	if _, err := database.Exec(`INSERT INTO requestDetails (id, timestamp, provider, model, connectionId, status, data) VALUES ('req-f1', '2026-10-06T01:00:00Z', 'anthropic', 'claude-3-5', 'conn-1', 'success', ?)`, d); err != nil {
+		t.Fatalf("seed requestDetails: %v", err)
+	}
+
+	// Make every insert into compressionAnalytics fail, the way a full disk or
+	// a locked database would. This is the deterministic mid-run failure.
+	if _, err := database.Exec(`CREATE TRIGGER fail_ca_insert BEFORE INSERT ON compressionAnalytics
+		BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	err := BackfillCompressionAnalytics(context.Background(), database)
+	if err == nil {
+		t.Fatal("BackfillCompressionAnalytics() error = nil, want the insert failure surfaced")
+	}
+
+	// The marker must stay unwritten so the next start retries the backfill.
+	var done string
+	scanErr := database.QueryRow(`SELECT value FROM _meta WHERE key = 'migration_compression_backfill_done'`).Scan(&done)
+	if scanErr == nil {
+		t.Fatalf("done-marker was written despite the failure (value=%q); the backfill can never re-run", done)
+	}
+	if !errors.Is(scanErr, sql.ErrNoRows) {
+		t.Fatalf("read done-marker: %v", scanErr)
+	}
+
+	// With the fault removed, a retry must now succeed and write the marker.
+	if _, err := database.Exec(`DROP TRIGGER fail_ca_insert`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if err := BackfillCompressionAnalytics(context.Background(), database); err != nil {
+		t.Fatalf("retry BackfillCompressionAnalytics() error = %v", err)
+	}
+	if err := database.QueryRow(`SELECT value FROM _meta WHERE key = 'migration_compression_backfill_done'`).Scan(&done); err != nil {
+		t.Fatalf("read done-marker after retry: %v", err)
+	}
+	if done != "true" {
+		t.Errorf("done-marker after retry = %q, want %q", done, "true")
 	}
 }
