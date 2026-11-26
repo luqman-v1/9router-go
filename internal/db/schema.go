@@ -380,6 +380,11 @@ var goOnlyColumns = [][3]string{
 	{"apiKeys", "rateLimitRPM", "INTEGER DEFAULT 0"},
 	{"apiKeys", "rateLimitTPM", "INTEGER DEFAULT 0"},
 	{"apiKeys", "rateLimitConcurrency", "INTEGER DEFAULT 0"},
+	// Per-hour and per-day request ceilings. RPM cannot express a reseller's
+	// daily tier without also capping the minute, and a daily ceiling is the
+	// axis an abusive key actually trips.
+	{"apiKeys", "rateLimitRPH", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitRPD", "INTEGER DEFAULT 0"},
 	// F-1b Budget & queue: cumulative token quota and how long a request may
 	// wait for a concurrency slot before it is refused.
 	{"apiKeys", "tokenQuota", "INTEGER DEFAULT 0"},
@@ -465,6 +470,8 @@ var keiRouterTables = []tableDef{
 			{"limit_tokens", "INTEGER NOT NULL DEFAULT 0"},
 			{"rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"tpm_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"rph_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"rpd_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"concurrency_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"period", "TEXT NOT NULL DEFAULT 'monthly'"},
 			{"alert_pct", "INTEGER NOT NULL DEFAULT 80"},

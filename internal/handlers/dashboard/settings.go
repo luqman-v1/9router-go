@@ -488,6 +488,7 @@ func validateProviderThinking(v any) error {
 // unlimited while the rate limiter stays on.
 var numericSettingKeys = []string{
 	"defaultRpm", "defaultTpm", "defaultConcurrency", "rateWindowSeconds",
+	"perIpRpm", "perIpRph", "perIpRpd", "perIpConcurrency",
 	"retentionDays", "maxRequestRecords", "usageHistoryRetentionDays",
 	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
 	"semanticCacheTTL", "semanticCacheMaxEntries",

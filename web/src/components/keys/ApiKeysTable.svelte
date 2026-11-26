@@ -353,6 +353,8 @@
   function policyBadges(k: APIKey): { label: string; tone: 'info' | 'danger' }[] {
     const badges: { label: string; tone: 'info' | 'danger' }[] = []
     if ((k.rateLimitRpm ?? 0) > 0) badges.push({ label: `${k.rateLimitRpm}/min`, tone: 'info' })
+    if ((k.rateLimitRph ?? 0) > 0) badges.push({ label: `${(k.rateLimitRph ?? 0).toLocaleString()}/hour`, tone: 'info' })
+    if ((k.rateLimitRpd ?? 0) > 0) badges.push({ label: `${(k.rateLimitRpd ?? 0).toLocaleString()}/day`, tone: 'info' })
     if ((k.rateLimitTpm ?? 0) > 0) {
       badges.push({ label: `${(k.rateLimitTpm ?? 0).toLocaleString()} tok/min`, tone: 'info' })
     }

@@ -828,6 +828,17 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// windows already depend on, is pinned at boot.
 	defaults := func() middleware.Limits {
 		d := repo.GetRateLimitDefaults()
+		// The per-IP ceiling is read on the same call, so the limiter and the
+		// key defaults can never be resolved from two different settings
+		// snapshots. It is pushed even when the master switch is off: the IP
+		// gate is checked against its own zero value, not against Enabled, so an
+		// operator who configured only a host ceiling still gets it.
+		rateLimiter.SetIPLimits(middleware.IPLimits{
+			PerMinute:   d.PerIPMinute,
+			PerHour:     d.PerIPHour,
+			PerDay:      d.PerIPDay,
+			Concurrency: d.PerIPConcurrency,
+		})
 		if !d.Enabled {
 			return middleware.Limits{}
 		}
