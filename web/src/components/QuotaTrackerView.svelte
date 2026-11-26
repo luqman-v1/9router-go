@@ -21,6 +21,7 @@
     getResetCreditWindowTitle,
     newResetCreditIdempotencyKey,
   } from '../lib/codexResetCredit'
+  import { formatPlanExpiry, getPlanBadge, planLabel } from '../lib/planBadge'
   import { PROVIDER_CATALOG } from '../lib/providers'
   import { copyToClipboard } from '../lib/clipboard'
   import { emailPrivacy, formatEmailLabel } from '../lib/privacy'
@@ -323,6 +324,12 @@
     return null
   }
 
+  // planBadgeOf reads the plan block off one connection's usage response. The
+  // tier and its end date are not quota windows, so they are drawn as a badge
+  // in the card header rather than as a row in the table.
+  function planBadgeOf(connectionId: string) {
+    return getPlanBadge(quotaData[connectionId]?.raw)
+  }
   function getCodexResetCreditCount(quota?: QuotaEntry): number {
     const value = (quota?.raw as { resetCredits?: { availableCount?: unknown } } | undefined)?.resetCredits?.availableCount
     const count = typeof value === 'number' ? value : Number(value)
@@ -1416,6 +1423,31 @@
                   {/if}
                   {#if getConnectionSecondaryLabel(conn)}
                     <p class="truncate text-[11px] text-text-muted/80">{formatEmailLabel(getConnectionSecondaryLabel(conn), $emailPrivacy)}</p>
+                  {/if}
+                  {#if conn.provider === 'codex'}
+                    {@const badge = planBadgeOf(conn.id)}
+                    {@const tierLabel = planLabel(badge?.plan)}
+                    {@const expiry = formatPlanExpiry(badge?.expiresAt)}
+                    {#if tierLabel || expiry.absolute}
+                      <p class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-text-muted/80">
+                        {#if tierLabel}
+                          <span
+                            class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-600 dark:text-violet-300"
+                            title="Plan tier"
+                          >
+                            {tierLabel}
+                          </span>
+                        {/if}
+                        {#if expiry.absolute}
+                          <span title={expiry.expired ? 'This plan has ended' : 'Plan end date'}>
+                            {expiry.expired ? 'Ended' : 'Renews by'} {expiry.absolute}
+                            {#if expiry.relative}
+                              <span class="text-text-muted/60">· in {expiry.relative}</span>
+                            {/if}
+                          </span>
+                        {/if}
+                      </p>
+                    {/if}
                   {/if}
                   {#if conn.provider === 'kiro'}
                     <div class="mt-1 flex flex-wrap items-center gap-1">
