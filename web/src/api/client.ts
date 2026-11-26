@@ -425,6 +425,28 @@ export interface ProviderOverridesResponse {
   blockedHeaders: string[]
 }
 
+/** One editable capability field, as the server describes it. */
+export interface ModelCapsField {
+  key: string
+  label: string
+  desc: string
+  type: 'boolean' | 'number'
+}
+
+/**
+ * The per-model capability editor's payload. `capsOverride` holds only what the
+ * operator pinned (absent key = Auto); `detected` is what the gateway currently
+ * resolves, so an Auto field shows the real number rather than a placeholder.
+ */
+export interface ModelCapsOverrideResponse {
+  provider: string
+  model: string
+  capsOverride: Record<string, boolean | number>
+  detected: Record<string, unknown>
+  fields: ModelCapsField[]
+  maxTokens: number
+}
+
 export interface TunnelStatusResponse {
   tunnel?: {
     enabled?: boolean
@@ -2236,6 +2258,19 @@ export const api = {
     request<{ provider: string; headers: Record<string, string> }>(
       `/api/providers/${encodeURIComponent(providerId)}/overrides`,
       { method: 'PUT', body: JSON.stringify({ headers }) },
+    ),
+  /**
+   * Per-model capability overrides (the model editor). The model segment is
+   * percent-encoded because an id carries slashes and colons.
+   */
+  getModelCapsOverride: (providerId: string, model: string) =>
+    request<ModelCapsOverrideResponse>(
+      `/api/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(model)}/caps`,
+    ),
+  saveModelCapsOverride: (providerId: string, model: string, capsOverride: Record<string, boolean | number>) =>
+    request<ModelCapsOverrideResponse>(
+      `/api/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(model)}/caps`,
+      { method: 'PUT', body: JSON.stringify({ capsOverride }) },
     ),
   // OAuth Flows
   initiateFreebuff: () => request<FreebuffInitiateResponse>('/api/oauth/freebuff/initiate', { method: 'POST' }),

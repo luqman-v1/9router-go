@@ -566,6 +566,21 @@ var keiRouterTables = []tableDef{
 			"CREATE INDEX IF NOT EXISTS idx_audit_chain_seq ON audit_log(chain_id, chain_seq)",
 		},
 	},
+	{
+		// Per-model capability overrides (the dashboard's model editor). A
+		// sparse JSON object per provider+model: absent key = Auto, so one row
+		// is one operator declaration and detection still answers the rest.
+		// It is its own table rather than a customModels kv member because the
+		// editor works on registry models too, which have no kv row at all.
+		name: "model_cap_overrides",
+		columns: [][2]string{
+			{"provider", "TEXT NOT NULL"},
+			{"model", "TEXT NOT NULL"},
+			{"caps_override", "TEXT NOT NULL DEFAULT '{}'"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+		primaryKey: "PRIMARY KEY (provider, model)",
+	},
 }
 
 // usageLedgerTables are Go-only tables backing the ledger retention in

@@ -399,6 +399,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Delete("/api/providers/{id}/models", dashH.HandleDeleteProviderModels)
 	r.Get("/api/providers/{id}/overrides", dashH.HandleGetProviderOverrides)
 	r.Put("/api/providers/{id}/overrides", dashH.HandleSaveProviderOverrides)
+	// Per-model capability overrides. Registered here as well as in
+	// dashboard.RegisterRoutes because that table is mounted by tests only: a
+	// route added there alone answers 200 in a unit test and 404s on the real
+	// server.
+	r.Get("/api/providers/{id}/models/{model}/caps", dashH.HandleGetModelCapsOverride)
+	r.Put("/api/providers/{id}/models/{model}/caps", dashH.HandleSaveModelCapsOverride)
 
 	r.Get("/api/combos", dashH.HandleGetCombos)
 	r.Post("/api/combos", dashH.HandleCreateCombo)

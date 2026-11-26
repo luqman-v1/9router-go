@@ -1652,6 +1652,12 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		res.AudioOutput = true
 	}
 
+	// The operator's pinned fields win over every detection level above. This
+	// is the last word because the sparse override means "I know this endpoint
+	// better than the tables do", so it has to outrank even the name heuristic
+	// and the TTS rule.
+	LookupModelCapsOverride(provider, model).applyToCapabilities(&res)
+
 	capsCacheMu.Lock()
 	capsCache[key] = res
 	capsCacheMu.Unlock()
@@ -1922,7 +1928,14 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 	if caps.ThinkingRange != nil {
 		thinkingRange = caps.ThinkingRange
 	}
-	return CapabilitiesDetail{
+	return finishCapsDetail(caps, cw, maxOut, thinkingFormat, thinkingRange, provider, model)
+}
+
+// finishCapsDetail assembles the wire block and stamps the operator's pinned
+// fields on last, so a number the chain above resolved cannot override a
+// declaration made on purpose.
+func finishCapsDetail(caps Capabilities, cw, maxOut int, thinkingFormat *string, thinkingRange any, provider, model string) CapabilitiesDetail {
+	detail := CapabilitiesDetail{
 		Vision:                  caps.Vision,
 		PDF:                     caps.PDF,
 		AudioInput:              caps.AudioInput,
@@ -1942,6 +1955,8 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 		ContextWindow:           cw,
 		MaxOutput:               maxOut,
 	}
+	LookupModelCapsOverride(provider, model).applyToDetail(&detail)
+	return detail
 }
 
 // lookupCustomModelCaps resolves a custom model row by its exact id first and

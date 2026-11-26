@@ -94,6 +94,7 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { PauseCircle } from 'lucide-svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
+  import ModelCapsEditorModal from './ModelCapsEditorModal.svelte'
   import FreePiConnectModal from './FreePiConnectModal.svelte'
   import FreePiAdBanner from './FreePiAdBanner.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
@@ -823,6 +824,29 @@
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
   let editingModel = $state<CustomModelData | null>(null)
+  // Per-model capability editor (the model editor): one modal, pointed at
+  // whichever row's tune button was pressed.
+  let showCapsEditor = $state(false)
+  let capsEditorProvider = $state('')
+  let capsEditorModel = $state('')
+
+  // After an edit the pinned fields outrank detection, so the row's capability
+  // chips are now stale. One read of the provider's capability map refreshes
+  // every row on this view, which is cheaper than a per-model endpoint and is
+  // the same call the initial load makes.
+  async function refreshModelCaps(provider: string) {
+    if (!provider) return
+    try {
+      const data = await api.getModelCaps(provider)
+      const next = data?.caps || {}
+      // Only overlay entries the server returned; a model absent from the map
+      // keeps its previous chips rather than blinking to all-false.
+      modelCaps = { ...modelCaps, ...next }
+    } catch {
+      // A failed refresh leaves the last known chips in place. The edit itself
+      // already succeeded, so a stale icon is better than an error state.
+    }
+  }
   let showEditNodeModal = $state(false)
   let showExportKeysModal = $state(false)
   let showShareProviderModal = $state(false)
@@ -5109,6 +5133,22 @@
                 <span class="material-symbols-outlined text-sm">edit</span>
               </button>
             {/if}
+            <!-- Capability editor: works on registry models too, which have no
+                 custom row. Pinning a field here outranks every detection
+                 level, so it is the way to correct a model the tables get
+                 wrong without editing the catalog. -->
+            <button
+              type="button"
+              onclick={() => {
+                capsEditorProvider = providerId
+                capsEditorModel = model.id
+                showCapsEditor = true
+              }}
+              class="shrink-0 rounded p-0.5 text-text-muted hover:bg-sidebar hover:text-primary cursor-pointer"
+              title="Edit capabilities"
+            >
+              <span class="material-symbols-outlined text-sm">tune</span>
+            </button>
             <!-- Disable button -->
             <button
               type="button"
@@ -5797,6 +5837,14 @@
   isOpen={showHeaderOverrides}
   providerId={providerId}
   onClose={() => (showHeaderOverrides = false)}
+/>
+
+<ModelCapsEditorModal
+  isOpen={showCapsEditor}
+  providerId={capsEditorProvider}
+  model={capsEditorModel}
+  onClose={() => (showCapsEditor = false)}
+  onSaved={() => refreshModelCaps(providerId)}
 />
 
 <FreePiConnectModal

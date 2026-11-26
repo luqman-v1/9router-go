@@ -405,6 +405,19 @@ var postgresTables = []pgTableDef{
 			{"updatedAt", "TEXT NOT NULL"},
 		},
 	},
+	{
+		// Mirror of keiRouterTables' model_cap_overrides. SQLite's
+		// TestSchemaParity compares column names case-insensitively, so the
+		// snake_case names must match exactly on both sides.
+		name: "model_cap_overrides",
+		columns: []pgColumn{
+			{"provider", "TEXT NOT NULL"},
+			{"model", "TEXT NOT NULL"},
+			{"caps_override", "TEXT NOT NULL DEFAULT '{}'"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+		primaryKey: "PRIMARY KEY (provider, model)",
+	},
 }
 
 // postgresAdditiveColumns is the PG mirror of goOnlyColumns. Added
