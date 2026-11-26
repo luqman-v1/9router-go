@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"bytes"
 	json "encoding/json/v2"
 	"net/http"
@@ -15,7 +17,7 @@ func TestHandleUpdateConnection_AssignedModel(t *testing.T) {
 
 	// Create initial connection with apiKey and existing providerSpecificData
 	connID := "conn-test-update-1"
-	if err := repo.CreateProviderConnection(connID, "anthropic", "apikey", "Anthropic Conn", "sk-ant-secret"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), connID, "anthropic", "apikey", "Anthropic Conn", "sk-ant-secret"); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
@@ -26,7 +28,7 @@ func TestHandleUpdateConnection_AssignedModel(t *testing.T) {
 			"existingConfig": "preserved-value"
 		}
 	}`
-	if err := repo.UpdateConnectionData(connID, initialData); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), connID, initialData); err != nil {
 		t.Fatalf("failed to initialize connection data: %v", err)
 	}
 

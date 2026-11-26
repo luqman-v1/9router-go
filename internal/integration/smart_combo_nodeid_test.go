@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,7 +33,7 @@ func TestSmartRulesMatchCustomModelsKeyedByNodeID(t *testing.T) {
 	}
 	priority := 1
 	data := `{"apiKey":"sk-cutad","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cutad"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	// Production shape: key AND value carry the node id, not the prefix.
@@ -127,7 +129,7 @@ func TestSmartRulesKeepNodeIDSpelledMember(t *testing.T) {
 	}
 	priority := 1
 	data := `{"apiKey":"sk-cutad","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cutad"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	if err := env.Repo.SetKV("customModels", "node-cutad|deepseek-v4-flash|llm",
@@ -171,7 +173,7 @@ func TestSmartRulesMatchAlternateSpellings(t *testing.T) {
 	upstream := env.NewUpstream(t, chatCompletionResponder())
 	priority := 1
 	dsData := `{"apiKey":"sk-ds","baseUrl":"` + upstream.URL + `/chat/completions"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-ds", "deepseek", "apikey", "DeepSeek", &priority, dsData); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-ds", "deepseek", "apikey", "DeepSeek", &priority, dsData); err != nil {
 		t.Fatalf("create deepseek connection: %v", err)
 	}
 	if _, err := env.Repo.CreateProviderNode("node-cutad", "openai-compatible", "CutadAI",
@@ -179,7 +181,7 @@ func TestSmartRulesMatchAlternateSpellings(t *testing.T) {
 		t.Fatalf("create node: %v", err)
 	}
 	nodeData := `{"apiKey":"sk-cutad","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cutad"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cutad", "node-cutad", "apikey", "Cutad", &priority, nodeData); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cutad", "node-cutad", "apikey", "Cutad", &priority, nodeData); err != nil {
 		t.Fatalf("create node connection: %v", err)
 	}
 	if err := env.Repo.SetKV("customModels", "node-cutad|deepseek-v4-flash|llm",
@@ -263,7 +265,7 @@ func TestSmartRulesExcludedHoldsUnderEverySpelling(t *testing.T) {
 	}
 	priority := 1
 	data := `{"apiKey":"sk-cutad","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cutad"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	if err := env.Repo.SetKV("customModels", "node-cutad|deepseek-v4-flash|llm",
@@ -310,7 +312,7 @@ func TestSmartRulesCapKeepsExistingMembers(t *testing.T) {
 	}
 	priority := 1
 	data := `{"apiKey":"sk-cap","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cap"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cap", "node-cap", "apikey", "Cap", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cap", "node-cap", "apikey", "Cap", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	for _, m := range []string{"aaa", "mmm", "zzz"} {
@@ -353,7 +355,7 @@ func TestSmartRulesSegmentNegation(t *testing.T) {
 	upstream := env.NewUpstream(t, chatCompletionResponder())
 	priority := 1
 	dsData := `{"apiKey":"sk-ds","baseUrl":"` + upstream.URL + `/chat/completions"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-ds", "deepseek", "apikey", "DeepSeek", &priority, dsData); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-ds", "deepseek", "apikey", "DeepSeek", &priority, dsData); err != nil {
 		t.Fatalf("create deepseek connection: %v", err)
 	}
 	if _, err := env.Repo.CreateProviderNode("node-ken", "openai-compatible", "KenariAI",
@@ -361,7 +363,7 @@ func TestSmartRulesSegmentNegation(t *testing.T) {
 		t.Fatalf("create node: %v", err)
 	}
 	kenData := `{"apiKey":"sk-ken","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"kenari"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-ken", "node-ken", "apikey", "Kenari", &priority, kenData); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-ken", "node-ken", "apikey", "Kenari", &priority, kenData); err != nil {
 		t.Fatalf("create kenari connection: %v", err)
 	}
 	if err := env.Repo.SetKV("customModels", "node-ken|kenari-chat|llm",
@@ -416,7 +418,7 @@ func TestSmartRulesLoadMergesWithoutDroppingPins(t *testing.T) {
 	}
 	priority := 1
 	data := `{"apiKey":"sk-cutad","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cutad"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	for _, m := range []string{"deepseek-v4-flash", "glm-5"} {
@@ -499,10 +501,10 @@ func TestComboRespectStoredOrder(t *testing.T) {
 	upstream := env.NewUpstream(t, chatCompletionResponder())
 	priority := 1
 	data := `{"apiKey":"sk-x","baseUrl":"` + upstream.URL + `/chat/completions"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-a", "deepseek", "apikey", "A", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-a", "deepseek", "apikey", "A", &priority, data); err != nil {
 		t.Fatalf("create conn a: %v", err)
 	}
-	if err := env.Repo.CreateProviderConnectionFull("conn-b", "openrouter", "apikey", "B", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-b", "openrouter", "apikey", "B", &priority, data); err != nil {
 		t.Fatalf("create conn b: %v", err)
 	}
 	// Two live registry models, stored in a deliberate order.
@@ -556,7 +558,7 @@ func TestModelMetaPublishesBothSpellings(t *testing.T) {
 	}
 	priority := 1
 	data := `{"apiKey":"sk-cutad","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"cutad"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-cutad", "node-cutad", "apikey", "Cutad", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	// A custom row carrying the operator's own declarations: kind, capability

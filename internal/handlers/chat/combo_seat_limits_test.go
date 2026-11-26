@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -222,7 +224,7 @@ func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T)
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
-	if err := db.NewRepo(database).CreateProviderConnection("custom-conn-id", "openai", "apikey", "my-openai-alias", `{"apiKey":"sk-test"}`); err != nil {
+	if err := db.NewRepo(database).CreateProviderConnection(context.Background(), "custom-conn-id", "openai", "apikey", "my-openai-alias", `{"apiKey":"sk-test"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 

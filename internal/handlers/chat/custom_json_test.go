@@ -114,7 +114,7 @@ func TestCustomJSON_ComboResponseTimeoutDoesNotReplay(t *testing.T) {
 			repo := db.NewRepo(sqlDB)
 			seedCustomJSONConn(t, sqlDB, "conn-biz", "key", business.URL+"/run", map[string]any{"responsePath": "answer"})
 			p := 2
-			if err := repo.CreateProviderConnectionFull("c2", "provider2", "apikey", "c2", &p, `{"apiKey":"sk-p2","baseUrl":"`+next.URL+`"}`); err != nil {
+			if err := repo.CreateProviderConnectionFull(context.Background(), "c2", "provider2", "apikey", "c2", &p, `{"apiKey":"sk-p2","baseUrl":"`+next.URL+`"}`); err != nil {
 				t.Fatal(err)
 			}
 			if err := repo.CreateCombo("biz-combo", "biz-combo", "chat", `["`+customJSONProvider+`/custom-model", "provider2/m2"]`, "fallback", ""); err != nil {

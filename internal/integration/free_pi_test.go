@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -62,7 +64,7 @@ func addFreePiConnection(t *testing.T, env *Env, id, token string, up *Upstream,
 	}
 
 	priority := 1
-	if err := env.Repo.CreateProviderConnectionFull(id, "free-pi", "apikey", "Free Pi "+id, &priority, string(data)); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), id, "free-pi", "apikey", "Free Pi "+id, &priority, string(data)); err != nil {
 		t.Fatalf("create free-pi connection %s: %v", id, err)
 	}
 }

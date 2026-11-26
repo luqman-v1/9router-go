@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,7 +44,7 @@ func TestWriteConnectionModels_NoModelsRouteProviders(t *testing.T) {
 			defer cleanup()
 			router := setupTestRouter(repo)
 			connID := tt.provider + "-conn"
-			if err := repo.CreateProviderConnection(connID, tt.provider, "apiKey", tt.provider+" conn", "k"); err != nil {
+			if err := repo.CreateProviderConnection(context.Background(), connID, tt.provider, "apiKey", tt.provider+" conn", "k"); err != nil {
 				t.Fatalf("seed connection: %v", err)
 			}
 			req := httptest.NewRequest(http.MethodGet, "/api/providers/"+connID+"/models", nil)

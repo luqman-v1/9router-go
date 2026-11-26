@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +32,7 @@ func seedProvidersClient(t *testing.T, repo *db.Repo) {
 		{"c-long", "trae", "oauth", "abcdefghijklmnopqrstuvwxyz0123456789ABCD", "secret-trae"},
 	}
 	for _, s := range seed {
-		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.name, s.key); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), s.id, s.provider, s.authType, s.name, s.key); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
 	}
@@ -173,7 +175,7 @@ func TestSanitizeProviderConnection_LastErrorString(t *testing.T) {
 	h := NewDashboardHandler(repo)
 
 	connID := "c-err"
-	if err := repo.CreateProviderConnection(connID, "codex", "oauth", "Codex Err", "secret-codex"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), connID, "codex", "oauth", "Codex Err", "secret-codex"); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	if err := repo.LockConnectionRateLimit(connID, time.Now().Add(time.Minute), 1, 429, "Rate limit reached"); err != nil {
@@ -214,7 +216,7 @@ func TestHiddenProvidersStayOutOfTheQuotaList(t *testing.T) {
 		// four hidden entries are TTS-only.
 		{"c-mmf", "mmf", "apikey"},
 	} {
-		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
 			t.Fatalf("seed %s: %v", s.provider, err)
 		}
 	}
@@ -243,7 +245,7 @@ func TestProvidersClientFilters_CooldownAndStatus(t *testing.T) {
 
 	ids := []string{"c-unlocked", "c-expired", "c-locked", "c-ratelimited", "c-exhausted"}
 	for _, id := range ids {
-		if err := repo.CreateProviderConnection(id, "codex", "oauth", id, "secret-"+id); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), id, "codex", "oauth", id, "secret-"+id); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
@@ -263,7 +265,7 @@ func TestProvidersClientFilters_CooldownAndStatus(t *testing.T) {
 	if err := repo.LockConnectionRateLimit("c-ratelimited", time.Now().Add(time.Hour), 1, 429, "Rate limit reached"); err != nil {
 		t.Fatalf("lock c-ratelimited: %v", err)
 	}
-	if err := repo.UpdateConnectionData("c-exhausted", `{"testStatus":"unavailable","lastError":"credit insufficient balance: balance=0"}`); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), "c-exhausted", `{"testStatus":"unavailable","lastError":"credit insufficient balance: balance=0"}`); err != nil {
 		t.Fatalf("update c-exhausted: %v", err)
 	}
 

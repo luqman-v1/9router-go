@@ -33,7 +33,7 @@ func TestMediaContracts_ClientCancellationAbortsUpstream(t *testing.T) {
 	d, cleanup := setupMultimodalTestDB(t)
 	defer cleanup()
 	repo := db.NewRepo(d)
-	_ = repo.CreateProviderConnection("conn-stt", "openai", "apikey", "STT Test", "sk-test")
+	_ = repo.CreateProviderConnection(context.Background(), "conn-stt", "openai", "apikey", "STT Test", "sk-test")
 	handler := newTestMediaHandler(repo)
 
 	ctx, cancel := context.WithCancel(context.Background())

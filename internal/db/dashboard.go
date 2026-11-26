@@ -39,17 +39,17 @@ func (r *Repo) UpdateProviderConnection(id string, name string, priority *int, i
 // Background writers (token refresh, node sync, probe persist) must use this:
 // a full-row update writes back the name/isActive/priority they read before the
 // write, which reverts a reorder or a toggle the user just performed.
-func (r *Repo) UpdateConnectionData(id string, data string) error {
+func (r *Repo) UpdateConnectionData(ctx context.Context, id string, data string) error {
 	// Seal before the data write so a credential is never briefly readable in
 	// `data` after this call returns. A payload with no whitelisted credential
 	// (a background writer touching only expiresAt) is stored verbatim and the
 	// existing sealed slots are left alone.
-	sealed, err := r.sealOnWrite(id, data)
+	sealed, err := r.sealOnWrite(ctx, id, data)
 	if err != nil {
 		return err
 	}
 	now := nowUTC()
-	if _, err = r.db.Exec(
+	if _, err = r.db.ExecContext(ctx,
 		`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`,
 		sealed, now, id,
 	); err != nil {

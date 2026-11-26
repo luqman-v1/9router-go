@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -19,7 +21,7 @@ func TestApplyConnectionStrategy_SurvivesRestart(t *testing.T) {
 		t.Fatalf("clean provider: %v", err)
 	}
 	for i, name := range []string{"conn-a", "conn-b", "conn-c"} {
-		if err := repo.CreateProviderConnection(name, "rr-restart", "apikey", name, `{"apiKey":"sk-x"}`); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), name, "rr-restart", "apikey", name, `{"apiKey":"sk-x"}`); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
 		if err := repo.SetConnectionPriority(name, i+1); err != nil {
@@ -67,7 +69,7 @@ func TestApplyConnectionStrategy_KeepsRotatingPastFirstCycle(t *testing.T) {
 	}
 	names := []string{"conn-a", "conn-b", "conn-c"}
 	for i, name := range names {
-		if err := repo.CreateProviderConnection(name, "rr-cycle", "apikey", name, `{"apiKey":"sk-x"}`); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), name, "rr-cycle", "apikey", name, `{"apiKey":"sk-x"}`); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
 		if err := repo.SetConnectionPriority(name, i+1); err != nil {
@@ -100,7 +102,7 @@ func TestApplyConnectionStrategy_SkipsDisabledAccount(t *testing.T) {
 		t.Fatalf("clean provider: %v", err)
 	}
 	for i, name := range []string{"conn-a", "conn-b"} {
-		if err := repo.CreateProviderConnection(name, "rr-disabled", "apikey", name, `{"apiKey":"sk-x"}`); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), name, "rr-disabled", "apikey", name, `{"apiKey":"sk-x"}`); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
 		if err := repo.SetConnectionPriority(name, i+1); err != nil {

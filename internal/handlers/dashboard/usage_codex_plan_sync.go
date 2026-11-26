@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"strings"
 
@@ -49,7 +50,7 @@ var validCodexPlans = map[string]bool{
 // connection from, so a concurrent writer's change is lost only in the narrow
 // window between that read and this write — the same window every other
 // background writer in this package (persistUsageTokens, the node sync) carries.
-func (h *DashboardHandler) syncCodexPlanFromUsage(conn *models.ProviderConnection, data map[string]any, plan string) {
+func (h *DashboardHandler) syncCodexPlanFromUsage(ctx context.Context, conn *models.ProviderConnection, data map[string]any, plan string) {
 	if h == nil || h.Repo == nil || conn == nil || data == nil {
 		return
 	}
@@ -78,7 +79,7 @@ func (h *DashboardHandler) syncCodexPlanFromUsage(conn *models.ProviderConnectio
 		log.Warn("usage", "encode connection data for plan sync failed", "provider", conn.Provider, "conn", conn.ID, "error", err)
 		return
 	}
-	if err := h.Repo.UpdateConnectionData(conn.ID, string(encoded)); err != nil {
+	if err := h.Repo.UpdateConnectionData(ctx, conn.ID, string(encoded)); err != nil {
 		log.Warn("usage", "sync codex plan type failed", "conn", conn.ID, "plan", plan, "error", err)
 	}
 }

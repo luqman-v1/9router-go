@@ -25,7 +25,7 @@ func seedNaraNode(t *testing.T, env *Env, upstream *Upstream, limits db.Provider
 	}
 	priority := 1
 	data := `{"apiKey":"sk-nara","baseUrl":"` + upstream.URL + `/chat/completions","providerSpecificData":{"prefix":"nara"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-nara", "node-nara", "apikey", "Nara", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-nara", "node-nara", "apikey", "Nara", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	if err := env.Repo.SetProviderLimits(context.Background(), "node-nara", limits); err != nil {

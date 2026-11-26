@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"testing"
 
@@ -22,7 +24,7 @@ func museUpstream(t *testing.T, env *Env) *Upstream {
 	})
 	priority := 1
 	data := `{"apiKey":"sk-muse","baseUrl":"` + up.URL + `/chat/completions"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-muse", "muse", "apikey", "Muse", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-muse", "muse", "apikey", "Muse", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	return up

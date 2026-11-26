@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"bufio"
 	"bytes"
 	"fmt"
@@ -51,7 +53,7 @@ func TestOpenCodeBridgeDoneBoundary_StrictClientParsesStream(t *testing.T) {
 	env := newEnv(t)
 	priority := 1
 	data := fmt.Sprintf(`{"apiKey":"public","baseUrl":%q}`, up.URL+"/inference/v1/chat/completions")
-	if err := env.Repo.CreateProviderConnectionFull("conn-bridge-done", "opencode", "apikey", "OpenCode", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-bridge-done", "opencode", "apikey", "OpenCode", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 

@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"fmt"
 	"io"
 	"net/http"
@@ -189,7 +191,7 @@ func (e *Env) AddConnection(t *testing.T, id, provider, name string, up *Upstrea
 func (e *Env) AddConnectionWithPriority(t *testing.T, id, provider, name string, up *Upstream, apiKey string, priority int) {
 	t.Helper()
 	data := fmt.Sprintf(`{"apiKey":%q,"baseUrl":%q}`, apiKey, up.URL+"/chat/completions")
-	if err := e.Repo.CreateProviderConnectionFull(id, provider, "apikey", name, &priority, data); err != nil {
+	if err := e.Repo.CreateProviderConnectionFull(context.Background(), id, provider, "apikey", name, &priority, data); err != nil {
 		t.Fatalf("create connection %s: %v", id, err)
 	}
 	stored, err := e.Repo.GetProviderConnectionByID(id)

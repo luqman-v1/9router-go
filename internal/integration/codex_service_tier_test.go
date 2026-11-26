@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"testing"
 
@@ -29,7 +31,7 @@ func codexTierEnv(t *testing.T) (*Env, *Upstream) {
 
 	priority := 1
 	data := `{"apiKey":"sk-codex","baseUrl":"` + up.URL + `/responses"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-codex", "codex", "apikey", "Codex Integration", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-codex", "codex", "apikey", "Codex Integration", &priority, data); err != nil {
 		t.Fatalf("create codex connection: %v", err)
 	}
 	return env, up
@@ -256,7 +258,7 @@ func TestSiblingResponsesProviderKeepsFlex(t *testing.T) {
 
 	priority := 1
 	data := `{"apiKey":"sk-grok","baseUrl":"` + up.URL + `/responses"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-grok", "grok-cli", "apikey", "Grok CLI", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-grok", "grok-cli", "apikey", "Grok CLI", &priority, data); err != nil {
 		t.Fatalf("create grok-cli connection: %v", err)
 	}
 

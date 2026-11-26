@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +65,7 @@ func assignPool(t *testing.T, env *Env, connID, poolID string) {
 func addNoAuthConnection(t *testing.T, env *Env, id, provider, name string) {
 	t.Helper()
 	priority := 1
-	if err := env.Repo.CreateProviderConnectionFull(id, provider, "none", name, &priority, `{}`); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), id, provider, "none", name, &priority, `{}`); err != nil {
 		t.Fatalf("create %s connection: %v", provider, err)
 	}
 }

@@ -117,7 +117,7 @@ func TestConnectionModels_Nous(t *testing.T) {
 	defer cleanup()
 
 	connID := "conn-nous-1"
-	if err := repo.CreateProviderConnectionFull(connID, "nous", "apikey", "Nous Test", nil, `{"apiKey":"test-key"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "nous", "apikey", "Nous Test", nil, `{"apiKey":"test-key"}`); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 

@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +29,7 @@ func newCodexPlanSyncConn(t *testing.T, psd map[string]any, livePlan string) (*D
 	if err != nil {
 		t.Fatalf("marshal connection data: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull("codex-1", "codex", "oauth", "Codex Plan", nil, string(encoded)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "codex-1", "codex", "oauth", "Codex Plan", nil, string(encoded)); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -185,7 +187,7 @@ func TestCodexPlanSyncLeavesOtherProvidersAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal other data: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull("other-1", "openai", "apikey", "Other", nil, string(encoded)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "other-1", "openai", "apikey", "Other", nil, string(encoded)); err != nil {
 		t.Fatalf("create other connection: %v", err)
 	}
 
@@ -255,7 +257,7 @@ func TestCodexPlanSyncNeverTouchesNonCodexConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal other data: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull("claude-1", "claude", "apikey", "Claude", nil, string(encoded)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "claude-1", "claude", "apikey", "Claude", nil, string(encoded)); err != nil {
 		t.Fatalf("create claude connection: %v", err)
 	}
 
@@ -272,7 +274,7 @@ func TestCodexPlanSyncNeverTouchesNonCodexConnection(t *testing.T) {
 		t.Fatalf("unmarshal claude data: %v", err)
 	}
 
-	handler.syncCodexPlanFromUsage(conn, data, "pro")
+	handler.syncCodexPlanFromUsage(context.Background(), conn, data, "pro")
 
 	if got := readStoredCodexPSD(t, repo, "claude-1")["chatgptPlanType"]; got != "free" {
 		t.Errorf("claude chatgptPlanType = %v, want free untouched by plan sync", got)

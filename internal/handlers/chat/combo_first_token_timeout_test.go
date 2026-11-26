@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,10 +39,10 @@ func TestComboChat_FirstTokenTimeoutAdvancesToNextModel(t *testing.T) {
 
 	p1 := 1
 	p2 := 2
-	if err := database.CreateProviderConnectionFull("c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv1.URL+`"}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv1.URL+`"}`); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.CreateProviderConnectionFull("c2", "provider2", "apikey", "c2", &p2, `{"apiKey":"sk-p2","baseUrl":"`+srv2.URL+`"}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "c2", "provider2", "apikey", "c2", &p2, `{"apiKey":"sk-p2","baseUrl":"`+srv2.URL+`"}`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,7 +100,7 @@ func TestComboChat_FirstTokenTimeoutIgnoredOnLastMember(t *testing.T) {
 	defer srv.Close()
 
 	p1 := 1
-	if err := database.CreateProviderConnectionFull("c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv.URL+`"}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv.URL+`"}`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,10 +159,10 @@ func TestComboChat_FirstTokenArrivesBeforeTimeoutLetsStreamComplete(t *testing.T
 
 	p1 := 1
 	p2 := 2
-	if err := database.CreateProviderConnectionFull("c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv.URL+`"}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv.URL+`"}`); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.CreateProviderConnectionFull("c2", "provider2", "apikey", "c2", &p2, `{"apiKey":"sk-p2","baseUrl":"http://127.0.0.1:9999"}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "c2", "provider2", "apikey", "c2", &p2, `{"apiKey":"sk-p2","baseUrl":"http://127.0.0.1:9999"}`); err != nil {
 		t.Fatal(err)
 	}
 

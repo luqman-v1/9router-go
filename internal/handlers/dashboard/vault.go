@@ -70,7 +70,7 @@ func (h *DashboardHandler) HandleRotateVault(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	rewrapped, failures, err := h.Repo.RewrapConnectionDEKs(v, newKey)
+	rewrapped, failures, err := h.Repo.RewrapConnectionDEKs(r.Context(), v, newKey)
 	if err != nil {
 		if errors.Is(err, vault.ErrDisabled) {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())

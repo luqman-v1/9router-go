@@ -51,13 +51,13 @@ func scanConnection(scan func(dest ...any) error, conn *models.ProviderConnectio
 
 // CreateProviderConnection inserts a new provider connection carrying just an
 // API key, the shape OAuth imports and CLI provisioning use.
-func (r *Repo) CreateProviderConnection(id, provider, authType, name string, apiKey string) error {
+func (r *Repo) CreateProviderConnection(ctx context.Context, id, provider, authType, name string, apiKey string) error {
 	data, err := json.Marshal(map[string]string{"apiKey": apiKey})
 	if err != nil {
 		return fmt.Errorf("marshal provider connection data: %w", err)
 	}
 	now := nowUTC()
-	if _, err = r.db.Exec(
+	if _, err = r.db.ExecContext(ctx,
 		`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
 		id, provider, authType, name, string(data), now, now,
 	); err != nil {
@@ -65,12 +65,12 @@ func (r *Repo) CreateProviderConnection(id, provider, authType, name string, api
 	}
 	// Seal after the insert: the sealed columns are written with one UPDATE per
 	// slot, which needs the row to exist.
-	sealed, err := r.sealOnWrite(id, string(data))
+	sealed, err := r.sealOnWrite(ctx, id, string(data))
 	if err != nil {
 		return err
 	}
 	if sealed != string(data) {
-		if _, err = r.db.Exec(`UPDATE providerConnections SET data = ? WHERE id = ?`, sealed, id); err != nil {
+		if _, err = r.db.ExecContext(ctx, `UPDATE providerConnections SET data = ? WHERE id = ?`, sealed, id); err != nil {
 			return fmt.Errorf("create provider connection: redact data: %w", err)
 		}
 	}
@@ -82,18 +82,18 @@ func (r *Repo) CreateProviderConnection(id, provider, authType, name string, api
 // + proxyPoolId, as the dashboard add-key modal sends them). A nil priority
 // falls back to max(existing priority for the provider) + 1, matching upstream
 // connectionsRepo when the caller omits priority.
-func (r *Repo) CreateProviderConnectionFull(id, provider, authType, name string, priority *int, dataJSON string) error {
+func (r *Repo) CreateProviderConnectionFull(ctx context.Context, id, provider, authType, name string, priority *int, dataJSON string) error {
 	if dataJSON == "" {
 		dataJSON = "{}"
 	}
 	priorityVal := 1
 	if priority != nil {
 		priorityVal = *priority
-	} else if next, err := r.NextConnectionPriority(provider); err == nil && next > 0 {
+	} else if next, err := r.NextConnectionPriority(ctx, provider); err == nil && next > 0 {
 		priorityVal = next
 	}
 	now := nowUTC()
-	_, err := r.db.Exec(
+	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
 		id, provider, authType, name, priorityVal, dataJSON, now, now,
 	)
@@ -102,14 +102,14 @@ func (r *Repo) CreateProviderConnectionFull(id, provider, authType, name string,
 	}
 	// Seal after the insert so the credentials land in their own columns and
 	// the stored payload keeps only what the model resolver must read.
-	sealed, err := r.sealOnWrite(id, dataJSON)
+	sealed, err := r.sealOnWrite(ctx, id, dataJSON)
 	if err != nil {
 		return err
 	}
 	if sealed == dataJSON {
 		return nil
 	}
-	if _, err = r.db.Exec(`UPDATE providerConnections SET data = ? WHERE id = ?`, sealed, id); err != nil {
+	if _, err = r.db.ExecContext(ctx, `UPDATE providerConnections SET data = ? WHERE id = ?`, sealed, id); err != nil {
 		return fmt.Errorf("create provider connection: redact data: %w", err)
 	}
 	return nil
@@ -117,11 +117,11 @@ func (r *Repo) CreateProviderConnectionFull(id, provider, authType, name string,
 
 // ResolveDefaultPriority returns the next sequential priority for a provider
 // (max(existing priority) + 1), or 1 if no connections exist yet.
-func (r *Repo) ResolveDefaultPriority(provider string) int {
+func (r *Repo) ResolveDefaultPriority(ctx context.Context, provider string) int {
 	if r == nil || r.db == nil {
 		return 1
 	}
-	if next, err := r.NextConnectionPriority(provider); err == nil && next > 0 {
+	if next, err := r.NextConnectionPriority(ctx, provider); err == nil && next > 0 {
 		return next
 	}
 	return 1
@@ -129,9 +129,9 @@ func (r *Repo) ResolveDefaultPriority(provider string) int {
 
 // NextConnectionPriority returns max(priority) + 1 for a provider, or 1 when the
 // provider has no connections yet.
-func (r *Repo) NextConnectionPriority(provider string) (int, error) {
+func (r *Repo) NextConnectionPriority(ctx context.Context, provider string) (int, error) {
 	var maxPriority sql.NullInt64
-	if err := r.db.QueryRow(
+	if err := r.db.QueryRowContext(ctx,
 		`SELECT MAX(priority) FROM providerConnections WHERE provider = ?`, provider,
 	).Scan(&maxPriority); err != nil {
 		return 0, fmt.Errorf("next connection priority for %s: %w", provider, err)
@@ -222,16 +222,16 @@ func (r *Repo) ResolveConnectionRoutingByPrefix(prefix string) (provider string,
 // data in place, keeping its id and position in the rotation. This is what an
 // explicit overwrite does: the caller asked to change the key behind a name
 // they already own, not to add a second row with the same name.
-func (r *Repo) ReplaceProviderConnectionPayload(id, name, dataJSON string) error {
+func (r *Repo) ReplaceProviderConnectionPayload(ctx context.Context, id, name, dataJSON string) error {
 	// Seal first: this is the dashboard's overwrite path, so the new key must
 	// never land in `data` in the clear even for the moment between the two
 	// statements.
-	sealed, err := r.sealOnWrite(id, dataJSON)
+	sealed, err := r.sealOnWrite(ctx, id, dataJSON)
 	if err != nil {
 		return err
 	}
 	now := nowUTC()
-	res, err := r.db.Exec(
+	res, err := r.db.ExecContext(ctx,
 		`UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?`,
 		name, sealed, now, id,
 	)

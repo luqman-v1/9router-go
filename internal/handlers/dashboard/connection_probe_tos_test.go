@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"net/http"
 	"strings"
 	"testing"
@@ -31,7 +33,7 @@ func TestTestConnection_AntigravityTOSBanCapturesAppealURL(t *testing.T) {
 	defer cleanup()
 
 	const id = "conn-antigravity-tos"
-	if err := repo.CreateProviderConnectionFull(id, "antigravity", "oauth", "antigravity", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), id, "antigravity", "oauth", "antigravity", nil,
 		`{"accessToken":"tok","expiresAt":"2099-01-01T00:00:00Z"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
@@ -80,7 +82,7 @@ func TestTestConnection_AgyTOSBanCapturesAppealURL(t *testing.T) {
 	defer cleanup()
 
 	const id = "conn-agy-tos"
-	if err := repo.CreateProviderConnectionFull(id, "agy", "oauth", "agy", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), id, "agy", "oauth", "agy", nil,
 		`{"accessToken":"tok","expiresAt":"2099-01-01T00:00:00Z"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}

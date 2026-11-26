@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -112,7 +114,7 @@ func newAdsTestEnv(t *testing.T, ads *fakeFreePiAds, mutate func(*atomic.Bool)) 
 
 	data := `{"apiKey":"free-pi-jwt","baseUrl":"` + ads.srv.URL + `/v1/chat/completions"}`
 	priority := 1
-	if err := repo.CreateProviderConnectionFull("conn-ads", providers.FreePiProviderID, "apikey",
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-ads", providers.FreePiProviderID, "apikey",
 		"Free Pi ads", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
@@ -547,7 +549,7 @@ func TestFreePiPrefetchMakesOneReadForThePage(t *testing.T) {
 	// and a page read are indistinguishable in cost.
 	second := `{"apiKey":"free-pi-jwt-2","baseUrl":"` + ads.srv.URL + `/v1/chat/completions"}`
 	priority := 2
-	if err := env.handler.Repo.CreateProviderConnectionFull("conn-ads-2", providers.FreePiProviderID,
+	if err := env.handler.Repo.CreateProviderConnectionFull(context.Background(), "conn-ads-2", providers.FreePiProviderID,
 		"apikey", "Free Pi ads 2", &priority, second); err != nil {
 		t.Fatalf("create second connection: %v", err)
 	}
