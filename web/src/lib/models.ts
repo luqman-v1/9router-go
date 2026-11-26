@@ -4963,7 +4963,54 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Jev 1.13 Free",
       "kind": "systemone"
     },
-  ],
+    {
+      "id": "longcat-2.5-free",
+      "name": "longcat-2.5-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "iceman-free",
+      "name": "iceman-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "inkling-2-small-free",
+      "name": "inkling-2-small-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "beam-free",
+      "name": "beam-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "flint-40b-free",
+      "name": "flint-40b-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "nemotron-3.5-super-vl-free",
+      "name": "nemotron-3.5-super-vl-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "hy4-flash-free",
+      "name": "hy4-flash-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    },
+    {
+      "id": "tidepool-alpha-free",
+      "name": "tidepool-alpha-free",
+      "supportedFormats": ["openai"],
+      "capabilities": ["reasoning"]
+    }],
   "ocz": [
     {
       "id": "claude-fable-5",
