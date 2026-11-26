@@ -24,6 +24,8 @@ one forced refresh + retry.
 - `internal/providers/catalog_sweep_test.go` — autoclaw models pinned to their
   published windows (1M / 200k), no floor hits.
 
+**Capability source.** The seven model windows (1M/200k context, 131k/393k max output) are pinned from the community-proxy catalogs that front AutoClaw (glmproxy and autoclawpi publish the same ids and windows). Autoclaw's model feed requires a signed session, so there is no unauthenticated `/v1/models` endpoint in-tree to verify against, and no models.dev entry exists for this private app protocol. The pins are effective-value checks (`GetCapabilitiesDetailForModel` returns the pinned values, not the 128k floor) but are not sourced from a live Autoclaw feed — verify against a real `refresh_token|device_id` login before trusting them in production.
+
 **Maintenance note.** `APP_ID`/`APP_KEY`/`X-Version` are captured from desktop
 client build 1.18.5. If Autoclaw bumps the build, every signed request 403s
 until the constants are re-dumped. `X-Tm: win` is the working fallback; some
