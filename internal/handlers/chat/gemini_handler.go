@@ -243,16 +243,29 @@ func (h *ChatHandler) StoreAntigravityProjectID(connectionID, pid string) {
 }
 
 func (h *ChatHandler) storeAntigravityProjectID(connectionID, pid string) {
-	if connectionID == "" || pid == "" || h.Repo == nil || h.Repo.RawDB() == nil {
+	if connectionID == "" || pid == "" || h.Repo == nil {
 		return
 	}
 	go func() {
-		if h.Repo == nil || h.Repo.RawDB() == nil {
+		if h.Repo == nil {
 			return
 		}
-		if _, err := h.Repo.RawDB().Exec("UPDATE providerConnections SET data = json_set(data, '$.projectId', ?) WHERE id = ?", pid, connectionID); err != nil {
-			log.Warn("gemini", "update projectId failed", "conn", connectionID, "error", err)
+		ctx := context.Background()
+		existing, _ := h.Repo.GetProviderConnectionByID(connectionID)
+		if existing == nil {
+			return
 		}
+		dataMap := map[string]any{}
+		if jerr := json.Unmarshal([]byte(existing.Data), &dataMap); jerr != nil {
+			dataMap = map[string]any{}
+		}
+		dataMap["projectId"] = pid
+		raw, _ := json.Marshal(dataMap)
+		name := ""
+		if existing.Name != nil {
+			name = *existing.Name
+		}
+		_ = h.Repo.ReplaceProviderConnectionPayload(ctx, connectionID, name, string(raw))
 	}()
 }
 
