@@ -59,6 +59,15 @@ func TestCatalogSweepNoFloorWhereSourceExists(t *testing.T) {
 		// Cloudflare llama-3.1 fast/awq: 32000 (models.dev).
 		{"cloudflare-ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast", 32000},
 		{"cloudflare-ai", "@cf/meta/llama-3.1-70b-instruct-fp8-fast", 32000},
+		// Autoclaw (Zhipu GLM via native desktop protocol; windows from the
+		// community proxy catalog, static since the model feed needs auth).
+		{"autoclaw", "zai_auto", 1000000},
+		{"autoclaw", "zai_auto-fast", 1000000},
+		{"autoclaw", "zai_glm-5-turbo", 200000},
+		{"autoclaw", "zaicoding_glm-5.3", 1000000},
+		{"autoclaw", "zai_glm-5.3-flash", 1000000},
+		{"autoclaw", "tdpsk_deepseek-v4-pro", 1000000},
+		{"autoclaw", "tdpsk_deepseek-v4-flash", 1000000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {
