@@ -866,7 +866,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 	"autoclaw": {
 		ID:           "autoclaw",
 		Name:         "Autoclaw",
-		Alias:        "ac",
+		Alias:        "au",
 		Category:     CategoryAPIKey,
 		Color:        "#8B3DFE",
 		Icon:         "cloud",

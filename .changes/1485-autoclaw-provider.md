@@ -1,6 +1,6 @@
 ### feat(providers): add Autoclaw provider with one-time login
 
-Adds `autoclaw` (alias `ac`) as a first-class API-key provider serving Zhipu
+Adds `autoclaw` (alias `au`) as a first-class API-key provider serving Zhipu
 AutoClaw's GLM models (GLM-5.3, GLM-5-Turbo, GLM-5.3-Flash, DeepSeek-V4) via
 the native desktop protocol at `https://autoglm-api.autoglm.ai`.
 
