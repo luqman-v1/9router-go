@@ -164,3 +164,52 @@ func TestHandleAntigravity_CatalogPreserve(t *testing.T) {
 		t.Errorf("generation should override User-Agent to 2.33.0, got %q", capturedUA)
 	}
 }
+
+func TestRewriteAntigravityUserAgent(t *testing.T) {
+	tests := []struct {
+		name      string
+		userAgent string
+		version   string
+		expected  string
+	}{
+		{"hub with suffix", "antigravity/hub/2.32.2 darwin/arm64", "2.33.0", "antigravity/hub/2.33.0 darwin/arm64"},
+		{"bare with suffix", "antigravity/2.32.2 linux/x64", "2.33.0", "antigravity/2.33.0 linux/x64"},
+		{"bare no suffix", "antigravity/2.32.2", "2.33.0", "antigravity/2.33.0"},
+		{"hub no suffix", "antigravity/hub/2.11.0", "2.33.0", "antigravity/hub/2.33.0"},
+		{"non-antigravity untouched", "curl/7.68.0", "2.33.0", "curl/7.68.0"},
+		{"empty untouched", "", "2.33.0", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RewriteAntigravityUserAgent(tt.userAgent, tt.version)
+			if got != tt.expected {
+				t.Errorf("RewriteAntigravityUserAgent(%q, %q) = %q, want %q", tt.userAgent, tt.version, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHandleAntigravity_GenerationOverridesIDEVersion(t *testing.T) {
+	var capturedUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	oldBase := proxyBase
+	proxyBase = srv.URL
+	defer func() { proxyBase = oldBase }()
+
+	body := []byte(`{"model":"gemini-3.8-flash","metadata":{"ideVersion":"2.32.2"}}`)
+	req := httptest.NewRequest("POST", "/v1internal:streamGenerateContent?alt=sse", strings.NewReader(string(body)))
+	req.Header.Set("User-Agent", "antigravity/hub/2.32.2 darwin/arm64")
+	w := httptest.NewRecorder()
+
+	HandleAntigravity(w, req, body)
+
+	if capturedUA != "antigravity/hub/2.33.0 darwin/arm64" {
+		t.Errorf("expected User-Agent %q, got %q", "antigravity/hub/2.33.0 darwin/arm64", capturedUA)
+	}
+}
