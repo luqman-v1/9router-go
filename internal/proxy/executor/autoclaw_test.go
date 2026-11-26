@@ -90,7 +90,7 @@ func TestAutoclawSignerIsDeterministic(t *testing.T) {
 
 func TestAutoclawBodyForcesStream(t *testing.T) {
 	body := []byte(`{"model":"zai_glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}`)
-	out, err := autoclawBody(body)
+	out, err := autoclawBody(body, true)
 	if err != nil {
 		t.Fatalf("autoclawBody: %v", err)
 	}

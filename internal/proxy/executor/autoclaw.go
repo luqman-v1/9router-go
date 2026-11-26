@@ -54,7 +54,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	}
 	accessToken := result.AccessToken
 
-	body, err := autoclawBody(req.Body)
+	body, err := autoclawBody(req.Body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("autoclaw: prepare body: %w", err)
 	}
@@ -85,7 +85,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 			return fmt.Errorf("autoclaw: force refresh after 401: %w", err)
 		}
 		headers = autoclawHeaders(result.AccessToken, req.IsStream, req.ModelName)
-		resp, err = proxy.DoRequest(req.Ctx, req.Client, http.MethodPost, autoclawBaseURL+autoclawChatPath, headers, body)
+		resp, err = proxy.DoRequest(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
 		if err != nil {
 			return fmt.Errorf("autoclaw: upstream retry: %w", err)
 		}
@@ -124,15 +124,19 @@ func splitAutoclawCredential(cred string) (refreshToken, deviceID string) {
 	return
 }
 
-// autoclawBody forces stream:true so the upstream keeps the SSE channel open.
+// autoclawBody forces stream:true so the upstream keeps the SSE channel open,
+// but only when the client asked for a stream. A non-stream request keeps the
+// client's stream flag so the SSE body is never mislabelled as JSON.
 // The body's `model` field is left as the client sent it; upstream reads the
 // model from X-Request-Model instead.
-func autoclawBody(raw []byte) ([]byte, error) {
+func autoclawBody(raw []byte, isStream bool) ([]byte, error) {
 	var envelope map[string]any
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	envelope["stream"] = true
+	if isStream {
+		envelope["stream"] = true
+	}
 	return json.Marshal(envelope)
 }
 
