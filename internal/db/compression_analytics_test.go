@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -367,5 +368,55 @@ func TestBackfillCompressionAnalytics(t *testing.T) {
 	_ = database.QueryRow(`SELECT COUNT(*) FROM compressionAnalytics`).Scan(&countAfter)
 	if countAfter != 3 {
 		t.Errorf("count after second run = %d, want 3", countAfter)
+	}
+}
+
+// TestCompressionAnalytics_SummarySurfacesRowErrors pins that a failure during
+// row iteration is returned, not swallowed. Before the fix every breakdown
+// loop ignored both the Scan error and rows.Err(), so one unreadable row made
+// the dashboard render a partial summary with a nil error — silently wrong
+// numbers rather than a visible failure. A non-numeric tokensSaved is the
+// deterministic trigger: SQLite's INTEGER affinity still stores it as TEXT, so
+// the TopSavers query starts fine and the Scan into int64 fails mid-loop.
+func TestCompressionAnalytics_SummarySurfacesRowErrors(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := EnsureCoreSchema(database); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	repo := NewRepo(database)
+	ctx := context.Background()
+
+	// A healthy row first, so the query returns at least one row before the
+	// corrupt one is reached.
+	if err := repo.InsertCompressionAnalytics(ctx, CompressionAnalyticsRecord{
+		Timestamp:        time.Now().UTC().Format(time.RFC3339),
+		Provider:         "anthropic",
+		Mode:             "rtk",
+		OriginalTokens:   1000,
+		CompressedTokens: 600,
+		TokensSaved:      400,
+		RequestID:        "req-good",
+	}); err != nil {
+		t.Fatalf("insert good row: %v", err)
+	}
+
+	// The corrupt row: tokensSaved is declared INTEGER NOT NULL, but SQLite's
+	// permissive affinity accepts a non-numeric string and keeps it as TEXT.
+	if _, err := database.Exec(
+		`INSERT INTO compressionAnalytics (timestamp, mode, originalTokens, compressedTokens, tokensSaved, requestId)
+		 VALUES (?, 'rtk', 100, 50, 'not-a-number', 'req-corrupt')`,
+		time.Now().UTC().Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert corrupt row: %v", err)
+	}
+
+	_, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("all", time.Now()))
+	if err == nil {
+		t.Fatal("GetCompressionAnalyticsSummary() error = nil, want an error from the unreadable row; a nil error here means the summary silently dropped data")
+	}
+	if !strings.Contains(err.Error(), "top savers") {
+		t.Errorf("GetCompressionAnalyticsSummary() error = %q, want it to name the top-savers breakdown", err)
 	}
 }
