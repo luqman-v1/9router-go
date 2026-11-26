@@ -194,7 +194,7 @@ docker run -d --name 9router-go --restart unless-stopped \
 - 🩺 Per-model circuit breakers: a model that keeps failing sits out its cooldown while the rest of its provider keeps serving — a provider outage never parks the whole model list, and one throttled account never parks a model the others serve fine. See the **Model Breakers** page, or [Advanced Features](wiki/advanced-features.html)
 - 💾 SQLite WAL persistence, outbound proxy support, self-update, MITM commands, Docker, cross-compilation
 - 💰 Per-key budget enforcement (USD + tokens, four periods, hard cutoff) and `/api/usage/export` — from [new-api](wiki/new-api-ports.md)
-- 🧪 Dashboard Playground: one chat turn through the engine's own dispatch, with no engine key — attributed to a picked key, budget and allowlist enforced (inspired by [new-api](wiki/new-api-ports.md))
+- 🧪 Dashboard Playground: a streaming, multi-turn conversation through the engine's own dispatch, with no engine key — attributed to a picked key, budget and allowlist enforced, nothing persisted (inspired by [new-api](wiki/new-api-ports.md))
 - 📡 Uptime heartbeat (Push-Monitor / Uptime Kuma) — from [new-api](wiki/new-api-ports.md)
 - 🔀 Vertex `v1beta1` per-connection switch, and an optional HTTP/2 PING health check for idle upstream connections — from [new-api](wiki/new-api-ports.md)
 

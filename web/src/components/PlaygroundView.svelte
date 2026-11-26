@@ -1,27 +1,42 @@
 <script lang="ts">
   import { api, type APIKey } from '../api/client'
   import Button from '../lib/ui/Button.svelte'
-  import Card from '../lib/ui/Card.svelte'
 
   /**
-   * The Playground: one chat turn from the dashboard against any model the
-   * gateway routes, through the engine's own dispatch.
+   * The Playground: a conversation with any model the gateway routes, from the
+   * dashboard session, through the engine's own dispatch.
    *
-   * An operator picks a model, types a turn, and reads the reply without
-   * minting or pasting an engine key. The reply is the gateway's own Chat
-   * Completions response, so the panel shows the message, the model the
-   * gateway resolved to, the token usage and the finish reason — the same
-   * figures a client application would read, and the reason an operator
-   * reaches for this page before wiring a client.
+   * The turn reaches the gateway the way a client's does (the same
+   * `HandleChatCompletions` path the Gemini surface takes), so routing, combo
+   * fallback, personas, the limiter and usage accounting are production code
+   * rather than a parallel implementation that can drift.
    *
-   * `keyId` scopes the turn: the usage row is attributed to that key, its
-   * budget is spent and its model allowlist is enforced by the same gate the
-   * public lane uses. No key picked is the global scope — a keyless caller —
-   * so the turn is not billed to any key.
+   * `keyId` scopes every turn: the usage rows are attributed to that key, its
+   * budget is spent, and its model allowlist is enforced by the gate the public
+   * lane uses. No key is the global scope — a keyless caller, billed to nothing.
+   *
+   * The conversation lives in this component's state and nowhere else. It is
+   * deliberately not persisted: no localStorage, no sessionStorage, no rows.
+   * Reloading the page starts a fresh conversation, and the only thing a turn
+   * writes on the server is the usage row its own attribution requires.
    */
 
   interface Props {
     classes?: string
+  }
+
+  interface Turn {
+    role: 'user' | 'assistant'
+    content: string
+    reasoning?: string
+    /** Set on an assistant turn while its stream is still arriving. */
+    pending?: boolean
+    /** Set when the turn failed or was stopped, so the card says which. */
+    note?: string
+    ms?: number
+    model?: string
+    tokens?: number | null
+    finish?: string
   }
 
   let { classes = '' }: Props = $props()
@@ -29,11 +44,11 @@
   let modelId = $state('')
   let keyId = $state('')
   let prompt = $state('')
-  let sending = $state(false)
+  let turns = $state<Turn[]>([])
+  let streaming = $state(false)
   let error = $state('')
-  let reply = $state('')
-  let meta = $state<{ model: string; tokens: number | null; finish: string; ms: number } | null>(null)
-  let done = $state(false)
+  let controller: AbortController | null = null
+  let logEl: HTMLDivElement | null = $state(null)
 
   let keys = $state<APIKey[]>([])
   let catalog = $state<string[]>([])
@@ -55,78 +70,118 @@
     )
   })
 
+  // Keep the newest turn in view as it streams. Reading `turns` here makes the
+  // effect re-run on every delta, which is exactly when the log grows.
+  $effect(() => {
+    void turns.length
+    void turns[turns.length - 1]?.content
+    const el = logEl
+    if (el) el.scrollTop = el.scrollHeight
+  })
+
   function message(e: unknown): string {
     return e instanceof Error ? e.message : String(e)
   }
 
-  /**
-   * The reply text from the gateway's own response shape.
-   *
-   * `choices[0].message.content` is the normal answer; a refusal or a provider
-   * error arrives as `error.message` instead, and an empty choice list means
-   * the gateway answered but the model said nothing — all three are replies
-   * the panel must show rather than render as a blank card.
-   */
-  function extract(json: unknown): { text: string; tokens: number | null; finish: string } {
-    if (json == null || typeof json !== 'object') return { text: '(empty reply)', tokens: null, finish: '' }
-    const obj = json as Record<string, any>
-    const err = obj.error
-    if (err && typeof err === 'object' && typeof err.message === 'string') {
-      return { text: err.message, tokens: null, finish: 'error' }
-    }
-    if (Array.isArray(obj.choices) && obj.choices.length > 0) {
-      const msg = obj.choices[0]?.message
-      const content = typeof msg?.content === 'string' ? msg.content : ''
-      const usage = obj.usage
-      const tokens =
-        usage && typeof usage === 'object' && typeof usage.total_tokens === 'number'
-          ? usage.total_tokens
-          : null
-      return {
-        text: content || '(empty reply)',
-        tokens,
-        finish: typeof obj.choices[0]?.finish_reason === 'string' ? obj.choices[0].finish_reason : '',
-      }
-    }
-    return { text: '(empty reply)', tokens: null, finish: '' }
+  function stop(): void {
+    controller?.abort()
+    controller = null
+  }
+
+  function reset(): void {
+    if (streaming) stop()
+    turns = []
+    error = ''
   }
 
   async function send(): Promise<void> {
-    if (!modelId.trim() || !prompt.trim()) return
-    sending = true
+    const text = prompt.trim()
+    if (!text || !modelId.trim() || streaming) return
+
     error = ''
-    reply = ''
-    meta = null
+    // The history the model sees is the completed turns; the turn being sent is
+    // appended after, so an assistant placeholder never enters the payload.
+    const history = turns
+      .filter((t) => t.content.trim())
+      .map((t) => ({ role: t.role, content: t.content }))
+
+    const userTurn: Turn = { role: 'user', content: text }
+    const replyTurn: Turn = { role: 'assistant', content: '', pending: true }
+    turns = [...turns, userTurn, replyTurn]
+    prompt = ''
+    streaming = true
     const started = performance.now()
+
+    const ac = new AbortController()
+    controller = ac
+
     try {
-      const json = await api.playgroundChat({
-        model: modelId.trim(),
-        messages: [{ role: 'user', content: prompt.trim() }],
-        stream: false,
-        ...(keyId ? { keyId } : {}),
-      })
-      const out = extract(json)
-      reply = out.text
-      meta = {
-        model: (json as Record<string, any>)?.model || modelId.trim(),
-        tokens: out.tokens,
-        finish: out.finish,
-        ms: Math.round((performance.now() - started) / 100) / 10,
+      const result = await api.playgroundChatStream(
+        {
+          model: modelId.trim(),
+          messages: [...history, { role: 'user', content: text }],
+          ...(keyId ? { keyId } : {}),
+        },
+        {
+          signal: ac.signal,
+          onDelta: (kind, chunk) => {
+            // Mutate the last turn through the array so Svelte sees the change;
+            // a per-token array copy would be O(n²) over a long answer.
+            const last = turns[turns.length - 1]
+            if (!last || !last.pending) return
+            if (kind === 'content') last.content += chunk
+            else last.reasoning = (last.reasoning || '') + chunk
+          },
+        },
+      )
+      const last = turns[turns.length - 1]
+      if (last) {
+        last.pending = false
+        last.model = result.model || modelId.trim()
+        last.tokens = result.tokens
+        last.finish = result.finish || (ac.signal.aborted ? 'stopped' : '')
+        last.ms = Math.round((performance.now() - started) / 100) / 10
+        if (ac.signal.aborted) last.note = 'Stopped'
+        if (!result.text && !result.reasoning && !last.note) last.note = 'The model returned no text.'
       }
-      done = true
     } catch (e) {
-      error = message(e)
+      const last = turns[turns.length - 1]
+      if (ac.signal.aborted) {
+        // Stop is a user action, not a failure: keep what arrived and say so.
+        if (last) {
+          last.pending = false
+          last.finish = 'stopped'
+          last.note = 'Stopped'
+          last.ms = Math.round((performance.now() - started) / 100) / 10
+        }
+      } else {
+        error = message(e)
+        if (last) {
+          last.pending = false
+          last.note = message(e)
+        }
+      }
     } finally {
-      sending = false
+      if (controller === ac) controller = null
+      streaming = false
+    }
+  }
+
+  function onKeydown(e: KeyboardEvent): void {
+    // Enter sends, Shift+Enter is a newline — the convention every chat client
+    // uses, and the reason this is a textarea rather than an input.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void send()
     }
   }
 </script>
 
-<div class="space-y-4 {classes}">
+<div class="flex flex-col gap-4 {classes}">
   <p class="text-xs text-text-subtle">
-    One turn, any model the gateway routes, from this dashboard session. No engine key needed —
-    the call goes through the same dispatch path a client's request takes, so the reply is the
-    gateway's own Chat Completions answer.
+    A conversation with any model the gateway routes, from this dashboard session. No engine key
+    needed — each turn goes through the same dispatch path a client's request takes, and the reply
+    is the gateway's own answer. Nothing is stored: the conversation ends with this page.
   </p>
 
   <div class="flex flex-wrap items-end gap-3">
@@ -160,43 +215,94 @@
         <option value={m}></option>
       {/each}
     </datalist>
+
+    {#if turns.length > 0}
+      <Button variant="ghost" size="sm" onclick={reset} icon="add" title="Start a new conversation">
+        New
+      </Button>
+    {/if}
   </div>
+
+  {#if turns.length > 0}
+    <div
+      bind:this={logEl}
+      class="flex max-h-[420px] flex-col gap-3 overflow-y-auto rounded-[14px] border border-border-subtle bg-surface p-3"
+      aria-label="Conversation"
+      role="log"
+    >
+      {#each turns as turn, i (i)}
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center gap-2 text-[11px] text-text-subtle">
+            <span class="font-semibold uppercase tracking-wider text-text-muted">
+              {turn.role === 'user' ? 'You' : 'Reply'}
+            </span>
+            {#if turn.role === 'assistant' && turn.model}
+              <span class="font-code">{turn.model}</span>
+            {/if}
+            {#if turn.role === 'assistant' && turn.pending}
+              <span class="text-brand-500">streaming…</span>
+            {/if}
+            {#if turn.role === 'assistant' && !turn.pending}
+              <span class="ml-auto">
+                {turn.ms != null ? `${turn.ms}s` : ''}{turn.tokens != null
+                  ? ` · ${turn.tokens} tok`
+                  : ''}{turn.finish ? ` · ${turn.finish}` : ''}
+              </span>
+            {/if}
+          </div>
+          <p class="text-sm whitespace-pre-wrap break-words text-text-main">{turn.content}</p>
+          {#if turn.reasoning}
+            <details class="text-xs text-text-muted">
+              <summary class="cursor-pointer select-none">Reasoning</summary>
+              <p class="mt-1 whitespace-pre-wrap break-words font-code text-text-subtle">
+                {turn.reasoning}
+              </p>
+            </details>
+          {/if}
+          {#if turn.note}
+            <p class="text-xs text-warning">{turn.note}</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   <label class="block space-y-1.5">
     <span class="text-xs text-text-muted">Prompt</span>
     <textarea
       bind:value={prompt}
-      rows="4"
+      onkeydown={onKeydown}
+      rows="3"
       aria-label="Prompt to send"
-      placeholder="Ask anything — the reply is what a client would receive."
+      placeholder="Ask anything — Enter sends, Shift+Enter adds a line."
       class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code placeholder:text-text-subtle outline-none focus:border-brand-500 resize-y"
     ></textarea>
   </label>
 
   <div class="flex items-center gap-3">
-    <Button variant="primary" size="sm" onclick={() => void send()} disabled={sending || !modelId.trim() || !prompt.trim()} icon="send">
-      {sending ? 'Sending…' : 'Send'}
-    </Button>
+    {#if streaming}
+      <Button variant="danger" size="sm" onclick={stop} icon="stop">
+        Stop
+      </Button>
+    {:else}
+      <Button
+        variant="primary"
+        size="sm"
+        onclick={() => void send()}
+        disabled={!modelId.trim() || !prompt.trim()}
+        icon="send"
+      >
+        Send
+      </Button>
+    {/if}
     {#if error}
       <p class="text-xs text-error">{error}</p>
     {/if}
+    {#if turns.length === 0 && !streaming}
+      <p class="text-xs text-text-subtle">
+        Pick a model and send — the reply streams in as the provider produces it, with the model
+        the gateway resolved, the token count and the finish reason.
+      </p>
+    {/if}
   </div>
-
-  {#if done && meta}
-    <Card padding="md" class="space-y-2">
-      <div class="flex items-center gap-2 text-[11px] text-text-subtle">
-        <span class="font-semibold uppercase tracking-wider text-text-muted">Reply</span>
-        <span class="font-code">{meta.model}</span>
-        <span class="ml-auto">
-          {meta.ms}s{meta.tokens != null ? ` · ${meta.tokens} tok` : ''}{meta.finish ? ` · ${meta.finish}` : ''}
-        </span>
-      </div>
-      <p class="text-sm whitespace-pre-wrap break-words text-text-main">{reply}</p>
-    </Card>
-  {:else if !sending}
-    <p class="text-xs text-text-subtle">
-      Pick a model and send — the reply carries the model the gateway resolved, the token count
-      and the finish reason.
-    </p>
-  {/if}
 </div>
