@@ -65,7 +65,16 @@ jobs:
         run: |
           set -euo pipefail
           assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          arches=$(printf '%s\n' "$assets" | sed -n 's/^Packages\.\(.\+\)$/\1/p' | grep -v '\.gz$' | sort -u)
+          arches=$(
+            for a in $assets; do
+              case "$a" in
+                Packages.*)
+                  arch=${a#Packages.}
+                  case "$arch" in *.gz) ;; *) printf '%s\n' "$arch" ;; esac
+                  ;;
+              esac
+            done | sort -u
+          )
           if [ -z "$arches" ]; then
             echo "::error::release $TAG carries no Packages.<arch> asset."
             echo "The release job must run 'make ipk IPK_BASE_URL=...' and upload"

@@ -193,8 +193,8 @@ jobs:
             cp "$dir/Packages" "ipk-assets/Packages.$arch"
             cp "$dir/Packages.gz" "ipk-assets/Packages.$arch.gz"
           done
-          ls -l ipk-assets | head -40
-          test "$(ls ipk-assets/*.ipk | wc -l)" -ge 2 || {
+          find ipk-assets -maxdepth 1 -type f -printf '%s %p\n' | sort | head -40
+          test "$(find ipk-assets -maxdepth 1 -name '*.ipk' | wc -l)" -ge 2 || {
             echo "::error::no OpenWrt packages were produced"
             exit 1
           }

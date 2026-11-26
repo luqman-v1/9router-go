@@ -96,8 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           make ipk IPK_ARCHES='x86_64=dist/ipk-bin/linux-amd64'
-          ls -l dist/ipk/x86_64/9router-go_*.ipk dist/ipk/x86_64/luci-app-9router-go_*.ipk
-          test "$(ls dist/ipk/x86_64/*.ipk | wc -l)" -ge 2
+          find dist/ipk/x86_64 -maxdepth 1 -name '*.ipk' -printf '%s %p\n' | sort
+          test "$(find dist/ipk/x86_64 -maxdepth 1 -name '*.ipk' | wc -l)" -ge 2
 
       # The 273 MB image is identical for every run: it is the official
       # 18.06.9 release, pinned by sha256. Caching it keyed on that hash turns
