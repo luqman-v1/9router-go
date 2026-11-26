@@ -916,6 +916,37 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 			if !match {
 				continue
 			}
+			// For image generation the provider name alone is not a usable id:
+			// the generation endpoint resolves "{provider}/{model}" and rejects
+			// a bare alias ("could not resolve model: xai"). List the provider's
+			// actual image models, so discovery output can be fed straight back
+			// into POST /v1/images/generations.
+			if kind == "image" {
+				if imageModels := providers.ImageModelsForProvider(id); len(imageModels) > 0 {
+					for _, modelID := range imageModels {
+						data = append(data, map[string]any{
+							"id":       id + "/" + modelID,
+							"object":   "model",
+							"kind":     kind,
+							"owned_by": id,
+							"endpoint": kindEndpoint(kind),
+							"created":  now,
+						})
+					}
+					continue
+				}
+				// An ImageURL with no recognisable catalog entry (a relay, a
+				// user-defined node) still needs an addressable id.
+				data = append(data, map[string]any{
+					"id":       id + "/" + providers.DefaultImageModel(id),
+					"object":   "model",
+					"kind":     kind,
+					"owned_by": id,
+					"endpoint": kindEndpoint(kind),
+					"created":  now,
+				})
+				continue
+			}
 			data = append(data, map[string]any{
 				"id":       id,
 				"object":   "model",
