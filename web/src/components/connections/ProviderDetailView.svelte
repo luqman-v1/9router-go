@@ -3799,10 +3799,12 @@
       </div>
 
       <!-- A no-auth provider sends requests too, so its outbound headers are
-           just as fixable as an authenticated provider's. Upstream renders the
-           Custom Headers card on every provider; hiding it here left the free
-           lanes (the ones most sensitive to a vendor's UA gate) with no way to
-           correct a header from the dashboard. -->
+           just as fixable as an authenticated provider's. This is a deliberate
+           fork-side addition, not upstream parity: at decolua/9router
+           5ae63d22, CustomConfigCard.js returns null when the provider has no
+           registry builtins and no saved override, so a no-auth provider with
+           neither shows no card there. The free lanes are exactly where a
+           vendor's UA gate bites hardest, so the button is offered here. -->
       <div class="flex items-center gap-2 border-t border-border-subtle pt-4">
         <button
           type="button"
