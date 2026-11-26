@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
 
@@ -39,6 +40,8 @@ func ForwardTrae(w http.ResponseWriter, req *Request) error {
 	}
 	baseURL := strings.TrimRight(req.Config.BaseURL, "/")
 	headers := traeHeaders(req.APIKey, req.IsStream)
+	// Operator Custom Headers win over the CLI defaults this lane hardcodes.
+	headers = providers.ApplyHeaderOverrides(headers, req.Config.HeaderOverrides)
 
 	mode, strategy, modelName := resolveTraeMode(oreq.Model)
 	sessionID, messageID, err := traeCreateSession(ctx, req.Client, baseURL, headers, map[string]any{

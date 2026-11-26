@@ -3797,6 +3797,25 @@
           </p>
         {/if}
       </div>
+
+      <!-- A no-auth provider sends requests too, so its outbound headers are
+           just as fixable as an authenticated provider's. Upstream renders the
+           Custom Headers card on every provider; hiding it here left the free
+           lanes (the ones most sensitive to a vendor's UA gate) with no way to
+           correct a header from the dashboard. -->
+      <div class="flex items-center gap-2 border-t border-border-subtle pt-4">
+        <button
+          type="button"
+          onclick={() => (showHeaderOverrides = true)}
+          class="inline-flex h-7 items-center gap-1.5 rounded-[8px] px-3 text-xs font-medium text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+        >
+          <span class="material-symbols-outlined text-[18px]" aria-hidden="true">tune</span>
+          Custom headers
+        </button>
+        <p class="text-xs text-text-muted">
+          Override headers this provider sends upstream.
+        </p>
+      </div>
     </div>
   {:else}
   <!-- 3. Connections Card -->
