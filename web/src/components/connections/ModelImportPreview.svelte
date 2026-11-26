@@ -16,7 +16,6 @@
     sortImportPreviewModels,
     importPreviewSelectionState,
     toggleImportPreviewSelectAll,
-    importPreviewSelectedIds,
     IMPORT_PREVIEW_SORTS,
     IMPORT_PREVIEW_STATE_FILTERS,
     type ImportPreviewModel,
@@ -107,9 +106,6 @@
   let removableIds = $derived(filtered.filter((m) => activeIds.has(m.id)).map((m) => m.id))
 
   let selection = $derived(importPreviewSelectionState(selectedIds, filtered))
-  let selectedList = $derived(importPreviewSelectedIds(selectedIds, filtered))
-  let selectedAddable = $derived(selectedList.filter((id) => !activeIds.has(id)))
-  let selectedRemovable = $derived(selectedList.filter((id) => activeIds.has(id)))
 
   let stateCounts = $derived<Record<ImportPreviewStateFilter, number>>({
     all: models.length,
@@ -276,101 +272,85 @@
         </select>
       </label>
 
-      <label class="ml-auto flex items-center gap-1.5 text-[11px] text-text-muted cursor-pointer">
-        <input
-          type="checkbox"
-          checked={selection.allSelected}
-          indeterminate={selection.indeterminate}
-          onchange={(e) => (selectedIds = toggleImportPreviewSelectAll(selectedIds, filtered, (e.target as HTMLInputElement).checked))}
-          class="size-3.5 shrink-0 accent-brand-500 cursor-pointer"
-        />
-        Select all ({filtered.length})
-      </label>
     </div>
 
-    <!-- Batch bar: acts on the filtered set (not the whole catalogue), which is
-         the selective import this panel exists for. The whole-list case is just
-         an empty search. -->
-    <div class="shrink-0 border-b border-border-subtle bg-surface-2/40 px-4 py-2">
-      {#if selection.selected > 0}
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="text-[11px] font-semibold text-text-main">{selection.selected} selected</span>
-          <button
-            type="button"
-            onclick={() => onTestSelected(selectedList)}
-            disabled={testing || busy}
-            title="Test every selected model; each probe consumes account quota"
-            class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer"
-          >
-            <span class="material-symbols-outlined text-sm" style={testing ? 'animation: spin 1s linear infinite' : undefined}>
-              {testing ? 'progress_activity' : 'science'}
-            </span>
-            {testing ? 'Testing...' : `Test selected (${selectedList.length})`}
-          </button>
-          {#if selectedAddable.length > 0}
-            <button
-              type="button"
-              onclick={() => onAddAll(selectedAddable)}
-              disabled={busy}
-              title="Add the {selectedAddable.length} selected models to the list"
-              class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2 text-[11px] font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
-            >
-              <span class="material-symbols-outlined text-sm">library_add</span>
-              Add selected ({selectedAddable.length})
-            </button>
-          {/if}
-          {#if selectedRemovable.length > 0}
-            <button
-              type="button"
-              onclick={() => onRemoveAll(selectedRemovable)}
-              disabled={busy}
-              title="Remove the {selectedRemovable.length} selected models from the list"
-              class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
-            >
-              <span class="material-symbols-outlined text-sm">delete_sweep</span>
-              Remove selected ({selectedRemovable.length})
-            </button>
-          {/if}
-          <button
-            type="button"
-            onclick={clearSelection}
-            class="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-text-muted hover:text-text-main cursor-pointer"
-            title="Clear the selection"
-          >
-            <span class="material-symbols-outlined text-sm">deselect</span>
-            Clear
-          </button>
-        </div>
-      {:else}
-        <div class="flex flex-wrap items-center gap-2">
-          {#if addableIds.length > 0}
-            <button
-              type="button"
-              onclick={() => onAddAll(addableIds)}
-              disabled={busy}
-              title="Add all {addableIds.length} models matching the current filter"
-              class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2.5 text-[11px] font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
-            >
-              <span class="material-symbols-outlined text-sm">library_add</span>
-              Add all ({addableIds.length})
-            </button>
-          {/if}
-          {#if removableIds.length > 0}
-            <button
-              type="button"
-              onclick={() => onRemoveAll(removableIds)}
-              disabled={busy}
-              title="Remove all {removableIds.length} models matching the current filter"
-              class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
-            >
-              <span class="material-symbols-outlined text-sm">delete_sweep</span>
-              Remove all ({removableIds.length})
-            </button>
-          {/if}
-          <span class="ml-auto text-[11px] text-text-muted">
-            Click a chip to select it, or use its + and trash buttons
+    <!-- One action row. Every control acts on the filtered set (not the whole
+         catalogue), which is the selective import this panel exists for; the
+         whole-catalogue case is just an empty search. Select-all sits here
+         rather than in the toolbar because it is the first step of exactly
+         these three actions, and it is drawn as a button so it reads as one
+         more thing you do to the list, not as a form field. -->
+    <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle bg-surface-2/40 px-4 py-2">
+      <button
+        type="button"
+        onclick={() => (selectedIds = toggleImportPreviewSelectAll(selectedIds, filtered, !selection.allSelected))}
+        disabled={filtered.length === 0 || busy}
+        title={selection.allSelected ? 'Deselect every visible model' : 'Select every model matching the current filter'}
+        aria-pressed={selection.allSelected}
+        class="inline-flex h-7 items-center gap-1 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50 cursor-pointer {selection.selected > 0
+          ? 'border-primary/50 bg-primary/10 text-primary'
+          : 'border-border bg-surface text-text-main hover:bg-surface-3'}"
+      >
+        <span class="material-symbols-outlined text-sm">{selection.allSelected ? 'check_box' : selection.indeterminate ? 'indeterminate_check_box' : 'check_box_outline_blank'}</span>
+        {selection.allSelected ? 'Deselect all' : 'Select all'}
+        <span class="tabular-nums opacity-60">{selection.selected > 0 ? `${selection.selected}/${filtered.length}` : `(${filtered.length})`}</span>
+      </button>
+
+      {#if addableIds.length > 0}
+        <button
+          type="button"
+          onclick={() => onAddAll(addableIds)}
+          disabled={busy}
+          title="Add all {addableIds.length} models matching the current filter"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2.5 text-[11px] font-medium text-brand-600 transition-colors hover:bg-brand-500/20 disabled:opacity-50 cursor-pointer dark:text-brand-400"
+        >
+          <span class="material-symbols-outlined text-sm">library_add</span>
+          Add all ({addableIds.length})
+        </button>
+      {/if}
+
+      {#if filtered.length > 0}
+        <button
+          type="button"
+          onclick={() => onTestSelected(filtered.map((m) => m.id))}
+          disabled={testing || busy}
+          title="Test all {filtered.length} models matching the current filter; each probe consumes account quota"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[11px] font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer"
+        >
+          <span class="material-symbols-outlined text-sm" style={testing ? 'animation: spin 1s linear infinite' : undefined}>
+            {testing ? 'progress_activity' : 'science'}
           </span>
-        </div>
+          {testing ? 'Testing...' : `Test all (${filtered.length})`}
+        </button>
+      {/if}
+
+      {#if removableIds.length > 0}
+        <button
+          type="button"
+          onclick={() => onRemoveAll(removableIds)}
+          disabled={busy}
+          title="Remove all {removableIds.length} models matching the current filter"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-500/20 disabled:opacity-50 cursor-pointer dark:text-red-400"
+        >
+          <span class="material-symbols-outlined text-sm">delete_sweep</span>
+          Remove all ({removableIds.length})
+        </button>
+      {/if}
+
+      {#if selection.selected > 0}
+        <button
+          type="button"
+          onclick={clearSelection}
+          class="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-text-muted hover:text-text-main cursor-pointer"
+          title="Clear the selection"
+        >
+          <span class="material-symbols-outlined text-sm">deselect</span>
+          Clear
+        </button>
+      {:else}
+        <span class="ml-auto text-[11px] text-text-muted">
+          Click a chip to select it, or use its + and trash buttons
+        </span>
       {/if}
     </div>
 
