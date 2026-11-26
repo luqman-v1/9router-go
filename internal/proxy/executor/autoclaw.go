@@ -65,13 +65,15 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("autoclaw: upstream: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// A 401 means the rotated access token was already stale (the background
 	// refresher may not have ticked yet). Force one refresh and retry once
 	// instead of surfacing a hard auth error.
 	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			return fmt.Errorf("autoclaw: close response body: %w", err)
+		}
 		result, err = oauth.Refresh(req.Ctx, &oauth.Params{
 			Provider:             "autoclaw",
 			RefreshToken:         refreshToken,
@@ -87,7 +89,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 		if err != nil {
 			return fmt.Errorf("autoclaw: upstream retry: %w", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 	}
 
 	forwardUpstreamResponseHeaders(w, resp.Header)
