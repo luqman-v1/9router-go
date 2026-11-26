@@ -134,7 +134,7 @@ func parseSubscriptionAt(body []byte, accountID string, now time.Time) (*Subscri
 			break
 		}
 	}
-	if accountID == "" || strings.EqualFold(pick.id, accountID) == false {
+	if accountID == "" || !strings.EqualFold(pick.id, accountID) {
 		for _, c := range candidates {
 			if c.isDefault {
 				pick = c
@@ -219,7 +219,7 @@ func FetchSubscription(ctx context.Context, client *http.Client, accessToken, ac
 		}
 		return nil, fmt.Errorf("codexquota.FetchSubscription: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
