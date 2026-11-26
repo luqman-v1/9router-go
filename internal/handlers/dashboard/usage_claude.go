@@ -145,6 +145,15 @@ func fetchClaudeUsage(ctx context.Context, accessToken string) usageResult {
 	}
 
 	res := parseClaudeUsage(usageJSON(body))
+	// The seat's tier is not in the usage document; it lives on oauth/profile.
+	// No expiry is attached because that profile reports none — see
+	// usage_claude_plan.go. A failed read leaves the badge off, never the rows.
+	if plan := fetchClaudePlan(ctx, accessToken); plan != "" {
+		if res.extra == nil {
+			res.extra = map[string]any{}
+		}
+		res.extra["subscription"] = map[string]any{"plan": plan}
+	}
 	if len(res.quotas) > 0 {
 		claudeUsageUpdate(key, func(e *claudeUsageEntry) {
 			e.result, e.hasResult = res, true
