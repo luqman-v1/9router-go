@@ -3937,6 +3937,27 @@
           </p>
         {/if}
       </div>
+
+      <!-- A no-auth provider sends requests too, so its outbound headers are
+           just as fixable as an authenticated provider's. This is a deliberate
+           fork-side addition, not upstream parity: at decolua/9router
+           5ae63d22, CustomConfigCard.js returns null when the provider has no
+           registry builtins and no saved override, so a no-auth provider with
+           neither shows no card there. The free lanes are exactly where a
+           vendor's UA gate bites hardest, so the button is offered here. -->
+      <div class="flex items-center gap-2 border-t border-border-subtle pt-4">
+        <button
+          type="button"
+          onclick={() => (showHeaderOverrides = true)}
+          class="inline-flex h-7 items-center gap-1.5 rounded-[8px] px-3 text-xs font-medium text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+        >
+          <span class="material-symbols-outlined text-[18px]" aria-hidden="true">tune</span>
+          Custom headers
+        </button>
+        <p class="text-xs text-text-muted">
+          Override headers this provider sends upstream.
+        </p>
+      </div>
     </div>
   {:else}
   <!-- 3. Connections Card -->

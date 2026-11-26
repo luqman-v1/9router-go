@@ -80,6 +80,9 @@ func codebuddyCredentialFromRequest(req *Request) codebuddyCredential {
 		AccessToken: req.APIKey,
 		ID:          req.ConnectionID,
 	}
+	if req.Config != nil {
+		c.HeaderOverrides = req.Config.HeaderOverrides
+	}
 	if req.ConnData != nil {
 		if uid, ok := req.ConnData["uid"].(string); ok && uid != "" {
 			c.UID = uid

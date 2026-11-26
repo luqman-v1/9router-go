@@ -44,6 +44,11 @@ type codebuddyCredential struct {
 	AccessToken  string
 	ID           string // connection id
 	UID          string // x-user-id for telemetry head
+	// HeaderOverrides is the operator's per-provider Custom Headers. The
+	// telemetry calls are upstream requests too, so a header the operator
+	// corrected for this provider must reach them; otherwise the chat call
+	// carried the override and every report POST did not.
+	HeaderOverrides map[string]string
 }
 
 func (c codebuddyCredential) seed() string {

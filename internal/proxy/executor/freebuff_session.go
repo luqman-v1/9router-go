@@ -219,6 +219,13 @@ func releaseFreebuffSession(ctx context.Context, client *http.Client, baseURL, t
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
 	req.Header.Set(freebuffInstanceHeader, instanceID)
+	// The admission/release calls take the operator's Custom Headers too: the
+	// caller already passes them here, but they were never applied, so a
+	// per-provider header reached the chat request and not the session calls
+	// that precede it.
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := DoFreebuffHTTP(ctx, client, req)
 	if err != nil {
@@ -491,6 +498,12 @@ func postFreebuffSession(ctx context.Context, client *http.Client, baseURL, toke
 	req.Header.Set("x-freebuff-wallet-spend-limit", "session")
 	req.Header.Set("x-freebuff-multi-session", "1")
 	req.Header.Set("x-freebuff-purchase-continuity", "1")
+	// Operator Custom Headers last, so an override wins over the CLI defaults
+	// above. The admission call is the first request Freebuff sees, so a header
+	// that only reached the chat request was useless.
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := DoFreebuffHTTP(ctx, client, req)
 	if err != nil {
 		return nil, fmt.Errorf("freebuff session request failed: %w", err)
