@@ -57,6 +57,9 @@ by `make ipk` from `tools/ipkbuild` (a Go ar/tar writer, so the build needs no
   official 18.06.9 x86-64 image in QEMU, installs the built package inside it
   and asserts the service starts through procd, answers `/health`, and the
   helper scripts run — the only test that exercises the service start for real,
-  since a chroot or docker rootfs cannot run procd as PID 1.
+  since a chroot or docker rootfs cannot run procd as PID 1. The job builds
+  only the `x86_64` package (`make ipk IPK_ARCHES=...` now compiles just the
+  Go targets the requested names need) and caches the 273 MB image keyed on
+  its pinned sha256, so a PR run is one cross-build and a cache hit.
 
 Documentation: `docs/OPENWRT.md`.

@@ -89,29 +89,45 @@ jobs:
             sleep 5
           done
 
-      - name: Build OpenWrt packages
+      # Build only what the test installs. The Makefile now compiles just the
+      # Go targets the requested architecture names need, so this is one
+      # cross-build instead of four; the release job still builds all eight.
+      - name: Build the x86_64 packages
         run: |
           set -euo pipefail
-          make ipk
-          # The VM test only needs the x86_64 gateway package and the
-          # architecture-independent LuCI package.
+          make ipk IPK_ARCHES='x86_64=dist/ipk-bin/linux-amd64'
           ls -l dist/ipk/x86_64/9router-go_*.ipk dist/ipk/x86_64/luci-app-9router-go_*.ipk
           test "$(ls dist/ipk/x86_64/*.ipk | wc -l)" -ge 2
+
+      # The 273 MB image is identical for every run: it is the official
+      # 18.06.9 release, pinned by sha256. Caching it keyed on that hash turns
+      # a multi-minute download into a cache hit on every PR after the first.
+      - name: Cache the OpenWrt image
+        uses: actions/cache@v4
+        with:
+          path: openwrt-${{ env.OPENWRT_RELEASE }}-x86-64-combined-ext4.img
+          key: openwrt-${{ env.OPENWRT_RELEASE }}-x86-64-combined-ext4-483a38be503b2ce8
 
       - name: Download the official OpenWrt image
         run: |
           set -euo pipefail
           R="${OPENWRT_RELEASE}"
+          IMG="openwrt-${R}-x86-64-combined-ext4.img"
+          # A cache restore (step above) leaves the decompressed image behind;
+          # only fetch when it is absent.
+          if [ -f "${IMG}" ]; then
+            echo "image present from cache, skipping download"
+            exit 0
+          fi
           BASE="https://archive.openwrt.org/releases/${R}/targets/x86/64"
-          IMG="openwrt-${R}-x86-64-combined-ext4.img.gz"
           SHA="483a38be503b2ce8d90bba973a46b0e89771532bb12c74ce39d9037046824311"
           # The sha256sum is pinned rather than fetched from the same host:
           # a compromised mirror must not be able to substitute a booted image,
           # because everything that runs in this job trusts it.
-          curl -fsSL -o "${IMG}" "${BASE}/${IMG}"
-          echo "${SHA}  ${IMG}" | sha256sum -c -
-          gunzip -f "${IMG}"
-          ls -lh openwrt-${R}-x86-64-combined-ext4.img
+          curl -fsSL -o "${IMG}.gz" "${BASE}/${IMG}.gz"
+          echo "${SHA}  ${IMG}.gz" | sha256sum -c -
+          gunzip -f "${IMG}.gz"
+          ls -lh "${IMG}"
 
       - name: Boot OpenWrt and test the package
         run: |

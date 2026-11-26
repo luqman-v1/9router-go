@@ -386,6 +386,12 @@ IPK_ARCHES ?= \
 	arm_cortex-a15_neon-vfpv4=$(IPK_BIN)/linux-armv7 \
 	arm_cortex-a9_vfpv3=$(IPK_BIN)/linux-armv7
 
+# The Go targets the requested architecture names actually need. One binary
+# serves several opkg names (the three arm64 names share linux-arm64), so a
+# subset build — the CI VM test only installs x86_64 — compiles only what it
+# will use instead of all four cross-builds.
+IPK_GO_BINS := $(sort $(foreach a,$(IPK_ARCHES),$(notdir $(lastword $(subst =, ,$(a))))))
+
 ipk: web-build
 	@$(MAKE) --no-print-directory ipk-bins
 	go run ./tools/ipkbuild -version "$(VERSION)" \
@@ -394,14 +400,22 @@ ipk: web-build
 
 ipk-bins:
 	@mkdir -p $(IPK_BIN)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-		go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-amd64 ./cmd/9router-go/
-	CGO_ENABLED=0 GOOS=linux GOARCH=386 \
-		go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-386 ./cmd/9router-go/
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-		go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-arm64 ./cmd/9router-go/
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
-		go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-armv7 ./cmd/9router-go/
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-amd64 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-amd64 ./cmd/9router-go/ ; \
+	fi
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-386 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=386 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-386 ./cmd/9router-go/ ; \
+	fi
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-arm64 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-arm64 ./cmd/9router-go/ ; \
+	fi
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-armv7 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-armv7 ./cmd/9router-go/ ; \
+	fi
 
 ## clean — remove build artifacts
 clean:
