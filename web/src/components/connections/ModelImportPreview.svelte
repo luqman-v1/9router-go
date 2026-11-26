@@ -86,6 +86,10 @@
   )
   let filtered = $derived(sortImportPreviewModels(searched, sort, testLatency))
 
+  // The header badge reports the catalogue size, and the match count while a
+  // search is active so the title answers "how many did my query hit".
+  let headerCount = $derived(search.trim() ? filtered.length : models.length)
+
   // Pagination, not a growing list: a 460-model catalog draws ~3,000 DOM nodes
   // if every chip mounts at once, which is a phone-unfriendly first paint on
   // the small box this dashboard serves from. The search, the state filter and
@@ -203,7 +207,7 @@
         Preview Fetch Models
       </h2>
       <span class="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-text-muted">
-        {models.length}
+        {headerCount}
       </span>
       <button
         type="button"
