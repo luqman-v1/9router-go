@@ -960,6 +960,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	if hasIsActive && a {
 		chat.ClearCodexQuotaBlock(id)
 	}
+	// The edit may have changed the node's baseUrl or the credential; the
+	// cached catalogue belongs to the previous configuration.
+	liveModelsCatalog.invalidate(id)
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":        "ok",
@@ -1121,6 +1124,7 @@ func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http
 		return
 	}
 	connlimit.Close(id) // release breaker/backoff state so nothing leaks
+	liveModelsCatalog.invalidate(id)
 	if provider != "" && remaining == 0 {
 		h.pruneDeletedProviderFromCombosBestEffort(r.Context(), provider)
 	}
@@ -1141,7 +1145,15 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
-	h.writeConnectionModels(w, r, id)
+	// Reopening the panel, a double click and the free-only press right after a
+	// plain import all ask the same question within seconds. serve collapses
+	// them into one upstream call and replays the answer for a minute, so the
+	// second open of a 460-model catalogue is not another 2.6 s round trip.
+	// Cache-Control: no-store below is set by the JSON writers; the replay sets
+	// X-Models-Cache so a hit is visible in the network panel.
+	liveModelsCatalog.serve(w, r, id, func(cw http.ResponseWriter, cr *http.Request) {
+		h.writeConnectionModels(cw, cr, id)
+	})
 }
 
 // writeConnectionModels is HandleGetConnectionModels with the connection id
