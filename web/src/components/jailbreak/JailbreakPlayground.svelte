@@ -157,6 +157,7 @@
       <input
         type="text"
         bind:value={modelId}
+        list="jailbreak-model-catalog"
         placeholder="providerx/deepseek-4-pro"
         aria-label="Model id to resolve"
         onkeydown={(e) => e.key === 'Enter' && void resolve()}
