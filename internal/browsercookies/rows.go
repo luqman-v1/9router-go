@@ -3,6 +3,7 @@ package browsercookies
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -111,7 +112,12 @@ func readChromiumRows(ctx context.Context, db *sql.DB, domainPattern string) ([]
 		var row chromiumRow
 		var hasExpires int64
 		if err := rows.Scan(&row.host, &row.name, &row.encrypted, &row.plain, &hasExpires, &row.expiresUTC); err != nil {
-			continue
+			// A row the reader cannot scan means the table's columns moved —
+			// schema drift the expiry fallback above does not know about.
+			// Skipping it silently would report an empty cookie jar as a
+			// healthy "session not found", which sends an operator hunting a
+			// login that exists; surfacing it keeps the two apart.
+			return nil, fmt.Errorf("scan chromium cookie row: %w", err)
 		}
 		if hasExpires != 0 && row.expiresUTC > 0 {
 			unixSec := (row.expiresUTC / 1_000_000) - chromiumEpochOffsetSec
