@@ -2,10 +2,10 @@ package dashboard
 
 import (
 	"context"
-
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -235,6 +235,40 @@ func TestHiddenProvidersStayOutOfTheQuotaList(t *testing.T) {
 	}
 	if len(opts) != 2 {
 		t.Errorf("providerOptions = %v, want the two visible providers only", opts)
+	}
+}
+
+// agy-acp shares Antigravity's Google quota RPCs (usage.go), but its own
+// connection rows are only listed when the usage allowlist names the provider.
+// Without that entry the quota tracker never renders an ACP row at all, even
+// though /api/usage/{id} can answer for it.
+func TestProvidersClientIncludesAGYACP(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	h := NewDashboardHandler(repo)
+	if err := repo.CreateProviderConnection(context.Background(), "agcpy-1", "agy-acp", "oauth", "Antigravity CLI", "sk-agcpy"); err != nil {
+		t.Fatalf("seed agy-acp: %v", err)
+	}
+
+	out := getProvidersClient(t, setupProvidersClientRouter(h), "")
+	rawOpts, _ := out["providerOptions"].([]any)
+	if !slices.Contains(rawOpts, "agy-acp") {
+		t.Errorf("providerOptions = %v, want agy-acp", rawOpts)
+	}
+	conns, _ := out["connections"].([]any)
+	var found bool
+	for _, c := range conns {
+		m, _ := c.(map[string]any)
+		if m["id"] == "agcpy-1" && m["provider"] == "agy-acp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("agy-acp connection missing from quota tracker list: %v", conns)
+	}
+	tot, _ := out["totals"].(map[string]any)
+	if tot["eligibleConnections"] != float64(1) {
+		t.Errorf("eligibleConnections = %v, want 1", tot["eligibleConnections"])
 	}
 }
 
