@@ -81,7 +81,7 @@ jobs:
             echo "the generated Packages.<arch>(.gz) as release assets."
             exit 1
           fi
-          echo "$arches" | sed 's/^/  arch: /'
+          for a in $arches; do printf '  arch: %s\n' "$a"; done
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           for arch in $arches; do
             dir="feed/openwrt/$arch"
