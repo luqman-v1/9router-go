@@ -441,19 +441,24 @@ ORDER BY hr ASC`
 
 	if !win.Unbounded() {
 		trendRows, err := r.db.QueryContext(ctx, trendQuery, args...)
-		if err == nil {
-			defer trendRows.Close()
-			for trendRows.Next() {
-				var hr string
-				var cnt, saved sql.NullInt64
-				if err := trendRows.Scan(&hr, &cnt, &saved); err == nil {
-					summary.Trend = append(summary.Trend, CompressionHourBucket{
-						Hour:        hr,
-						Count:       cnt.Int64,
-						TokensSaved: saved.Int64,
-					})
-				}
+		if err != nil {
+			return nil, fmt.Errorf("queryCompressionAnalyticsTable trend: %w", err)
+		}
+		defer func() { _ = trendRows.Close() }()
+		for trendRows.Next() {
+			var hr string
+			var cnt, saved sql.NullInt64
+			if err := trendRows.Scan(&hr, &cnt, &saved); err != nil {
+				return nil, fmt.Errorf("queryCompressionAnalyticsTable trend scan: %w", err)
 			}
+			summary.Trend = append(summary.Trend, CompressionHourBucket{
+				Hour:        hr,
+				Count:       cnt.Int64,
+				TokensSaved: saved.Int64,
+			})
+		}
+		if err := trendRows.Err(); err != nil {
+			return nil, fmt.Errorf("queryCompressionAnalyticsTable trend rows: %w", err)
 		}
 	}
 
@@ -496,20 +501,28 @@ HAVING s > 0
 ORDER BY s DESC
 LIMIT %d`, whereClause, maxBreakdownGroups)
 		pRows, pErr := r.db.QueryContext(ctx, pQuery, args...)
-		if pErr == nil {
-			defer pRows.Close()
-			for pRows.Next() {
-				var p, m string
-				var saved int64
-				if err := pRows.Scan(&p, &m, &saved); err == nil && saved > 0 {
-					mp, _ := pricing.GetPricingForModel(p, m)
-					rate := mp.InputPer1M
-					if rate <= 0 {
-						rate = defaultAvgInputPricePerMillion
-					}
-					dynamicUsd += (float64(saved) / 1_000_000.0) * rate
-				}
+		if pErr != nil {
+			return nil, fmt.Errorf("queryCompressionAnalyticsTable savings by provider/model: %w", pErr)
+		}
+		defer func() { _ = pRows.Close() }()
+		for pRows.Next() {
+			var p, m string
+			var saved int64
+			if err := pRows.Scan(&p, &m, &saved); err != nil {
+				return nil, fmt.Errorf("queryCompressionAnalyticsTable savings by provider/model scan: %w", err)
 			}
+			if saved <= 0 {
+				continue
+			}
+			mp, _ := pricing.GetPricingForModel(p, m)
+			rate := mp.InputPer1M
+			if rate <= 0 {
+				rate = defaultAvgInputPricePerMillion
+			}
+			dynamicUsd += (float64(saved) / 1_000_000.0) * rate
+		}
+		if err := pRows.Err(); err != nil {
+			return nil, fmt.Errorf("queryCompressionAnalyticsTable savings by provider/model rows: %w", err)
 		}
 		if dynamicUsd > 0 {
 			summary.RealUsage.EstimatedUsdSaved = math.Round(dynamicUsd*100) / 100
@@ -627,18 +640,23 @@ ORDER BY saved DESC
 LIMIT %d`, whereClause, maxBreakdownGroups)
 
 	provRows, err := r.db.QueryContext(ctx, provQuery, args...)
-	if err == nil {
-		defer provRows.Close()
-		for provRows.Next() {
-			var p string
-			var cnt, saved sql.NullInt64
-			if err := provRows.Scan(&p, &cnt, &saved); err == nil {
-				summary.ByProvider[p] = CompressionProviderStats{
-					Count:       cnt.Int64,
-					TokensSaved: saved.Int64,
-				}
-			}
+	if err != nil {
+		return nil, fmt.Errorf("queryUsageHistoryBackfill by provider: %w", err)
+	}
+	defer func() { _ = provRows.Close() }()
+	for provRows.Next() {
+		var p string
+		var cnt, saved sql.NullInt64
+		if err := provRows.Scan(&p, &cnt, &saved); err != nil {
+			return nil, fmt.Errorf("queryUsageHistoryBackfill by provider scan: %w", err)
 		}
+		summary.ByProvider[p] = CompressionProviderStats{
+			Count:       cnt.Int64,
+			TokensSaved: saved.Int64,
+		}
+	}
+	if err := provRows.Err(); err != nil {
+		return nil, fmt.Errorf("queryUsageHistoryBackfill by provider rows: %w", err)
 	}
 	summary.TruncatedProviders = droppedGroups(ctx, r.db, provQuery, args, len(summary.ByProvider))
 
@@ -656,19 +674,24 @@ ORDER BY hr ASC`, whereClause)
 
 	if !win.Unbounded() {
 		trendRows, err := r.db.QueryContext(ctx, trendQuery, args...)
-		if err == nil {
-			defer trendRows.Close()
-			for trendRows.Next() {
-				var hr string
-				var cnt, saved sql.NullInt64
-				if err := trendRows.Scan(&hr, &cnt, &saved); err == nil {
-					summary.Trend = append(summary.Trend, CompressionHourBucket{
-						Hour:        hr,
-						Count:       cnt.Int64,
-						TokensSaved: saved.Int64,
-					})
-				}
+		if err != nil {
+			return nil, fmt.Errorf("queryUsageHistoryBackfill trend: %w", err)
+		}
+		defer func() { _ = trendRows.Close() }()
+		for trendRows.Next() {
+			var hr string
+			var cnt, saved sql.NullInt64
+			if err := trendRows.Scan(&hr, &cnt, &saved); err != nil {
+				return nil, fmt.Errorf("queryUsageHistoryBackfill trend scan: %w", err)
 			}
+			summary.Trend = append(summary.Trend, CompressionHourBucket{
+				Hour:        hr,
+				Count:       cnt.Int64,
+				TokensSaved: saved.Int64,
+			})
+		}
+		if err := trendRows.Err(); err != nil {
+			return nil, fmt.Errorf("queryUsageHistoryBackfill trend rows: %w", err)
 		}
 	}
 
@@ -699,33 +722,38 @@ ORDER BY savedTok DESC
 LIMIT 10`, whereClause)
 
 	uhTopRows, err := r.db.QueryContext(ctx, uhTopQuery, args...)
-	if err == nil {
-		defer uhTopRows.Close()
-		for uhTopRows.Next() {
-			var saver CompressionTopSaver
-			var pct sql.NullFloat64
-			if err := uhTopRows.Scan(
-				&saver.RequestID,
-				&saver.Timestamp,
-				&saver.Provider,
-				&saver.Model,
-				&saver.Mode,
-				&saver.OriginalTokens,
-				&saver.CompressedTokens,
-				&saver.TokensSaved,
-				&pct,
-				&saver.DurationMs,
-			); err == nil {
-				saver.SavingsPct = math.Round(pct.Float64)
-				mp, _ := pricing.GetPricingForModel(saver.Provider, saver.Model)
-				rate := mp.InputPer1M
-				if rate <= 0 {
-					rate = defaultAvgInputPricePerMillion
-				}
-				saver.EstimatedUsd = math.Round((float64(saver.TokensSaved)/1_000_000.0)*rate*100) / 100
-				summary.TopSavers = append(summary.TopSavers, saver)
-			}
+	if err != nil {
+		return nil, fmt.Errorf("queryUsageHistoryBackfill top savers: %w", err)
+	}
+	defer func() { _ = uhTopRows.Close() }()
+	for uhTopRows.Next() {
+		var saver CompressionTopSaver
+		var pct sql.NullFloat64
+		if err := uhTopRows.Scan(
+			&saver.RequestID,
+			&saver.Timestamp,
+			&saver.Provider,
+			&saver.Model,
+			&saver.Mode,
+			&saver.OriginalTokens,
+			&saver.CompressedTokens,
+			&saver.TokensSaved,
+			&pct,
+			&saver.DurationMs,
+		); err != nil {
+			return nil, fmt.Errorf("queryUsageHistoryBackfill top savers scan: %w", err)
 		}
+		saver.SavingsPct = math.Round(pct.Float64)
+		mp, _ := pricing.GetPricingForModel(saver.Provider, saver.Model)
+		rate := mp.InputPer1M
+		if rate <= 0 {
+			rate = defaultAvgInputPricePerMillion
+		}
+		saver.EstimatedUsd = math.Round((float64(saver.TokensSaved)/1_000_000.0)*rate*100) / 100
+		summary.TopSavers = append(summary.TopSavers, saver)
+	}
+	if err := uhTopRows.Err(); err != nil {
+		return nil, fmt.Errorf("queryUsageHistoryBackfill top savers rows: %w", err)
 	}
 
 	return summary, nil

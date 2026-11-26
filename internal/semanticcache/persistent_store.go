@@ -3,12 +3,42 @@ package semanticcache
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"9router/proxy/internal/log"
 )
 
-// storedAtFormat is a fixed-width RFC3339 with nanoseconds. TTL expiry is
+// cacheTablePresent reports whether the semantic cache table exists, so a
+// failed hydration can tell "nothing to load yet" from "the table is there and
+// unreadable". It asks the catalog instead of matching the driver's message
+// (§4.E): an error string is not a contract, and a reworded one would silently
+// suppress a real failure.
+//
+// Both engines are covered without importing the schema layer, which would
+// make this package depend on its own consumer: the SQLite catalog answers on
+// SQLite, and the PostgreSQL catalog answers on PostgreSQL. An engine that
+// answers neither counts as present, because the safe default is to report the
+// hydration error rather than swallow it.
+func cacheTablePresent(ctx context.Context, db *sql.DB) bool {
+	const table = "semanticCacheEntries"
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err == nil {
+		return count > 0
+	}
+	var name string
+	switch err := db.QueryRowContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_name = $1 LIMIT 1`, table).Scan(&name); {
+	case err == nil:
+		return true
+	case errors.Is(err, sql.ErrNoRows):
+		return false
+	default:
+		return true
+	}
+}
+
 // evaluated in SQL (`WHERE storedAt < ?` / `WHERE storedAt >= ?`), so the
 // comparison is a string compare on the stored text: plain time.RFC3339
 // truncates to whole seconds, which makes every row written in the same second
@@ -54,7 +84,21 @@ func NewPersistentStore(db *sql.DB, maxEntries int, ttl time.Duration) *Persiste
 		ttl:         ttl,
 		stopJanitor: make(chan struct{}),
 	}
-	_ = store.Hydrate(context.Background())
+	// A failed hydration used to be discarded here with `_ =`, so an unreadable
+	// cache table booted a gateway whose semantic cache silently served nothing
+	// while reporting itself healthy. The cache still starts — a warm cache is an
+	// optimization, not a precondition for routing — but the operator can now
+	// see why every request is a miss.
+	//
+	// An absent table is not that failure: this store is built against a
+	// repository before its schema is ensured in some paths, and a fresh install
+	// has no table yet, so "starting cold" is the normal state there — the same
+	// condition Put and Delete already tolerate, and reporting it would blame a
+	// healthy gateway on every boot. Existence is asked of the catalog rather
+	// than inferred from the message text (§4.E).
+	if err := store.Hydrate(context.Background()); err != nil && cacheTablePresent(context.Background(), db) {
+		log.Warn("semantic-cache", "hydrate from disk failed; starting cold", "error", err)
+	}
 	if ttl > 0 {
 		store.startJanitor(1 * time.Hour)
 	}
@@ -114,7 +158,7 @@ FROM semanticCacheEntries`
 	if err != nil {
 		return fmt.Errorf("PersistentLRUStore.Hydrate: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -122,21 +166,25 @@ FROM semanticCacheEntries`
 			body                                 []byte
 			hitCount, tokensSaved                int64
 		)
-		if err := rows.Scan(&key, &model, &body, &contentType, &storedAtStr, &hitCount, &tokensSaved); err == nil {
-			storedAt, ok := parseStoredAt(storedAtStr)
-			if !ok {
-				storedAt = time.Now()
-			}
-			_ = p.lru.Put(ctx, key, Entry{
-				Key:          key,
-				Model:        model,
-				ResponseBody: body,
-				ContentType:  contentType,
-				StoredAt:     storedAt,
-				HitCount:     hitCount,
-				TokensSaved:  tokensSaved,
-			})
+		if err := rows.Scan(&key, &model, &body, &contentType, &storedAtStr, &hitCount, &tokensSaved); err != nil {
+			return fmt.Errorf("PersistentLRUStore.Hydrate scan: %w", err)
 		}
+		storedAt, ok := parseStoredAt(storedAtStr)
+		if !ok {
+			storedAt = time.Now()
+		}
+		_ = p.lru.Put(ctx, key, Entry{
+			Key:          key,
+			Model:        model,
+			ResponseBody: body,
+			ContentType:  contentType,
+			StoredAt:     storedAt,
+			HitCount:     hitCount,
+			TokensSaved:  tokensSaved,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("PersistentLRUStore.Hydrate rows: %w", err)
 	}
 	return nil
 }
