@@ -458,6 +458,7 @@ POST /v1/images/edits           Image editing
 POST /v1/videos/generations     Video generation
 POST /v1/audio/speech           Text to speech
 POST /v1/audio/transcriptions   Speech to text
+POST /v1/audio/translations   Speech translation
 POST /v1/search                 Web search
 GET  /api/usage/stream          Live usage SSE
 GET  /health                    Liveness
