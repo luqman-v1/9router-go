@@ -368,8 +368,13 @@ func geminiWebParseModelRegistry(payload any) ([]geminiWebModel, []int, []int, b
 	if !ok || len(rawModels) == 0 {
 		return nil, nil, nil, false
 	}
-	tierFlags := geminiWebIntList(arr[16])
-	capFlags := geminiWebIntList(arr[17])
+	// Indices 16 and 17 are read through geminiWebPayloadAt for the same
+	// reason index 24 is: the length guard above only promises 16 elements, so
+	// a payload that stops there would otherwise panic with index out of range
+	// (AGENTS.md §4.E, zero panic policy). A missing flag list degrades to no
+	// capacity metadata rather than taking the discovery path down.
+	tierFlags := geminiWebIntList(geminiWebPayloadAt(arr, 16))
+	capFlags := geminiWebIntList(geminiWebPayloadAt(arr, 17))
 	capacity, capacityField := geminiWebComputeCapacity(tierFlags, capFlags)
 	policy, policyKnown := geminiWebParseThinkingPolicy(geminiWebPayloadAt(arr, 24))
 

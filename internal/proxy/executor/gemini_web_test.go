@@ -1394,3 +1394,75 @@ func TestGeminiWebArgonCarriesItsThinkingLevel(t *testing.T) {
 		})
 	}
 }
+
+// TestGeminiWebParseModelRegistryShortPayload pins that a registry payload
+// which stops at the model list does not panic. The length guard only promises
+// 16 elements, and the tier/capacity flags at indices 16 and 17 used to be
+// indexed directly, so a 16-element payload crashed the discovery path with
+// "index out of range [16] with length 16" (AGENTS.md §4.E).
+func TestGeminiWebParseModelRegistryShortPayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		length  int
+		wantOK  bool
+		wantIDs []string
+	}{
+		{
+			name:    "exactly 16 elements has no flag slots and still yields the models",
+			length:  16,
+			wantOK:  true,
+			wantIDs: []string{"gemini-2.5-pro"},
+		},
+		{
+			name:    "17 elements has the tier flags but no capacity flags",
+			length:  17,
+			wantOK:  true,
+			wantIDs: []string{"gemini-2.5-pro"},
+		},
+		{
+			name:    "18 elements carries both flag lists",
+			length:  18,
+			wantOK:  true,
+			wantIDs: []string{"gemini-2.5-pro"},
+		},
+		{
+			name:    "15 elements is below the guard and is rejected",
+			length:  15,
+			wantOK:  false,
+			wantIDs: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			arr := make([]any, tt.length)
+			for i := range arr {
+				arr[i] = float64(0)
+			}
+			// Slot 15 holds the model list; 16 and 17 hold the flag lists.
+			if tt.length > 15 {
+				arr[15] = []any{[]any{"gemini-2.5-pro"}}
+			}
+			if tt.length > 16 {
+				arr[16] = []any{float64(1)}
+			}
+			if tt.length > 17 {
+				arr[17] = []any{float64(2)}
+			}
+
+			models, _, _, ok := geminiWebParseModelRegistry(arr)
+			if ok != tt.wantOK {
+				t.Fatalf("geminiWebParseModelRegistry() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if len(models) != len(tt.wantIDs) {
+				t.Fatalf("geminiWebParseModelRegistry() returned %d models, want %d", len(models), len(tt.wantIDs))
+			}
+			if got := models[0].ID; got != tt.wantIDs[0] {
+				t.Errorf("models[0].ID = %q, want %q", got, tt.wantIDs[0])
+			}
+		})
+	}
+}
