@@ -432,4 +432,12 @@ describe('pickerData', () => {
     const accountGroups = groups.filter((g) => g.id.startsWith('openai-'))
     assert.strictEqual(accountGroups.length, 0, 'No account-specific groups should be generated')
   })
+  it('includes SearXNG as a no-auth web search provider in picker groups', () => {
+    const groups = resolveModelPickerGroups([], [])
+    const sxGroup = groups.find((g) => g.id === 'searxng')
+    assert.ok(sxGroup, 'SearXNG should appear in picker groups (noAuth webSearch provider)')
+    assert.ok(sxGroup.models.length > 0)
+    assert.strictEqual(sxGroup.models[0].id, 'search')
+    assert.ok(sxGroup.models[0].value.startsWith('searxng/'))
+  })
 })
