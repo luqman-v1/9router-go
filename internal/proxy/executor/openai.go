@@ -115,23 +115,35 @@ func renameMaxTokensBody(body []byte) []byte {
 // than this, so a client budget above it is folded down before dispatch.
 const volcengineArkGLM5OutputCeiling = 4096
 
-// clampVolcengineArkGLM5OutputTokens folds a GLM-5 output budget above the
-// Ark ceiling down to the model's capability ceiling (capped at Ark's 4096).
-// A budget at or below the ceiling, a request that sets no budget, and every
-// non-GLM-5 model are left byte-identical. All three output-budget spellings
-// are clamped: max_tokens, max_completion_tokens and max_output_tokens.
-func clampVolcengineArkGLM5OutputTokens(provider string, body []byte) []byte {
+// volcengineArkKimiOutputCeiling is Volcengine Ark's output-token ceiling for
+// the Kimi family. Mirrors upstream paramSupport.js: the Kimi-K2.7-Code
+// catalogue advertises maxOutput 262144, but Ark caps the family at 32768 and
+// answers 400 "integer above maximum value, expected <= 32768" for a larger
+// budget. clampToModelMaxOutput alone leaves it uncapped precisely because the
+// advertised ceiling is far above the endpoint's, so the endpoint cap is
+// pinned here and min() with the model ceiling still applies when a variant
+// declares something lower.
+const volcengineArkKimiOutputCeiling = 32768
+
+// clampVolcengineArkOutputTokens folds an output budget above the Ark endpoint
+// ceiling down to it, for the two model families Ark caps below their
+// advertised maxOutput: GLM-5 (4096) and Kimi (32768). A budget at or below the
+// ceiling, a request that sets no budget, and every other model are left
+// byte-identical. All three output-budget spellings are clamped: max_tokens,
+// max_completion_tokens and max_output_tokens.
+func clampVolcengineArkOutputTokens(provider string, body []byte) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
 	model, _ := m["model"].(string)
-	if !isVolcengineArkGLM5Model(model) {
+	ceiling, ok := volcengineArkOutputCeilingFor(model)
+	if !ok {
 		return body
 	}
-	// Ark's GLM-5 output ceiling, further bounded by the model's declared
-	// maxOutput from the capability registry when one is specified.
-	maxOutputCap := volcengineArkGLM5OutputCeiling
+	// The endpoint ceiling, further bounded by the model's declared maxOutput
+	// from the capability registry when that is lower.
+	maxOutputCap := ceiling
 	if maxOutput := providers.GetCapabilitiesForModel(provider, model).MaxOutput; maxOutput > 0 && maxOutput < maxOutputCap {
 		maxOutputCap = maxOutput
 	}
@@ -158,12 +170,23 @@ func clampVolcengineArkGLM5OutputTokens(provider string, body []byte) []byte {
 	return out
 }
 
-// isVolcengineArkGLM5Model reports whether a model id is a GLM-5 model whose
-// output is capped at the Ark ceiling: any model id containing 'glm-5'
-// (case-insensitive), e.g. bare glm-5*, GLM-5.1, glm-5-turbo,
-// zai-org/GLM-5.2, or a Doubao-family id carrying the glm-5 qualifier.
-func isVolcengineArkGLM5Model(model string) bool {
-	return strings.Contains(strings.ToLower(model), "glm-5")
+// volcengineArkOutputCeilingFor returns the Ark endpoint output ceiling for a
+// model, and whether the model has one at all.
+//
+// Matching is by family substring, which is what makes a new variant land
+// without an edit here: "Kimi-K2.6", "kimi-k2.7-code" and a Doubao id carrying
+// the qualifier all match. A model in neither capped family is left alone,
+// because Ark's other models accept their advertised maxOutput.
+func volcengineArkOutputCeilingFor(model string) (int, bool) {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.Contains(lower, "glm-5"):
+		return volcengineArkGLM5OutputCeiling, true
+	case strings.Contains(lower, "kimi"):
+		return volcengineArkKimiOutputCeiling, true
+	default:
+		return 0, false
+	}
 }
 
 // DowngradeJsonSchemaToJSONObject downgrades response_format from "json_schema"
@@ -315,11 +338,12 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 		req.Body = normalizeGroqGPTOSSRequest(req.Body)
 	}
 	if req.Provider == "volcengine-ark" {
-		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
-		// than its output-token ceiling, so a client budget above it is folded
-		// down before the request leaves the upstream. The ceiling is the model's
-		// declared maxOutput from the capability registry, capped at Ark's 4096.
-		req.Body = clampVolcengineArkGLM5OutputTokens(req.Provider, req.Body)
+		// Volcengine Ark answers HTTP 400 when a GLM-5 or Kimi model is asked
+		// for more than its endpoint ceiling (4096 and 32768 respectively), so
+		// a client budget above it is folded down before the request leaves the
+		// upstream. The ceiling is further bounded by the model's declared
+		// maxOutput from the capability registry when that is lower.
+		req.Body = clampVolcengineArkOutputTokens(req.Provider, req.Body)
 	}
 	body := req.Body
 	if isMistralVibeRequest(req) {

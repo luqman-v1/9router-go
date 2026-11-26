@@ -8,7 +8,7 @@ import (
 	"9router/proxy/internal/providers"
 )
 
-func TestClampVolcengineArkGLM5OutputTokens(t *testing.T) {
+func TestClampVolcengineArkOutputTokens(t *testing.T) {
 	tests := []struct {
 		name      string
 		body      string
@@ -95,6 +95,40 @@ func TestClampVolcengineArkGLM5OutputTokens(t *testing.T) {
 			body: `{"model":"glm-5-custom","max_tokens":8192,"messages":[]}`,
 			want: map[string]any{"max_tokens": float64(2048)},
 		},
+		// Kimi family: Ark caps it at 32768 while the catalogue advertises a
+		// far higher maxOutput (Kimi-K2.7-Code resolves to 262144), so the
+		// endpoint cap is what stops the 400 "integer above maximum value".
+		{
+			name: "kimi max_tokens above Ark ceiling is clamped",
+			body: `{"model":"Kimi-K2.6","max_tokens":262144,"messages":[]}`,
+			want: map[string]any{"max_tokens": float64(32768)},
+		},
+		{
+			name: "kimi max_completion_tokens above Ark ceiling is clamped",
+			body: `{"model":"kimi-k2.7-code","max_completion_tokens":100000,"messages":[]}`,
+			want: map[string]any{"max_completion_tokens": float64(32768)},
+		},
+		{
+			name: "kimi max_output_tokens above Ark ceiling is clamped",
+			body: `{"model":"kimi-k2.5","max_output_tokens":100000,"messages":[]}`,
+			want: map[string]any{"max_output_tokens": float64(32768)},
+		},
+		{
+			name: "kimi max_tokens at Ark ceiling preserved",
+			body: `{"model":"Kimi-K2.6","max_tokens":32768,"messages":[]}`,
+			want: map[string]any{"max_tokens": float64(32768)},
+		},
+		{
+			name: "kimi max_tokens below Ark ceiling preserved",
+			body: `{"model":"Kimi-K2.6","max_tokens":8000,"messages":[]}`,
+			want: map[string]any{"max_tokens": float64(8000)},
+		},
+		// A model in neither capped family keeps its advertised budget.
+		{
+			name:      "doubao model unchanged",
+			body:      `{"model":"Doubao-Seed-2.0-pro","max_tokens":131072,"messages":[]}`,
+			unchanged: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -104,7 +138,7 @@ func TestClampVolcengineArkGLM5OutputTokens(t *testing.T) {
 				defer providers.ClearCustomModelCaps()
 				providers.SetCustomModelCaps("volcengine-ark", "glm-5-custom", providers.Capabilities{MaxOutput: 2048})
 			}
-			got := clampVolcengineArkGLM5OutputTokens("volcengine-ark", []byte(tt.body))
+			got := clampVolcengineArkOutputTokens("volcengine-ark", []byte(tt.body))
 			if tt.unchanged {
 				if string(got) != tt.body {
 					t.Errorf("body changed: %s, want unchanged %s", got, tt.body)
