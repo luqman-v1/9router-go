@@ -124,3 +124,29 @@ export function importPreviewSelectedIds(
 
 /** SortMode is the main list's vocabulary; this keeps a shared pick honest. */
 export type { SortMode }
+
+/** The chip states the panel can narrow to. */
+export type ImportPreviewStateFilter = 'all' | 'available' | 'added'
+
+export const IMPORT_PREVIEW_STATE_FILTERS: ReadonlyArray<{
+  value: ImportPreviewStateFilter
+  label: string
+}> = [
+  { value: 'all', label: 'All' },
+  { value: 'available', label: 'Not added' },
+  { value: 'added', label: 'Added' },
+]
+
+/**
+ * Narrow the fetched catalog to one chip state. `all` passes through unchanged,
+ * so the panel's counters and its bulk actions keep agreeing with each other.
+ */
+export function filterImportPreviewByState(
+  models: ImportPreviewModel[],
+  state: ImportPreviewStateFilter,
+  activeIds: ReadonlySet<string>
+): ImportPreviewModel[] {
+  if (state === 'all') return models
+  const wantAdded = state === 'added'
+  return models.filter((m) => activeIds.has(m.id) === wantAdded)
+}

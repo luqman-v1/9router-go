@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   buildImportPreviewActiveIds,
+  filterImportPreviewByState,
   filterImportPreviewModels,
   importPreviewSelectedIds,
   importPreviewSelectionState,
@@ -120,5 +121,22 @@ describe('selection', () => {
   test('selected ids are limited to what is still filtered in', () => {
     const narrowed = [{ id: 'b' }]
     expect(importPreviewSelectedIds(new Set(['a', 'b']), narrowed)).toEqual(['b'])
+  })
+})
+
+describe('filterImportPreviewByState', () => {
+  const models = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+  const active = new Set(['b'])
+
+  test('all passes the catalog through untouched', () => {
+    expect(filterImportPreviewByState(models, 'all', active)).toBe(models)
+  })
+
+  test('added keeps only the ids on the active list', () => {
+    expect(filterImportPreviewByState(models, 'added', active).map((m) => m.id)).toEqual(['b'])
+  })
+
+  test('available keeps only the ids missing from the active list', () => {
+    expect(filterImportPreviewByState(models, 'available', active).map((m) => m.id)).toEqual(['a', 'c'])
   })
 })
