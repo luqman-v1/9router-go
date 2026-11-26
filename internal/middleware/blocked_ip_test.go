@@ -69,6 +69,18 @@ func TestEnforceBlockedIP(t *testing.T) {
 		t.Errorf("unknown IP got %d, want 200", recUnknown.Code)
 	}
 
+	// Fail-open on repo lookup error (e.g. closed database)
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	reqLookupErr := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqLookupErr.RemoteAddr = "198.51.100.55:12345"
+	recLookupErr := httptest.NewRecorder()
+	handler.ServeHTTP(recLookupErr, reqLookupErr)
+	if recLookupErr.Code != http.StatusOK {
+		t.Errorf("lookup error fail-open got %d, want 200", recLookupErr.Code)
+	}
+
 	// Fail-open on nil repo
 	failOpenHandler := EnforceBlockedIP(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
