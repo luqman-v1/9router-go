@@ -165,6 +165,7 @@
       <input
         type="text"
         bind:value={modelId}
+        list="jailbreak-model-catalog"
         placeholder="providerx/deepseek-4-pro"
         aria-label="Model id for this key"
         class="min-w-[240px] px-3 py-1.5 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-xs font-code placeholder:text-text-subtle outline-none focus:border-brand-500"
