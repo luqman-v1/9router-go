@@ -254,6 +254,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 		// Same instance as the resilience panel reads: the data plane owns the
 		// layer it consults on every request.
 		dashH.Resilience = chatH.Resilience
+		// The playground forwards its synthetic request to the engine's own
+		// handler (dashboard/playground.go), so the turn takes the same
+		// dispatch path as public traffic.
+		dashH.ChatH = chatH
 	}
 	ssoH := sso.NewHandler(repo)
 
@@ -417,6 +421,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/combos/{id}/smart/preview", dashH.HandleComboSmartPreview)
 	r.Post("/api/combos/{id}/smart/load", dashH.HandleComboSmartLoad)
 	r.Get("/api/models/meta", dashH.HandleGetModelMeta)
+	// Playground: one chat turn from the dashboard through the engine's own
+	// dispatch. Registered here as well as in dashboard.RegisterRoutes, because
+	// that table is mounted by tests only (see the note on models/meta above).
+	r.Post("/api/playground/chat", dashH.HandlePlaygroundChat)
 	r.Delete("/api/combos/{id}", dashH.HandleDeleteCombo)
 
 	r.Get("/api/proxy-pools", dashH.HandleGetProxyPools)

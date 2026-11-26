@@ -19,6 +19,7 @@
   import { parseProviderShareHash, type ProviderShareLink } from './lib/providerShare'
   import OAuthCallbackView from './components/connections/OAuthCallbackView.svelte'
   import EndpointView from './components/EndpointView.svelte'
+  import PlaygroundView from './components/PlaygroundView.svelte'
   import LoginView from './components/LoginView.svelte'
   import ModelBreakerView from './components/ModelBreakerView.svelte'
   import MediaKindView from './components/media/MediaKindView.svelte'
@@ -359,6 +360,7 @@
   const pageMeta: Record<ActiveTab, { title: string; description: string }> = {
     login: { title: 'Login', description: 'Authenticate to access 9router-go' },
     endpoint: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
+    playground: { title: 'Playground', description: 'One chat turn through the gateway, no key needed' },
     connections: { title: 'Providers & Endpoints', description: 'Manage your AI provider connections' },
     combos: { title: 'Combo & Routing', description: 'Model combos and failover strategies' },
     // The two moved tabs are sections of the Usage page, so the TopBar keeps
@@ -553,6 +555,8 @@
           {:else}
             {#if activeTab === 'endpoint'}
               <EndpointView {apiKeys} {settings} onRefresh={loadData} navigate={(tab) => navigate(tab)} />
+            {:else if activeTab === 'playground'}
+              <PlaygroundView />
             {:else if activeTab === 'connections'}
               <ConnectionsView
                 {connections}
