@@ -26,6 +26,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "alicode-intl": "alicode-intl",
   "alims-intl": "alims-intl",
   "alitp-intl": "alitp-intl",
+  "autoclaw": "autoclaw",
   "qwencloud": "qwencloud",
   "anthropic": "anthropic",
   "antigravity": "ag",
@@ -7535,6 +7536,15 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {"id": "deepseek-v4-flash-0731", "name": "DeepSeek V4 Flash 0731"},
     {"id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash"},
     {"id": "deepseek-v4.1-flash-1017", "name": "DeepSeek V4.1 Flash 1017"}
+  ],
+  "autoclaw": [
+    {"id": "zai_auto", "name": "AutoClaw Auto"},
+    {"id": "zai_auto-fast", "name": "AutoClaw Auto-Fast"},
+    {"id": "zai_glm-5-turbo", "name": "GLM 5-Turbo"},
+    {"id": "zaicoding_glm-5.3", "name": "GLM 5.3"},
+    {"id": "zai_glm-5.3-flash", "name": "GLM 5.3 Flash"},
+    {"id": "tdpsk_deepseek-v4-pro", "name": "DeepSeek V4 Pro"},
+    {"id": "tdpsk_deepseek-v4-flash", "name": "DeepSeek V4 Flash"}
   ],
   "qwencloud": [
     {"id": "auto", "name": "Auto"},
