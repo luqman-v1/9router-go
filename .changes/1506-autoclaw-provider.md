@@ -12,15 +12,23 @@ dance, no per-request re-login, and no DeepSeek connection are required.
 
 **Wire contract.** Each request is signed with the app's MD5 envelope
 (`x-auth-sign = md5("100003&<ts>&<APP_KEY>")`), the model rides in
-`X-Request-Model` (not the body), and `stream: true` is forced. A 401 triggers
-one forced refresh + retry.
+`X-Request-Model` (not the body), and `stream: true` is forced when the
+client asked for a stream. A 401 triggers one forced refresh + retry against
+the same endpoint: the executor calls `SendOnce` (not `DoRequest`), because
+`DoRequest` wraps every non-200 in an `*UpstreamError`, which made the 401
+branch unreachable on the first head; any non-200 that survives the retry is
+surfaced as an `*UpstreamError` so failover classifies it, never relayed as a
+200 SSE stream.
 
 **Verification (offline, no credentials).**
 - `internal/proxy/oauth/autoclaw_test.go` — refresh round-trip against an
   httptest fake; rejects empty refresh token.
 - `internal/proxy/executor/autoclaw_test.go` — signer header determinism
-  (fixed timestamp → exact MD5), body forces `stream: true`, executor sends
-  `X-Request-Model` and relays the SSE stream.
+  (fixed timestamp → exact MD5), body forces `stream: true` only when the
+  client asked for a stream, executor sends `X-Request-Model` and relays the
+  SSE stream, and the 401 path: first chat call 401s, the executor
+  force-refreshes once, the retry hits the same overridable base URL, and the
+  second call succeeds (`TestAutoclawExecutor401RetryHitsOverrideBaseURL`).
 - `internal/providers/catalog_sweep_test.go` — autoclaw models pinned to their
   published windows (1M / 200k), no floor hits.
 

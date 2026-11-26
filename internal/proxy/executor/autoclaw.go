@@ -61,7 +61,13 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 
 	headers := autoclawHeaders(accessToken, req.IsStream, req.ModelName)
 
-	resp, err := proxy.DoRequest(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
+	// SendOnce rather than DoRequest: the 401 branch below is this
+	// executor's own single forced-refresh retry, so the generic transient
+	// replay must not act on the status first, and the caller needs the
+	// response (not a wrapped *UpstreamError) to branch on 401. DoRequest
+	// converts every non-200 into an error, which made the 401 branch
+	// unreachable dead code on the first PR head.
+	resp, err := proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
 	if err != nil {
 		return fmt.Errorf("autoclaw: upstream: %w", err)
 	}
@@ -85,11 +91,22 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 			return fmt.Errorf("autoclaw: force refresh after 401: %w", err)
 		}
 		headers = autoclawHeaders(result.AccessToken, req.IsStream, req.ModelName)
-		resp, err = proxy.DoRequest(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
+		resp, err = proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
 		if err != nil {
 			return fmt.Errorf("autoclaw: upstream retry: %w", err)
 		}
 		defer func() { _ = resp.Body.Close() }()
+	}
+
+	// After the one 401 retry (and for every other non-200), surface the
+	// status as an UpstreamError so failover and retry classification see
+	// it; a raw relay would label an auth failure as a 200 SSE stream.
+	if resp.StatusCode != http.StatusOK {
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		if readErr != nil {
+			errBody = nil
+		}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header, ReadErr: readErr}
 	}
 
 	forwardUpstreamResponseHeaders(w, resp.Header)

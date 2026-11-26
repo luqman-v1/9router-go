@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"9router/proxy/internal/proxy/oauth"
@@ -174,5 +175,73 @@ func TestAutoclawExecutorWireShape(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "hi") {
 		t.Errorf("response body missing streamed content: %s", w.Body.String())
+	}
+}
+
+// TestAutoclawExecutor401RetryHitsOverrideBaseURL covers the 401 path the
+// wire-shape test does not: a stale access token makes the first chat request
+// 401, the executor force-refreshes once, and the retry goes to the same
+// overridable base URL as the initial call — never to the production host.
+// It also proves the retry path is reachable: with DoRequest the 401 became
+// an *UpstreamError before the branch could run, so the forced refresh never
+// fired (the review's "no test covering the retry path" hid a dead branch).
+func TestAutoclawExecutor401RetryHitsOverrideBaseURL(t *testing.T) {
+	oauth.ResetRefreshCache()
+
+	var chatCalls, refreshCalls int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/userapi/v1/refresh":
+			atomic.AddInt32(&refreshCalls, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"access_token":"at-call-%d","refresh_token":"rt-2"}}`, atomic.LoadInt32(&refreshCalls))
+		case autoclawChatPath:
+			n := atomic.AddInt32(&chatCalls, 1)
+			if n == 1 {
+				http.Error(w, `{"code":401,"message":"token expired"}`, http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"retry-ok"}}]}` + "\n\n"))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase := autoclawExecutorBaseURL
+	autoclawExecutorBaseURL = srv.URL
+	defer func() { autoclawExecutorBaseURL = oldBase }()
+
+	oldRefreshBase := oauth.SetAutoclawBaseURLForTest(srv.URL)
+	defer func() { oauth.SetAutoclawBaseURLForTest(oldRefreshBase) }()
+
+	req := &Request{
+		Ctx:       t.Context(),
+		Client:    http.DefaultClient,
+		Provider:  "autoclaw",
+		APIKey:    fmt.Sprintf("rt-%d|%s", 42, "device-9"),
+		Body:      []byte(`{"model":"zai_glm-5.3-flash","stream":false}`),
+		IsStream:  true,
+		ModelName: "zai_glm-5.3-flash",
+	}
+
+	w := httptest.NewRecorder()
+	if err := ForwardAutoclaw(w, req); err != nil {
+		t.Fatalf("ForwardAutoclaw: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&chatCalls); got != 2 {
+		t.Errorf("chat calls = %d, want 2 (initial + one retry)", got)
+	}
+	if got := atomic.LoadInt32(&refreshCalls); got < 1 {
+		t.Errorf("refresh calls = %d, want >= 1 (forced refresh before retry)", got)
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 after retry", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "retry-ok") {
+		t.Errorf("retry response body missing content: %s", w.Body.String())
 	}
 }
