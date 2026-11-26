@@ -95,7 +95,7 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 	case "grok-cli":
 		return fetchGrokCliUsage(ctx, accessToken, psd), true
 	case "codex":
-		return fetchCodexUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
+		return fetchCodexUsageFor(ctx, firstNonEmptyStr(accessToken, apiKey), psdStr(psd, "chatgptAccountId")), true
 	case "claude":
 		return fetchClaudeUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
 	case "gemini-web":
