@@ -684,3 +684,58 @@ func extractJSONPayload(b []byte) []byte {
 	}
 	return bytes.TrimSpace(b)
 }
+
+// TestHandleResponsesCompact_NonObjectBodyIsABadRequest pins that a compact
+// request whose body is valid JSON but not an object is answered 400, not a
+// recovered panic. `null`, `4`, `"x"` and `[]` all unmarshal into a nil map
+// with a nil error, so the `_compact` marker write used to panic with
+// "assignment to entry in nil map" and chi's Recoverer answered a bare 500
+// with no payload (AGENTS.md §4.E). Nothing else on this endpoint validates
+// the body first, so the handler is the boundary.
+func TestHandleResponsesCompact_NonObjectBodyIsABadRequest(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	handler := NewChatHandler(db.NewRepo(database))
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "json null", body: `null`},
+		{name: "bare number", body: `4`},
+		{name: "bare string", body: `"x"`},
+		{name: "bare array", body: `[]`},
+		{name: "empty object is accepted and marked", body: `{}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/responses/compact", bytes.NewReader([]byte(tt.body)))
+			rec := httptest.NewRecorder()
+
+			// No Recoverer here: a panic must fail the test outright, which is
+			// what used to happen for every non-object body.
+			handler.HandleResponsesCompact(rec, req)
+
+			if tt.body == `{}` {
+				// The control case: an object body passes the marking and is
+				// rejected downstream for its missing model — proof the object
+				// path is unchanged by the nil guard. A non-object body never
+				// gets that far.
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected HTTP 400 for a model-less object body, got %d: %s", rec.Code, rec.Body.String())
+				}
+				if !strings.Contains(rec.Body.String(), "missing model") {
+					t.Errorf("object body should fail downstream on the missing model, got: %s", rec.Body.String())
+				}
+				return
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected HTTP 400 for a non-object body, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "invalid JSON body") {
+				t.Errorf("error body should carry the invalid-JSON message: %s", rec.Body.String())
+			}
+		})
+	}
+}
