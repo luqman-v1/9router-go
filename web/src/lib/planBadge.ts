@@ -12,23 +12,47 @@ export interface PlanBadgeView {
 
 // planLabel renders a tier code as a label a reader recognises. An unknown or
 // empty tier yields null so the badge is not drawn rather than showing the code.
+// The server normalizes the compact ids it can, but an older binary still sends
+// "chatgptplusplan", so the folding happens here too.
 export function planLabel(plan: string | null | undefined): string | null {
   if (!plan) return null
   const key = plan.trim().toLowerCase()
   if (!key) return null
-  switch (key) {
+  switch (key.replace(/[^a-z0-9]/g, '')) {
+    case 'free':
+    case 'freeplan':
+    case 'freetier':
+    case 'chatgptfree':
+    case 'chatgptfreeplan':
+    case 'chatgptfreetier':
+      return 'Free'
     case 'plus':
+    case 'plusplan':
+    case 'chatgptplus':
+    case 'chatgptplusplan':
       return 'Plus'
     case 'pro':
+    case 'proplan':
+    case 'chatgptpro':
+    case 'chatgptproplan':
       return 'Pro'
     case 'team':
+    case 'teamplan':
+    case 'chatgptteam':
+    case 'chatgptteamplan':
       return 'Team'
+    case 'business':
+    case 'businessplan':
+    case 'chatgptbusiness':
+    case 'chatgptbusinessplan':
+      return 'Business'
     case 'enterprise':
+    case 'enterpriseplan':
+    case 'chatgptenterprise':
+    case 'chatgptenterpriseplan':
       return 'Enterprise'
     case 'edu':
       return 'Edu'
-    case 'free':
-      return 'Free'
     // Claude seats: the server already sends the multiplier ("Max 20x").
     case 'max':
       return 'Max'

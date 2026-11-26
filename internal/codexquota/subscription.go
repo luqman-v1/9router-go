@@ -63,6 +63,12 @@ type wireSubscriptionEntitlement struct {
 // id_token claim 9router already stores, so a multi-workspace account resolves
 // to its own seat rather than to whichever record happens to come first.
 func ParseSubscription(body []byte, accountID string) (*Subscription, error) {
+	return parseSubscriptionAt(body, accountID, time.Now())
+}
+
+// parseSubscriptionAt is ParseSubscription with the clock injected so the
+// expired-entitlement rule is testable.
+func parseSubscriptionAt(body []byte, accountID string, now time.Time) (*Subscription, error) {
 	var wire wireSubscription
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, fmt.Errorf("codexquota.ParseSubscription: decode: %w", err)
@@ -71,10 +77,32 @@ func ParseSubscription(body []byte, accountID string) (*Subscription, error) {
 		return nil, fmt.Errorf("codexquota.ParseSubscription: no accounts in response")
 	}
 
-	// Map order is not meaningful, so candidates are gathered then ranked.
+	// Map order is not meaningful, so candidates are gathered then ranked. The
+	// account's own tier and the entitlement's are kept apart: which one wins
+	// depends on whether the entitlement has already lapsed.
 	type candidate struct {
-		id, plan, expires string
-		isDefault         bool
+		id, accountPlan, entitlementPlan, expires string
+		isDefault                                 bool
+	}
+	// plan resolves the record's tier the way cockpit-tools does. An expired
+	// entitlement on a free account means the paid seat is over: ChatGPT has
+	// already downgraded and `subscription_plan` is the stale value. Anywhere
+	// else the entitlement wins over the account's own plan_type, because it is
+	// the field the billing side maintains.
+	planOf := func(c candidate) string {
+		if !strings.EqualFold(strings.TrimSpace(c.accountPlan), "free") {
+			return firstNonEmpty(c.entitlementPlan, c.accountPlan)
+		}
+		if t := parseResetTime(c.expires); t != nil && !t.After(now) {
+			return "free"
+		}
+		return firstNonEmpty(c.entitlementPlan, c.accountPlan)
+	}
+	// ended reports an expired seat, whose date must not be drawn: a free plan
+	// has no end date, and "Free · Ended 28 Oct" reads as a contradiction.
+	ended := func(c candidate) bool {
+		t := parseResetTime(c.expires)
+		return t != nil && !t.After(now) && strings.EqualFold(strings.TrimSpace(c.accountPlan), "free")
 	}
 	var candidates []candidate
 	for id, rec := range wire.Accounts {
@@ -83,7 +111,7 @@ func ParseSubscription(body []byte, accountID string) (*Subscription, error) {
 		}
 		c := candidate{id: id}
 		if rec.Account != nil {
-			c.plan = firstNonEmpty(rec.Account.PlanType, rec.Account.PlanTypeC)
+			c.accountPlan = firstNonEmpty(rec.Account.PlanType, rec.Account.PlanTypeC)
 			c.isDefault = rec.Account.IsDefault
 			if c.id == "" {
 				c.id = rec.Account.AccountID
@@ -91,7 +119,7 @@ func ParseSubscription(body []byte, accountID string) (*Subscription, error) {
 		}
 		if rec.Entitlement != nil {
 			c.expires = firstNonEmpty(rec.Entitlement.ExpiresAt, rec.Entitlement.ExpiresAtC)
-			c.plan = firstNonEmpty(rec.Entitlement.SubscriptionPlan, c.plan)
+			c.entitlementPlan = strings.TrimSpace(rec.Entitlement.SubscriptionPlan)
 		}
 		candidates = append(candidates, c)
 	}
@@ -114,19 +142,54 @@ func ParseSubscription(body []byte, accountID string) (*Subscription, error) {
 			}
 		}
 	}
-	if strings.TrimSpace(pick.plan) == "" || strings.EqualFold(pick.plan, "free") {
-		for _, c := range candidates {
-			if plan := strings.TrimSpace(c.plan); plan != "" && !strings.EqualFold(plan, "free") {
-				pick = c
-				break
+	if plan := planOf(pick); strings.TrimSpace(plan) == "" || strings.EqualFold(plan, "free") {
+		// Only when the caller's own record was not matched: a resolved-but-free
+		// seat is the answer, not a reason to report someone else's plan.
+		if accountID == "" || !strings.EqualFold(pick.id, accountID) {
+			for _, c := range candidates {
+				if plan := planOf(c); plan != "" && !strings.EqualFold(plan, "free") {
+					pick = c
+					break
+				}
 			}
 		}
 	}
-	sub := &Subscription{Plan: strings.ToLower(strings.TrimSpace(pick.plan))}
-	if t := parseResetTime(pick.expires); t != nil {
-		sub.ExpiresAt = *t
+	sub := &Subscription{Plan: normalizePlan(planOf(pick))}
+	if !ended(pick) {
+		if t := parseResetTime(pick.expires); t != nil {
+			sub.ExpiresAt = *t
+		}
 	}
 	return sub, nil
+}
+
+// normalizePlan folds the compact ids the endpoint returns into the tier names
+// the dashboard labels. "chatgptplusplan" and "chatgptplus" are the same seat as
+// "plus", and without this the badge draws the raw id.
+func normalizePlan(plan string) string {
+	lowered := strings.ToLower(strings.TrimSpace(plan))
+	compact := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		}
+		return -1
+	}, lowered)
+	switch compact {
+	case "free", "freeplan", "freetier", "chatgptfree", "chatgptfreeplan", "chatgptfreetier":
+		return "free"
+	case "plus", "plusplan", "chatgptplus", "chatgptplusplan":
+		return "plus"
+	case "pro", "proplan", "chatgptpro", "chatgptproplan":
+		return "pro"
+	case "team", "teamplan", "chatgptteam", "chatgptteamplan":
+		return "team"
+	case "business", "businessplan", "chatgptbusiness", "chatgptbusinessplan":
+		return "business"
+	case "enterprise", "enterpriseplan", "chatgptenterprise", "chatgptenterpriseplan":
+		return "enterprise"
+	}
+	return lowered
 }
 
 // FetchSubscription reads the plan and its expiry for a Codex access token.

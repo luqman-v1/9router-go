@@ -12,6 +12,15 @@ describe('planLabel', () => {
     expect(planLabel('Max 20x')).toBe('Max 20x')
   })
 
+  // The compact ids the accounts/check endpoint answers must not reach the
+  // screen as "Chatgptplusplan".
+  it('folds the compact plan ids the endpoint returns', () => {
+    expect(planLabel('chatgptplusplan')).toBe('Plus')
+    expect(planLabel('ChatGPTProPlan')).toBe('Pro')
+    expect(planLabel('chatgptbusinessplan')).toBe('Business')
+    expect(planLabel('chatgptfreeplan')).toBe('Free')
+  })
+
   it('draws nothing for an absent tier rather than a raw code', () => {
     expect(planLabel(null)).toBeNull()
     expect(planLabel('')).toBeNull()
