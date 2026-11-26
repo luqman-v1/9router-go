@@ -1,8 +1,8 @@
 package db
 
 import (
-	json "encoding/json/v2"
 	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"testing"
 )
 

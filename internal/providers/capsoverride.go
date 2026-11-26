@@ -415,7 +415,7 @@ func CapsOverrideFields() []CapsOverrideField {
 func DecodeCapsOverridePayload(raw []byte) (ModelCapsOverride, error) {
 	members, err := decodeJSONObject(string(raw))
 	if err != nil {
-		return ModelCapsOverride{}, fmt.Errorf("%w: %v", ErrCapsOverrideNotObject, err)
+		return ModelCapsOverride{}, fmt.Errorf("%w: %w", ErrCapsOverrideNotObject, err)
 	}
 	return NormalizeModelCapsOverride(members)
 }

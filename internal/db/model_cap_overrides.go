@@ -3,9 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"fmt"
-
 	"strings"
 	"time"
 )
@@ -39,7 +37,7 @@ func (r *Repo) GetModelCapOverride(provider, model string) (*ModelCapOverrideRow
 		return nil, nil
 	}
 	var raw string
-	err := r.db.QueryRow(
+	err := r.db.QueryRow( //nolint:noctx
 		"SELECT "+modelCapOverrideJSONCol+" FROM "+modelCapOverrideTable+
 			" WHERE "+modelCapOverrideProviderCol+" = ? AND "+modelCapOverrideModelCol+" = ? LIMIT 1",
 		provider, model,
@@ -61,14 +59,14 @@ func (r *Repo) GetModelCapOverride(provider, model string) (*ModelCapOverrideRow
 // raw JSON, which is the shape the capability loader consumes. A read error is
 // returned rather than swallowed so the loader can fail open deliberately.
 func (r *Repo) AllModelCapOverrides() (map[string]string, error) {
-	rows, err := r.db.Query(
+	rows, err := r.db.Query( //nolint:noctx
 		"SELECT " + modelCapOverrideProviderCol + ", " + modelCapOverrideModelCol + ", " +
 			modelCapOverrideJSONCol + " FROM " + modelCapOverrideTable,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list model caps overrides: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[string]string{}
 	for rows.Next() {
 		var provider, model, raw string
@@ -98,7 +96,7 @@ func (r *Repo) SetModelCapOverride(provider, model string, override jsontext.Val
 	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
 		return r.DeleteModelCapOverride(provider, model)
 	}
-	_, err := r.db.Exec(
+	_, err := r.db.Exec( //nolint:noctx
 		"INSERT INTO "+modelCapOverrideTable+" ("+modelCapOverrideProviderCol+", "+
 			modelCapOverrideModelCol+", "+modelCapOverrideJSONCol+", "+modelCapOverrideUpdatedCol+
 			") VALUES (?, ?, ?, ?) ON CONFLICT ("+modelCapOverrideProviderCol+", "+
@@ -119,7 +117,7 @@ func (r *Repo) DeleteModelCapOverride(provider, model string) error {
 	if provider == "" || model == "" {
 		return fmt.Errorf("model caps override: provider and model are required")
 	}
-	if _, err := r.db.Exec(
+	if _, err := r.db.Exec( //nolint:noctx
 		"DELETE FROM "+modelCapOverrideTable+" WHERE "+modelCapOverrideProviderCol+
 			" = ? AND "+modelCapOverrideModelCol+" = ?",
 		provider, model,
@@ -127,10 +125,4 @@ func (r *Repo) DeleteModelCapOverride(provider, model string) error {
 		return fmt.Errorf("delete model caps override %s/%s: %w", provider, model, err)
 	}
 	return nil
-}
-
-// encodeCapsOverrideObject re-encodes a value as a JSON object, which keeps a
-// payload that arrived as a map[string]any canonical before it is stored.
-func encodeCapsOverrideObject(v any) (jsontext.Value, error) {
-	return json.Marshal(v)
 }

@@ -69,7 +69,7 @@ func (h *DashboardHandler) HandleSaveModelCapsOverride(w http.ResponseWriter, r 
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var payload struct {
 		CapsOverride map[string]any `json:"capsOverride"`
