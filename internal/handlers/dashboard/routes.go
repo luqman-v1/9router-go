@@ -5,6 +5,7 @@ import (
 
 	"9router/proxy/internal/auth"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/modelhealth"
@@ -60,6 +61,12 @@ type DashboardHandler struct {
 	// captured the loop at construction would hold nil in production and
 	// record nothing.
 	ModelHealth *modelhealth.Loop
+	// ChatH is the engine's chat handler: the one SetupRoutes built and the
+	// data plane serves. The playground forwards its synthetic request to it
+	// (dashboard/playground.go) so the turn takes the production dispatch path
+	// instead of a parallel one. Nil when the handler was built outside a
+	// boot — the playground endpoint then answers 503 rather than panicking.
+	ChatH *chat.ChatHandler
 }
 
 func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *DashboardHandler {
@@ -138,6 +145,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Delete("/providers/{id}/models", h.HandleDeleteProviderModels)
 		r.Get("/providers/{id}/overrides", h.HandleGetProviderOverrides)
 		r.Put("/providers/{id}/overrides", h.HandleSaveProviderOverrides)
+		// Per-model capability overrides (model editor). The model segment is
+		// percent-encoded because an id carries slashes and colons.
+		r.Get("/providers/{id}/models/{model}/caps", h.HandleGetModelCapsOverride)
+		r.Put("/providers/{id}/models/{model}/caps", h.HandleSaveModelCapsOverride)
 		r.Post("/providers/validate", h.HandleValidateProvider)
 		// The provider registry is the single source of truth for the dashboard's
 		// catalog (category, icon, colour, auth type, service kinds), so the SPA
@@ -171,6 +182,9 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/combos/{id}/smart/preview", h.HandleComboSmartPreview)
 		r.Post("/combos/{id}/smart/load", h.HandleComboSmartLoad)
 		r.Get("/models/meta", h.HandleGetModelMeta)
+		// Playground: one chat turn from the dashboard through the engine's own
+		// dispatch (dashboard/playground.go).
+		r.Post("/playground/chat", h.HandlePlaygroundChat)
 		r.Delete("/combos/{id}", h.HandleDeleteCombo)
 
 		// Proxy Pools

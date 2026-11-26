@@ -30,7 +30,49 @@ func parseSettings(rawData string) (*SettingsData, bool) {
 	applyCapacityAdapters(s, raw)
 	applyProviderOverrides(s, raw)
 	applySeatAttemptBudget(s, raw)
+	applyPerModelRateLimit(s, raw)
 	return s, true
+}
+
+// applyPerModelRateLimit reads the per-model cap block. A value outside its
+// clamp is kept as given here and clamped at use, so the stored row stays what
+// the operator wrote instead of being silently rewritten on every read.
+func applyPerModelRateLimit(s *SettingsData, raw map[string]any) {
+	vm, ok := raw["perModelRateLimit"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &PerModelRateLimitSettings{}
+	if v, ok := vm["enabled"].(bool); ok {
+		cfg.Enabled = &v
+	}
+	if v, ok := vm["limit"].(float64); ok {
+		cfg.Limit = int(v)
+	}
+	if v, ok := vm["windowMs"].(float64); ok {
+		cfg.WindowMs = int(v)
+	}
+	if ovs, ok := vm["overrides"].(map[string]any); ok && len(ovs) > 0 {
+		cfg.Overrides = make(map[string]*PerModelRateLimitOverride, len(ovs))
+		for k, v := range ovs {
+			om, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			ov := &PerModelRateLimitOverride{}
+			if b, ok := om["enabled"].(bool); ok {
+				ov.Enabled = &b
+			}
+			if n, ok := om["limit"].(float64); ok && n >= 0 {
+				ov.Limit = int(n)
+			}
+			if n, ok := om["windowMs"].(float64); ok && n >= 0 {
+				ov.WindowMs = int(n)
+			}
+			cfg.Overrides[k] = ov
+		}
+	}
+	s.PerModelRateLimit = cfg
 }
 
 func applySeatAttemptBudget(s *SettingsData, raw map[string]any) {
@@ -121,6 +163,9 @@ func applyPromptSettings(s *SettingsData, raw map[string]any) {
 	}
 	if v := handlerutil.GetString(raw, "systemPromptSuffix"); v != "" {
 		s.SystemPromptSuffix = v
+	}
+	if v, ok := raw["reaAllowEnabled"].(bool); ok {
+		s.ReaAllowEnabled = v
 	}
 }
 

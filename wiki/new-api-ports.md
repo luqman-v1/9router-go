@@ -198,6 +198,55 @@ dispatch allows — a client cannot list a model its key may not call.
 
 ---
 
+## Playground — a conversation with any routed model
+
+**Since:** v1.9.17 · **PR:** [#1466](https://github.com/luqman-v1/9router-go/pull/1466)
+
+### What it does
+
+A **Playground** tab holds a conversation with any model the gateway routes, without
+an engine key. It is the fastest way to answer "does this connection, combo or model
+actually answer?" before wiring a client.
+
+Each turn is a synthetic request through the engine's own `HandleChatCompletions` —
+the same in-process path the Gemini surface uses — so routing, combo fallback,
+persona injection, the limiter and usage accounting are the production code, not a
+second implementation. The reply **streams** in as the provider produces it, and the
+turn's header shows what a client would receive: the model the gateway resolved, the
+token count and the finish reason.
+
+### How to use it
+
+1. Open **Playground** in the sidebar.
+2. Optionally pick an **API key**. Every turn is then attributed to it: its usage rows
+   name it as the client, its budget is spent, and its model allowlist is enforced by
+   the same gate the public lane uses. No key picked is the global scope.
+3. Type a **model** (`provider/model` or a combo name) and a prompt, then **Send**
+   (or Enter; Shift+Enter adds a line).
+4. Keep typing to continue the conversation — each turn carries the earlier ones, so
+   context, tool use and multi-step prompts behave as they do for a real client.
+   **Stop** ends a stream mid-answer and keeps the text that already arrived.
+   **New** clears the conversation.
+
+### What it deliberately does not do
+
+**Nothing is persisted.** The conversation lives in the page's own state: no
+`localStorage`, no `sessionStorage`, no database row. Reloading the page starts a
+fresh conversation, and a closed tab leaves nothing behind.
+
+The only server-side write a turn makes is the usage row its own attribution
+requires (and the budget it spends) — the same accounting the public lane performs
+for a real client request. Pick **Global scope** to send a turn that is billed to no
+key.
+
+The body is rebuilt deterministically for the same input, so an identical turn
+produces identical bytes and can hit the prompt cache.
+
+**Related:** the page was inspired by new-api's Playground, but it is not a parity
+port — the mechanism here is a synthetic request through this gateway's own engine.
+
+---
+
 ## What was considered and not ported
 
 - **Provider/request plugin marketplace** (300 files, one commit) — an architecture

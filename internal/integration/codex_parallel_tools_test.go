@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"fmt"
 	"net/http"
 	"strings"
@@ -36,7 +38,7 @@ func TestCodexParallelToolArgumentsReachChatClientOnce(t *testing.T) {
 	})
 	priority := 1
 	data := `{"apiKey":"sk-codex","baseUrl":"` + up.URL + `/responses"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-codex", "codex", "apikey", "Codex Integration", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-codex", "codex", "apikey", "Codex Integration", &priority, data); err != nil {
 		t.Fatalf("create codex connection: %v", err)
 	}
 

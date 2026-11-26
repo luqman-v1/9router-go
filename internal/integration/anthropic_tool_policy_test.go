@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"testing"
@@ -36,7 +38,7 @@ func addAnthropicConnection(t *testing.T, env *Env, id string, up *Upstream) {
 	priority := 1
 	data := `{"apiKey":"sk-upstream","baseUrl":"https://api.anthropic.com/v1/messages",` +
 		`"providerSpecificData":{"vercelRelayUrl":"` + up.URL + `"}}`
-	if err := env.Repo.CreateProviderConnectionFull(id, "claude", "apikey", "Anthropic Relay", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), id, "claude", "apikey", "Anthropic Relay", &priority, data); err != nil {
 		t.Fatalf("create connection %s: %v", id, err)
 	}
 	stored, err := env.Repo.GetProviderConnectionByID(id)

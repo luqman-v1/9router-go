@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"9router/proxy/internal/providers"
 )
 
 // CodeBuddy CN anti-ban telemetry.
@@ -78,7 +80,11 @@ func codebuddyTelemetryAuthHeaders(c codebuddyCredential) map[string]string {
 	if uid != "" {
 		h["X-User-Id"] = uid
 	}
-	return h
+	// The operator's Custom Headers reach the telemetry senders too. These are
+	// upstream requests on the same provider, so a header corrected here was
+	// otherwise applied to the chat call and silently dropped from every
+	// /v2/report POST and the aegis check.
+	return providers.ApplyHeaderOverrides(h, c.HeaderOverrides)
 }
 
 // codebuddyEvent merges per-event fields with common event metadata.
@@ -462,5 +468,8 @@ func codebuddySendGalileoTrace(parent context.Context, c codebuddyCredential, du
 		"Content-Type": "application/json",
 		"User-Agent":   "CLI/" + codebuddyCLIVersion + " CodeBuddy/" + codebuddyCLIVersion,
 	}
+	// Same rule as the report senders: the trace is an upstream request on this
+	// provider, so the operator's headers apply to it too.
+	headers = providers.ApplyHeaderOverrides(headers, c.HeaderOverrides)
 	codebuddyTelemetryPost(ctx, client, codebuddyGalileoTracesURL, headers, body)
 }

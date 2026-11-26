@@ -71,7 +71,7 @@ func TestHandleGetConnectionUsage_AGYACPShowsHydrogen(t *testing.T) {
 
 	repo, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
-	if err := repo.CreateProviderConnectionFull(
+	if err := repo.CreateProviderConnectionFull(context.Background(), 
 		"agcpy-hydrogen", "agy-acp", "oauth", "ACP", nil,
 		`{"accessToken":"tok","refreshToken":"refresh","projectId":"proj"}`,
 	); err != nil {
@@ -96,7 +96,7 @@ func TestHandleGetConnectionUsage_AGYACPShowsHydrogen(t *testing.T) {
 func TestAntigravityUsageToken_AGYACPSourceReference(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
-	if err := repo.CreateProviderConnectionFull(
+	if err := repo.CreateProviderConnectionFull(context.Background(), 
 		"ag-source", "antigravity", "oauth", "AG", nil,
 		`{"accessToken":"source-tok","refreshToken":"refresh","projectId":"source-proj"}`,
 	); err != nil {

@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"io"
 	"net/http"
@@ -33,7 +35,7 @@ func TestHandleComboTestModels(t *testing.T) {
 	defer cleanup()
 
 	p1 := 1
-	if err := database.CreateProviderConnectionFull("conn-1", "testprov", "apikey", "testconn", &p1, `{"apiKey":"sk-1","baseUrl":"`+srv.URL+`"}`); err != nil {
+	if err := database.CreateProviderConnectionFull(context.Background(), "conn-1", "testprov", "apikey", "testconn", &p1, `{"apiKey":"sk-1","baseUrl":"`+srv.URL+`"}`); err != nil {
 		t.Fatal(err)
 	}
 

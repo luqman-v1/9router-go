@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +21,7 @@ func TestHandleGetUsageProviders_ExcludesHidden(t *testing.T) {
 		{"c-mimo", "mimo-free", "apikey"},
 		{"c-mmf", "mmf", "apikey"},
 	} {
-		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
 			t.Fatalf("seed %s: %v", s.provider, err)
 		}
 	}

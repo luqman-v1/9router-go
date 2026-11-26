@@ -164,7 +164,7 @@ func TestMigratePlaintextCredentialsLeavesNonSecrets(t *testing.T) {
 	repo, path := migrationEnv(t)
 	data := `{"baseUrl":"https://example.invalid/v1","enabledModels":"gpt-4o"}`
 	priority := 1
-	if err := repo.CreateProviderConnectionFull("conn-plain", "openai", "apikey", "plain", &priority, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-plain", "openai", "apikey", "plain", &priority, data); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

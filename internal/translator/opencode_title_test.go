@@ -159,12 +159,17 @@ func TestShapeOpenCodeV2TitleRequest_DiffersFromAgentShaping(t *testing.T) {
 		t.Errorf("title shaping must not declare tools")
 	}
 	if tools, _ := agentReq["tools"].([]any); len(tools) != len(openCodeGenuineToolNames) {
-		t.Errorf("agent shaping must still install the built-in set, got %d tools", len(tools))
+		t.Errorf("agent shaping must still install one placeholder per built-in, got %d tools", len(tools))
 	}
-	// Both keep the preamble: it is the gate's body fingerprint.
+	// Both keep the preamble: it is the gate's body fingerprint. The agent
+	// path strips its Code Mode section, the title path keeps it whole.
 	agentMsgs, _ := agentReq["messages"].([]any)
 	agentFirst, _ := agentMsgs[0].(map[string]any)
-	if system, _ := agentFirst["content"].(string); !strings.HasPrefix(system, openCodeHarnessSystem) {
+	system, _ := agentFirst["content"].(string)
+	if !strings.HasPrefix(system, openCodeHarnessPrefix()) {
 		t.Errorf("agent shaping must also keep the harness preamble")
+	}
+	if strings.Contains(system, "# Code Mode") {
+		t.Errorf("agent shaping must strip the Code Mode section")
 	}
 }

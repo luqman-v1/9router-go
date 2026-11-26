@@ -151,7 +151,7 @@ func deepSeekStoreCredential(ctx context.Context, repo *db.Repo, conn *models.Pr
 	if err != nil {
 		return fmt.Errorf("renew the DeepSeek credential: encode the new credential: %w", err)
 	}
-	if err := repo.UpdateConnectionData(conn.ID, string(encoded)); err != nil {
+	if err := repo.UpdateConnectionData(ctx, conn.ID, string(encoded)); err != nil {
 		return fmt.Errorf("renew the DeepSeek credential: store the new credential: %w", err)
 	}
 	// The old credential was what got the account parked; a renewal that left

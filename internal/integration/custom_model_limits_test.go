@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"testing"
 
@@ -21,7 +23,7 @@ func TestCustomModelDeclaredLimitsReachEveryDiscoverySurface(t *testing.T) {
 		t.Fatalf("create provider node: %v", err)
 	}
 	priority := 1
-	if err := env.Repo.CreateProviderConnectionFull("conn-nara", "node-nara", "apikey", "Nara",
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-nara", "node-nara", "apikey", "Nara",
 		&priority, `{"apiKey":"sk-nara","providerSpecificData":{"prefix":"nara"}}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}

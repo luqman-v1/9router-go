@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"testing"
 
 	"9router/proxy/internal/models"
@@ -108,10 +110,10 @@ func TestFindDuplicateConnection(t *testing.T) {
 		Name:     new("Account B"),
 		Data:     `{"accessToken":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLWQifQ.yyy"}`,
 	}
-	if err := repo.CreateProviderConnectionFull(conn1.ID, conn1.Provider, conn1.AuthType, *conn1.Name, nil, conn1.Data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), conn1.ID, conn1.Provider, conn1.AuthType, *conn1.Name, nil, conn1.Data); err != nil {
 		t.Fatalf("insert conn1: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull(conn2.ID, conn2.Provider, conn2.AuthType, *conn2.Name, nil, conn2.Data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), conn2.ID, conn2.Provider, conn2.AuthType, *conn2.Name, nil, conn2.Data); err != nil {
 		t.Fatalf("insert conn2: %v", err)
 	}
 

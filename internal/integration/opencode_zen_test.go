@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"strings"
 	"testing"
@@ -24,7 +26,7 @@ func addZenConnectionWithData(t *testing.T, env *Env, baseURL string) {
 	t.Helper()
 	priority := 1
 	data := `{"apiKey":"sk-zen","baseUrl":"` + baseURL + `"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-ocz", "opencode-zen", "apikey", "OpenCode Zen", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-ocz", "opencode-zen", "apikey", "OpenCode Zen", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	stored, err := env.Repo.GetProviderConnectionByID("conn-ocz")

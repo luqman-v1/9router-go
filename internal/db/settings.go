@@ -135,6 +135,28 @@ type CapacityAdapterEntry struct {
 	Models     []string `json:"models"`
 }
 
+// PerModelRateLimitSettings is the stored configuration for per-model caps on
+// custom providers. Every field is optional; an absent block means "not
+// configured", which the resolver reads as its built-in default.
+type PerModelRateLimitSettings struct {
+	// Enabled gates the whole feature. Nil means "on" — the limit only ever
+	// applies to custom providers, and the default is generous enough that an
+	// operator who never touched this should not notice it.
+	Enabled  *bool `json:"enabled,omitempty"`
+	Limit    int   `json:"limit,omitempty"`
+	WindowMs int   `json:"windowMs,omitempty"`
+	// Overrides keys by provider id, or by "provider/model" for a single model.
+	Overrides map[string]*PerModelRateLimitOverride `json:"overrides,omitempty"`
+}
+
+// PerModelRateLimitOverride narrows or widens the limit for one provider or one
+// provider+model. A nil field inherits from the enclosing block.
+type PerModelRateLimitOverride struct {
+	Enabled  *bool `json:"enabled,omitempty"`
+	Limit    int   `json:"limit,omitempty"`
+	WindowMs int   `json:"windowMs,omitempty"`
+}
+
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
 	RTKEnabled              bool            `json:"rtkEnabled"`
@@ -179,6 +201,7 @@ type SettingsData struct {
 	HeadroomCodeAware       bool   `json:"headroomCodeAware"`
 	HeadroomKompress        bool   `json:"headroomKompress"`
 	HeadroomTimeoutMs       int    `json:"headroomTimeoutMs"`
+	ReaAllowEnabled         bool   `json:"reaAllowEnabled"`
 	SemanticCacheEnabled    bool   `json:"semanticCacheEnabled"`
 	SemanticCacheTTL        int    `json:"semanticCacheTTL,omitempty"`
 	SemanticCacheMaxEntries int    `json:"semanticCacheMaxEntries,omitempty"`
@@ -199,10 +222,14 @@ type SettingsData struct {
 	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
 	ProviderOverrides          map[string]ProviderOverrides    `json:"providerOverrides,omitempty"`
-	EnableObservability        bool                            `json:"enableObservability"`
-	ObservabilityMode          string                          `json:"observabilityMode,omitempty"`
-	RetentionDays              int                             `json:"retentionDays,omitempty"`
-	MaxRequestRecords          int                             `json:"maxRequestRecords,omitempty"`
+	// PerModelRateLimit caps requests per model on CUSTOM providers, so one hot
+	// model cannot drain a shared endpoint's quota. Nil means "not configured",
+	// which the resolver reads as the built-in default.
+	PerModelRateLimit   *PerModelRateLimitSettings `json:"perModelRateLimit,omitempty"`
+	EnableObservability bool                       `json:"enableObservability"`
+	ObservabilityMode   string                     `json:"observabilityMode,omitempty"`
+	RetentionDays       int                        `json:"retentionDays,omitempty"`
+	MaxRequestRecords   int                        `json:"maxRequestRecords,omitempty"`
 	// UsageHistoryRetentionDays bounds how far back the usage ledger is kept.
 	// It is a separate knob from RetentionDays on purpose: that one governs
 	// requestDetails, which is diagnostics nothing bills from, while this one
@@ -346,6 +373,30 @@ func cloneSettings(s *SettingsData) *SettingsData {
 	out.CapacityAdapter = cloneCapacityAdapters(s.CapacityAdapter)
 	out.ProviderOverrides = cloneProviderOverrides(s.ProviderOverrides)
 	out.ProviderThinking = cloneProviderThinking(s.ProviderThinking)
+	out.PerModelRateLimit = clonePerModelRateLimit(s.PerModelRateLimit)
+	return &out
+}
+
+// clonePerModelRateLimit deep-copies the per-model cap block. Every other map
+// in SettingsData is copied here, and this one is no exception: the cached
+// settings value is shared, and a caller that wrote into Overrides it was
+// handed would change the answer every other reader sees.
+func clonePerModelRateLimit(s *PerModelRateLimitSettings) *PerModelRateLimitSettings {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.Overrides != nil {
+		out.Overrides = make(map[string]*PerModelRateLimitOverride, len(s.Overrides))
+		for k, v := range s.Overrides {
+			if v == nil {
+				out.Overrides[k] = nil
+				continue
+			}
+			ov := *v
+			out.Overrides[k] = &ov
+		}
+	}
 	return &out
 }
 

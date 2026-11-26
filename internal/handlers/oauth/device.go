@@ -450,7 +450,7 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 		handlerutil.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
-	conn := h.saveDeviceConnection(deviceCanonical(body.Provider), tokens)
+	conn := h.saveDeviceConnection(r.Context(), deviceCanonical(body.Provider), tokens)
 	// Fill the live model catalog while the fresh credential is in hand, so
 	// the first chat request after login resolves from a warm snapshot.
 	refreshQoderCatalogAfterDeviceLogin(r.Context(), deviceCanonical(body.Provider), tokens)
@@ -513,7 +513,7 @@ func devicePoll(ctx context.Context, provider, code string, session map[string]a
 
 type savedConn struct{ id, name, email string }
 
-func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) savedConn {
+func (h *OAuthHandler) saveDeviceConnection(ctx context.Context, provider string, t deviceTokens) savedConn {
 	if strings.TrimSpace(t.access) == "" {
 		return savedConn{}
 	}
@@ -551,7 +551,7 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 	// already knows: a device that changes on every re-login is exactly what the
 	// identity gate flags.
 	if provider == "zcode" && h.Repo != nil && h.Repo.RawDB() != nil {
-		if prevID, prevPSD := zcodeExistingIdentity(context.Background(), h.Repo.RawDB(), email); prevID != "" {
+		if prevID, prevPSD := zcodeExistingIdentity(ctx, h.Repo.RawDB(), email); prevID != "" {
 			id = prevID
 			for _, key := range []string{"deviceId", "sessionSeed", "accountUUID"} {
 				if v, ok := prevPSD[key].(string); ok && v != "" {
@@ -588,7 +588,7 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 		} else {
 			priority := 1
 			if h.Repo != nil {
-				priority = h.Repo.ResolveDefaultPriority(provider)
+				priority = h.Repo.ResolveDefaultPriority(ctx, provider)
 			}
 			_, _ = h.Repo.RawDB().Exec(
 				"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",

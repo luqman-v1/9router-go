@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"encoding/json"
 	"io"
 	"net/http"
@@ -130,7 +132,7 @@ func sakooGateway(t *testing.T) (*Env, *recordingProxy) {
 	}
 	priority := 1
 	connData := `{"apiKey":"sk-through-proxy","baseUrl":"` + proxy.URL + `","providerSpecificData":{"apiType":"chat"}}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-sakoo", nodeID, "apikey", "Sakoo", &priority, connData); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-sakoo", nodeID, "apikey", "Sakoo", &priority, connData); err != nil {
 		t.Fatalf("create Sakoo connection: %v", err)
 	}
 	// Sakoo answers 403 client_router_denied to the gateway's parity default

@@ -2,6 +2,7 @@ package oauth
 
 import (
 	json "encoding/json/v2"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -190,7 +191,7 @@ func (h *OAuthHandler) exchangeGoogleCode(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	h.storeGoogleConnection(w, tokenData, target)
+	h.storeGoogleConnection(r.Context(), w, tokenData, target)
 }
 
 // requestGoogleTokens performs the authorization-code exchange against the
@@ -253,7 +254,7 @@ func requestGoogleTokens(w http.ResponseWriter, r *http.Request, code, redirectU
 
 // storeGoogleConnection upserts the connection row for a completed Google
 // login and writes the success response.
-func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *googleTokenData, target googleLoginTarget) {
+func (h *OAuthHandler) storeGoogleConnection(ctx context.Context, w http.ResponseWriter, tokenData *googleTokenData, target googleLoginTarget) {
 	email := ""
 	if tokenData.IDToken != "" {
 		email = extractEmailFromJWT(tokenData.IDToken)
@@ -324,7 +325,7 @@ func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *g
 				connName, string(dataBytes), now, connID,
 			)
 		} else {
-			priority := h.Repo.ResolveDefaultPriority(target.provider)
+			priority := h.Repo.ResolveDefaultPriority(ctx, target.provider)
 			_, err = h.Repo.RawDB().Exec(
 				"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",
 				connID, target.provider, connName, priority, string(dataBytes), now, now,

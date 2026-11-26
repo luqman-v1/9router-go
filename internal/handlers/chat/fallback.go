@@ -73,6 +73,9 @@ func (h *ChatHandler) handleAccountFallback(
 	if FallbackAttemptRecorderFrom(ctx) == nil {
 		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
 	}
+	// Per-model admission moved into tryForwardWithConnection, which every
+	// dispatch path (this one, the combo loops, fusion) calls: one choke
+	// point instead of one per path.
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
@@ -684,6 +687,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// when it failed, so the answer is final: no account rotation, no combo
 	// fallback, and no zero-content probe that would replay an empty answer.
 	customJSON := isCustomJSONConn(connData)
+	// Per-model admission for custom providers, here rather than only in
+	// handleAccountFallback: the combo dispatch paths (combo.go's OpenAI and
+	// Messages loops, combo_fusion.go's panel calls) reach the upstream through
+	// this one function, so a cap on a combo member is enforced on the combo
+	// path too — the member fails over to the next one instead of serving.
+	// A refusal carries Local=true, so failover moves on without cooling the
+	// credential — it was never exercised.
+	if err := h.admitPerModel(ctx, provider, model); err != nil {
+		return err
+	}
 	// Unified thinking normalisation, inbound half: capture the client's
 	// reasoning intent before any converter rewrites the body. model stays
 	// the requested id for logs/usage; wireModel is suffix-free.
@@ -1685,6 +1698,12 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 	}
 	out := body
 	var origTokens, savedTokens, savedPct int
+	if h.TokenSaver.ReaAllowEnabled() {
+		format := detectReaFormat(out, claudeNative)
+		if next, did := tokensaver.ApplyReaAllow(out, format); did {
+			out = next
+		}
+	}
 	if h.TokenSaver.RTKEnabled() {
 		rtkCfg := h.TokenSaver.RTKConfig()
 		if next, did := tokensaver.CompressMessagesWithConfig(out, rtkCfg); did {
@@ -2502,4 +2521,39 @@ func bodySpeaksClaudeMessages(body []byte) bool {
 		}
 	}
 	return false
+}
+
+func detectReaFormat(body []byte, claudeNative bool) string {
+	if claudeNative {
+		return "claude"
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "openai"
+	}
+	if _, ok := m["conversationState"]; ok {
+		return "kiro"
+	}
+	if _, ok := m["systemInstruction"]; ok {
+		return "gemini"
+	}
+	if _, ok := m["system_instruction"]; ok {
+		return "gemini"
+	}
+	if _, ok := m["instructions"]; ok {
+		if _, ok := m["input"]; ok {
+			return "openai-responses"
+		}
+	}
+	if _, ok := m["input"]; ok {
+		// responses if input is array of items
+		if arr, ok := m["input"].([]any); ok && len(arr) > 0 {
+			if it, ok := arr[0].(map[string]any); ok {
+				if _, ok := it["type"]; ok {
+					return "openai-responses"
+				}
+			}
+		}
+	}
+	return "openai"
 }

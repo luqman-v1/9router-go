@@ -517,3 +517,89 @@ func TestGetJailbreakDocForModelResolvesKeyword(t *testing.T) {
 		t.Errorf("unrelated id got %+v, want nil", doc)
 	}
 }
+
+func TestJailbreakPresetEnabledSwitch(t *testing.T) {
+	repo := newJailbreakTestRepo(t)
+	saveSynced := func(enabled *bool) {
+		t.Helper()
+		if err := repo.SaveJailbreakPreset(&JailbreakDoc{
+			ID: "ds", Name: "DeepSeek", Prompt: "DS RULE",
+			Keywords:   []JailbreakKeyword{{Text: "deepseek"}},
+			SyncOrigin: "owner/repo@main", SyncPath: "DeepSeek/deepseek v4.md",
+			Enabled: enabled,
+		}); err != nil {
+			t.Fatalf("save preset: %v", err)
+		}
+	}
+	resolve := func() *JailbreakDoc {
+		t.Helper()
+		doc, err := repo.ResolveJailbreakDoc("", "providera/deepseek")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		return doc
+	}
+
+	// A synced preset with no explicit choice is inert until switched on.
+	saveSynced(nil)
+	if doc := resolve(); doc != nil {
+		t.Errorf("synced preset with no choice injected %+v, want none", doc)
+	}
+
+	on := true
+	saveSynced(&on)
+	if doc := resolve(); doc == nil || doc.Prompt != "DS RULE" {
+		t.Errorf("enabled preset got %+v, want DS RULE", doc)
+	}
+
+	off := false
+	saveSynced(&off)
+	if doc := resolve(); doc != nil {
+		t.Errorf("disabled preset injected %+v, want none", doc)
+	}
+
+	// An exact binding to a disabled preset must not resurrect it either.
+	if err := repo.SetJailbreakModelPreset("providera/deepseek", "ds", true); err != nil {
+		t.Fatalf("bind model: %v", err)
+	}
+	if doc := resolve(); doc != nil {
+		t.Errorf("disabled preset via exact binding injected %+v, want none", doc)
+	}
+}
+
+func TestJailbreakHandWrittenPresetDefaultsActive(t *testing.T) {
+	repo := newJailbreakTestRepo(t)
+	if err := repo.SaveJailbreakPreset(&JailbreakDoc{
+		ID: "mine", Name: "Mine", Prompt: "MINE RULE",
+		Keywords: []JailbreakKeyword{{Text: "manual-model"}},
+	}); err != nil {
+		t.Fatalf("save preset: %v", err)
+	}
+	doc, err := repo.ResolveJailbreakDoc("", "providera/manual-model")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if doc == nil || doc.Prompt != "MINE RULE" {
+		t.Errorf("hand-written preset got %+v, want MINE RULE", doc)
+	}
+}
+
+func TestExplainJailbreakDocReportsDisabledPreset(t *testing.T) {
+	repo := newJailbreakTestRepo(t)
+	off := false
+	if err := repo.SaveJailbreakPreset(&JailbreakDoc{
+		ID: "ds", Name: "DeepSeek", Prompt: "DS RULE",
+		Keywords:   []JailbreakKeyword{{Text: "deepseek"}},
+		SyncOrigin: "owner/repo@main",
+		Enabled:    &off,
+	}); err != nil {
+		t.Fatalf("save preset: %v", err)
+	}
+	match, err := repo.ExplainJailbreakDoc("", "providera/deepseek")
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if match.Injected {
+		t.Errorf("explain got %+v, want no injection for a disabled preset", match)
+	}
+}

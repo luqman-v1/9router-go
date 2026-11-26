@@ -188,12 +188,12 @@ func TestComboTokenmaxxing_DrivesWiringEndToEnd(t *testing.T) {
 	p1 := 1
 	p2 := 2
 	// openai has low quota (10%)
-	if err := repo.CreateProviderConnectionFull("conn-oa", "openai", "apikey", "OA Low", &p1,
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-oa", "openai", "apikey", "OA Low", &p1,
 		`{"apiKey":"sk-oa","baseUrl":"`+oaServer.URL+`","quotas":{"monthly":{"remainingPercentage":10,"resetAt":"2026-02-01T00:00:00Z"}}}`); err != nil {
 		t.Fatal(err)
 	}
 	// deepseek has high quota (90%)
-	if err := repo.CreateProviderConnectionFull("conn-ds", "deepseek", "apikey", "DS High", &p2,
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-ds", "deepseek", "apikey", "DS High", &p2,
 		`{"apiKey":"sk-ds","baseUrl":"`+dsServer.URL+`","quotas":{"monthly":{"remainingPercentage":90,"resetAt":"2026-02-01T00:00:00Z"}}}`); err != nil {
 		t.Fatal(err)
 	}

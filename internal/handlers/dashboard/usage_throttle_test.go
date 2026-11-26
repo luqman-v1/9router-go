@@ -133,7 +133,7 @@ func TestHandleGetConnectionUsage_SpacesBurstAcrossConnections(t *testing.T) {
 	var ids []string
 	for i := range 4 {
 		id := fmt.Sprintf("ollama-%d", i)
-		if err := repo.CreateProviderConnection(id, "ollama", "api_key", id, fmt.Sprintf("key-%d", i)); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), id, "ollama", "api_key", id, fmt.Sprintf("key-%d", i)); err != nil {
 			t.Fatalf("seed connection %s: %v", id, err)
 		}
 		ids = append(ids, id)
@@ -188,7 +188,7 @@ func TestHandleGetConnectionUsage_SpacesAntigravityBurst(t *testing.T) {
 	for i := range 4 {
 		id := fmt.Sprintf("ag-%d", i)
 		data := fmt.Sprintf(`{"accessToken":"tok-%d","projectId":"proj-%d"}`, i, i)
-		if err := repo.CreateProviderConnectionFull(id, "antigravity", "oauth", id, nil, data); err != nil {
+		if err := repo.CreateProviderConnectionFull(context.Background(), id, "antigravity", "oauth", id, nil, data); err != nil {
 			t.Fatalf("seed connection %s: %v", id, err)
 		}
 		ids = append(ids, id)
@@ -237,7 +237,7 @@ func TestHandleGetConnectionUsage_QueuedClientGoneFetchesNothing(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 
-	if err := repo.CreateProviderConnectionFull(
+	if err := repo.CreateProviderConnectionFull(context.Background(), 
 		"ag-cancel", "antigravity", "oauth", "ag-cancel", nil, `{"accessToken":"tok","projectId":"proj"}`,
 	); err != nil {
 		t.Fatalf("seed connection: %v", err)

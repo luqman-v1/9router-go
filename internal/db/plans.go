@@ -27,6 +27,11 @@ type Plan struct {
 	LimitTokens      int64
 	RPMLimit         int
 	TPMLimit         int
+	// RPHLimit and RPDLimit are the hourly and daily request ceilings. RPM
+	// alone cannot express a reseller's daily tier without also capping the
+	// minute, and a daily ceiling is the axis abuse actually trips.
+	RPHLimit         int
+	RPDLimit         int
 	ConcurrencyLimit int
 	Period           string
 	AlertPct         int
@@ -37,7 +42,7 @@ type Plan struct {
 }
 
 const planTable = "plans"
-const planSelectCols = "id, tenant_id, name, description, limit_micros, limit_tokens, rpm_limit, tpm_limit, concurrency_limit, period, alert_pct, hard_cutoff, allowed_models, created_at, updated_at"
+const planSelectCols = "id, tenant_id, name, description, limit_micros, limit_tokens, rpm_limit, tpm_limit, rph_limit, rpd_limit, concurrency_limit, period, alert_pct, hard_cutoff, allowed_models, created_at, updated_at"
 
 // CreatePlan inserts a new plan.
 func (r *Repo) CreatePlan(p Plan) error {
@@ -46,10 +51,10 @@ func (r *Repo) CreatePlan(p Plan) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.db.Exec( //nolint:noctx
-		`INSERT INTO `+planTable+` (id, tenant_id, name, description, limit_micros, limit_tokens, rpm_limit, tpm_limit, concurrency_limit, period, alert_pct, hard_cutoff, allowed_models, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO `+planTable+` (id, tenant_id, name, description, limit_micros, limit_tokens, rpm_limit, tpm_limit, rph_limit, rpd_limit, concurrency_limit, period, alert_pct, hard_cutoff, allowed_models, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.TenantID, p.Name, p.Description, p.LimitMicros, p.LimitTokens,
-		p.RPMLimit, p.TPMLimit, p.ConcurrencyLimit, p.Period,
+		p.RPMLimit, p.TPMLimit, p.RPHLimit, p.RPDLimit, p.ConcurrencyLimit, p.Period,
 		p.AlertPct, boolToInt(p.HardCutoff), strings.Join(p.AllowedModels, ","),
 		now, now,
 	)
@@ -185,9 +190,9 @@ func (r *Repo) UpdatePlan(p Plan) error {
 		return fmt.Errorf("plans: update: nil repo or empty id")
 	}
 	res, err := r.db.Exec( //nolint:noctx
-		`UPDATE `+planTable+` SET name = ?, description = ?, limit_micros = ?, limit_tokens = ?, rpm_limit = ?, tpm_limit = ?, concurrency_limit = ?, period = ?, alert_pct = ?, hard_cutoff = ?, allowed_models = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE `+planTable+` SET name = ?, description = ?, limit_micros = ?, limit_tokens = ?, rpm_limit = ?, tpm_limit = ?, rph_limit = ?, rpd_limit = ?, concurrency_limit = ?, period = ?, alert_pct = ?, hard_cutoff = ?, allowed_models = ?, updated_at = ? WHERE id = ?`,
 		p.Name, p.Description, p.LimitMicros, p.LimitTokens,
-		p.RPMLimit, p.TPMLimit, p.ConcurrencyLimit, p.Period,
+		p.RPMLimit, p.TPMLimit, p.RPHLimit, p.RPDLimit, p.ConcurrencyLimit, p.Period,
 		p.AlertPct, boolToInt(p.HardCutoff), strings.Join(p.AllowedModels, ","),
 		time.Now().UTC().Format(time.RFC3339), p.ID,
 	)
@@ -292,7 +297,7 @@ func (r *Repo) HasPlansTable() bool {
 // planSelectColsPrefixed is the plan column list qualified with the p alias
 // for the GetPlansForKeys join.
 func planSelectColsPrefixed() string {
-	return "p.id, p.tenant_id, p.name, p.description, p.limit_micros, p.limit_tokens, p.rpm_limit, p.tpm_limit, p.concurrency_limit, p.period, p.alert_pct, p.hard_cutoff, p.allowed_models, p.created_at, p.updated_at"
+	return "p.id, p.tenant_id, p.name, p.description, p.limit_micros, p.limit_tokens, p.rpm_limit, p.tpm_limit, p.rph_limit, p.rpd_limit, p.concurrency_limit, p.period, p.alert_pct, p.hard_cutoff, p.allowed_models, p.created_at, p.updated_at"
 }
 
 // rowScanner abstracts sql.Row and *sql.Rows for scanPlanRow.
@@ -309,7 +314,7 @@ func scanPlanRow(row rowScanner) (Plan, error) {
 	err := row.Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Description,
 		&p.LimitMicros, &p.LimitTokens,
-		&p.RPMLimit, &p.TPMLimit, &p.ConcurrencyLimit,
+		&p.RPMLimit, &p.TPMLimit, &p.RPHLimit, &p.RPDLimit, &p.ConcurrencyLimit,
 		&p.Period, &p.AlertPct, &hardCut, &allowedModelsStr, &created, &updated,
 	)
 	if err != nil {
@@ -338,7 +343,7 @@ func scanPlanRowsPrefixed(rows *sql.Rows, keyID *string) (Plan, error) {
 		keyID,
 		&p.ID, &p.TenantID, &p.Name, &p.Description,
 		&p.LimitMicros, &p.LimitTokens,
-		&p.RPMLimit, &p.TPMLimit, &p.ConcurrencyLimit,
+		&p.RPMLimit, &p.TPMLimit, &p.RPHLimit, &p.RPDLimit, &p.ConcurrencyLimit,
 		&p.Period, &p.AlertPct, &hardCut, &allowedModelsStr, &created, &updated,
 	)
 	if err != nil {

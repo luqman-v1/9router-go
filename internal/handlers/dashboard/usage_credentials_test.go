@@ -189,7 +189,7 @@ func TestHandleGetConnectionUsage_RefreshesExpiredTokenBeforeReading(t *testing.
 	// the blob mirrors that shape: a refresh that rotated one field but not the
 	// other would leave the stale copy in place for the fetcher to send.
 	payload := `{"accessToken":"stale","apiKey":"stale","refreshToken":"rt","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-refresh", "ollama", "oauth", "Refresh", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-refresh", "ollama", "oauth", "Refresh", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestHandleGetConnectionUsage_RetriesOnceWhenProviderReportsAuthExpired(t *t
 	// A live expiresAt keeps the pre-read refresh out of the way, so this
 	// exercises the retry half on its own.
 	payload := `{"accessToken":"stale","apiKey":"stale","refreshToken":"rt","expiresAt":"2099-01-01T00:00:00Z"}`
-	if err := repo.CreateProviderConnectionFull("conn-retry", "ollama", "oauth", "Retry", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-retry", "ollama", "oauth", "Retry", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestHandleGetConnectionUsage_FailedRefreshStillReadsWithStoredToken(t *test
 
 	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	payload := `{"accessToken":"still-valid","apiKey":"still-valid","refreshToken":"rt","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-fail", "ollama", "oauth", "Fail", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-fail", "ollama", "oauth", "Fail", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestRunUsageRefresh_SpendsTheStoredRefreshToken(t *testing.T) {
 	// taken before that write and is now the stale one.
 	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	stored := `{"accessToken":"stale","apiKey":"stale","refreshToken":"rt-rotated","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-reuse", "ollama", "oauth", "Reuse", nil, stored); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-reuse", "ollama", "oauth", "Reuse", nil, stored); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	snapshot := map[string]any{"accessToken": "stale", "apiKey": "stale", "refreshToken": "rt-stale", "expiresAt": expired}
@@ -353,7 +353,7 @@ func TestRunUsageRefresh_KeepsSnapshotWhenRowUnchanged(t *testing.T) {
 
 	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	stored := `{"accessToken":"stale","apiKey":"stale","refreshToken":"rt-same","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-same", "ollama", "oauth", "Same", nil, stored); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-same", "ollama", "oauth", "Same", nil, stored); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	conn, err := repo.GetProviderConnectionByID("conn-same")
@@ -384,7 +384,7 @@ func TestRunUsageRefresh_FallsBackToSnapshotWhenRowIsUnreadable(t *testing.T) {
 	})
 
 	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
-	if err := repo.CreateProviderConnectionFull("conn-gone", "ollama", "oauth", "Gone", nil, `{"refreshToken":"rt-only-on-row"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-gone", "ollama", "oauth", "Gone", nil, `{"refreshToken":"rt-only-on-row"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	conn := &models.ProviderConnection{ID: "conn-does-not-exist", Provider: "ollama", AuthType: "oauth"}

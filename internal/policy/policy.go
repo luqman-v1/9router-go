@@ -38,6 +38,10 @@ type EffectivePolicy struct {
 	PlanID string
 	RPM    int
 	TPM    int
+	// RPH and RPD are the hourly and daily request ceilings. RPM alone cannot
+	// express a reseller tier like "10k a day" without also capping the minute.
+	RPH int
+	RPD int
 	// Concurrency caps how many requests the key may have in flight.
 	Concurrency int
 	// QueueTimeoutMs is a per-key wait budget for a free concurrency slot.
@@ -97,6 +101,8 @@ func applyPlan(out *EffectivePolicy, plans PlanSource, planID *string) {
 	out.PlanID = plan.ID
 	out.RPM = plan.RPMLimit
 	out.TPM = plan.TPMLimit
+	out.RPH = plan.RPHLimit
+	out.RPD = plan.RPDLimit
 	out.Concurrency = plan.ConcurrencyLimit
 	out.LimitMicros = plan.LimitMicros
 	out.LimitTokens = plan.LimitTokens
@@ -117,6 +123,12 @@ func applyKeyOverrides(out *EffectivePolicy, key *models.APIKey) {
 	}
 	if v := derefInt(key.RateLimitTPM); v > 0 {
 		out.TPM = v
+	}
+	if v := derefInt(key.RateLimitRPH); v > 0 {
+		out.RPH = v
+	}
+	if v := derefInt(key.RateLimitRPD); v > 0 {
+		out.RPD = v
 	}
 	if v := derefInt(key.RateLimitConcurrency); v > 0 {
 		out.Concurrency = v

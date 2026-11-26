@@ -380,6 +380,11 @@ var goOnlyColumns = [][3]string{
 	{"apiKeys", "rateLimitRPM", "INTEGER DEFAULT 0"},
 	{"apiKeys", "rateLimitTPM", "INTEGER DEFAULT 0"},
 	{"apiKeys", "rateLimitConcurrency", "INTEGER DEFAULT 0"},
+	// Per-hour and per-day request ceilings. RPM cannot express a reseller's
+	// daily tier without also capping the minute, and a daily ceiling is the
+	// axis an abusive key actually trips.
+	{"apiKeys", "rateLimitRPH", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitRPD", "INTEGER DEFAULT 0"},
 	// F-1b Budget & queue: cumulative token quota and how long a request may
 	// wait for a concurrency slot before it is refused.
 	{"apiKeys", "tokenQuota", "INTEGER DEFAULT 0"},
@@ -465,6 +470,8 @@ var keiRouterTables = []tableDef{
 			{"limit_tokens", "INTEGER NOT NULL DEFAULT 0"},
 			{"rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"tpm_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"rph_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"rpd_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"concurrency_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"period", "TEXT NOT NULL DEFAULT 'monthly'"},
 			{"alert_pct", "INTEGER NOT NULL DEFAULT 80"},
@@ -565,6 +572,21 @@ var keiRouterTables = []tableDef{
 			"CREATE INDEX IF NOT EXISTS idx_audit_tenant_action_time ON audit_log(tenant_id, action, created_at)",
 			"CREATE INDEX IF NOT EXISTS idx_audit_chain_seq ON audit_log(chain_id, chain_seq)",
 		},
+	},
+	{
+		// Per-model capability overrides (the dashboard's model editor). A
+		// sparse JSON object per provider+model: absent key = Auto, so one row
+		// is one operator declaration and detection still answers the rest.
+		// It is its own table rather than a customModels kv member because the
+		// editor works on registry models too, which have no kv row at all.
+		name: "model_cap_overrides",
+		columns: [][2]string{
+			{"provider", "TEXT NOT NULL"},
+			{"model", "TEXT NOT NULL"},
+			{"caps_override", "TEXT NOT NULL DEFAULT '{}'"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+		primaryKey: "PRIMARY KEY (provider, model)",
 	},
 }
 

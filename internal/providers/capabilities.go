@@ -408,28 +408,35 @@ var modelCapabilities = map[string]Capabilities{
 	// a row they fall through to text-only defaults and the client's
 	// reasoning_effort is stripped before it reaches the upstream. Modality
 	// and limit values are taken verbatim from upstream (models.dev).
-	"space-bunny-free":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 524288},
-	"space-bunny":               {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 524288},
-	"big-pickle":                {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 32000},
-	"exo-free":                  {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
-	"fledge-alpha-free":         {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
-	"longcat-2.0":               {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
-	"longcat-2.0-free":          {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
-	"longcat-2.5-preview-free":  {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
-	"north-mini-code-free":      {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 256000, MaxOutput: 64000},
-	"ring-2.6-1t-free":          {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 262000, MaxOutput: 66000},
-	"x-preview-f-free":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
-	"vision-model":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
-	"coder-model":               {Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
-	"kimi-k3":                   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
-	"k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
-	"kimi-k3.1-pro":             {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
-	"k3.1-pro":                  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
-	"k3.1-pro-highspeed":        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
-	"kimi-for-coding":           {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
-	"kimi-for-coding-highspeed": {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
-	"kimi-k2.7-code":            {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
-	"kimi-k2.7-code-highspeed":  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"space-bunny-free":            {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 524288},
+	"space-bunny":                 {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 524288},
+	"big-pickle":                  {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 32000},
+	"exo-free":                    {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+	"fledge-alpha-free":           {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+	"longcat-2.0":                 {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"longcat-2.0-free":            {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"longcat-2.5-preview-free":    {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"north-mini-code-free":        {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 256000, MaxOutput: 64000},
+	"ring-2.6-1t-free":            {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 262000, MaxOutput: 66000},
+	"x-preview-f-free":            {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"iceman-free":                 {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 131072},
+	"beam-free":                   {ContextWindow: 1048576, MaxOutput: 131072},
+	"flint-40b-free":              {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
+	"nemotron-3.5-super-vl-free":  {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+	"jev-1.13-free":               {ContextWindow: 64000, MaxOutput: 32000},
+	"nemotron-3.5-lightning-free": {ContextWindow: 262144, MaxOutput: 262144},
+	"hy4-flash-free":              {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 65536},
+	"vision-model":                {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
+	"coder-model":                 {Reasoning: true, Tools: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
+	"kimi-k3":                     {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"k3":                          {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"kimi-k3.1-pro":               {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"k3.1-pro":                    {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"k3.1-pro-highspeed":          {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"kimi-for-coding":             {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"kimi-for-coding-highspeed":   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"kimi-k2.7-code":              {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
+	"kimi-k2.7-code-highspeed":    {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 262144, MaxOutput: 65536},
 }
 
 // codexExtendedContextWindow is the context window the codex registry
@@ -518,7 +525,12 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		// Without a row hy4-flash-free fell to the 128k floor (no *hy4*
 		// pattern exists). Window pinned only; thinking stays on the family
 		// resolution (the fixture pins it).
-		"hy4-flash-free": {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
+		"hy4-flash-free":             {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
+		"iceman-free":                {ContextWindow: 262144, MaxOutput: 131072},
+		"beam-free":                  {ContextWindow: 1048576, MaxOutput: 131072},
+		"flint-40b-free":             {ContextWindow: 262144, MaxOutput: 65536},
+		"nemotron-3.5-super-vl-free": {ContextWindow: 1048576, MaxOutput: 131072},
+		"jev-1.13-free":              {ContextWindow: 64000, MaxOutput: 32000},
 	},
 	"nvidia": {
 		"nvidia/nemotron-3.5-bolt-e4b":                  {Tools: true, ContextWindow: 128000, MaxOutput: 8192},
@@ -879,7 +891,7 @@ func init() {
 		"hy3":                        {Reasoning: true, Tools: true, ThinkingFormat: "hunyuan", ContextWindow: 256000},
 		"muse-spark-1.2-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
 		"muse-spark-1.3-contributor": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
-		"beam-free":                  {Tools: true, ContextWindow: 1048576},
+		"beam-free":                  {Tools: true, ContextWindow: 1048576, MaxOutput: 131072},
 	}
 
 	// OpenCode Zen serves the same free ids as the free lane on the fast PAYG
@@ -890,7 +902,7 @@ func init() {
 	providerCapabilities["opencode-zen"] = map[string]Capabilities{
 		"ling-3.0-flash-fin-free":     {Reasoning: true, Tools: true, ContextWindow: 262144},
 		"nemotron-3-ultra-free":       {Reasoning: true, Tools: true, ContextWindow: 1000000},
-		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ContextWindow: 262144},
+		"nemotron-3.5-lightning-free": {Reasoning: true, Tools: true, ContextWindow: 262144, MaxOutput: 262144},
 		"hy4-flash-free":              {Tools: true, ContextWindow: 1048576, MaxOutput: 65536},
 	}
 
@@ -909,6 +921,8 @@ func init() {
 	// upstream does (open-sse/providers/capabilities.js:
 	// PROVIDER_CAPABILITIES.cx = PROVIDER_CAPABILITIES.codex).
 	providerCapabilities["cx"] = providerCapabilities["codex"]
+	providerCapabilities["oc"] = providerCapabilities["opencode"]
+	providerCapabilities["ocz"] = providerCapabilities["opencode-zen"]
 
 	// The global mcode site serves the identical catalog, so it shares the
 	// table rather than restating it (upstream
@@ -1652,6 +1666,12 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		res.AudioOutput = true
 	}
 
+	// The operator's pinned fields win over every detection level above. This
+	// is the last word because the sparse override means "I know this endpoint
+	// better than the tables do", so it has to outrank even the name heuristic
+	// and the TTS rule.
+	LookupModelCapsOverride(provider, model).applyToCapabilities(&res)
+
 	capsCacheMu.Lock()
 	capsCache[key] = res
 	capsCacheMu.Unlock()
@@ -1922,7 +1942,14 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 	if caps.ThinkingRange != nil {
 		thinkingRange = caps.ThinkingRange
 	}
-	return CapabilitiesDetail{
+	return finishCapsDetail(caps, cw, maxOut, thinkingFormat, thinkingRange, provider, model)
+}
+
+// finishCapsDetail assembles the wire block and stamps the operator's pinned
+// fields on last, so a number the chain above resolved cannot override a
+// declaration made on purpose.
+func finishCapsDetail(caps Capabilities, cw, maxOut int, thinkingFormat *string, thinkingRange any, provider, model string) CapabilitiesDetail {
+	detail := CapabilitiesDetail{
 		Vision:                  caps.Vision,
 		PDF:                     caps.PDF,
 		AudioInput:              caps.AudioInput,
@@ -1942,6 +1969,8 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 		ContextWindow:           cw,
 		MaxOutput:               maxOut,
 	}
+	LookupModelCapsOverride(provider, model).applyToDetail(&detail)
+	return detail
 }
 
 // lookupCustomModelCaps resolves a custom model row by its exact id first and

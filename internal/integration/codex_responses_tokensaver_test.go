@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"strings"
 	"testing"
@@ -45,7 +47,7 @@ func codexResponsesEnv(t *testing.T, build func(*db.Repo) *handlers.TokenSaverCo
 
 	priority := 1
 	data := `{"apiKey":"sk-codex","baseUrl":"` + up.URL + `/responses"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-codex", "codex", "apikey", "Codex Integration", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-codex", "codex", "apikey", "Codex Integration", &priority, data); err != nil {
 		t.Fatalf("create codex connection: %v", err)
 	}
 	stored, err := env.Repo.GetProviderConnectionByID("conn-codex")

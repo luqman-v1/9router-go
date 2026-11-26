@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -48,7 +50,7 @@ func addAntigravityConnection(t *testing.T, env *Env, up *Upstream) {
 	data := fmt.Sprintf(`{"accessToken":"ya29.e2e","refreshToken":"r-e2e",`+
 		`"expiresAt":%q,"projectId":"e2e-project","baseUrl":%q}`,
 		time.Now().Add(time.Hour).UTC().Format(time.RFC3339), up.URL)
-	if err := env.Repo.CreateProviderConnectionFull("conn-ag", "antigravity", "oauth",
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-ag", "antigravity", "oauth",
 		"Antigravity E2E", &priority, data); err != nil {
 		t.Fatalf("create antigravity connection: %v", err)
 	}

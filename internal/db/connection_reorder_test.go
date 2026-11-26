@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+
 	"slices"
 	"testing"
 
@@ -13,7 +15,7 @@ import (
 func seedOrderedConnections(t *testing.T, repo *Repo, provider string, seedOrder []string, priorities map[string]*int) {
 	t.Helper()
 	for i, id := range seedOrder {
-		if err := repo.CreateProviderConnection(id, provider, "apikey", id, `{"apiKey":"sk-`+id+`"}`); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), id, provider, "apikey", id, `{"apiKey":"sk-`+id+`"}`); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 		priority, ok := priorities[id]
@@ -236,8 +238,8 @@ func TestUpdateConnectionData_LeavesOtherColumnsAlone(t *testing.T) {
 	if err := repo.SetConnectionPriority("a", 3); err != nil {
 		t.Fatalf("SetConnectionPriority() error = %v", err)
 	}
-	if err := repo.UpdateConnectionData("a", `{"apiKey":"sk-new"}`); err != nil {
-		t.Fatalf("UpdateConnectionData() error = %v", err)
+	if err := repo.UpdateConnectionData(context.Background(), "a", `{"apiKey":"sk-new"}`); err != nil {
+		t.Fatalf("UpdateConnectionData(context.Background(), ) error = %v", err)
 	}
 
 	got, err := repo.GetProviderConnectionByID("a")

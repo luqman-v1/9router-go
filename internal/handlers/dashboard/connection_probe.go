@@ -328,7 +328,7 @@ func (h *DashboardHandler) HandleTestConnection(w http.ResponseWriter, r *http.R
 	data := parseConnectionProbeData(raw)
 
 	out := h.testSingleConnection(r.Context(), conn, data, raw)
-	h.persistProbeResult(conn, raw, out)
+	h.persistProbeResult(r.Context(), conn, raw, out)
 
 	payload := map[string]any{
 		"valid":     out.valid,
@@ -996,7 +996,7 @@ func connectionTokenExpired(provider string, data connectionProbeData) bool {
 
 // persistProbeResult writes the probe outcome back to the connection row:
 // testStatus, lastError/lastErrorAt and any refreshed credentials.
-func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, raw map[string]any, out probeOutcome) {
+func (h *DashboardHandler) persistProbeResult(ctx context.Context, conn *models.ProviderConnection, raw map[string]any, out probeOutcome) {
 	if out.valid {
 		raw["testStatus"] = "active"
 		if out.message != "" {
@@ -1068,5 +1068,5 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 	if err != nil {
 		return
 	}
-	_ = h.Repo.UpdateConnectionData(conn.ID, string(encoded))
+	_ = h.Repo.UpdateConnectionData(ctx, conn.ID, string(encoded))
 }

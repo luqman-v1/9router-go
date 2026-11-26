@@ -48,6 +48,8 @@ type planRequest struct {
 	LimitTokens      *int64   `json:"limitTokens"`
 	RPMLimit         *int     `json:"rpmLimit"`
 	TPMLimit         *int     `json:"tpmLimit"`
+	RPHLimit         *int     `json:"rphLimit"`
+	RPDLimit         *int     `json:"rpdLimit"`
 	ConcurrencyLimit *int     `json:"concurrencyLimit"`
 	Period           *string  `json:"period"`
 	AlertPct         *int     `json:"alertPct"`
@@ -64,6 +66,8 @@ type planResponse struct {
 	LimitTokens      int64    `json:"limitTokens"`
 	RPMLimit         int      `json:"rpmLimit"`
 	TPMLimit         int      `json:"tpmLimit"`
+	RPHLimit         int      `json:"rphLimit"`
+	RPDLimit         int      `json:"rpdLimit"`
 	ConcurrencyLimit int      `json:"concurrencyLimit"`
 	Period           string   `json:"period"`
 	AlertPct         int      `json:"alertPct"`
@@ -275,6 +279,12 @@ func (h *DashboardHandler) planFromRequest(req planRequest, base db.Plan) (db.Pl
 	if req.TPMLimit != nil {
 		plan.TPMLimit = *req.TPMLimit
 	}
+	if req.RPHLimit != nil {
+		plan.RPHLimit = *req.RPHLimit
+	}
+	if req.RPDLimit != nil {
+		plan.RPDLimit = *req.RPDLimit
+	}
 	if req.ConcurrencyLimit != nil {
 		plan.ConcurrencyLimit = *req.ConcurrencyLimit
 	}
@@ -301,7 +311,7 @@ func (h *DashboardHandler) planFromRequest(req planRequest, base db.Plan) (db.Pl
 	if plan.LimitMicros < 0 || plan.LimitTokens < 0 {
 		return db.Plan{}, fmt.Errorf("budget limits must be zero (unlimited) or positive")
 	}
-	if plan.RPMLimit < 0 || plan.TPMLimit < 0 || plan.ConcurrencyLimit < 0 {
+	if plan.RPMLimit < 0 || plan.TPMLimit < 0 || plan.RPHLimit < 0 || plan.RPDLimit < 0 || plan.ConcurrencyLimit < 0 {
 		return db.Plan{}, fmt.Errorf("rate limits must be zero (unlimited) or positive")
 	}
 	// A period with no budget to measure is harmless, but an unknown one would
@@ -326,6 +336,8 @@ func planToResponse(p db.Plan) planResponse {
 		LimitTokens:      p.LimitTokens,
 		RPMLimit:         p.RPMLimit,
 		TPMLimit:         p.TPMLimit,
+		RPHLimit:         p.RPHLimit,
+		RPDLimit:         p.RPDLimit,
 		ConcurrencyLimit: p.ConcurrencyLimit,
 		Period:           p.Period,
 		AlertPct:         p.AlertPct,

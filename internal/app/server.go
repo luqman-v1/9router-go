@@ -119,6 +119,10 @@ func ProvideServer(p ServerParams) *http.Server {
 
 			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
+			// Per-model capability overrides: the same install pattern as the
+			// synced catalog, because internal/providers must stay DB-free.
+			// Until this runs, capability resolution is detection alone.
+			installModelCapsOverrideLoader(p.Repo)
 			// The preset library's auto-sync: one pass shortly after boot, then
 			// hourly, over the GitHub collections the operator follows. It is
 			// one worker per process, shared by the endpoints and this loop, so

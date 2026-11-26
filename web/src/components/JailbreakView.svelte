@@ -108,6 +108,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
     prompt: string
     kind: string
     geminiSafety: boolean
+    enabled: boolean
     source: string
     keywords: JailbreakKeyword[]
     excludes: JailbreakKeyword[]
@@ -118,6 +119,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
     prompt: '',
     kind: '',
     geminiSafety: false,
+    enabled: true,
     source: '',
     keywords: [],
     excludes: [],
@@ -267,7 +269,12 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
   // the operator typing (or knowing) the exact prefix string.
   let bindingPrefix = $state('')
 
-  onMount(load)
+  onMount(() => {
+    void load()
+    // The datalist is a convenience, not a gate: a failed fetch leaves the
+    // model-id inputs as free text, the state before this feature existed.
+    void loadModelCatalog().catch(() => {})
+  })
   async function load() {
     loading = true
     try {
@@ -440,6 +447,31 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
     bindPresetSearch = ''
     bindPresetDropdownOpen = false
   }
+  // The live model catalog, loaded once and shared by two consumers: the
+  // bulk-arm picker's list and index, and the page-level datalist the
+  // free-text model-id inputs (single-bind modal, per-key editor, resolver
+  // check) suggest from. It is fetched on mount rather than on first bulk-arm
+  // open because the datalist is visible from first paint: an operator who
+  // types an id before the bulk tab has ever opened still gets the list.
+  // A failed fetch resolves to the error for the next caller, which retries,
+  // so the bulk tab still reports its own error and the datalist degrades to
+  // free text until then.
+  let modelCatalog = $state<string[]>([])
+  let modelCatalogPromise: Promise<string[]> | null = null
+  function loadModelCatalog(): Promise<string[]> {
+    if (modelCatalogPromise) return modelCatalogPromise
+    modelCatalogPromise = api
+      .getJailbreakModelCatalog()
+      .then((res) => {
+        modelCatalog = Array.isArray(res.models) ? res.models : []
+        return modelCatalog
+      })
+      .catch((e) => {
+        modelCatalogPromise = null
+        throw e
+      })
+    return modelCatalogPromise
+  }
   // #6 Bulk arm: load the live model catalog once, then bind the picked ids.
   // It no longer opens a modal of its own — the 'many' tab of the shared
   // add-binding modal renders it, and switching to that tab is what triggers
@@ -451,8 +483,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
     if (bulkArmModels.length > 0 || bulkArmModelsLoading) return
     bulkArmModelsLoading = true
     try {
-      const res = await api.getJailbreakModelCatalog()
-      bulkArmModels = Array.isArray(res.models) ? res.models : []
+      bulkArmModels = await loadModelCatalog()
       bulkArmIndex = buildFuzzyIndex(bulkArmModels)
     } catch (e) {
       bulkArmStatus = 'Failed to load models: ' + errorMessage(e)
@@ -881,6 +912,10 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
       importStatus = 'Duplicate failed: ' + errorMessage(e)
     }
   }
+  function presetEnabled(preset: JailbreakDoc): boolean {
+    return preset.enabled ?? !preset.syncOrigin
+  }
+
   function openCreate() {
     editingId = null
     presetForm = {
@@ -889,6 +924,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
       prompt: '',
       kind: '',
       geminiSafety: false,
+      enabled: true,
       source: '',
       keywords: [],
       excludes: [],
@@ -908,6 +944,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
       prompt: preset.prompt || '',
       kind: preset.kind || '',
       geminiSafety: !!preset.geminiSafety,
+      enabled: presetEnabled(preset),
       source: preset.source || '',
       keywords: preset.keywords || [],
       excludes: preset.excludes || [],
@@ -930,6 +967,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
         name: presetForm.name.trim(),
         prompt: presetForm.prompt,
         geminiSafety: presetForm.geminiSafety,
+        enabled: presetForm.enabled,
         kind: presetForm.kind.trim() || undefined,
         source: presetForm.source.trim() || undefined,
         keywords: presetForm.keywords,
@@ -1039,6 +1077,17 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
 </script>
 
 <div class="space-y-6">
+  <!-- The model-id datalist: one page-level list every free-text model-id input
+       on this page suggests from — the single-bind modal below, the per-key
+       editor and the resolver check (the datalist resolves by id across the
+       whole document, so the child panels reference it without a prop). The
+       catalog is the same list the bulk-arm picker loads; an empty catalog
+       renders no options and the inputs stay free text. -->
+  <datalist id="jailbreak-model-catalog">
+    {#each modelCatalog as m (m)}
+      <option value={m}></option>
+    {/each}
+  </datalist>
   <!-- No page header: the TopBar already carries the page title and description. -->
   {#if loading}<span class="text-xs text-text-subtle">Loading…</span>{/if}
 
@@ -1293,7 +1342,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
                 {/if}
               </div>
               <div class="text-[11px] text-text-subtle truncate">
-                {preset.id}{preset.geminiSafety ? ' · safety' : ''}{preset.source ? ' · ' + preset.source : ''}{preset.keywords?.length
+                {preset.id}{preset.geminiSafety ? ' · safety' : ''}{presetEnabled(preset) ? '' : ' · off'}{preset.source ? ' · ' + preset.source : ''}{preset.keywords?.length
                   ? ' · ' + preset.keywords.length + ' keyword' + (preset.keywords.length > 1 ? 's' : '')
                   : ''}{preset.excludes?.length ? ' · ' + preset.excludes.length + ' excluded' : ''}
                 {#if presetUsage[preset.id ?? ''] !== undefined}
@@ -1917,6 +1966,13 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
         {/each}
       </datalist>
       <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" bind:checked={presetForm.enabled} class="w-4 h-4 accent-brand-500" />
+        <span class="text-sm text-text-main">Preset enabled</span>
+      </label>
+      <p class="text-xs text-text-muted">
+        Disabled presets stay in the library but never inject. Synced and uploaded presets start disabled.
+      </p>
+      <label class="flex items-center gap-2 cursor-pointer select-none">
         <input type="checkbox" bind:checked={presetForm.geminiSafety} class="w-4 h-4 accent-brand-500" />
         <span class="text-sm text-text-main">Relax Gemini safety filters</span>
       </label>
@@ -2130,6 +2186,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
           <input
             type="text"
             bind:value={bindModelId}
+            list="jailbreak-model-catalog"
             disabled={!!bindingEditId}
             placeholder="deepseek-v4-flash"
             class="w-full px-3 py-2 rounded-[10px] bg-surface-2 border border-border-subtle text-text-main text-sm font-code outline-none focus:border-brand-500 disabled:opacity-50"

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/budget"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -53,6 +54,10 @@ type RateLimiter struct {
 	// short-circuit means a nil reader is never dereferenced for a key that
 	// has no budget configured.
 	budgetSpend atomic.Pointer[budget.Reader]
+	// ipLimits is the operator's per-client-IP request ceiling. Atomic for the
+	// same reason as plans: it can be changed without a restart, and a reader
+	// must never observe a half-written value. nil means no IP ceiling.
+	ipLimits atomic.Pointer[IPLimits]
 }
 
 // waitQueue is the FIFO of parked requests for one key.
@@ -65,19 +70,77 @@ type waitQueue struct {
 // closes the loop by re-checking whether it still holds the grant.
 type waiter struct {
 	grant chan struct{}
-	// rpm and concurrency are the limits this waiter is queued under. They are
-	// captured at enqueue so the pump admits the head against exactly the same
-	// limits the caller was refused under, rather than re-deriving them from a
-	// key whose configuration may have changed.
-	rpm         int
+	// spans and concurrency are the limits this waiter is queued under. They
+	// are captured at enqueue so the pump admits the head against exactly the
+	// same limits the caller was refused under, rather than re-deriving them
+	// from a key whose configuration may have changed.
+	spans       []windowSpan
 	concurrency int
 	// done is set when the waiter gives up (timeout or cancellation), so the
 	// pump can discard it without granting.
 	done bool
 }
 
+// newWaiter builds a parked request. The grant channel is buffered(1) so a pump
+// can hand over a slot without blocking on a caller that has already timed out;
+// the caller closes the loop by re-checking whether it still holds the grant.
+func newWaiter(spans []windowSpan, concurrency int) *waiter {
+	return &waiter{grant: make(chan struct{}, 1), spans: spans, concurrency: concurrency}
+}
+
 type slidingWindow struct {
 	stamps []time.Time
+}
+
+// windowSpan is one request-counter window and its ceiling.
+//
+// The limiter used to hold a single window, so RPM was the only request rate
+// it could express. A reseller tier is a set of nested windows: a minute cap
+// to keep a burst civil, an hour cap for the tier's shape, and a day cap for
+// what the account may spend. They share the stamp list, because one admitted
+// request is one count in every window, so adding a window costs a comparison,
+// not another list.
+type windowSpan struct {
+	limit  int
+	length time.Duration
+	axis   string
+}
+
+// hourWindow and dayWindow are package constants rather than fields so a test
+// can express a small ceiling without waiting an hour; the span list itself is
+// built per call from the key's limits.
+const (
+	hourWindow = time.Hour
+	dayWindow  = 24 * time.Hour
+)
+
+// spansFor builds the active windows for one key's limits. A zero ceiling means
+// the operator did not configure that window, so it is omitted rather than
+// treated as an unlimited window every stamp has to be compared against.
+func spansFor(rpm, rph, rpd int, minute time.Duration) []windowSpan {
+	spans := make([]windowSpan, 0, 3)
+	if rpm > 0 {
+		spans = append(spans, windowSpan{limit: rpm, length: minute, axis: "rpm"})
+	}
+	if rph > 0 {
+		spans = append(spans, windowSpan{limit: rph, length: hourWindow, axis: "rph"})
+	}
+	if rpd > 0 {
+		spans = append(spans, windowSpan{limit: rpd, length: dayWindow, axis: "rpd"})
+	}
+	return spans
+}
+
+// longestSpan returns the widest active window. A key with no window caps has
+// no span, and the caller stores nothing.
+func longestSpan(spans []windowSpan) time.Duration {
+	var out time.Duration
+	for _, s := range spans {
+		if s.length > out {
+			out = s.length
+		}
+	}
+	return out
 }
 
 type tokenBucket struct {
@@ -155,14 +218,24 @@ func (rl *RateLimiter) budgetReader() budget.Reader {
 // Check is the NON-blocking gate. It never queues; a caller that wants to wait
 // for a slot uses Acquire, which shares the same admit test.
 func (rl *RateLimiter) Check(keyID string, rpm, tpm, concurrency int, promptTokens int) (bool, int, string) {
-	// RPM and concurrency share the one admit test Acquire uses, so a key that
-	// Check refuses is exactly a key that would have to queue. The scope names
-	// which axis tripped, for the metric label.
-	if !rl.tryAdmit(keyID, rpm, concurrency) {
+	return rl.CheckWithWindows(keyID, rpm, 0, 0, tpm, concurrency, promptTokens)
+}
+
+// CheckWithWindows is Check with the hourly and daily request ceilings the
+// key's plan or columns may carry. It exists as a separate method so every
+// existing caller keeps the two-window signature; a caller that knows the full
+// limit set uses this one.
+func (rl *RateLimiter) CheckWithWindows(keyID string, rpm, rph, rpd, tpm, concurrency, promptTokens int) (bool, int, string) {
+	spans := spansFor(rpm, rph, rpd, rl.window)
+	// Request windows and concurrency share the one admit test Acquire uses, so
+	// a key that Check refuses is exactly a key that would have to queue. The
+	// scope names which axis tripped, for the metric label.
+	if !rl.tryAdmitSpans(keyID, spans, concurrency) {
 		if concurrency > 0 && rl.concurrencyFull(keyID, concurrency) {
 			return false, 1, "concurrency"
 		}
-		return false, rl.rpmRetryAfter(keyID, time.Now()), "rpm"
+		axis := rl.blockedAxis(keyID, spans)
+		return false, rl.windowRetryAfter(keyID, spans, axis), axis
 	}
 
 	// TPM is not part of admission: a token bucket is not queueable, so it is
@@ -177,9 +250,21 @@ func (rl *RateLimiter) Check(keyID string, rpm, tpm, concurrency int, promptToke
 	return true, 0, ""
 }
 
+// blockedAxis re-derives which window refused, for the scope label. It is read
+// after the admit test failed, so a caller that only wants the label does not
+// pay for it on the admitted path.
+func (rl *RateLimiter) blockedAxis(keyID string, spans []windowSpan) string {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if axis := rl.firstBlockedAxisLocked(keyID, spans, time.Now()); axis != "" {
+		return axis
+	}
+	return "rpm"
+}
+
 // concurrencyFull reports whether the concurrency axis is the one that blocked,
-// used only to label a refusal. Must be called with rl.mu held by tryAdmit's
-// caller having released it; it re-takes the lock for a consistent read.
+// used only to label a refusal. It re-takes the lock for a consistent read,
+// so it must not be called with rl.mu already held.
 func (rl *RateLimiter) concurrencyFull(keyID string, limit int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -227,10 +312,20 @@ func (rl *RateLimiter) ReleaseConcurrency(keyID string) {
 // Callers size TPM against the body before calling here; a TPM refusal is a 429
 // from Check, not a wait.
 func (rl *RateLimiter) Acquire(ctx context.Context, keyID string, rpm, concurrency int, timeout time.Duration) (waited time.Duration, ok bool) {
-	start := time.Now()
+	return rl.AcquireWithWindows(ctx, keyID, rpm, 0, 0, concurrency, timeout)
+}
 
-	// Fast path: admit without queueing if both axes have room.
-	if rl.tryAdmit(keyID, rpm, concurrency) {
+// AcquireWithWindows is Acquire with the hourly and daily request ceilings a
+// key's plan or columns may carry. A parked waiter captures all three ceilings,
+// so the pump admits the head against exactly the limits the caller was refused
+// under rather than re-deriving them from a key whose configuration may have
+// changed while it waited.
+func (rl *RateLimiter) AcquireWithWindows(ctx context.Context, keyID string, rpm, rph, rpd, concurrency int, timeout time.Duration) (waited time.Duration, ok bool) {
+	start := time.Now()
+	spans := spansFor(rpm, rph, rpd, rl.window)
+
+	// Fast path: admit without queueing if every axis has room.
+	if rl.tryAdmitSpans(keyID, spans, concurrency) {
 		return 0, true
 	}
 	if timeout <= 0 {
@@ -246,7 +341,7 @@ func (rl *RateLimiter) Acquire(ctx context.Context, keyID string, rpm, concurren
 		}
 	}
 
-	w := &waiter{grant: make(chan struct{}, 1), rpm: rpm, concurrency: concurrency}
+	w := newWaiter(spans, concurrency)
 	deadline := start.Add(timeout)
 
 	// Enqueue and re-check under one lock, so a release between the fast-path
@@ -311,34 +406,41 @@ func (rl *RateLimiter) Acquire(ctx context.Context, keyID string, rpm, concurren
 	return time.Since(start), false
 }
 
-// tryAdmit atomically claims an RPM stamp and (if capped) a concurrency slot.
-// It is all-or-nothing: a request that gets the stamp but not the slot returns
-// false with the stamp already given back, so a refused request never consumes
-// part of the budget.
-func (rl *RateLimiter) tryAdmit(keyID string, rpm, concurrency int) bool {
+// tryAdmitSpans atomically claims a stamp in every active request window and
+// (if capped) a concurrency slot. It is all-or-nothing: a request that gets the
+// stamp but not the slot returns false without consuming any budget, because
+// the stamp is recorded only after both axes are secured.
+func (rl *RateLimiter) tryAdmitSpans(keyID string, spans []windowSpan, concurrency int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	return rl.tryAdmitLocked(keyID, rpm, concurrency)
+	return rl.tryAdmitLocked(keyID, spans, concurrency)
 }
 
-// tryAdmitLocked is tryAdmit under an already-held lock. It also runs the RPM
+// tryAdmitLocked is tryAdmit under an already-held lock. It also runs the
 // window compaction, so it must be the single place a stamp is added.
-func (rl *RateLimiter) tryAdmitLocked(keyID string, rpm, concurrency int) bool {
+func (rl *RateLimiter) tryAdmitLocked(keyID string, spans []windowSpan, concurrency int) bool {
 	now := time.Now()
 
-	// RPM: compact the window and test for room before touching the counter, so
-	// a full window costs nothing.
-	hasStamp := false
-	if rpm > 0 {
-		if !rl.windowHasRoomLocked(keyID, rpm, now) {
+	// Request windows: compact once to the widest active span, then test every
+	// span against the same list. Testing before touching the counter keeps a
+	// refused request from costing a stamp in any window.
+	hasStamp := len(spans) > 0
+	if hasStamp {
+		if axis := rl.firstBlockedAxisLocked(keyID, spans, now); axis != "" {
 			return false
 		}
-		hasStamp = true
 	}
 
 	// Concurrency: claim a slot if the key is capped.
 	claimedSlot := false
 	if concurrency > 0 {
+		// Bound the concurrency map here as well as in recordStampLocked. The
+		// IP path is concurrency-only: it never stamps a window, so the sweep in
+		// recordStampLocked never runs for it and active[ip] would grow without
+		// limit under a flood of distinct addresses.
+		if len(rl.active) >= rl.maxKeys {
+			rl.evictIfNeededLocked(keyID)
+		}
 		counter := rl.activeCounterLocked(keyID)
 		if atomic.LoadInt32(counter) >= int32(concurrency) {
 			return false
@@ -349,7 +451,7 @@ func (rl *RateLimiter) tryAdmitLocked(keyID string, rpm, concurrency int) bool {
 
 	// Commit: only now that both axes are secured do we consume the stamp. Doing
 	// it here rather than above is what makes the decision atomic — a request
-	// refused on concurrency leaves the RPM window untouched.
+	// refused on concurrency leaves the window untouched.
 	if hasStamp {
 		rl.recordStampLocked(keyID, now)
 	}
@@ -357,42 +459,62 @@ func (rl *RateLimiter) tryAdmitLocked(keyID string, rpm, concurrency int) bool {
 	return true
 }
 
-// windowHasRoomLocked reports whether the key's RPM window has room for one more
-// request, compacting expired stamps as a side effect.
-func (rl *RateLimiter) windowHasRoomLocked(keyID string, rpm int, now time.Time) bool {
-	window := rl.windowForLocked(keyID)
-	cutoff := now.Add(-rl.window)
-	valid := window.stamps[:0]
-	for _, t := range window.stamps {
+// firstBlockedAxisLocked names the first window that has no room for one more
+// request, compacting the shared stamp list to the widest span as a side
+// effect. An empty result means every active window has room.
+//
+// The order is narrowest first, so a minute burst is reported as "rpm" rather
+// than as whichever axis the map happened to iterate first; the caller's
+// Retry-After is then the wait the operator can act on immediately.
+func (rl *RateLimiter) firstBlockedAxisLocked(keyID string, spans []windowSpan, now time.Time) string {
+	list := rl.stampListForLocked(keyID)
+	cutoff := now.Add(-longestSpan(spans))
+	valid := list.stamps[:0]
+	for _, t := range list.stamps {
 		if t.After(cutoff) {
 			valid = append(valid, t)
 		}
 	}
-	window.stamps = valid
-	return len(window.stamps) < rpm
+	list.stamps = valid
+	for _, span := range spans {
+		live := 0
+		spanCutoff := now.Add(-span.length)
+		for _, t := range list.stamps {
+			if t.After(spanCutoff) {
+				live++
+			}
+		}
+		if live >= span.limit {
+			return span.axis
+		}
+	}
+	return ""
 }
 
-// recordStampLocked appends a request stamp to the key's window.
-//
-// Eviction runs BEFORE the stamp and is told to spare keyID. The admitting key
-// is mid-flight: its window was just created by windowHasRoomLocked and is about
-// to receive the stamp this call appends. If the sweep reclaimed it — which it
-// could, since an RPM-limited key holds no concurrency slot and may have no
-// waiter — the stamp would land in a fresh window and the key would be admitted
-// past its own RPM limit at the maxKeys boundary.
-func (rl *RateLimiter) recordStampLocked(keyID string, now time.Time) {
-	rl.evictIfNeededLocked(keyID)
-	window := rl.windowForLocked(keyID)
-	window.stamps = append(window.stamps, now)
-}
-
-func (rl *RateLimiter) windowForLocked(keyID string) *slidingWindow {
+// stampListForLocked returns the key's shared request-stamp list. One list
+// serves every window, so the minute, hour and day counters cannot disagree
+// about how many requests were admitted.
+func (rl *RateLimiter) stampListForLocked(keyID string) *slidingWindow {
 	window, exists := rl.windows[keyID]
 	if !exists {
 		window = &slidingWindow{}
 		rl.windows[keyID] = window
 	}
 	return window
+}
+
+// recordStampLocked appends a request stamp to the key's window.
+//
+// Eviction runs BEFORE the stamp and is told to spare keyID. The admitting key
+// is mid-flight: its stamp list was just created by firstBlockedAxisLocked and
+// is about to receive the stamp this call appends. If the sweep reclaimed it
+// (which it could, since a window-limited key holds no concurrency slot and may
+// have no waiter), the stamp would land in a fresh list and the key would be
+// admitted past its own ceiling at the maxKeys boundary.
+func (rl *RateLimiter) recordStampLocked(keyID string, now time.Time) {
+	rl.evictIfNeededLocked(keyID)
+	list := rl.stampListForLocked(keyID)
+	list.stamps = append(list.stamps, now)
 }
 
 func (rl *RateLimiter) activeCounterLocked(keyID string) *int32 {
@@ -434,14 +556,14 @@ func (rl *RateLimiter) pumpLocked(keyID string) {
 
 		// Test the head against the limits it was queued under, so a waiter
 		// and a fresh caller cannot disagree about whether a slot exists.
-		if !rl.tryAdmitLockedForWaiter(keyID, head.rpm, head.concurrency) {
+		if !rl.tryAdmitLocked(keyID, head.spans, head.concurrency) {
 			// The head cannot be admitted; FIFO means nobody behind it may
-			// overtake. Wake again only when TIME can help — i.e. when the RPM
+			// overtake. Wake again only when TIME can help, i.e. when a request
 			// window is what is blocking. A concurrency block clears on
 			// ReleaseConcurrency, which calls back into the pump, so scheduling
 			// a timer for it would only spin until the timeout.
-			if rl.rpmBlockedLocked(keyID, head.rpm, now) {
-				rl.scheduleWindowWakeLocked(keyID, now)
+			if wakeIn, ok := rl.blockedWindowWakeLocked(keyID, head.spans, now); ok {
+				rl.scheduleWindowWakeLocked(keyID, wakeIn, now)
 			}
 			return
 		}
@@ -461,49 +583,59 @@ func (rl *RateLimiter) pumpLocked(keyID string) {
 	}
 }
 
-// rpmBlockedLocked reports whether the RPM window is what is holding the head
-// waiter back, as opposed to concurrency. Only an RPM block is time-resolved; a
-// concurrency block clears on release, so it needs no timer. Must run under
-// rl.mu.
-func (rl *RateLimiter) rpmBlockedLocked(keyID string, rpm int, now time.Time) bool {
-	if rpm <= 0 {
-		return false
+// blockedWindowWakeLocked reports whether a request window is what is holding
+// the head waiter back (as opposed to concurrency) and, if so, how long until
+// the earliest stamp leaves the blocked window. Only a window block is
+// time-resolved; a concurrency block clears on release, so it needs no timer.
+// Must run under rl.mu.
+//
+// The wait is computed against the window that actually blocks, not always the
+// minute window: a head waiter held by its daily ceiling would otherwise be
+// woken once a minute for a whole day.
+func (rl *RateLimiter) blockedWindowWakeLocked(keyID string, spans []windowSpan, now time.Time) (time.Duration, bool) {
+	list := rl.windows[keyID]
+	if list == nil || len(list.stamps) == 0 {
+		return 0, false
 	}
-	window := rl.windows[keyID]
-	if window == nil {
-		return false
-	}
-	cutoff := now.Add(-rl.window)
-	live := 0
-	for _, t := range window.stamps {
-		if t.After(cutoff) {
+	var earliest time.Duration
+	for _, span := range spans {
+		if span.limit <= 0 {
+			continue
+		}
+		cutoff := now.Add(-span.length)
+		live := 0
+		var oldest time.Time
+		for _, t := range list.stamps {
+			if !t.After(cutoff) {
+				continue
+			}
 			live++
+			if oldest.IsZero() || t.Before(oldest) {
+				oldest = t
+			}
+		}
+		if live < span.limit || oldest.IsZero() {
+			continue
+		}
+		wakeIn := oldest.Add(span.length).Sub(now)
+		if wakeIn < time.Millisecond {
+			wakeIn = time.Millisecond
+		}
+		if earliest == 0 || wakeIn < earliest {
+			earliest = wakeIn
 		}
 	}
-	return live >= rpm
+	return earliest, earliest > 0
 }
 
-// tryAdmitLockedForWaiter is tryAdmitLocked for a parked waiter, reusing the
-// same admit rules so a waiter and a fresh caller cannot disagree about whether
-// a slot exists.
-func (rl *RateLimiter) tryAdmitLockedForWaiter(keyID string, rpm, concurrency int) bool {
-	return rl.tryAdmitLocked(keyID, rpm, concurrency)
-}
-
-// scheduleWindowWakeLocked arranges a pump when the head waiter's RPM wait could
-// clear. It is a best-effort timer: a wake that fires early simply re-pumps and
-// reschedules. The window timer is keyed and replaced so repeated pumps do not
-// pile up timers.
-func (rl *RateLimiter) scheduleWindowWakeLocked(keyID string, now time.Time) {
-	window := rl.windows[keyID]
-	if window == nil || len(window.stamps) == 0 {
-		return
-	}
+// scheduleWindowWakeLocked arranges a pump when the head waiter's window wait
+// could clear. It is a best-effort timer: a wake that fires early simply
+// re-pumps and reschedules. The timer is keyed so repeated pumps do not pile up
+// timers for one key.
+func (rl *RateLimiter) scheduleWindowWakeLocked(keyID string, wakeIn time.Duration, now time.Time) {
 	if _, exists := rl.windowTimers[keyID]; exists {
 		return
 	}
-	oldest := window.stamps[0]
-	wakeIn := oldest.Add(rl.window).Sub(now)
 	if wakeIn <= 0 {
 		wakeIn = time.Millisecond
 	}
@@ -568,17 +700,37 @@ func (rl *RateLimiter) RefundTPM(keyID string, tpm, amount int) {
 	}
 }
 
-func (rl *RateLimiter) rpmRetryAfter(keyID string, now time.Time) int {
+// windowRetryAfter reports how long until the axis that refused has room. It is
+// computed against that axis's own window: a request refused by the daily
+// ceiling must not be told to retry in a minute, which the minute window would
+// answer even though it is not what blocked.
+func (rl *RateLimiter) windowRetryAfter(keyID string, spans []windowSpan, axis string) int {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	window, exists := rl.windows[keyID]
-	if !exists || len(window.stamps) == 0 {
+	list, exists := rl.windows[keyID]
+	if !exists || len(list.stamps) == 0 {
 		return 1
 	}
-
-	oldest := window.stamps[0]
-	retryAfter := rl.window - now.Sub(oldest)
+	length := rl.window
+	for _, span := range spans {
+		if span.axis == axis {
+			length = span.length
+			break
+		}
+	}
+	now := time.Now()
+	cutoff := now.Add(-length)
+	var oldest time.Time
+	for _, t := range list.stamps {
+		if t.After(cutoff) && (oldest.IsZero() || t.Before(oldest)) {
+			oldest = t
+		}
+	}
+	if oldest.IsZero() {
+		return 1
+	}
+	retryAfter := oldest.Add(length).Sub(now)
 	if retryAfter < 0 {
 		retryAfter = 0
 	}
@@ -648,13 +800,38 @@ func (rl *RateLimiter) tpmRetryAfter(keyID string, tpm int, tokens int) int {
 // parked waiter. An in-flight key is by definition recent, so skipping it
 // cannot defeat the bound — the next call evicts it once it drains.
 //
+// The trigger counts BOTH the window map and the concurrency map. An earlier
+// version triggered on rl.windows alone, which left the IP concurrency path
+// unbounded: AcquireIP with concurrency-only limits takes acquireScoped ->
+// tryAdmitSpans -> activeCounterLocked, creates active[ip], and returns without
+// ever recording a stamp, so no window entry exists and the sweep never fired.
+// A probe with 5000 distinct IPs and maxKeys=20 left 5000 live active entries.
+// Counting the union of the two maps restores the bound AGENTS.md §4.G requires.
+//
 // Must be called with rl.mu held.
 func (rl *RateLimiter) evictIfNeededLocked(keep string) {
-	if len(rl.windows) < rl.maxKeys {
+	if len(rl.windows)+len(rl.active) < rl.maxKeys {
 		return
 	}
 	target := rl.maxKeys * 9 / 10
+	// Walk the union: a key can hold an active counter with no window entry
+	// (IP concurrency-only) or a window with no counter (RPM-only).
+	seen := make(map[string]struct{}, len(rl.windows)+len(rl.active))
+	candidates := make([]string, 0, len(rl.windows)+len(rl.active))
 	for k := range rl.windows {
+		seen[k] = struct{}{}
+		candidates = append(candidates, k)
+	}
+	for k := range rl.active {
+		if _, ok := seen[k]; !ok {
+			candidates = append(candidates, k)
+		}
+	}
+	remaining := len(candidates)
+	for _, k := range candidates {
+		if remaining <= target {
+			break
+		}
 		// Never evict the key whose admit is in progress: its window is about
 		// to be stamped by the caller, and reclaiming it here would let the
 		// stamp land in a fresh window and over-admit.
@@ -678,9 +855,7 @@ func (rl *RateLimiter) evictIfNeededLocked(keep string) {
 			timer.Stop()
 			delete(rl.windowTimers, k)
 		}
-		if len(rl.windows) <= target {
-			break
-		}
+		remaining--
 	}
 }
 
@@ -766,11 +941,26 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 				}
 			}
 
-			// RPM + concurrency: admit now if there is room, otherwise wait in
-			// FIFO order up to the key's queue timeout. The caller's context is
-			// passed so a client that hangs up leaves the queue instead of being
-			// granted a slot and dispatched upstream for nobody.
-			waited, ok := rl.Acquire(r.Context(), apiKey.ID, limits.RPM, limits.Concurrency, limits.QueueTimeout)
+			// Per-IP admission runs before the key's own windows. It is the one
+			// axis that survives a caller minting fresh keys: a reseller's
+			// per-key ceiling protects each key, while a per-IP ceiling protects
+			// the upstream account from one host holding many keys. It is
+			// skipped entirely when the operator configured no IP ceiling, so a
+			// default install pays nothing for it.
+			if ipLimits := rl.IPLimits(); ipLimits.Armed() {
+				ip := auth.LoginClientIP(r)
+				if _, ok := rl.AcquireIP(r.Context(), ip, ipLimits, ipQueueTimeout); !ok {
+					rejectIPRateLimited(w, ip)
+					return
+				}
+			}
+
+			// RPM, RPH, RPD and concurrency: admit now if there is room,
+			// otherwise wait in FIFO order up to the key's queue timeout. The
+			// caller's context is passed so a client that hangs up leaves the
+			// queue instead of being granted a slot and dispatched upstream for
+			// nobody.
+			waited, ok := rl.AcquireWithWindows(r.Context(), apiKey.ID, limits.RPM, limits.RPH, limits.RPD, limits.Concurrency, limits.QueueTimeout)
 			if !ok {
 				// The TPM charge was taken before the queue. A request the queue
 				// refused never reaches the metering path, so the settle hook can
@@ -1193,6 +1383,12 @@ type Limits struct {
 	RPM         int
 	TPM         int
 	Concurrency int
+	// RPH and RPD bound requests per hour and per day. RPM alone cannot express
+	// a reseller's daily tier without also capping the minute, and a daily
+	// ceiling is the axis abuse actually trips: a key can sit far under its
+	// minute cap all day and still drain the upstream account.
+	RPH int
+	RPD int
 	// TokenQuota caps the key's cumulative prompt+completion tokens. It is
 	// enforced before dispatch and is not a per-window rate: it only ever
 	// decreases the key's remaining budget.
@@ -1232,6 +1428,14 @@ func limitsFor(apiKey *models.APIKey, d Defaults, plans policy.PlanSource) Limit
 	}
 	if pol.TPM > 0 {
 		out.TPM = pol.TPM
+	}
+	// The hourly and daily ceilings resolve exactly like RPM: plan first (which
+	// already carries the key's own columns), then the operator default.
+	if pol.RPH > 0 {
+		out.RPH = pol.RPH
+	}
+	if pol.RPD > 0 {
+		out.RPD = pol.RPD
 	}
 	if pol.Concurrency > 0 {
 		out.Concurrency = pol.Concurrency
@@ -1384,4 +1588,170 @@ func promptTokensForRequest(r *http.Request) int {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return estimatePromptTokens(body)
+}
+
+// IPLimits is the operator's per-client-IP request ceiling.
+//
+// It exists because a per-key ceiling protects each key, not the install: a
+// caller holding several keys, or minting new ones, can spend a fresh budget
+// per key while every one of them stays under its own limit. The IP axis is
+// what the upstream account actually experiences, so it is enforced globally
+// across keys.
+//
+// Every field is 0 when the operator configured no IP ceiling, which is what
+// Armed reports on; a default install pays nothing for this feature.
+type IPLimits struct {
+	PerMinute   int
+	PerHour     int
+	PerDay      int
+	Concurrency int
+}
+
+// Armed reports whether any IP axis is configured.
+func (l IPLimits) Armed() bool {
+	return l.PerMinute > 0 || l.PerHour > 0 || l.PerDay > 0 || l.Concurrency > 0
+}
+
+// spansForIP builds the request windows for an IP ceiling. It is a separate
+// function from spansFor because the axis names differ: an operator reading a
+// 429 has to be able to tell a key ceiling from a host ceiling.
+func (l IPLimits) spansForIP(minute time.Duration) []windowSpan {
+	spans := make([]windowSpan, 0, 3)
+	if l.PerMinute > 0 {
+		spans = append(spans, windowSpan{limit: l.PerMinute, length: minute, axis: "ip_rpm"})
+	}
+	if l.PerHour > 0 {
+		spans = append(spans, windowSpan{limit: l.PerHour, length: hourWindow, axis: "ip_rph"})
+	}
+	if l.PerDay > 0 {
+		spans = append(spans, windowSpan{limit: l.PerDay, length: dayWindow, axis: "ip_rpd"})
+	}
+	return spans
+}
+
+// IPScopeKey namespaces an IP's slot inside the shared limiter maps, so an IP
+// can never collide with a key id or a provider id.
+func IPScopeKey(ip string) string { return "ip:" + ip }
+
+// AcquireIP admits a request under the per-IP ceiling. It shares the same maps
+// and the same admit test as the key path, so the two cannot disagree about
+// whether a request is admissible.
+//
+// A zero timeout means "test once and refuse", which is the behaviour every
+// unconfigured install would get if the gate ran at all.
+func (rl *RateLimiter) AcquireIP(ctx context.Context, ip string, limits IPLimits, timeout time.Duration) (waited time.Duration, ok bool) {
+	if rl == nil || ip == "" || !limits.Armed() {
+		return 0, true
+	}
+	return rl.acquireScoped(ctx, IPScopeKey(ip), limits.spansForIP(rl.window), limits.Concurrency, timeout)
+}
+
+// acquireScoped is the shared admission path for a namespaced slot: the IP
+// axis and the provider axis both need "test every window, claim a slot, park
+// or refuse", and duplicating it would let the two drift apart on the order in
+// which they consume a stamp.
+func (rl *RateLimiter) acquireScoped(ctx context.Context, key string, spans []windowSpan, concurrency int, timeout time.Duration) (waited time.Duration, ok bool) {
+	start := time.Now()
+	if rl.tryAdmitSpans(key, spans, concurrency) {
+		return 0, true
+	}
+	if timeout <= 0 {
+		return 0, false
+	}
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return 0, false
+		default:
+		}
+	}
+
+	w := newWaiter(spans, concurrency)
+	deadline := start.Add(timeout)
+
+	rl.mu.Lock()
+	depth := rl.maxQueueDepth
+	if depth <= 0 {
+		depth = DefaultMaxQueueDepth
+	}
+	q := rl.queueForLocked(key)
+	if len(q.waiters) >= depth {
+		rl.mu.Unlock()
+		return time.Since(start), false
+	}
+	q.waiters = append(q.waiters, w)
+	rl.pumpLocked(key)
+	rl.mu.Unlock()
+
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	select {
+	case <-w.grant:
+		return time.Since(start), true
+	case <-timer.C:
+	case <-ctxDone:
+	}
+
+	rl.mu.Lock()
+	w.done = true
+	select {
+	case <-w.grant:
+		if concurrency > 0 {
+			if counter := rl.active[key]; counter != nil {
+				atomic.AddInt32(counter, -1)
+			}
+		}
+	default:
+	}
+	rl.pumpLocked(key)
+	rl.mu.Unlock()
+	return time.Since(start), false
+}
+
+// rejectIPRateLimited answers an IP refusal with the same 429 shape the key
+// path uses, so a client's retry logic needs no special case, plus a body that
+// names the host ceiling rather than a key one.
+func rejectIPRateLimited(w http.ResponseWriter, ip string) {
+	// The IP is deliberately not logged: it is client-supplied data that would
+	// end up in a log an operator may ship elsewhere. The scope is enough to
+	// tell this refusal from a key refusal.
+	log.Warn("rate limit", "scope", "ip", "retryAfter", 1)
+	observ.IncRateLimitReject("ip", "")
+	w.Header().Set("Retry-After", "1")
+	w.Header().Set("X-RateLimit-Remaining", "0")
+	handlerutil.WriteJSONError(w, http.StatusTooManyRequests,
+		"Rate limit exceeded for this client address. Retry after 1s.")
+}
+
+// ipQueueTimeout is how long an IP may wait for a free slot. IP admission is a
+// flood guard, not a fairness queue: a caller already over its host ceiling is
+// the caller the ceiling exists to slow down, so it is refused immediately
+// rather than parked. A zero value here is the policy, not an unset default.
+const ipQueueTimeout time.Duration = 0
+
+// ipLimits holds the operator's per-IP ceiling. It is an atomic pointer for the
+// same reason as plans: an operator can change it without a restart, and a
+// reader already resolving limits must not observe a half-written value.
+func (rl *RateLimiter) SetIPLimits(l IPLimits) {
+	if rl == nil {
+		return
+	}
+	rl.ipLimits.Store(&l)
+}
+
+// IPLimits returns the configured per-IP ceiling, or the zero value when none
+// was set. The zero value is what Armed reads, so an install that never
+// configured one runs no IP work at all.
+func (rl *RateLimiter) IPLimits() IPLimits {
+	if rl == nil {
+		return IPLimits{}
+	}
+	if p := rl.ipLimits.Load(); p != nil {
+		return *p
+	}
+	return IPLimits{}
 }

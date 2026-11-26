@@ -254,6 +254,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 		// Same instance as the resilience panel reads: the data plane owns the
 		// layer it consults on every request.
 		dashH.Resilience = chatH.Resilience
+		// The playground forwards its synthetic request to the engine's own
+		// handler (dashboard/playground.go), so the turn takes the same
+		// dispatch path as public traffic.
+		dashH.ChatH = chatH
 	}
 	ssoH := sso.NewHandler(repo)
 
@@ -399,6 +403,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Delete("/api/providers/{id}/models", dashH.HandleDeleteProviderModels)
 	r.Get("/api/providers/{id}/overrides", dashH.HandleGetProviderOverrides)
 	r.Put("/api/providers/{id}/overrides", dashH.HandleSaveProviderOverrides)
+	// Per-model capability overrides. Registered here as well as in
+	// dashboard.RegisterRoutes because that table is mounted by tests only: a
+	// route added there alone answers 200 in a unit test and 404s on the real
+	// server.
+	r.Get("/api/providers/{id}/models/{model}/caps", dashH.HandleGetModelCapsOverride)
+	r.Put("/api/providers/{id}/models/{model}/caps", dashH.HandleSaveModelCapsOverride)
 
 	r.Get("/api/combos", dashH.HandleGetCombos)
 	r.Post("/api/combos", dashH.HandleCreateCombo)
@@ -417,6 +427,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/combos/{id}/smart/preview", dashH.HandleComboSmartPreview)
 	r.Post("/api/combos/{id}/smart/load", dashH.HandleComboSmartLoad)
 	r.Get("/api/models/meta", dashH.HandleGetModelMeta)
+	// Playground: one chat turn from the dashboard through the engine's own
+	// dispatch. Registered here as well as in dashboard.RegisterRoutes, because
+	// that table is mounted by tests only (see the note on models/meta above).
+	r.Post("/api/playground/chat", dashH.HandlePlaygroundChat)
 	r.Delete("/api/combos/{id}", dashH.HandleDeleteCombo)
 
 	r.Get("/api/proxy-pools", dashH.HandleGetProxyPools)
@@ -828,6 +842,17 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// windows already depend on, is pinned at boot.
 	defaults := func() middleware.Limits {
 		d := repo.GetRateLimitDefaults()
+		// The per-IP ceiling is read on the same call, so the limiter and the
+		// key defaults can never be resolved from two different settings
+		// snapshots. It is pushed even when the master switch is off: the IP
+		// gate is checked against its own zero value, not against Enabled, so an
+		// operator who configured only a host ceiling still gets it.
+		rateLimiter.SetIPLimits(middleware.IPLimits{
+			PerMinute:   d.PerIPMinute,
+			PerHour:     d.PerIPHour,
+			PerDay:      d.PerIPDay,
+			Concurrency: d.PerIPConcurrency,
+		})
 		if !d.Enabled {
 			return middleware.Limits{}
 		}

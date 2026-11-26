@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"bytes"
 	json "encoding/json/v2"
 	"net/http"
@@ -21,7 +23,7 @@ func TestHandleUpdateConnection_APIKeyReplacement(t *testing.T) {
 	const stored = `{"apiKey":"` + storedKey + `","authToken":"bearer-token","testStatus":"error",` +
 		`"lastError":{"message":"401 invalid key"},"lastErrorAt":"2026-01-01T00:00:00Z",` +
 		`"providerSpecificData":{"baseUrl":"https://api.example.com/v1"}}`
-	if err := repo.CreateProviderConnectionFull(connID, "openai-compatible-chat-abc", "apikey", "Node", nil, stored); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "openai-compatible-chat-abc", "apikey", "Node", nil, stored); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -115,15 +117,15 @@ func TestSanitizeProviderConnection_ExposesOnlyMaskedCredentials(t *testing.T) {
 		oauthConn  = "conn-mask-oauth"
 		keyless    = "conn-mask-keyless"
 	)
-	if err := repo.CreateProviderConnectionFull(apiKeyConn, "openai", "apikey", "Key", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), apiKeyConn, "openai", "apikey", "Key", nil,
 		`{"apiKey":"sk-abcdefghijklmnop"}`); err != nil {
 		t.Fatalf("create api-key connection: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull(oauthConn, "gemini-cli", "oauth", "OAuth", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), oauthConn, "gemini-cli", "oauth", "OAuth", nil,
 		`{"apiKey":"oauth-token-value-1234","accessToken":"oauth-access-token-9999"}`); err != nil {
 		t.Fatalf("create oauth connection: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull(keyless, "ollama", "none", "Local", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), keyless, "ollama", "none", "Local", nil,
 		`{"providerSpecificData":{"baseUrl":"http://127.0.0.1:11434"}}`); err != nil {
 		t.Fatalf("create credential-less connection: %v", err)
 	}

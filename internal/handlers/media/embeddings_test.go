@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+
 	"database/sql"
 	json "encoding/json/v2"
 	"io"
@@ -343,7 +345,7 @@ func TestHandleEmbeddings_CopilotTokenOverride(t *testing.T) {
 			"copilotToken": "tid=copilot-token-abc",
 		},
 	})
-	_ = repo.CreateProviderConnectionFull("conn-copilot-token", "github", "apikey", "Copilot Token Test", nil, string(connDataJSON))
+	_ = repo.CreateProviderConnectionFull(context.Background(), "conn-copilot-token", "github", "apikey", "Copilot Token Test", nil, string(connDataJSON))
 
 	handler := newTestMediaHandler(repo)
 	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"github/text-embedding-3-small","input":"test"}`))
@@ -391,7 +393,7 @@ func TestHandleEmbeddings_CopilotTokenIgnoredForOtherProvider(t *testing.T) {
 			"copilotToken": "tid=should-not-be-here",
 		},
 	})
-	if err := repo.CreateProviderConnectionFull("conn-openai-copilot-token", "openai", "apikey", "OpenAI With Stray Copilot Token", nil, string(connDataJSON)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-openai-copilot-token", "openai", "apikey", "OpenAI With Stray Copilot Token", nil, string(connDataJSON)); err != nil {
 		t.Fatalf("failed to seed provider connection: %v", err)
 	}
 
@@ -444,7 +446,7 @@ func TestHandleEmbeddings_CopilotTokenOverrideViaAlias(t *testing.T) {
 			"copilotToken": "tid=copilot-token-alias",
 		},
 	})
-	if err := repo.CreateProviderConnectionFull("conn-copilot-token-alias", "github", "apikey", "Copilot Token Alias Test", nil, string(connDataJSON)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-copilot-token-alias", "github", "apikey", "Copilot Token Alias Test", nil, string(connDataJSON)); err != nil {
 		t.Fatalf("failed to seed provider connection: %v", err)
 	}
 
@@ -494,7 +496,7 @@ func TestEmbeddings_ForwardGeminiOutputDimensions(t *testing.T) {
 	connDataJSON, _ := json.Marshal(map[string]any{
 		"apiKey": "gemini-test-key",
 	})
-	if err := repo.CreateProviderConnectionFull("conn-gemini-emb", "gemini", "apikey", "Gemini Emb Test", nil, string(connDataJSON)); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-gemini-emb", "gemini", "apikey", "Gemini Emb Test", nil, string(connDataJSON)); err != nil {
 		t.Fatalf("failed to seed provider connection: %v", err)
 	}
 

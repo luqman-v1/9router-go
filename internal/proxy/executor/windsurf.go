@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
 
@@ -398,6 +399,11 @@ func ForwardWindsurf(w http.ResponseWriter, req *Request) error {
 	}
 	hreq.Header.Set("User-Agent", "windsurf/"+wsIDEVers)
 	hreq.Header.Set("X-Grpc-Web", "1")
+	// The operator's Custom Headers are applied last so they win over every
+	// default above, matching ForwardOpenAI's order.
+	for k, v := range providers.ApplyHeaderOverrides(nil, req.Config.HeaderOverrides) {
+		hreq.Header.Set(k, v)
+	}
 
 	resp, err := req.Client.Do(hreq)
 	if err != nil {
