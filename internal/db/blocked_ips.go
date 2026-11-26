@@ -90,4 +90,3 @@ func (r *Repo) IsIPBlocked(ip string) (bool, error) {
 	}
 	return v != "", nil
 }
-

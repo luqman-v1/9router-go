@@ -34,7 +34,7 @@ func (h *DashboardHandler) HandleBlockIP(w http.ResponseWriter, r *http.Request)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var data map[string]any
 	if err := jsonv2.Unmarshal(body, &data); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -80,4 +80,3 @@ func (h *DashboardHandler) HandleUnblockIP(w http.ResponseWriter, r *http.Reques
 		"unblocked": norm,
 	})
 }
-
