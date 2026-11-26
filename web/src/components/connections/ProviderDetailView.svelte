@@ -640,14 +640,28 @@
   }
 
   // Bulk add for the filtered set: one request for the whole list so a refused
-  // id cannot stop the ones after it, and the response names what landed.
+  // id cannot stop the ones after it, and the response names what landed. Each
+  // entry carries the same caps and limits a single chip add forwards, or the
+  // bulk path would store rows the rest of the gateway cannot size while the
+  // one-by-one path sized them correctly.
   async function handlePreviewAddAll(modelIds: string[]) {
     if (isImportPreviewLoading || modelIds.length === 0) return
     isImportPreviewLoading = true
     try {
+      const byId = new Map(importPreviewModels.map((m) => [m.id, m]))
       const out = await api.saveCustomModelsBulk({
         providerAlias: storageAlias,
-        models: modelIds.map((id) => ({ id, type: inferModelKind(id) })),
+        models: modelIds.map((id) => {
+          const meta = byId.get(id)
+          return {
+            id,
+            type: inferModelKind(id),
+            ...(meta?.caps?.vision ? { vision: true } : {}),
+            ...(meta?.caps?.reasoning ? { reasoning: true } : {}),
+            ...(meta?.contextWindow ? { contextWindow: meta.contextWindow } : {}),
+            ...(meta?.maxOutput ? { maxOutput: meta.maxOutput } : {}),
+          }
+        }),
       })
       await refreshCompatibleModels()
       notifyCustomModelsChanged()

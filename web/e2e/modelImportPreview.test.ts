@@ -161,4 +161,40 @@ describe('Import from /models opens a preview panel', () => {
     )
     expect(await customModelKeys()).toEqual([])
   }, 120_000)
+
+  // Selecting a chip must narrow the bulk actions to it. Before this the
+  // selection only tinted the row: "Add all" wrote the whole filter and the
+  // button labels never said which set they would act on, so a hand-picked
+  // subset was not reachable from the UI at all.
+  test('a chip selection narrows the bulk actions to the selected ids', async () => {
+    await page.locator('[role="dialog"] input[aria-label="Search models by id"]').fill('')
+    await page.waitForFunction(
+      () => document.querySelector('[role="dialog"] header span.rounded-full')?.textContent?.trim() === '3',
+      undefined,
+      { timeout: 10_000 }
+    )
+
+    // Nothing selected: the action row acts on the whole filter. The previous
+    // test removed nothing, so all three staged ids are addable.
+    await expect(page.getByRole('button', { name: /Add all \(3\)/ }).isVisible()).resolves.toBe(true)
+
+    // Select one chip by clicking its name.
+    // The chip's select button carries no aria-label; its accessible name is
+    // the model id it renders, so select by the pressed-state button inside it.
+    await chip(OTHER).locator('button[aria-pressed]').click()
+    await expect(page.getByRole('button', { name: /Add selected \(1\)/ }).isVisible()).resolves.toBe(true)
+    await expect(page.getByRole('button', { name: /Test selected \(1\)/ }).isVisible()).resolves.toBe(true)
+
+    // Acting on it writes exactly that id, not the filter.
+    await page.getByRole('button', { name: /Add selected \(1\)/ }).click()
+    await page.waitForFunction(
+      (id) =>
+        [...document.querySelectorAll('[role="dialog"] div.font-mono')].some(
+          (el) => el.textContent?.includes(id) && el.textContent?.includes('Added')
+        ),
+      OTHER,
+      { timeout: 10_000 }
+    )
+    expect(await customModelKeys()).toEqual([`${NODE_ID}|${OTHER}|llm`])
+  }, 120_000)
 })

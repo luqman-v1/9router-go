@@ -15,7 +15,7 @@ import (
 func resetModelsCatalog(t *testing.T) {
 	t.Helper()
 	prev := liveModelsCatalog
-	liveModelsCatalog = &modelsCatalog{entries: make(map[string]modelsCatalogEntry)}
+	liveModelsCatalog = &modelsCatalog{entries: make(map[string]modelsCatalogEntry), gens: make(map[string]uint64)}
 	t.Cleanup(func() { liveModelsCatalog = prev })
 }
 
@@ -243,4 +243,51 @@ func modelsCatalogHas(connID string) bool {
 	defer liveModelsCatalog.mu.Unlock()
 	_, ok := liveModelsCatalog.entries[connID]
 	return ok
+}
+
+// An invalidation that lands while a fetch is in flight must not be undone by
+// that fetch storing what it read. Before the generation counter, the sync path
+// cleared the entry, the in-flight fetch completed and wrote the pre-sync body
+// back, and the very next request was answered from the cache the sync existed
+// to bypass.
+func TestModelsCatalogInvalidateDuringFlightDoesNotRestoreStaleBody(t *testing.T) {
+	resetModelsCatalog(t)
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	first := true
+
+	produce := func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		if first {
+			first = false
+			close(started)
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[{"id":"pre-sync"}]}`))
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rec := httptest.NewRecorder()
+		liveModelsCatalog.serve(rec, httptest.NewRequest(http.MethodGet, "/", nil), "conn-race", produce)
+	}()
+
+	<-started
+	liveModelsCatalog.invalidate("conn-race")
+	close(release)
+	<-done
+
+	if entry, ok := liveModelsCatalog.entries["conn-race"]; ok {
+		t.Fatalf("stale body restored after invalidate: %q", entry.body)
+	}
+
+	// The next request must reach the upstream, not the body the sync cleared.
+	rec := httptest.NewRecorder()
+	liveModelsCatalog.serve(rec, httptest.NewRequest(http.MethodGet, "/", nil), "conn-race", produce)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("upstream called %d times, want 2 (invalidate must survive the in-flight fetch)", got)
+	}
 }

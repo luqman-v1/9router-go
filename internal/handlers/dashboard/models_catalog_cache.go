@@ -47,13 +47,22 @@ type modelsCatalogEntry struct {
 // modelsCatalog is the process-wide cache and de-duplicator. Package-level like
 // liveCatalogFlight in the chat handler: the dashboard is a singleton, and a
 // per-instance cache would miss across route rebuilds.
+//
+// gen guards the in-flight window: a fetch that started before invalidate must
+// not re-store the body it was already reading, or a sync would be answered from
+// the very cache it just cleared. The fetcher captures gen before calling
+// produce and store refuses the write when it has moved.
 type modelsCatalog struct {
 	mu      sync.Mutex
 	entries map[string]modelsCatalogEntry
+	gens    map[string]uint64
 	flight  singleflight.Group
 }
 
-var liveModelsCatalog = &modelsCatalog{entries: make(map[string]modelsCatalogEntry)}
+var liveModelsCatalog = &modelsCatalog{
+	entries: make(map[string]modelsCatalogEntry),
+	gens:    make(map[string]uint64),
+}
 
 // serve answers a models request from the cache, or runs produce once for every
 // concurrent caller. The handler's own ResponseWriter is swapped for a capture,
@@ -81,6 +90,9 @@ func (c *modelsCatalog) serve(
 			c.mu.Unlock()
 			return entry.body, nil
 		}
+		// The generation this fetch answers for. If invalidate() lands while
+		// produce is running, the body is already stale and must not be cached.
+		gen := c.generationLocked(connID)
 		c.mu.Unlock()
 
 		capture := &captureWriter{header: make(http.Header)}
@@ -89,7 +101,7 @@ func (c *modelsCatalog) serve(
 			return nil, modelsHTTPError{code: capture.status, body: capture.body.Bytes()}
 		}
 		body := capture.body.Bytes()
-		c.store(connID, body)
+		c.storeIfCurrent(connID, gen, body)
 		return body, nil
 	})
 
@@ -128,11 +140,45 @@ func writeModelsBody(w http.ResponseWriter, body []byte, hit bool) {
 	_, _ = w.Write(body)
 }
 
+// generationLocked returns the current generation for a connection, creating
+// the map and slot on first use so a zero-value modelsCatalog (tests construct
+// one directly) behaves like the package-level instance.
+func (c *modelsCatalog) generationLocked(connID string) uint64 {
+	if c.gens == nil {
+		c.gens = make(map[string]uint64)
+	}
+	return c.gens[connID]
+}
+
+// bumpGenerationLocked advances the generation for a connection.
+func (c *modelsCatalog) bumpGenerationLocked(connID string) {
+	if c.gens == nil {
+		c.gens = make(map[string]uint64)
+	}
+	c.gens[connID]++
+}
+
 // store records a body, evicting expired entries and, when still over the cap,
 // the entry nearest expiry.
 func (c *modelsCatalog) store(connID string, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.storeLocked(connID, body)
+}
+
+// storeIfCurrent stores only when no invalidate landed for this connection since
+// the fetch began. An invalidation means a sync is re-reading the catalogue, so
+// the body this fetch read belongs to the generation before it.
+func (c *modelsCatalog) storeIfCurrent(connID string, gen uint64, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generationLocked(connID) != gen {
+		return
+	}
+	c.storeLocked(connID, body)
+}
+
+func (c *modelsCatalog) storeLocked(connID string, body []byte) {
 	now := time.Now()
 	if len(c.entries) >= modelsCatalogMaxEntries {
 		for key, entry := range c.entries {
@@ -157,11 +203,16 @@ func (c *modelsCatalog) store(connID string, body []byte) {
 
 // invalidate drops one connection's cached body. Model sync calls it because
 // its purpose is to re-read the catalogue, and it must not be answered from the
-// cache it is trying to refresh.
+// cache it is trying to refresh. The generation bump is what stops a fetch that
+// was already in flight from writing the pre-sync body back into the cache, and
+// forgetting the key is what stops a request that arrives *after* the sync from
+// joining that same in-flight fetch and receiving the pre-sync body.
 func (c *modelsCatalog) invalidate(connID string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	delete(c.entries, connID)
+	c.bumpGenerationLocked(connID)
+	c.mu.Unlock()
+	c.flight.Forget(connID)
 }
 
 // captureWriter records what a handler writes so the body can be cached and
