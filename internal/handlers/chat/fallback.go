@@ -1685,6 +1685,12 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 	}
 	out := body
 	var origTokens, savedTokens, savedPct int
+	if h.TokenSaver.ReaAllowEnabled() {
+		format := detectReaFormat(out, claudeNative)
+		if next, did := tokensaver.ApplyReaAllow(out, format); did {
+			out = next
+		}
+	}
 	if h.TokenSaver.RTKEnabled() {
 		rtkCfg := h.TokenSaver.RTKConfig()
 		if next, did := tokensaver.CompressMessagesWithConfig(out, rtkCfg); did {
@@ -2502,4 +2508,39 @@ func bodySpeaksClaudeMessages(body []byte) bool {
 		}
 	}
 	return false
+}
+
+func detectReaFormat(body []byte, claudeNative bool) string {
+	if claudeNative {
+		return "claude"
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "openai"
+	}
+	if _, ok := m["conversationState"]; ok {
+		return "kiro"
+	}
+	if _, ok := m["systemInstruction"]; ok {
+		return "gemini"
+	}
+	if _, ok := m["system_instruction"]; ok {
+		return "gemini"
+	}
+	if _, ok := m["instructions"]; ok {
+		if _, ok := m["input"]; ok {
+			return "openai-responses"
+		}
+	}
+	if _, ok := m["input"]; ok {
+		// responses if input is array of items
+		if arr, ok := m["input"].([]any); ok && len(arr) > 0 {
+			if it, ok := arr[0].(map[string]any); ok {
+				if _, ok := it["type"]; ok {
+					return "openai-responses"
+				}
+			}
+		}
+	}
+	return "openai"
 }
