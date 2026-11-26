@@ -76,7 +76,26 @@ if [ ! -x "$runtime" ] || [ "$recorded" != "$PKG_VERSION" ]; then
 fi
 
 /etc/init.d/9router-go enable
-/etc/init.d/9router-go restart >/dev/null 2>&1 || true
+
+# Healthcheck: install the once-a-minute probe when enabled. Rewrite the line
+# rather than append blindly: re-running postinst on an upgrade must not stack
+# duplicate cron entries. The init script also manages the entry on start, so
+# both paths stay idempotent.
+healthcheck=$(uci -q get 9router-go.main.healthcheck)
+healthcheck=${healthcheck:-1}
+if [ -d /etc/crontabs ]; then
+	tmp=/etc/crontabs/root.9router-go.tmp
+	grep -v '/usr/bin/9router-go-healthcheck' /etc/crontabs/root > "$tmp" 2>/dev/null || true
+	[ "$healthcheck" != "0" ] && \
+		printf '* * * * * /usr/bin/9router-go-healthcheck\n' >> "$tmp"
+	mv -f "$tmp" /etc/crontabs/root
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
+# Start the service through the init script rather than invoking the binary
+# directly: start_service reads open_lan and other UCI settings, and applies
+# the LAN firewall rule when the option is set.
+/etc/init.d/9router-go start >/dev/null 2>&1 || true
 
 port=$(uci -q get 9router-go.main.port)
 logger -t 9router-go "installed $PKG_VERSION (data: $data_dir)"
