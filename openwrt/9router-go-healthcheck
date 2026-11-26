@@ -5,7 +5,9 @@
 # alive with its listener wedged: the PID is there, /health never answers, and
 # every proxied request hangs until the client times out. This closes that gap.
 #
-# Install as a cron job (once a minute):
+# Installed automatically when `option healthcheck '1'` (the default) is set:
+# postinst adds the cron entry and init.d manages it on start. It can also be
+# installed by hand with:
 #   echo '* * * * * /usr/bin/9router-go-healthcheck' >> /etc/crontabs/root
 #   /etc/init.d/cron restart
 #
@@ -17,9 +19,13 @@ set -e
 
 RUN_DIR=/var/run
 FAIL_FILE="$RUN_DIR/9router-go-healthcheck.failures"
-THRESHOLD=${THRESHOLD:-3}
-TIMEOUT=${TIMEOUT:-5}
+THRESHOLD=$(uci -q get 9router-go.main.healthcheck_threshold 2>/dev/null || echo 3)
+TIMEOUT=$(uci -q get 9router-go.main.healthcheck_timeout 2>/dev/null || echo 5)
+case "$THRESHOLD" in ''|*[!0-9]*) THRESHOLD=3 ;; esac
+case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=5 ;; esac
 
+healthcheck=$(uci -q get 9router-go.main.healthcheck 2>/dev/null)
+[ "$healthcheck" = "0" ] && exit 0
 enabled=$(uci -q get 9router-go.main.enabled 2>/dev/null)
 [ "$enabled" = "1" ] || exit 0
 

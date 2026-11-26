@@ -43,6 +43,13 @@ o.rmempty = false
 
 o = s:option(Flag, "auto_update", translate("Self-update"),
 	translate("Let the gateway replace its own binary under the data directory. Leave off to update through opkg only."))
+o = s:option(Flag, "healthcheck", translate("Health check"),
+	translate("Probe /health once a minute and restart the gateway after three consecutive failures."))
+o.default = "1"
+o.rmempty = false
+o = s:option(Flag, "open_lan", translate("Open LAN firewall"),
+	translate("Allow the dashboard to be reached from the LAN. Disable this to keep it accessible only from the router itself."))
+o.default = "0"
 
 o = s:option(ListValue, "log_level", translate("Log level"))
 o:value("debug", "debug")

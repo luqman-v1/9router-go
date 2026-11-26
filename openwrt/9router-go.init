@@ -13,10 +13,12 @@ USE_PROCD=1
 
 NAME=9router-go
 PROG=/usr/bin/$NAME
+HEALTHCHECK=/usr/bin/9router-go-healthcheck
 PIDFILE=/var/run/$NAME.pid
+RULE_NAME=9router-go-allow-lan
 
 start_service() {
-	local enabled port host data_dir auto_update jwt_secret log_level
+	local enabled port host data_dir auto_update jwt_secret log_level healthcheck open_lan
 
 	config_load "$NAME"
 	config_get_bool enabled main enabled 1
@@ -25,7 +27,8 @@ start_service() {
 	config_get data_dir main data_dir '/opt/9router'
 	config_get_bool auto_update main auto_update 0
 	config_get jwt_secret main jwt_secret ''
-	config_get log_level main log_level 'info'
+	config_get_bool healthcheck main healthcheck 1
+	config_get_bool open_lan main open_lan 0
 
 	if [ "$enabled" -ne 1 ]; then
 		logger -t "$NAME" "disabled in /etc/config/$NAME, not starting"
@@ -67,7 +70,75 @@ start_service() {
 	procd_set_param stderr 1
 	procd_close_instance
 
+	# The probe is a separate script; cron must never invoke $PROG, which is
+	# the gateway wrapper itself. Rewrite rather than append so a repeated
+	# start does not stack duplicate lines, and drop the entry when the
+	# operator turned healthcheck off.
+	if [ -d /etc/crontabs ]; then
+		tmp=/etc/crontabs/root.9router-go.tmp
+		grep -vF "$HEALTHCHECK" /etc/crontabs/root > "$tmp" 2>/dev/null || true
+		if [ "$healthcheck" -eq 1 ]; then
+			printf '* * * * * %s\n' "$HEALTHCHECK" >> "$tmp"
+		fi
+		mv -f "$tmp" /etc/crontabs/root
+		/etc/init.d/cron restart >/dev/null 2>&1 || true
+	fi
+
+	# Open the LAN rule after the instance is configured, so a firewall rule
+	# never exists without a running gateway behind it.
+	if [ "$open_lan" -eq 1 ]; then
+		firewall_allow_lan "$port"
+	fi
+
 	logger -t "$NAME" "started on port $port, data in $data_dir"
+}
+
+stop_service() {
+	# No work here: procd stops the instance itself. The LAN rule is owned by
+	# the operator's open_lan setting and by prerm, not by a transient stop,
+	# so a `stop; start` cycle keeps the rule and a boot with open_lan=0
+	# removes it on the next start.
+	return 0
+}
+
+# firewall_allow_lan creates an idempotent uci-firewall rule for the gateway
+# port. It is called from start_service when open_lan is set; the rule is named
+# so prerm and a later open_lan=0 can remove exactly it.
+firewall_allow_lan() {
+	port="${1:-20130}"
+	command -v uci >/dev/null 2>&1 || return 0
+	uci -q get firewall >/dev/null 2>&1 || return 0
+	# Idempotent: re-running after a restart must not create a second rule.
+	if uci -q get firewall.$RULE_NAME >/dev/null 2>&1; then
+		# The rule exists but may point at a stale port; keep it in sync.
+		uci -q set firewall.$RULE_NAME.dest_port="$port" >/dev/null 2>&1
+		uci -q commit firewall >/dev/null 2>&1
+		return 0
+	fi
+	uci -q add firewall rule >/dev/null 2>&1 || return 0
+	uci -q set firewall.@rule[-1].name="$RULE_NAME" >/dev/null 2>&1
+	uci -q set firewall.@rule[-1].src="lan" >/dev/null 2>&1
+	uci -q set firewall.@rule[-1].proto="tcp udp" >/dev/null 2>&1
+	uci -q set firewall.@rule[-1].dest_port="$port" >/dev/null 2>&1
+	uci -q set firewall.@rule[-1].target="ACCEPT" >/dev/null 2>&1
+	uci -q set firewall.@rule[-1].enabled="1" >/dev/null 2>&1
+	uci -q commit firewall >/dev/null 2>&1
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	logger -t "$NAME" "opened port $port on the LAN firewall"
+}
+
+# firewall_disallow_lan removes the rule by name. uci section names are not
+# stable across config loads, so it matches the name field rather than an index.
+firewall_disallow_lan() {
+	command -v uci >/dev/null 2>&1 || return 0
+	uci -q get firewall >/dev/null 2>&1 || return 0
+	idx=$(uci -q show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='$RULE_NAME'$/\1/p" | head -1)
+	if [ -n "$idx" ]; then
+		uci -q delete firewall.$idx >/dev/null 2>&1
+		uci -q commit firewall >/dev/null 2>&1
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+		logger -t "$NAME" "closed the LAN firewall rule"
+	fi
 }
 
 reload_service() {
