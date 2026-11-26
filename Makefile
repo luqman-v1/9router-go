@@ -170,13 +170,14 @@ test:
 test-short:
 	go test ./...
 
-# test-race runs the same command as CI's Race detector job. -race needs cgo,
-# so it stays out of `test` and `test-short`: a toolchain without a C compiler
-# would otherwise fail there with a confusing build error rather than a clear
+# test-race runs the same command as CI's Race detector job (20m timeout to
+# match the per-package ceiling CI uses there). -race needs cgo, so it stays
+# out of `test` and `test-short`: a toolchain without a C compiler would
+# otherwise fail there with a confusing build error rather than a clear
 # "this target needs cgo". The live upstream tests are opt-in and stay skipped.
 ## test-race — run all unit tests under the race detector
 test-race:
-	go test -race -count=1 -timeout 10m ./...
+	go test -race -count=1 -timeout 20m ./...
 
 # Live upstream tests hit real providers with your own credentials from
 # ~/.9router/db/data.sqlite. They are skipped everywhere else on purpose: the

@@ -33,5 +33,12 @@ ok  9router/proxy/internal/handlers
 SPA is not embedded without a `make web-build` first. Not caused by this
 change; reproduced on base.
 
+**CI fix:** the Race detector job's `-timeout 10m` (and `make test-race`'s
+copy) is raised to 20m. The 10m per-package ceiling was already exhausted by
+`internal/handlers/chat` on slow runners — 589.8s and 590.7s under `-race` on
+commits on `main` on 2026-11-26 (1.6% headroom), so the red check on this PR
+was `panic: test timed out after 10m0s`, not a data race: the race detector
+itself is unchanged and still runs the full suite.
+
 **Breaking changes:** None. `*Repo` signatures gained a leading
 `context.Context`; every in-tree caller is updated in the same commit.
