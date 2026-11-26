@@ -796,6 +796,15 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"qwen3.7-plus":         {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
 		"deepseek-v4-pro-0813": {Reasoning: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 393216},
 	},
+	"autoclaw": {
+		"zai_auto":                {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"zai_auto-fast":           {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"zai_glm-5-turbo":         {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 200000, MaxOutput: 131072},
+		"zaicoding_glm-5.3":       {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"zai_glm-5.3-flash":       {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"tdpsk_deepseek-v4-pro":   {Reasoning: true, ThinkingFormat: "deepseek", ContextWindow: 1000000, MaxOutput: 393216},
+		"tdpsk_deepseek-v4-flash": {Reasoning: true, ThinkingFormat: "deepseek", ContextWindow: 1000000, MaxOutput: 393216},
+	},
 }
 
 func init() {

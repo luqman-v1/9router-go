@@ -15,6 +15,7 @@ var ProviderAliasMap = map[string]string{
 	"thh":            "tokenharbor",
 	"th":             "tokenharbor",
 	"aai":            "assemblyai",
+	"ac":             "autoclaw",
 	"ag":             "antigravity",
 	"agcpy":          "agy-acp",
 	"ali":            "alicode",

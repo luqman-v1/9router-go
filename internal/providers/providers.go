@@ -904,6 +904,12 @@ var KnownProviders = map[string]ProviderConfig{
 		Format:               "openai",
 		PreserveCacheControl: true,
 	},
+	"autoclaw": {
+		BaseURL:    "https://autoglm-api.autoglm.ai",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "openai",
+	},
 	"fish-audio": {
 		BaseURL:    "https://api.fish.audio/v1/tts",
 		AuthHeader: "Authorization",
