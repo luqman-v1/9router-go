@@ -16,8 +16,18 @@
   value and stores no stamps.
 - **The dashboard** carries the two new inputs in the API-key policy modal and
   the plan editor, RPH/RPD badges on the keys table, and the model-visible
-  `rph`/`rpd` in the policy PUT response.
+  `rph`/`rpd` in the policy PUT response. Screenshots of the three surfaces are
+  attached before (base) and after (this branch).
+- **The per-IP concurrency counter is bounded.** A concurrency-only `AcquireIP`
+  creates `active[ip]` without ever stamping a window, so the sweep in
+  `recordStampLocked` never ran for that path and a flood of distinct addresses
+  grew the map without limit (a 5000-address probe left 5000 live entries).
+  `tryAdmitLocked` now sweeps before it claims a slot, and the sweep triggers on
+  the union of the window and concurrency maps. `TestAcquireIPConcurrencyMapStaysBounded`
+  pins it.
 - Verified: `go test ./internal/middleware/ ./internal/db/
-  ./internal/handlers/dashboard/`; the new window and IP tests fail on base with
-  `CheckWithWindows undefined` / `AcquireIP undefined`, and pass with the change.
-  Frontend `bun run build` and the svelte-check ratchet stay green.
+  ./internal/handlers/dashboard/`; the new window and IP tests live in
+  `ratelimit_limits_test.go` (a neutral name, so they run on every GOOS; a
+  `_windows_test.go` suffix had excluded them from the Linux CI runner), fail on
+  base with `CheckWithWindows undefined` / `AcquireIP undefined`, and pass with
+  the change. Frontend `bun run build` and the svelte-check ratchet stay green.

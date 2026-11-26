@@ -172,3 +172,33 @@ func TestWindowRetryAfterUsesTheBlockingWindow(t *testing.T) {
 		t.Errorf("retryAfter is not an integer: %v", err)
 	}
 }
+
+// The per-client-IP ceiling is concurrency-only work when an operator sets just
+// `perIpConcurrency`: AcquireIP -> acquireScoped -> tryAdmitSpans ->
+// activeCounterLocked creates an active[ip] entry and returns WITHOUT recording
+// a stamp, so the sweep in recordStampLocked never ran for that path. A probe
+// with 5000 distinct addresses and maxKeys=20 left 5000 live entries, which is
+// the unbounded client-keyed map AGENTS.md §4.G forbids.
+func TestAcquireIPConcurrencyMapStaysBounded(t *testing.T) {
+	rl := NewRateLimiter(time.Minute)
+	rl.maxKeys = 20
+	limits := IPLimits{Concurrency: 5}
+
+	for i := range 5000 {
+		ip := "10." + strconv.Itoa(i/65536%256) + "." + strconv.Itoa(i/256%256) + "." + strconv.Itoa(i%256)
+		if _, ok := rl.AcquireIP(context.Background(), ip, limits, 0); !ok {
+			t.Fatalf("address %s refused under a ceiling of 5", ip)
+		}
+		// Release immediately: this test is about the map's bound, not the slot.
+		rl.ReleaseConcurrency(IPScopeKey(ip))
+	}
+
+	rl.mu.Lock()
+	live := len(rl.active)
+	rl.mu.Unlock()
+	// maxKeys is the bound; the sweep targets 90% but one admit may push it to
+	// the trigger before the next sweep fires, so allow the ceiling itself.
+	if live > rl.maxKeys {
+		t.Errorf("active map holds %d entries after 5000 distinct addresses, want <= %d", live, rl.maxKeys)
+	}
+}

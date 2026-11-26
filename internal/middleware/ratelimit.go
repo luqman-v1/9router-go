@@ -434,6 +434,13 @@ func (rl *RateLimiter) tryAdmitLocked(keyID string, spans []windowSpan, concurre
 	// Concurrency: claim a slot if the key is capped.
 	claimedSlot := false
 	if concurrency > 0 {
+		// Bound the concurrency map here as well as in recordStampLocked. The
+		// IP path is concurrency-only: it never stamps a window, so the sweep in
+		// recordStampLocked never runs for it and active[ip] would grow without
+		// limit under a flood of distinct addresses.
+		if len(rl.active) >= rl.maxKeys {
+			rl.evictIfNeededLocked(keyID)
+		}
 		counter := rl.activeCounterLocked(keyID)
 		if atomic.LoadInt32(counter) >= int32(concurrency) {
 			return false
@@ -793,13 +800,38 @@ func (rl *RateLimiter) tpmRetryAfter(keyID string, tpm int, tokens int) int {
 // parked waiter. An in-flight key is by definition recent, so skipping it
 // cannot defeat the bound — the next call evicts it once it drains.
 //
+// The trigger counts BOTH the window map and the concurrency map. An earlier
+// version triggered on rl.windows alone, which left the IP concurrency path
+// unbounded: AcquireIP with concurrency-only limits takes acquireScoped ->
+// tryAdmitSpans -> activeCounterLocked, creates active[ip], and returns without
+// ever recording a stamp, so no window entry exists and the sweep never fired.
+// A probe with 5000 distinct IPs and maxKeys=20 left 5000 live active entries.
+// Counting the union of the two maps restores the bound AGENTS.md §4.G requires.
+//
 // Must be called with rl.mu held.
 func (rl *RateLimiter) evictIfNeededLocked(keep string) {
-	if len(rl.windows) < rl.maxKeys {
+	if len(rl.windows)+len(rl.active) < rl.maxKeys {
 		return
 	}
 	target := rl.maxKeys * 9 / 10
+	// Walk the union: a key can hold an active counter with no window entry
+	// (IP concurrency-only) or a window with no counter (RPM-only).
+	seen := make(map[string]struct{}, len(rl.windows)+len(rl.active))
+	candidates := make([]string, 0, len(rl.windows)+len(rl.active))
 	for k := range rl.windows {
+		seen[k] = struct{}{}
+		candidates = append(candidates, k)
+	}
+	for k := range rl.active {
+		if _, ok := seen[k]; !ok {
+			candidates = append(candidates, k)
+		}
+	}
+	remaining := len(candidates)
+	for _, k := range candidates {
+		if remaining <= target {
+			break
+		}
 		// Never evict the key whose admit is in progress: its window is about
 		// to be stamped by the caller, and reclaiming it here would let the
 		// stamp land in a fresh window and over-admit.
@@ -823,9 +855,7 @@ func (rl *RateLimiter) evictIfNeededLocked(keep string) {
 			timer.Stop()
 			delete(rl.windowTimers, k)
 		}
-		if len(rl.windows) <= target {
-			break
-		}
+		remaining--
 	}
 }
 
