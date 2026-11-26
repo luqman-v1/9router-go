@@ -1,5 +1,304 @@
 # Changelog
 
+## [v1.9.17-exp.17] - 2026-11-26
+
+### Fixes
+- **antigravity**: Preserve the `hub/` prefix and platform suffix when rewriting Antigravity IDE User-Agent on generation requests (`decolua/9router@6b8b7ceb9` parity).
+
+### fix(db): propagate request context through all DB write paths
+
+`ReplaceProviderConnectionPayload`, `CreateProviderConnectionFull`,
+`UpdateConnectionData`, `SetConnectionSealed`, `sealOnWrite`,
+`NextConnectionPriority`, `ResolveDefaultPriority`, and
+`RewrapConnectionDEKs` now accept `ctx context.Context` and use
+`ExecContext`/`QueryRowContext`/`QueryContext` instead of context-less
+`Exec`/`QueryRow`/`Query`. A context-less write holds a SQLite write lock
+for the full statement duration even after the handler's context is
+cancelled — client disconnect, timeout, or graceful shutdown cannot stop it.
+
+All dashboard handlers, OAuth refresh paths, executor paths, and
+integration tests now pass `r.Context()` or their existing context through
+the full write path.
+
+### fix(usage): preserve explicit cached_tokens: 0 on Responses usage translation
+
+When a Responses-native upstream explicitly reports `cached_tokens: 0` inside
+`input_tokens_details` or `prompt_tokens_details`, `ParseResponsesUsage`
+treated it as absent and left `prompt_tokens_details` out of the shaped
+usage. Downstream clients (Cursor, Codex CLI, Claude Code) then classified
+cache-read as `unknown` instead of an explicit cache-miss, mismatching the
+direct upstream API.
+
+- Distinguish an absent cache counter (`nil`) from an explicit zero (`0`):
+  when `InputTokensDetails` or `PromptTokensDetails` is non-nil, preserve
+  `CachedTokens` including `0` and always populate `PromptTokensDetails`.
+- Absent counters still omit the field entirely.
+- Adds `explicit cached_tokens zero` and `no cached counter at all` cases to
+  `TestParseResponsesUsage`.
+
+### feat(jailbreak): presets now have an explicit on/off switch
+- **Root cause**: an imported/synced preset went straight into the resolver with its derived keyword chain (`deepseek`, `deepseek-v4`, ...). Every matching request got the preset prompt injected, and there was no per-preset toggle in the UI. Turning a key/model binding off did not help because the resolver fell through to the keyword rule.
+- **Backend** (`internal/db/jailbreak.go`, `internal/db/jailbreak_keywords.go`, `internal/handlers/dashboard/jailbreak_{import,sync}.go`): `JailbreakDoc.Enabled *bool` plus `EffectiveEnabled()`. Synced/uploaded presets with no explicit choice start **off**; hand-written presets keep their old live behavior. The resolver, exact/key bindings, keyword ruleset, and playground explain path all skip disabled presets. Sync copies the stored choice forward so a later refresh cannot silently re-enable or disable it.
+- **Frontend** (`web/src/api/client.ts`, `web/src/components/JailbreakView.svelte`): new **Preset enabled** checkbox in the editor, helper text, and an `off` badge in the preset list. The switch is persisted through `saveJailbreakPreset`.
+- **Tests**: resolver/binding/legacy-default/explain/sync cases plus import- and upload-end-to-end cases now assert a preset is inert before it is explicitly enabled. Verified with `go test ./...`, `go vet`, `golangci-lint`, `svelte-check`, `ratchet:svelte`, `bun run build`, and before/after dashboard screenshots.
+
+### fix(translator): keep the caller's tool declarations on OpenCode free-tier requests
+
+- The v2 shaper used to replace the caller's tools with the CLI built-ins and
+  to keep the harness preamble's Code Mode section. The gate intermittently
+  answered the replaced-tool shape with `429 FreeUsageLimitError`, and when it
+  accepted the request the model obeyed Code Mode: it narrated, or called a
+  built-in placeholder, instead of the caller's tool.
+- Caller tool declarations now travel natively — a tool without a schema gets
+  an empty object `parameters`/`input_schema`, since the gate validates every
+  declared tool — and the twelve built-in definitions are appended after them.
+  Dropping the built-in names entirely still 429s, and the definitions must stay
+  the verbatim CLI text: the gate validates `read` against the CLI 2.x capture
+  and answers 403 FreeTierError for a stub, so the definitions stay byte-exact
+  and the section below steers the model away from them instead.
+- The system prompt is the harness preamble minus its Code Mode section and
+  tool-preference bullets, followed by the caller's own text, a note stating
+  the built-in declarations are inert and the caller's tools are called
+  directly by name, and the model-identity note. The preamble's opening stays
+  byte-exact: it is the gate's body fingerprint. The stripped path sets the
+  system field outright instead of letting the preamble injector prepend the
+  original again, so the caller's text is sent exactly once per lane (sending
+  it twice would double every caller system prompt on the wire).
+- A built-in name a caller tool already declares is skipped rather than
+  appended: two declarations sharing a name answer a server error on the gate,
+  so each built-in name stays declared exactly once.
+- `tool_choice` handling is unchanged; a forced choice naming a caller tool
+  still cannot travel and becomes `required`.
+
+Verified live against the gate: 13/13 requests (chat, Claude Messages and
+Responses lanes) answered 200 with the caller's tool name in the response,
+where the replaced-tool shape answered `429 FreeUsageLimitError` and the
+built-ins-only shape called a built-in instead.
+
+### feat(security): edit guardrail policies in the dashboard
+- **Gap**: the Security view could create and delete guardrail policies, but the editor modal was create-only — the `PUT /api/guardrails/policies/{id}` endpoint and `Repo.UpdateGuardrailPolicy` existed, yet no UI path could reach them, so an operator had to delete and re-create a policy to change it (losing its `id` and `created_at` audit trail).
+- **Backend** (`internal/handlers/dashboard/guardrails.go`): `HandleUpdateGuardrailPolicy` now re-reads the row after the update and returns the stored record, so the response carries the persisted `createdAt`/`updatedAt`/tenant id instead of echoing the timestamp-less request body.
+- **Frontend** (`web/src/components/security/SecurityPanel.svelte`): the modal is now create-or-edit — a per-row edit (pencil) button opens it pre-filled with the policy's name, scope, scope id, detectors, action and custom patterns; the footer switches to "Save changes" and the title to "Edit guardrail policy". Saving calls `api.updateGuardrailPolicy` (existing client method) and preserves the policy's `enabled` state; the create path is unchanged.
+- **Regression test** (`internal/handlers/dashboard/guardrails_test.go`, `TestHandleUpdateGuardrailPolicy`): the update keeps the row's id and `created_at`, advances `updated_at`, preserves `enabled` from the payload, 404s on an unknown id, and rejects broken config / bad scope / missing name.
+- **Verified**: `go test ./internal/handlers/dashboard/` green; `svelte-check` ratchet passes (0 errors, 0 unresolved identifiers); live browser pass on a fresh gateway — create → edit (name, action → block, +injection detector) → save re-renders the row from the re-fetched state → delete.
+
+### fix(jailbreak): per-key binding delete button now actually removes the row
+- **Root cause** (`web/src/components/jailbreak/JailbreakKeyScope.svelte`): the per-key "Unbind" (delete icon) called `setJailbreakKeyModel(keyId, id, 'off', false)` — the same PUT the toggle uses. `SetJailbreakKeyModelPreset` normalizes `presetId:"off"` to `""` and upserts a disabled row, so clicking delete only turned the binding off; the row stayed listed, and the next reload's orphan cleanup (or a later toggle-on remapping the empty preset to a missing `default` preset) could silently drop the row instead.
+- **Backend** (`internal/db/jailbreak.go`, `internal/handlers/dashboard/jailbreak_handler.go`, `internal/handlers/dashboard/routes.go`, `internal/handlers/router.go`): new `DELETE /api/jailbreak/keys/model` endpoint (`HandleDeleteJailbreakKeyModel`) backed by `Repo.DeleteJailbreakKeyModel`, which deletes exactly the `<keyId>:<modelId>` kv row. The same model's global binding and other keys' bindings are untouched. Registered in both route tables — the real server reads `internal/handlers/router.go`, and a route added to `dashboard/routes.go` alone 405s there.
+- **Frontend** (`web/src/api/client.ts`, `web/src/components/jailbreak/JailbreakKeyScope.svelte`): new `api.deleteJailbreakKeyModel(keyId, id)`; the per-key delete button now calls it (two-click confirm unchanged). The toggle keeps its soft-disable semantics — off is a stored state the operator toggles back.
+- **Regression test** (`internal/handlers/dashboard/jailbreak_handler_test.go`, `TestJailbreakKeyModelDelete`): the deleted row is gone from the key's list, the same model's global binding and another key's binding survive, repeat delete is idempotent, and empty keyId/model id are refused. Verified live: arm → toggle off → toggle on → delete now removes the row end to end.
+
+### Fix: per-model breaker no longer charges context-window errors
+
+- `CountsTowardBreaker` now counts only availability failures (`ScopeModel` and `KindModelUnavailable`). A context-window overflow is produced by the caller's own prompt, so charging it let any caller open the breaker for a provider/model pair and answer 503 to every other tenant after five oversized requests (#1450).
+
+### Fixed
+
+- Antigravity quota tracker: tampilkan varian `gemini-4-hydrogen-*` (xhigh/high/medium/low) yang sebelumnya tersaring dari daftar model penting, plus `gemini-4-neon-xhigh` dan tier `max` Claude 5.5, mengikuti upstream.
+- Koneksi `agy-acp` sekarang memakai RPC kuota Google yang sama dengan `antigravity` (token sendiri atau dari koneksi sumber), sehingga halaman tracker ACP menampilkan baris kuota per model alih-alih hanya status kunci.
+
+### A 200 that carries only an upstream fault banner is retried
+
+- Antigravity's agent path reports a failure as **ordinary assistant text on
+  HTTP 200** ("Agent execution terminated due to error …", auth/quota/policy
+  faults, generic 502 banners). Every "does this carry an answer" check saw text
+  and committed the turn, so combo fallback never advanced and the client was
+  shown the error message as if it were the model's reply.
+- A turn whose **whole** text is banner-shaped is now classified as retryable:
+  the event-stream peek refuses it before the headers are written (the same 502
+  path an empty turn takes), and the buffering writer fails it at `Finish`
+  instead of committing. On the last combo candidate the caller still surfaces
+  the banner, so the operator sees why.
+- **This is not upstream parity.** `decolua/9router` has only
+  `isTransientAntigravityError(status, message)`; no heuristic treats 200
+  assistant text as a fault. The change turns a 200 into a retryable failure and
+  therefore changes failover behaviour, so it is graded as net-new semantics.
+- The bar is narrow on purpose: every pattern is anchored at BOTH ends, and the
+  text must be short. A real answer that merely OPENS with a fault phrase
+  ("Quota exceeded is the phrase you asked about; …") does not classify — the
+  earlier `^phrase` anchoring did classify it, turning a legitimate short answer
+  into a retry, and the four reviewer probes are now negative tests.
+- A banner split across frames is held open while the text is still a prefix of
+  a known lead-in ("Agent execution" → …), so the client never sees half a fault
+  message as the answer. A frame split across WRITES is held too, and that hold
+  no longer depends on a content heuristic firing on the first half: a 245-byte
+  banner frame split at byte 60 lands inside the JSON header, before `content`
+  exists, so `HasSSEContent` sees nothing there. Holding only when the first
+  write looked like content therefore relayed that banner verbatim — the exact
+  failure this layer exists to stop. Any write that ends mid-frame is now held
+  (bounded at 64 KiB) and the joined bytes are classified when the frame
+  completes; `TestPeekerHoldsSplitBeforeContentField` pins that split position
+  and `TestPeekerRelaysSplitRealAnswer` pins that a real answer split the same
+  way is relayed byte for byte. An upstream that stops mid-frame fails open at
+  `Finish` and relays the bytes.
+- Measured on the healthy path with `BenchmarkStreamContentPeekerHealthy`
+  (committed; three frames, one write per frame, a counting writer so the
+  recorder's own ~1.5 µs does not swamp the result), `-benchtime=2s -count=4`:
+  base 695-805 ns, head 899-947 ns, 384 → 400 B, 6 → 6 allocs. The honest
+  reading is **+0.15-0.2 µs per streamed turn and no new allocation** for
+  classifying the first frame — not the "cheaper than the base" an earlier
+  draft of this fragment claimed from benchmarks that carried the recorder's
+  setup cost. The supporting costs, measured the same way: `FrameParses` 200 ns
+  / 0 allocs per frame (line scan, no `bytes.Split`), the prefilter 126 ns / 1
+  alloc, and `IsBannerSuspect` 5 ns on an answer because it rejects on the first
+  letter before normalizing. `ExtractSSEText` (the full JSON decode, only
+  reached by a frame whose prefilter hit) is 1.7 µs / 6 allocs.
+
+### Usage: a month-to-date period
+
+- **Ported from `giienew/9router-pro@v0.5.109-pro.29`** — `src/app/(dashboard)/dashboard/usage/page.js`
+  (`{ value: "month", label: "Month" }`) and `src/app/api/usage/latency/route.js`
+  (`monthStartIso`, "Month-to-date: details since local midnight on the 1st of
+  this month"). This is **Pro-only, not upstream parity**: `decolua/9router` has
+  no month period, only an unrelated `timeRange === "month"` in code search.
+### Usage: a month-to-date period
+
+- The period picker gains **This month**, resolved as month-to-date — the
+  window opens at local midnight on the 1st — rather than as a rolling 30 days.
+  On the 10th that makes it narrower than `30d`, which is the point: "this
+  month" and "last 30 days" are different questions.
+- The 1st is the boundary a naive "truncate to the day" gets wrong: at 00:30 the
+  month opened 30 minutes ago, not 24 hours. The resolver uses an explicit date,
+  not a day floor.
+- Wired through every surface that reads a period, so the cards, the chart and
+  the request-details table describe one window: `resolveUsagePeriod` (stats,
+  details), `parseChartPeriod` (one daily bucket per day elapsed in the month)
+  and `analyticsrange.Resolve` (cache, compression and per-key analytics).
+  The chart gets its own kind because a day count of `0` already means "from
+  the earliest row" — the `all` preset.
+- The month window is anchored like `today`, so every poll in the month shares
+  one aggregate-cache entry instead of missing on each request.
+
+### Routing: `least-busy` connection strategy
+
+- A new value for the connection fallback strategy: each request goes to the
+  eligible connection carrying the fewest outstanding requests, so an agent
+  hammering a multi-key provider spreads across its keys instead of filling the
+  first one while the rest idle.
+- The load signal is in-memory and bounded — no timer, no polling loop, no new
+  dependency, no extra database read. The dispatch loop notes a pick before
+  every attempt and its outcome after, so a long streaming reply counts as load
+  for the whole turn it holds the key.
+- Score = in-flight requests × 1.0 + failures in the last 30s × 0.5. A key that
+  just refused a request is deprioritized behind one that has been serving, but
+  an outstanding request still outranks a past failure. Exact ties draw at
+  random, so a burst of equally idle keys spreads instead of always taking the
+  first row.
+- Stale safety: a pick whose outcome never reports stops counting after 10
+  minutes rather than wedging its key forever, and the table is capped at 4096
+  entries with per-key caps on stored timestamps and idle entries evicted
+  first.
+- Settings → Default Routing Strategy offers it beside Failover, Round Robin
+  and Sticky Round-Robin. Both spellings (`least-busy`, `leastbusy`) resolve to
+  the strategy.
+
+### Dashboard: a password change ends every existing session
+
+- Sessions are stateless HS256 cookies, so nothing ended one early: a token
+  captured before a password change kept working for the rest of its 24 hours.
+  Tokens now carry `tv` (a revocation epoch stored in settings) and `ph` (a
+  sha256 fingerprint of the stored password hash), and verify only while both
+  still match. `ph` catches a password reset that rewrites the hash without
+  bumping the epoch.
+- A password change writes `password` and `tokenVersion` in the same settings
+  update — so no request can observe a new password beside an old epoch — then
+  re-issues the caller's cookie. The operator who changed the password stays
+  signed in; every other session is signed out.
+- Tokens minted before this change carry neither claim and are read as epoch 0,
+  so deploying it logs nobody out. The epoch is loaded once at boot and
+  refreshed on the change, so authorization adds no database read per request.
+- The local CLI token (`x-9r-cli-token`) is a separate credential and is
+  unaffected.
+
+Two properties the first cut missed, both fixed here:
+
+- **`tokenVersion` is read-only over the API.** It is not in `protectedSettingKeys`,
+  so any session could `PUT {"tokenVersion":0}` and resurrect every token a
+  password change revoked. The protected-key check now runs **before** anything
+  is applied, so a payload carrying both `newPassword` and `tokenVersion` is
+  refused whole instead of changing the password and then reporting 400.
+- **An SSO operator stays an SSO operator after changing the password.** The
+  re-issued cookie is signed from the caller's existing claim set rather than as
+  a bare password session, so an OIDC/SAML operator does not silently become a
+  "Password user" in the dashboard. The claims are read before the change: the
+  change bumps the epoch, which invalidates the very token they come from.
+
+The reset and setup paths are now covered in-process too. `POST
+/api/auth/reset-password` clears the stored hash and `POST /api/setup` writes
+the first one; neither goes through `changeDashboardPassword`, so the
+in-memory fingerprint stayed stale until the next restart — the same
+failure mode this PR closes, reached through a different write. Both handlers
+now reinstall the epoch from the store (`auth.LoadSessionEpoch`) right after
+the settings write: a token minted before a reset stops verifying the moment
+the reset lands, and the session the setup wizard hands back verifies against
+the hash it just wrote. Tests pin both, and one fails without the refresh.
+
+### Dashboard: Escape goes through the dialog stack in every hand-rolled dialog
+
+- `AddConnectionModal`, `EditConnectionModal`, `ChangelogModal` and `UpdateModal`
+  render their own overlay and registered a raw `window` keydown listener for
+  Escape. One Escape therefore reached every open dialog: with a picker over a
+  form, both closed — and when the top layer had no handler of its own, the
+  dialog underneath closed while the top one stayed. They now register with
+  `pushEscapeHandler` from `web/src/lib/ui/escapeStack.ts`, the stack
+  `Modal.svelte` and the model picker already use.
+- `UpdateModal` keeps its scroll lock and shutdown-timer cleanup by releasing
+  the stack entry from the same effect teardown.
+- Verified: an e2e case boots the real gateway and asserts Escape closes Add
+  Connection while the page underneath stays; `escapeStack.test.ts` covers the
+  stack's push/pop ordering; the svelte-check ratchet resolves the new imports.
+
+### Dashboard: restart the gateway from Settings
+
+- Ported from **`giienew/9router-pro@v0.5.109-pro.29`** — `src/app/api/admin/maintenance/route.js`
+  (the restart action) and `src/lib/admin/requireAdmin.js` (the operator gate).
+  This is **Pro-only behaviour, not upstream parity**: `decolua/9router` has no
+  `/api/system/restart`, and Pro's PM2-only wire contract is deliberately not
+  ported — the Go binary restarts through its own supervisor, not through PM2.
+- `POST /api/system/restart` restarts the gateway, so an operator no longer
+  needs a shell. The request must carry `{"confirm":"restart"}` **and** an
+  `application/json` content type with no trailing data: the dashboard cookie
+  travels on a cross-site form post too, and a request that cannot set a JSON
+  body cannot stop the process.
+- The mechanism is chosen before anything answers `200`. A supervisor whose
+  unit restarts on exit (systemd-user `Restart=always`, launchd `KeepAlive`,
+  OpenRC, runit) owns the restart: the process asks to stop and the supervisor
+  brings it back. A process nobody supervises (cron, Windows logon entries, a
+  plain binary) replaces itself through `updater.RestartSelf`, which re-execs
+  the binary only after the listener is closed so the two never race for the
+  port. Spawning under a supervisor is the one combination that must not
+  happen — it starts a second process beside the one the supervisor starts.
+- `updater.RestartSupported()` gates the self-restart path, so a binary this
+  process cannot locate answers `500` instead of claiming a restart is under
+  way.
+- Settings → Gateway Process gains the Restart button: two confirmations, then
+  it polls an authenticated endpoint until the replacement answers and reloads.
+  In Docker the container exits and returns only under its restart policy.
+- Registered in both dashboard route tables (`dashboard.RegisterRoutes` and
+  `SetupDashboardRoutes`), with an integration test that boots the real router
+  and asserts `400` rather than `404`.
+- The route sits on the always-protected list: an engine client API key and an
+  anonymous caller on an install with login disabled are both refused, the same
+  rule `/api/version/shutdown` follows.
+- The supervisor branch requires a supervisor that is **active**: a unit file on
+  disk is not a running service, so an inactive or unknown state falls through
+  to the self-restart instead of leaving the gateway down.
+
+### Features
+- **token-saver**: Add REA reverse-engineering allow toggle (`reaAllowEnabled`) to strip restrictive CLI policy paragraphs and inject REA guidance (`decolua/9router@fdd942de8` parity).
+
+### Features
+- **providers**: Add QwenCloud (`qwencloud`) provider with `qc`, `qctp`, `qwen-cloud` aliases and 1M context capabilities for Qwen4/3.8/3.7 models (`decolua/9router@dbe446d05` parity).
+
+### Fixes
+- **antigravity**: Prepend official Antigravity 2.33.0 identity to `systemInstruction.parts` ahead of generation requests (`decolua/9router@e37cb78e1` parity).
+
+### fix(capabilities): register OpenCode 10 free models context limits
+
+Register the 10 deployed OpenCode free models in `capabilities.go` with verified context limits (1M/262k) per AGENTS.md §3.E.
+
+Upstream parity: decolua/9router#4e5485836. Closes #1395.
+
 ## [v1.9.17-exp.16] - 2026-11-25
 
 ### Fixed
