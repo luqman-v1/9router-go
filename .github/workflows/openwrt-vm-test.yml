@@ -1,0 +1,140 @@
+name: OpenWrt package test
+
+# Boots a real OpenWrt 18.06.9 x86-64 image in QEMU and installs the built
+# .ipk inside it, so the test exercises the parts a unit test cannot: procd as
+# PID 1 running /etc/init.d/9router-go, uci config created by postinst, the
+# gateway binding its port, and the helper scripts on a 18.06 userspace.
+#
+# Why a VM and not a chroot or docker rootfs: opkg install works in all three,
+# but only a booted kernel starts the service through procd. The service start
+# is the part that has regressed before, so it is the part that has to be
+# tested for real.
+#
+# The guest reaches the host through QEMU's user-mode network: slirp maps
+# 10.0.2.2:<port> to the host's loopback, where a local HTTP server serves the
+# built packages. No ssh keys, no shared folders.
+#
+# The image is the official 18.06.9 release (the oldest release this package
+# supports), verified against the published sha256sum before boot. 18.06 is
+# the strictest target: its userspace is the smallest (no base64, no pgrep),
+# so a package that runs there runs on 19.07 and later.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref, matching ci.yml: a superseded run would otherwise keep a
+# 25-minute VM job burning runner minutes to a conclusion nobody reads.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENWRT_RELEASE: 18.06.9
+
+jobs:
+  vm-test:
+    name: OpenWrt 18.06 VM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+          qemu-system-x86_64 --version | head -1
+          # /dev/kvm makes the boot ~30s instead of ~5min under TCG. The
+          # driver falls back to TCG automatically, so this is an optimization,
+          # not a requirement.
+          if [ -e /dev/kvm ]; then echo "KVM available"; else echo "no KVM, TCG fallback"; fi
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Build Web SPA
+        run: |
+          cd web
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Warm the module cache (retried)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod download all; then
+              echo "module graph cached on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::go mod download failed 3 times; the proxy is unreachable."
+              exit 1
+            fi
+            echo "attempt ${attempt} failed (transient proxy error); retrying in 5s"
+            sleep 5
+          done
+
+      # Build only what the test installs. The Makefile now compiles just the
+      # Go targets the requested architecture names need, so this is one
+      # cross-build instead of four; the release job still builds all eight.
+      - name: Build the x86_64 packages
+        run: |
+          set -euo pipefail
+          make ipk IPK_ARCHES='x86_64=dist/ipk-bin/linux-amd64'
+          find dist/ipk/x86_64 -maxdepth 1 -name '*.ipk' -printf '%s %p\n' | sort
+          test "$(find dist/ipk/x86_64 -maxdepth 1 -name '*.ipk' | wc -l)" -ge 2
+
+      # The 273 MB image is identical for every run: it is the official
+      # 18.06.9 release, pinned by sha256. Caching it keyed on that hash turns
+      # a multi-minute download into a cache hit on every PR after the first.
+      - name: Cache the OpenWrt image
+        uses: actions/cache@v4
+        with:
+          path: openwrt-${{ env.OPENWRT_RELEASE }}-x86-64-combined-ext4.img
+          key: openwrt-${{ env.OPENWRT_RELEASE }}-x86-64-combined-ext4-483a38be503b2ce8
+
+      - name: Download the official OpenWrt image
+        run: |
+          set -euo pipefail
+          R="${OPENWRT_RELEASE}"
+          IMG="openwrt-${R}-x86-64-combined-ext4.img"
+          # A cache restore (step above) leaves the decompressed image behind;
+          # only fetch when it is absent.
+          if [ -f "${IMG}" ]; then
+            echo "image present from cache, skipping download"
+            exit 0
+          fi
+          BASE="https://archive.openwrt.org/releases/${R}/targets/x86/64"
+          SHA="483a38be503b2ce8d90bba973a46b0e89771532bb12c74ce39d9037046824311"
+          # The sha256sum is pinned rather than fetched from the same host:
+          # a compromised mirror must not be able to substitute a booted image,
+          # because everything that runs in this job trusts it.
+          curl -fsSL -o "${IMG}.gz" "${BASE}/${IMG}.gz"
+          echo "${SHA}  ${IMG}.gz" | sha256sum -c -
+          gunzip -f "${IMG}.gz"
+          ls -lh "${IMG}"
+
+      - name: Boot OpenWrt and test the package
+        run: |
+          set -euo pipefail
+          VERSION="$(cat VERSION)"
+          python3 scripts/openwrt-vm-test.py \
+            --image "openwrt-${OPENWRT_RELEASE}-x86-64-combined-ext4.img" \
+            --ipk-dir dist/ipk/x86_64 \
+            --version "${VERSION}"
+        timeout-minutes: 25

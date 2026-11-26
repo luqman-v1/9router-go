@@ -1,0 +1,106 @@
+<%#
+	Status panel and lifecycle buttons for the 9router-go LuCI page.
+
+	Pure Lua 5.1 (18.06 and later ship it), so no JSON library and no client-side
+	framework. The service state comes from the pid file procd maintains; the
+	buttons post to the controller's action endpoint, which runs the init script
+	and answers with JSON.
+
+	This template is rendered inside a CBI SimpleSection, so it emits a fragment,
+	not a page. Everything it needs is required explicitly rather than relying on
+	what the template environment happens to expose: `uci` in particular is a
+	global of the dispatcher module, not of _G, so a template that assumed it
+	would break on some LuCI builds.
+-%>
+
+<%
+local fs = require("nixio.fs")
+local uci = require("luci.model.uci").cursor()
+local http = require("luci.http")
+
+local pidfile = "/var/run/9router-go.pid"
+local pid = nil
+local running = false
+
+local pidtxt = fs.readfile(pidfile)
+if pidtxt and #pidtxt > 0 then
+	pid = pidtxt:match("^%s*(%d+)")
+	if pid and pid ~= "" then
+		-- kill -0 tests liveness without signalling. A stale pid file naming a
+		-- reused PID would read as running here; the consequence is a wrong
+		-- badge for one page load, and start/stop still go through procd.
+		local ok = os.execute("kill -0 " .. pid .. " 2>/dev/null")
+		running = (ok == 0 or ok == true)
+	end
+end
+
+local port = uci:get("9router-go", "main", "port") or "20130"
+local data_dir = uci:get("9router-go", "main", "data_dir") or "/opt/9router"
+
+local hostname = http.getenv("SERVER_NAME") or http.getenv("HTTP_HOST") or ""
+hostname = (hostname:gsub(":%d+$", ""))
+
+local action_url = url("admin", "services", "9router-go", "action")
+-%>
+
+<script type="text/javascript">
+//<![CDATA[
+	function nineRouterGoAction(action) {
+		var el = document.getElementById('nine-router-go-badge');
+		XHR.post('<%=action_url%>', {
+			timeout: 15000,
+			content: 'action=' + encodeURIComponent(action)
+		}).addCallback(function (res) {
+			var data = null;
+			try { data = JSON.parse(res.responseText); } catch (e) {}
+			if (!data || !data.ok) {
+				el.innerHTML = '<%:action failed%>';
+				el.style.color = '#b00';
+				return;
+			}
+			if (data.running) {
+				el.innerHTML = '<%:running%>';
+				el.style.color = '#1a7f37';
+			} else {
+				el.innerHTML = '<%:stopped%>';
+				el.style.color = '#b00';
+			}
+		});
+	}
+//]]>
+</script>
+
+<div class="cbi-value">
+	<label class="cbi-value-title"><%:Status%></label>
+	<div class="cbi-value-field">
+		<span id="nine-router-go-badge"
+			style="font-weight:bold;color:<%= running and '#1a7f37' or '#b00' %>">
+			<% if running then %><%:running%><% else %><%:stopped%><% end %>
+		</span>
+		<% if pid then %><code style="margin-left:1em">PID <%= pid %></code><% end %>
+		<a style="margin-left:1.5em" href="http://<%= hostname %>:<%= port %>/"
+			target="_blank" rel="noopener"><%:Open dashboard%></a>
+	</div>
+</div>
+
+<div class="cbi-value">
+	<label class="cbi-value-title"><%:Address%></label>
+	<div class="cbi-value-field"><code><%= port %></code></div>
+</div>
+
+<div class="cbi-value">
+	<label class="cbi-value-title"><%:Data directory%></label>
+	<div class="cbi-value-field"><code><%= data_dir %></code></div>
+</div>
+
+<div class="cbi-value">
+	<label class="cbi-value-title"><%:Service%></label>
+	<div class="cbi-value-field">
+		<button type="button" class="cbi-button cbi-button-apply"
+			onclick="nineRouterGoAction('restart')"><%:Restart%></button>
+		<button type="button" class="cbi-button cbi-button-reset"
+			onclick="nineRouterGoAction('stop')"><%:Stop%></button>
+		<button type="button" class="cbi-button cbi-button-save"
+			onclick="nineRouterGoAction('start')"><%:Start%></button>
+	</div>
+</div>

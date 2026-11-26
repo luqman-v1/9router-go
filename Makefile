@@ -66,7 +66,7 @@ GOAMD64 ?= v1
 export CGO_ENABLED
 export GOAMD64
 
-.PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev changelog-merge
+.PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev changelog-merge ipk ipk-bins
 
 ## web-build — build frontend static assets (Svelte/Vite) into web/dist
 #
@@ -335,12 +335,92 @@ wiki-build:
 ## wiki-serve — generate and serve the site locally on :8000
 wiki-serve: wiki-build
 	cd _site && python -m http.server 8000
+## ipk — build OpenWrt .ipk packages and an opkg feed index
+#
+# Minimum supported release: OpenWrt 18.06.
+#
+# opkg installs a package only when its Architecture field matches the device's
+# DISTRIB_ARCH exactly, and the names below are the ones 18.06 and later
+# actually report. The suffixed forms (`arm_cortex-a7_neon-vfpv4`, `_vfpv3`) are
+# not decoration: 18.06 prints the FPU suffix on those targets, so a package
+# built as `arm_cortex-a7` is refused on an ipq40xx router.
+#
+#	x86_64                              x86/64, most PC-based routers
+#	i386_pentium4                       x86/legacy (18.06 target still shipped)
+#	aarch64_generic                     armvirt/64, later generic arm64 images
+#	aarch64_cortex-a53                  mediatek/mt7622, bcm2710, mvebu/cortexa53
+#	aarch64_cortex-a72                  bcm27xx/bcm2711, mvebu/cortexa72
+#	arm_cortex-a7_neon-vfpv4            ipq40xx, mediatek/mt7623, bcm2709, sunxi
+#	arm_cortex-a15_neon-vfpv4           ipq806x, armvirt/32
+#	arm_cortex-a9_vfpv3                 mvebu/cortexa9
+#
+# NOT built: the 32-bit MIPS targets (ramips mipsel_24kc, ath79/ar71xx
+# mips_24kc, lantiq), which cover a large share of 18.06 routers. The blocker is
+# the database driver, not this packaging: modernc.org/sqlite is pure Go and has
+# no mips/mipsle port (libc ships 386, amd64, arm, arm64, mips64le, ppc64le,
+# riscv64, s390x, loong64). Making it work would need a cgo SQLite and a
+# per-target C cross-compiler, which ends the single portable binary guarantee
+# for every target at once. A mips router therefore runs the gateway only from a
+# non-package install with its own build, if one exists.
+#
+# GOARM=7 is the safe generic for the armv7 names.
+#
+# One package per architecture name, not one per Go target: the binary is
+# identical for the three arm64 names, but opkg matches on the field, so the
+# alias has to exist as its own file. Override IPK_ARCHES to build a subset.
+#
+# Packages land in dist/ipk/<openwrt-arch>/, each with Packages and Packages.gz.
+#
+# IPK_BASE_URL is where the .ipk files will be downloadable from. The release
+# workflow sets it to the tag's download URL so the published index points at
+# release assets; a local build leaves it empty and Filename stays relative.
+IPK_BASE_URL ?=
+IPK_BIN := dist/ipk-bin
+IPK_ARCHES ?= \
+	x86_64=$(IPK_BIN)/linux-amd64 \
+	i386_pentium4=$(IPK_BIN)/linux-386 \
+	aarch64_generic=$(IPK_BIN)/linux-arm64 \
+	aarch64_cortex-a53=$(IPK_BIN)/linux-arm64 \
+	aarch64_cortex-a72=$(IPK_BIN)/linux-arm64 \
+	arm_cortex-a7_neon-vfpv4=$(IPK_BIN)/linux-armv7 \
+	arm_cortex-a15_neon-vfpv4=$(IPK_BIN)/linux-armv7 \
+	arm_cortex-a9_vfpv3=$(IPK_BIN)/linux-armv7
+
+# The Go targets the requested architecture names actually need. One binary
+# serves several opkg names (the three arm64 names share linux-arm64), so a
+# subset build — the CI VM test only installs x86_64 — compiles only what it
+# will use instead of all four cross-builds.
+IPK_GO_BINS := $(sort $(foreach a,$(IPK_ARCHES),$(notdir $(lastword $(subst =, ,$(a))))))
+
+ipk: web-build
+	@$(MAKE) --no-print-directory ipk-bins
+	go run ./tools/ipkbuild -version "$(VERSION)" \
+		$(foreach a,$(IPK_ARCHES),-arch $(a)) \
+		$(if $(IPK_BASE_URL),-base-url "$(IPK_BASE_URL)")
+
+ipk-bins:
+	@mkdir -p $(IPK_BIN)
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-amd64 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-amd64 ./cmd/9router-go/ ; \
+	fi
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-386 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=386 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-386 ./cmd/9router-go/ ; \
+	fi
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-arm64 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-arm64 ./cmd/9router-go/ ; \
+	fi
+	@if echo " $(IPK_GO_BINS) " | grep -q " linux-armv7 "; then \
+		CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+			go build -ldflags="$(LDFLAGS)" -o $(IPK_BIN)/linux-armv7 ./cmd/9router-go/ ; \
+	fi
 
 ## clean — remove build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
-	rm -rf web/dist
-	rm -rf _site
+	rm -rf web/dist _site dist/ipk dist/ipk-bin
 
 ## help — show targets
 help:

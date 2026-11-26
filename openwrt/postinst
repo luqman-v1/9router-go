@@ -1,0 +1,91 @@
+#!/bin/sh
+# postinst — runs on install and again on every `opkg upgrade`.
+#
+# Two jobs: make the runtime copy under data_dir match the package, and make
+# sure the service is registered. The copy is what allows one binary layout to
+# serve both update paths: the package file stays on read-only squashfs, while
+# `9router-go update` rewrites the copy in the writable overlay.
+#
+# Everything here must run on OpenWrt 18.06: busybox ash, no chmod guarantee
+# beyond busybox's own, and only the core applets.
+
+[ -n "$IPKG_INSTROOT" ] && exit 0
+
+PKG_VERSION="@VERSION@"
+PKG_BIN=/usr/libexec/9router-go/9router-go
+DEFAULT_DATA_DIR=/opt/9router
+STATE_DIR=/etc/9router-go
+
+data_dir=$(uci -q get 9router-go.main.data_dir)
+if [ -z "$data_dir" ]; then
+	data_dir="$DEFAULT_DATA_DIR"
+	uci -q set 9router-go.main.data_dir="$data_dir"
+fi
+
+# A random secret generated once. Every branch is a busybox applet that is
+# present in a default build; an image that ships none of them leaves the option
+# empty, which the gateway reads as "generate one per start". Nothing is
+# committed as "" in that case, so a later install can still fill it in.
+generate_secret() {
+	[ -r /dev/urandom ] || return 1
+	if command -v sha256sum >/dev/null 2>&1; then
+		dd if=/dev/urandom bs=32 count=1 2>/dev/null | sha256sum | cut -d' ' -f1
+	elif command -v md5sum >/dev/null 2>&1; then
+		dd if=/dev/urandom bs=32 count=1 2>/dev/null | md5sum | cut -d' ' -f1
+	elif command -v base64 >/dev/null 2>&1; then
+		dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\n'
+	else
+		return 1
+	fi
+}
+
+secret=$(uci -q get 9router-go.main.jwt_secret)
+if [ -z "$secret" ]; then
+	secret=$(generate_secret)
+	if [ -n "$secret" ]; then
+		uci -q set 9router-go.main.jwt_secret="$secret"
+	else
+		logger -t 9router-go "could not generate a JWT secret; the gateway will use a per-start one"
+	fi
+fi
+uci -q commit 9router-go
+
+mkdir -p "$data_dir/bin" "$data_dir/db" "$STATE_DIR"
+
+runtime="$data_dir/bin/9router-go"
+recorded=$(cat "$STATE_DIR/runtime-version" 2>/dev/null)
+
+# The package wins: an upgrade must be able to move a self-updated install
+# forward, and a consumer cannot be left running a build opkg did not install.
+if [ ! -x "$runtime" ] || [ "$recorded" != "$PKG_VERSION" ]; then
+	if [ -x "$runtime" ] && [ -n "$recorded" ] && [ "$recorded" != "$PKG_VERSION" ]; then
+		logger -t 9router-go "runtime copy was $recorded, replacing with package $PKG_VERSION"
+	fi
+	if cp -f "$PKG_BIN" "$runtime.tmp"; then
+		# No chmod call: `cp` keeps the source mode, and /usr/libexec/... is
+		# installed 0755. A stripped busybox without a chmod applet therefore
+		# still produces an executable runtime copy.
+		mv -f "$runtime.tmp" "$runtime"
+		printf '%s\n' "$PKG_VERSION" > "$STATE_DIR/runtime-version"
+	else
+		rm -f "$runtime.tmp"
+		logger -t 9router-go "could not install runtime copy into $data_dir/bin"
+		echo "9router-go: warning: $data_dir is not writable, the dashboard will"
+		echo "run from the read-only package binary and self-update is unavailable."
+	fi
+fi
+
+/etc/init.d/9router-go enable
+/etc/init.d/9router-go restart >/dev/null 2>&1 || true
+
+port=$(uci -q get 9router-go.main.port)
+logger -t 9router-go "installed $PKG_VERSION (data: $data_dir)"
+
+cat <<EOF
+9router-go $PKG_VERSION installed.
+
+  Dashboard : http://<router-lan-ip>:${port:-20130}
+  Data      : $data_dir
+  Service   : /etc/init.d/9router-go {start|stop|restart|status}
+  Feed      : 9router-go-feed add    (enables "opkg upgrade")
+EOF

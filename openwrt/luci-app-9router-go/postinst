@@ -1,0 +1,37 @@
+#!/bin/sh
+# postinst for luci-app-9router-go.
+#
+# LuCI 19.07+ discovers controllers and ACLs from their installed paths and
+# caches them; clearing the caches is what makes the new page appear without a
+# logout or a reboot. On 18.06 there is no rpcd and no /tmp/luci-indexcache, so
+# every step here is optional and guarded.
+#
+# The package ships the Lua LuCI tree because that is what 18.06 runs. On a
+# stock 21.02+ image LuCI is JS-only and the Lua compatibility layer lives in
+# `luci-compat`; the page then does not appear, and this names the missing
+# package instead of leaving the operator to guess.
+
+[ -n "$IPKG_INSTROOT" ] && exit 0
+
+# 18.06: LuCI is Lua, everything below is a no-op except the cache file that
+# does not exist yet. 19.07+: clear both caches so the new entry is discovered.
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* 2>/dev/null
+rm -f /tmp/luci-modulecache/* 2>/dev/null
+
+if [ -x /etc/init.d/rpcd ]; then
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+fi
+
+# A JS-only LuCI (21.02+) has no Lua view support unless luci-compat is
+# installed. The reliable signal is luci-base's Lua dispatcher: it exists on
+# 18.06/19.07, and on 21.02+ only when luci-compat is present.
+if [ -f /usr/lib/lua/luci/dispatcher.lua ]; then
+	exit 0
+fi
+if [ -f /usr/share/luci/menu.d/luci-base.json ]; then
+	echo "luci-app-9router-go: this LuCI is JS-only (21.02 or later)."
+	echo "Install the Lua compatibility layer to show the page:"
+	echo "    opkg install luci-compat"
+	echo "The gateway itself is unaffected; the dashboard is on its own port."
+fi
+exit 0

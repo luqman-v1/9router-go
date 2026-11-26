@@ -1,0 +1,39 @@
+#!/bin/sh
+# /usr/bin/9router-go — launcher for the 9router-go gateway.
+#
+# The package binary lives at /usr/libexec/9router-go/9router-go on read-only
+# squashfs. When a writable copy exists under data_dir/bin, it is used instead:
+# that copy is what `9router-go update` rewrites, and it is what the procd
+# service starts, so a self-updated binary survives a restart.
+#
+# DATA_DIR is exported here for CLI use (`9router-go version`, `update`), which
+# runs outside procd and otherwise would not see the UCI setting.
+#
+# The pid file is written here rather than by `procd_set_param pidfile`: that
+# parameter is not present in every procd release the package supports (18.06
+# predates it), while `echo $$` before `exec` names the process that is about to
+# become the gateway, on every version. NINE_ROUTER_PIDFILE is set by the init
+# script only, so a CLI invocation never overwrites the daemon's pid.
+
+PKG_BIN=/usr/libexec/9router-go/9router-go
+
+if [ -z "$DATA_DIR" ]; then
+	if command -v uci >/dev/null 2>&1; then
+		DATA_DIR=$(uci -q get 9router-go.main.data_dir)
+	fi
+	DATA_DIR=${DATA_DIR:-/opt/9router}
+	export DATA_DIR
+fi
+
+if [ -n "$NINE_ROUTER_PIDFILE" ]; then
+	# This shell becomes the gateway through exec, so its pid is the pid that
+	# will hold the listening socket.
+	printf '%s\n' "$$" > "$NINE_ROUTER_PIDFILE" 2>/dev/null
+fi
+
+runtime="$DATA_DIR/bin/9router-go"
+if [ -x "$runtime" ]; then
+	exec "$runtime" "$@"
+fi
+
+exec "$PKG_BIN" "$@"

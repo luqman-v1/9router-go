@@ -1,0 +1,17 @@
+{
+	"luci-app-9router-go": {
+		"description": "Grant access to the 9router-go service and its UCI settings",
+		"read": {
+			"uci": [ "9router-go" ],
+			"file": {
+				"/var/run/9router-go.pid": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "9router-go" ],
+			"file": {
+				"/etc/init.d/9router-go": [ "exec" ]
+			}
+		}
+	}
+}

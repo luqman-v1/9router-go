@@ -169,6 +169,36 @@ jobs:
           GOAMD64: v1
         run: make cross
 
+      # The OpenWrt packages ride along with the release so `opkg install` can
+      # pull them, and the opkg-feed workflow indexes them afterwards. They are
+      # built here rather than in a separate job because this runner already has
+      # the Go toolchain, the Bun web build and a warm module cache; a second
+      # job would pay for all three again to rebuild two binaries.
+      #
+      # IPK_BASE_URL points the generated Packages index at this tag's assets.
+      # A relative Filename would resolve against the Pages URL and 404.
+      - name: Build OpenWrt packages
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          make ipk IPK_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          mkdir -p ipk-assets
+          # Every architecture directory the build produced, discovered rather
+          # than listed: a hardcoded list here silently drops a new alias that
+          # the Makefile added, and the feed then misses it for that target.
+          for dir in dist/ipk/*/; do
+            arch=$(basename "$dir")
+            cp "$dir"/*.ipk ipk-assets/
+            cp "$dir/Packages" "ipk-assets/Packages.$arch"
+            cp "$dir/Packages.gz" "ipk-assets/Packages.$arch.gz"
+          done
+          find ipk-assets -maxdepth 1 -type f -printf '%s %p\n' | sort | head -40
+          test "$(find ipk-assets -maxdepth 1 -name '*.ipk' | wc -l)" -ge 2 || {
+            echo "::error::no OpenWrt packages were produced"
+            exit 1
+          }
+
       - name: Generate changelog
         run: |
           set -euo pipefail
@@ -297,6 +327,7 @@ jobs:
             9router-go-tray-windows-amd64.exe
             9router-go-android-arm64
             SHA256SUMS.txt
+            ipk-assets/*
           body_path: /tmp/notes.md
           generate_release_notes: false
         env:
