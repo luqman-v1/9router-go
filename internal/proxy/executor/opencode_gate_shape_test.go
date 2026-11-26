@@ -32,9 +32,11 @@ func TestShapeOpenCodeFreeBody_TitleVersusAgent(t *testing.T) {
 			titleWanted: true,
 		},
 		{
-			name:        "agent turn keeps the built-in set",
+			// The caller's Bash plus one inert placeholder per built-in: the
+			// gate requires the built-in names, the model needs the caller's.
+			name:        "agent turn keeps the caller tool plus the built-in set",
 			body:        agentBody,
-			wantTools:   openCodeBuiltinToolCount,
+			wantTools:   openCodeBuiltinToolCount + 1,
 			titleWanted: false,
 		},
 	}

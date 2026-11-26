@@ -14,18 +14,27 @@ import (
 //   - the system prompt must start with the CLI harness preamble, verbatim
 //     (a 2,000-char prefix fails; caller instructions appended after the full
 //     preamble pass);
-//   - tool declarations must be the CLI built-ins, byte-exact: a
-//     foreign-named tool, a renamed clone, or an edited description all
-//     answer 400 "Request validation failed"; at least six definitions are
-//     required;
+//   - the built-in tool names must be declared: a request whose declarations
+//     omit them entirely is refused (429 FreeUsageLimitError), and the built-in
+//     definitions themselves must stay the verbatim CLI 2.x text — a stubbed
+//     description answers 400 "Request validation failed" / 403 FreeTierError.
+//     Caller declarations carried alongside them are accepted;
+//   - two declarations sharing a name answer a server error, so a caller tool
+//     that reuses a built-in name must replace it rather than join it;
 //   - tool CALLS are not constrained: history may carry calls to undeclared
 //     names and the model may emit them.
 //
-// So caller tools never travel as declarations. They are described in the
-// appended system text and keep their names in history, and the genuine
-// built-in set is declared in their place. The returned rename map is empty:
-// no name is rewritten, so response tool_calls arrive in the caller's own
-// spelling and need no restoring.
+// Declaring the caller's tools in place of the built-ins passes the gate but
+// loses the turn: the harness preamble runs in Code Mode, which says the
+// built-ins are the only tools there are, and the model follows it — it
+// narrates, or calls a built-in, instead of the caller's tool (measured live
+// 2026-11-25). So the caller's declarations travel natively beside the
+// built-in set (whose definitions must stay the verbatim CLI text — the gate
+// refuses a stub, internal/integration encodes the rule), the preamble's Code
+// Mode section is stripped, and a note after the caller's own text states the
+// built-ins are inert and the caller's tools are called directly by name. The
+// returned rename map is empty: no name is rewritten, so response tool_calls
+// arrive in the caller's own spelling and need no restoring.
 //
 // flat is true for Responses API bodies and false for Chat Completions;
 // Claude Messages bodies (a "system" field or input_schema tools) are
@@ -38,10 +47,9 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 		return body, map[string]string{}
 	}
 	claude := isOpenCodeClaudeShapedRequest(request)
-
-	callerTools := describeOpenCodeCallerTools(request)
-	installOpenCodeGenuineTools(request, flat, claude)
-	injectOpenCodeHarnessSystem(request, flat, claude, callerTools, openCodeModelIdentityNote(request))
+	origSystem := opencodeSystemString(request)
+	installCallerToolsWithInertBuiltins(request, flat, claude)
+	injectStrippedHarnessSystem(request, flat, claude, origSystem, openCodeModelIdentityNote(request))
 	if flat {
 		// Prior-turn function_call items with no name fail the Responses
 		// validator; a harness history can carry one.
@@ -56,6 +64,23 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 		return body, map[string]string{}
 	}
 	return out, map[string]string{}
+}
+
+// openCodeGenuineToolNames lists the CLI built-ins the gate accepts, in
+// declaration order.
+var openCodeGenuineToolNames = []string{
+	"edit",
+	"glob",
+	"grep",
+	"question",
+	"read",
+	"shell",
+	"skill",
+	"subagent",
+	"webfetch",
+	"websearch",
+	"write",
+	"execute",
 }
 
 // openCodeGenuineToolSet lists the built-in names the gate accepts as
@@ -87,105 +112,126 @@ func isOpenCodeClaudeShapedRequest(request map[string]any) bool {
 	return false
 }
 
-// installOpenCodeGenuineTools replaces the tools array with the gate's exact
-// built-in definitions in the lane's own shape.
-func installOpenCodeGenuineTools(request map[string]any, flat, claude bool) {
-	var defs []any
-	if err := json.Unmarshal([]byte(openCodeGenuineToolsJSON), &defs); err != nil {
-		return
+// openCodeGenuineTools are the CLI's built-in definitions parsed once from the
+// verbatim capture. They are injected byte-exact, not as stubs: the gate
+// validates the "read" definition against the CLI 2.x text and answers a stub
+// with 403 FreeTierError (internal/integration: the inference-gate fake encodes
+// the same rule).
+var openCodeGenuineTools = func() []map[string]any {
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(openCodeGenuineToolsJSON), &tools); err != nil {
+		return nil
+	}
+	return tools
+}()
+
+// installCallerToolsWithInertBuiltins keeps the caller's own tool declarations
+// and appends the built-in definitions the gate requires. Dropping the built-in
+// names entirely is refused (429 FreeUsageLimitError), and replacing the
+// caller's declarations outright loses the turn: the preamble's Code Mode
+// section tells the model the built-ins are the only tools, so it narrates or
+// calls a built-in instead of the caller's tool. Declared natively side by side
+// with the Code Mode section stripped and the direct-call note appended, the
+// model picks the caller's tools (measured live: 6/6 caller tool emitted).
+func installCallerToolsWithInertBuiltins(request map[string]any, flat, claude bool) {
+	tools, _ := request["tools"].([]any)
+	out := make([]any, 0, len(tools)+len(openCodeGenuineToolNames))
+	declared := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		out = append(out, ensureOpencodeToolSchema(tool, flat, claude))
+		if name := opencodeToolDeclarationName(tool, flat, claude); name != "" {
+			declared[name] = true
+		}
+	}
+	for _, name := range openCodeGenuineToolNames {
+		// Two tools with one name answer a server error, so a caller tool of
+		// that name replaces the built-in rather than joining it.
+		if declared[name] {
+			continue
+		}
+		out = append(out, opencodeGenuineToolDefinition(name, flat, claude))
+	}
+	request["tools"] = out
+}
+
+// opencodeToolDeclarationName reads a declared tool's name in the lane's own
+// spelling.
+func opencodeToolDeclarationName(tool any, flat, claude bool) string {
+	m, ok := tool.(map[string]any)
+	if !ok {
+		return ""
 	}
 	switch {
 	case claude:
-		out := make([]any, 0, len(defs))
-		for _, def := range defs {
-			fn, ok := def.(map[string]any)["function"].(map[string]any)
-			if !ok {
-				continue
-			}
-			out = append(out, map[string]any{
+		name, _ := m["name"].(string)
+		return name
+	case flat:
+		name, _ := m["name"].(string)
+		return name
+	default:
+		fn, _ := m["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		return name
+	}
+}
+
+// opencodeGenuineToolDefinition re-shapes one captured built-in definition into
+// the lane's wire format. The chat lane gets the captured object verbatim.
+func opencodeGenuineToolDefinition(name string, flat, claude bool) any {
+	for _, def := range openCodeGenuineTools {
+		fn, _ := def["function"].(map[string]any)
+		if fn == nil || fn["name"] != name {
+			continue
+		}
+		switch {
+		case claude:
+			return map[string]any{
 				"name":         fn["name"],
 				"description":  fn["description"],
 				"input_schema": fn["parameters"],
-			})
-		}
-		request["tools"] = out
-	case flat:
-		out := make([]any, 0, len(defs))
-		for _, def := range defs {
-			fn, ok := def.(map[string]any)["function"].(map[string]any)
-			if !ok {
-				continue
 			}
-			out = append(out, map[string]any{
-				"type": "function", "name": fn["name"],
-				"description": fn["description"], "parameters": fn["parameters"],
-				"strict": false,
-			})
+		case flat:
+			return map[string]any{
+				"type":        "function",
+				"name":        fn["name"],
+				"description": fn["description"],
+				"parameters":  fn["parameters"],
+				"strict":      false,
+			}
+		default:
+			return def
 		}
-		request["tools"] = out
+	}
+	return nil
+}
+
+// ensureOpencodeToolSchema gives a caller tool declaration an empty object
+// schema when it has none: the gate validates every declared tool against an
+// object parameters/input_schema, and caller tools pass through verbatim now.
+func ensureOpencodeToolSchema(tool any, flat, claude bool) any {
+	empty := map[string]any{"type": "object", "properties": map[string]any{}}
+	m, ok := tool.(map[string]any)
+	if !ok {
+		return tool
+	}
+	switch {
+	case claude:
+		if _, ok := m["input_schema"]; !ok {
+			m["input_schema"] = empty
+		}
+	case flat:
+		if _, ok := m["parameters"]; !ok {
+			m["parameters"] = empty
+		}
 	default:
-		request["tools"] = defs
-	}
-}
-
-// describeOpenCodeCallerTools renders the caller's own tool declarations as
-// prompt text, so the model can still call them by name once the declarations
-// are replaced by the gate's built-ins.
-func describeOpenCodeCallerTools(request map[string]any) string {
-	tools, _ := request["tools"].([]any)
-	entries := make([]string, 0, len(tools))
-	for _, tool := range tools {
-		m, ok := tool.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := toolNameOf(m)
-		if name == "" {
-			continue
-		}
-		definition := m
 		if fn, ok := m["function"].(map[string]any); ok {
-			definition = fn
+			if _, ok := fn["parameters"]; !ok {
+				fn["parameters"] = empty
+			}
 		}
-		entry := map[string]any{"name": name}
-		if desc, ok := definition["description"].(string); ok && desc != "" {
-			entry["description"] = desc
-		}
-		params := definition["parameters"]
-		if params == nil {
-			params = definition["input_schema"]
-		}
-		if params != nil {
-			entry["parameters"] = params
-		}
-		encoded, err := json.Marshal(entry, json.Deterministic(true))
-		if err != nil {
-			continue
-		}
-		entries = append(entries, string(encoded))
 	}
-	if len(entries) == 0 {
-		return ""
-	}
-	return "# Caller tools\n" +
-		"The calling client provides these tools. Call them by these exact names and argument schemas; their results are returned to you as tool results:\n" +
-		strings.Join(entries, "\n")
+	return tool
 }
-
-// openCodeSessionToolProtocolNote overrides the harness preamble's Code Mode
-// instructions for proxied sessions: the built-in declarations exist only to
-// satisfy the gate, and the caller's own tools are invoked through the
-// execute/CALL_TOOL convention the bridge on the response side rewrites.
-// Without this override the model obeys the preamble's "tools only work inside
-// execute" rule, narrates instead of calling, and never emits a tool_call
-// (measured live 2026-10-25: finish_reason stop, no tool_calls).
-const openCodeSessionToolProtocolNote = "# Session tool protocol\n" +
-	"The Code Mode and tool-catalog instructions above do NOT apply to this session, and the built-in OpenCode tools (edit, glob, grep, question, read, shell, skill, subagent, webfetch, websearch, write, execute) declared in this request are non-functional placeholders — never call them directly.\n" +
-	"The calling client provides the tools listed below. To invoke one, emit a tool_call to the execute tool whose code argument is exactly: CALL_TOOL <tool-name> <json-arguments> — for example {\"code\":\"CALL_TOOL get_weather {\\\"city\\\":\\\"Jakarta\\\"}\"}. The harness routes it to that caller tool and returns its result as the tool result. This execute/CALL_TOOL form is the only working way to call the tools below. When a request needs one of them, emit the CALL_TOOL call immediately instead of narrating or writing code."
-
-// openCodeBuiltinPlaceholderNote is the tool-less variant: with no caller
-// tools to point at, it only needs to suppress the built-ins.
-const openCodeBuiltinPlaceholderNote = "The Code Mode instructions above do not apply to this session, and the built-in OpenCode tools declared in this request are non-functional placeholders. Never call them and never wrap tool usage in execute or in code. No tools are available; answer directly."
 
 // openCodeModelIdentityNote overrides the harness preamble's static "Your
 // Model" block with the model the client actually selected. The preamble is a
@@ -203,62 +249,106 @@ func openCodeModelIdentityNote(request map[string]any) string {
 		"Your actual model for this session is: " + model
 }
 
-// injectOpenCodeHarnessSystem prepends the harness preamble to the request's
-// system prompt and appends the caller-tool section and the placeholder note
-// after the caller's own text.
-func injectOpenCodeHarnessSystem(request map[string]any, flat, claude bool, callerTools, identityNote string) {
-	suffix := ""
-	if callerTools != "" {
-		suffix = "\n\n" + openCodeSessionToolProtocolNote + "\n\n" + callerTools
-	} else {
-		suffix = "\n\n" + openCodeBuiltinPlaceholderNote
+// openCodeHarnessPrefix is the part of the harness preamble that a stripped
+// system prompt keeps byte-exact: everything before the first section whose
+// instructions assume the built-in tools are the ones to call.
+func openCodeHarnessPrefix() string {
+	cut := len(openCodeHarnessSystem)
+	for _, marker := range openCodeStrippedMarkers {
+		if i := strings.Index(openCodeHarnessSystem, marker); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return openCodeHarnessSystem[:cut]
+}
+
+// injectStrippedHarnessSystem sets the system prompt to the harness preamble
+// minus its Code Mode section (which instructs the model to route all tool
+// use through the built-ins — inert placeholders here), followed by the
+// caller's own system text, the direct-call note and the model identity note.
+func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, origSystem, identityNote string) {
+	preamble := strings.TrimRight(stripOpencodeCodeMode(openCodeHarnessSystem), " \t\r\n")
+	suffix := "\n\n" + opencodeDirectCallNote
+	if strings.TrimSpace(origSystem) != "" {
+		suffix = "\n\n" + origSystem + suffix
 	}
 	if identityNote != "" {
 		suffix += "\n\n" + identityNote
 	}
-	injectOpenCodeHarnessSuffix(request, flat, claude, suffix)
+	replacePreambleSuffix(request, flat, claude, preamble, suffix)
 }
 
-// injectOpenCodeHarnessSuffix prepends the harness preamble and appends suffix
-// after the caller's own text. The preamble itself is not optional: the gate
-// fingerprints it, and a request without it is refused regardless of lane. It
-// is what a title request and an agent turn share; they differ only in suffix.
+// injectOpenCodeHarnessSuffix prepends the full harness preamble and appends
+// suffix after the caller's own text. The preamble itself is not optional: the
+// gate fingerprints it, and a request without it is refused regardless of
+// lane. It is what a title request and an agent turn share; they differ only
+// in suffix.
 func injectOpenCodeHarnessSuffix(request map[string]any, flat, claude bool, suffix string) {
+	injectPreambleSuffix(request, flat, claude, openCodeHarnessSystem, suffix)
+}
+
+// replacePreambleSuffix sets the system prompt to preamble+suffix, discarding
+// whatever caller text the request carried. The stripped path already carries
+// that text inside suffix, so prepending the original as well would send it
+// twice — doubling every caller system prompt on the wire.
+func replacePreambleSuffix(request map[string]any, flat, claude bool, preamble, suffix string) {
 	switch {
 	case claude:
-		injectClaudeSystem(request, suffix)
+		request["system"] = preamble + suffix
 	case flat:
-		instructions, _ := request["instructions"].(string)
-		if strings.TrimSpace(instructions) == "" {
-			request["instructions"] = openCodeHarnessSystem + suffix
-			return
-		}
-		request["instructions"] = openCodeHarnessSystem + "\n\n" + instructions + suffix
+		request["instructions"] = preamble + suffix
 	default:
-		injectChatSystem(request, suffix)
+		replaceChatSystem(request, preamble, suffix)
 	}
 }
 
-func injectClaudeSystem(request map[string]any, suffix string) {
+func replaceChatSystem(request map[string]any, preamble, suffix string) {
+	messages, ok := request["messages"].([]any)
+	if ok && len(messages) > 0 {
+		if first, ok := messages[0].(map[string]any); ok && first["role"] == "system" {
+			first["content"] = preamble + suffix
+			return
+		}
+	}
+	request["messages"] = append([]any{map[string]any{"role": "system", "content": preamble + suffix}}, messages...)
+}
+
+func injectPreambleSuffix(request map[string]any, flat, claude bool, preamble, suffix string) {
+	switch {
+	case claude:
+		injectClaudeSystem(request, preamble, suffix)
+	case flat:
+		instructions, _ := request["instructions"].(string)
+		if strings.TrimSpace(instructions) == "" {
+			request["instructions"] = preamble + suffix
+			return
+		}
+		request["instructions"] = preamble + "\n\n" + instructions + suffix
+	default:
+		injectChatSystem(request, preamble, suffix)
+	}
+}
+
+func injectClaudeSystem(request map[string]any, preamble, suffix string) {
 	switch system := request["system"].(type) {
 	case string:
 		if strings.TrimSpace(system) == "" {
-			request["system"] = openCodeHarnessSystem + suffix
+			request["system"] = preamble + suffix
 			return
 		}
-		request["system"] = openCodeHarnessSystem + "\n\n" + system + suffix
+		request["system"] = preamble + "\n\n" + system + suffix
 	case []any:
 		blocks := system
 		if len(blocks) > 0 {
-			request["system"] = append([]any{openCodeHarnessTextBlock(openCodeHarnessSystem)}, blocks...)
+			request["system"] = append([]any{openCodeHarnessTextBlock(preamble)}, blocks...)
 		} else {
-			request["system"] = []any{openCodeHarnessTextBlock(openCodeHarnessSystem)}
+			request["system"] = []any{openCodeHarnessTextBlock(preamble)}
 		}
 		if trimmed := strings.TrimPrefix(suffix, "\n\n"); trimmed != "" {
 			request["system"] = append(request["system"].([]any), openCodeHarnessTextBlock(trimmed))
 		}
 	default:
-		request["system"] = openCodeHarnessSystem + suffix
+		request["system"] = preamble + suffix
 	}
 }
 
@@ -266,36 +356,36 @@ func openCodeHarnessTextBlock(text string) map[string]any {
 	return map[string]any{"type": "text", "text": text}
 }
 
-func injectChatSystem(request map[string]any, suffix string) {
+func injectChatSystem(request map[string]any, preamble, suffix string) {
 	messages, ok := request["messages"].([]any)
 	if !ok || len(messages) == 0 {
-		request["messages"] = []any{map[string]any{"role": "system", "content": openCodeHarnessSystem + suffix}}
+		request["messages"] = []any{map[string]any{"role": "system", "content": preamble + suffix}}
 		return
 	}
 	first, ok := messages[0].(map[string]any)
 	if !ok || first["role"] != "system" {
-		request["messages"] = append([]any{map[string]any{"role": "system", "content": openCodeHarnessSystem + suffix}}, messages...)
+		request["messages"] = append([]any{map[string]any{"role": "system", "content": preamble + suffix}}, messages...)
 		return
 	}
 	switch content := first["content"].(type) {
 	case string:
 		if strings.TrimSpace(content) == "" {
-			first["content"] = openCodeHarnessSystem + suffix
+			first["content"] = preamble + suffix
 			return
 		}
-		first["content"] = openCodeHarnessSystem + "\n\n" + content + suffix
+		first["content"] = preamble + "\n\n" + content + suffix
 	case []any:
 		blocks := content
 		if len(blocks) > 0 {
-			first["content"] = append([]any{openCodeHarnessTextBlock(openCodeHarnessSystem)}, blocks...)
+			first["content"] = append([]any{openCodeHarnessTextBlock(preamble)}, blocks...)
 		} else {
-			first["content"] = []any{openCodeHarnessTextBlock(openCodeHarnessSystem)}
+			first["content"] = []any{openCodeHarnessTextBlock(preamble)}
 		}
 		if trimmed := strings.TrimPrefix(suffix, "\n\n"); trimmed != "" {
 			first["content"] = append(first["content"].([]any), openCodeHarnessTextBlock(trimmed))
 		}
 	default:
-		first["content"] = openCodeHarnessSystem + suffix
+		first["content"] = preamble + suffix
 	}
 }
 
@@ -324,9 +414,9 @@ func dropNamelessOpenCodeV2FunctionCalls(request map[string]any) {
 // validate. A "none" choice is dropped on every lane (the gate answers it
 // with 403 FreeTierError; tool suppression lives in the prompt). On the
 // Responses lane an explicit choice becomes "auto" on auto-only models, and a
-// forced choice naming no genuine built-in is dropped (reporting the drop so
-// the caller does not refill "auto" over it). On the chat and Claude lanes a
-// forced choice naming a caller tool becomes "required": the name cannot
+// forced choice naming no genuine name is dropped (reporting the drop so the
+// caller does not refill "auto" over it). On the chat and Claude lanes a
+// forced choice naming anything else becomes "required": the name cannot
 // travel, but the intent to force a tool call can.
 //
 // It reports whether a forced choice was dropped on the Responses lane.
@@ -396,3 +486,79 @@ func isOpenCodeNoneToolChoice(choice any) bool {
 	}
 	return false
 }
+
+// opencodeSystemString extracts the caller's own system text across the three
+// wire shapes (Responses instructions, Claude system, chat system message).
+func opencodeSystemString(request map[string]any) string {
+	if s, ok := request["instructions"].(string); ok {
+		return s
+	}
+	if s, ok := request["system"].(string); ok {
+		return s
+	}
+	blocksText := func(arr []any) string {
+		var sb strings.Builder
+		for _, b := range arr {
+			if m, ok := b.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					sb.WriteString(t)
+				}
+			}
+		}
+		return sb.String()
+	}
+	if s, ok := request["system"].([]any); ok {
+		return blocksText(s)
+	}
+	if msgs, ok := request["messages"].([]any); ok && len(msgs) > 0 {
+		if first, ok := msgs[0].(map[string]any); ok && first["role"] == "system" {
+			switch c := first["content"].(type) {
+			case string:
+				return c
+			case []any:
+				return blocksText(c)
+			}
+		}
+	}
+	return ""
+}
+
+// openCodeStrippedMarkers are the preamble passages that only make sense when
+// the built-ins are the live tool set: the tool-preference bullets, the Code
+// Mode section and the worktree guidance after it.
+var openCodeStrippedMarkers = []string{
+	"- Prefer dedicated tools over shell",
+	"- Use the write tool",
+	"- Use the edit tool",
+	"- Prefer parallelizing",
+	"# Code Mode",
+	"When you create a worktree",
+}
+
+func stripOpencodeCodeMode(sys string) string {
+	if i := strings.Index(sys, "# Code Mode"); i >= 0 {
+		if j := strings.Index(sys[i:], "Skills provide specialized"); j >= 0 {
+			sys = sys[:i] + sys[i+j:]
+		}
+	}
+	if i := strings.Index(sys, "When you create a worktree"); i >= 0 {
+		sys = sys[:i]
+	}
+	lines := strings.Split(sys, "\n")
+	out := lines[:0]
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "- Prefer dedicated tools over shell") ||
+			strings.HasPrefix(t, "- Use the write tool") ||
+			strings.HasPrefix(t, "- Use the edit tool") ||
+			strings.HasPrefix(t, "- Prefer parallelizing") {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), " 	\r\n") + "\n"
+}
+
+const opencodeDirectCallNote = "# Session tools\n" +
+	"The built-in tool declarations in this request are inert placeholders — never call them. " +
+	"The calling client provides its own tools; call them directly by their exact names and argument schemas, and emit the tool call immediately when a request needs one."

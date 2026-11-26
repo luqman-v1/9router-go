@@ -466,15 +466,18 @@ func TestZenShapedBodyFollowsTheDestinationGate(t *testing.T) {
 		if !names["read"] || !names["shell"] {
 			t.Errorf(`a free request must carry the genuine "read" and "shell" fingerprint, got %v`, names)
 		}
-		if names["Bash"] || names["bash"] {
-			t.Errorf("a caller tool must not travel as a declaration, got %v", names)
+		if !names["Bash"] {
+			t.Errorf("a caller tool must stay declared so the model emits its real name, got %v", names)
 		}
-		if len(raw) != 12 {
-			t.Errorf("a free request must declare exactly the 12 genuine built-ins, got %d", len(raw))
+		if len(raw) != 13 {
+			t.Errorf("a free request must declare the caller tool plus the 12 built-in placeholders, got %d", len(raw))
 		}
 		system, _ := payload["messages"].([]any)[0].(map[string]any)["content"].(string)
-		if !strings.Contains(system, `"name":"Bash"`) {
-			t.Errorf("the caller Bash tool must be described in the system text: %s", out)
+		if !strings.Contains(system, "inert placeholders") {
+			t.Errorf("the direct-call note must be in the system text: %s", out)
+		}
+		if strings.Contains(system, "# Code Mode") {
+			t.Errorf("Code Mode section must be stripped: %s", out)
 		}
 	})
 
@@ -577,12 +580,15 @@ func TestForwardZenMessages_FreeLaneTakesTheStealthForwarder(t *testing.T) {
 	if !strings.HasPrefix(system, "You are an AI agent running in OpenCode, a coding agent harness.") {
 		t.Errorf("a native Claude system must gain the harness preamble, got %.80s", system)
 	}
-	if !strings.Contains(system, "be brief") || !strings.Contains(system, "No tools are available") {
-		t.Errorf("the caller system text and the placeholder note must both survive, got tail %.60s", system[len(system)-60:])
+	if !strings.Contains(system, "be brief") || !strings.Contains(system, "inert placeholders") {
+		t.Errorf("the caller system text and the direct-call note must both survive, got tail %.60s", system[len(system)-60:])
+	}
+	if strings.Contains(system, "# Code Mode") {
+		t.Errorf("Code Mode section must be stripped, got %.80s", system)
 	}
 	tools, _ := probe.body["tools"].([]any)
 	if len(tools) != 12 {
-		t.Errorf("the messages lane must declare exactly the 12 genuine built-ins, got %d", len(tools))
+		t.Errorf("the messages lane must declare exactly the 12 built-in placeholders, got %d", len(tools))
 	}
 	for _, tool := range tools {
 		tm, _ := tool.(map[string]any)

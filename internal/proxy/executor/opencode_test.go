@@ -395,8 +395,8 @@ func TestForwardOpencode_HarnessBodyIsCanonicalizedForTheGate(t *testing.T) {
 		t.Fatal("upstream received no body")
 	}
 	tools, _ := sent["tools"].([]any)
-	if len(tools) != 12 {
-		t.Fatalf("want exactly the 12 genuine built-ins declared, got %d: %s", len(tools), sentRaw)
+	if len(tools) != 14 {
+		t.Fatalf("want the 2 caller tools plus the 12 built-in placeholders, got %d: %s", len(tools), sentRaw)
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
@@ -415,21 +415,25 @@ func TestForwardOpencode_HarnessBodyIsCanonicalizedForTheGate(t *testing.T) {
 	}
 	for _, want := range []string{"edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"} {
 		if !names[want] {
-			t.Errorf("genuine tool %q missing from the gate request: %s", want, sentRaw)
+			t.Errorf("builtin placeholder %q missing from the gate request: %s", want, sentRaw)
 		}
 	}
-	for _, banned := range []string{"Read", "Task"} {
-		if names[banned] {
-			t.Errorf("caller tool %q must not travel as a declaration: %s", banned, sentRaw)
+	// Caller tools stay declared natively so the model emits their real
+	// names; the built-ins travel as inert placeholders.
+	for _, keep := range []string{"Read", "Task"} {
+		if !names[keep] {
+			t.Errorf("caller tool %q must stay declared: %s", keep, sentRaw)
 		}
 	}
-	// Caller tools survive as prompt text instead of declarations.
 	system, _ := sent["messages"].([]any)[0].(map[string]any)["content"].(string)
-	if !strings.Contains(system, `"name":"Read"`) || !strings.Contains(system, `"name":"Task"`) {
-		t.Errorf("caller tools not described in the system text: %s", sentRaw)
-	}
 	if !strings.HasPrefix(system, "You are an AI agent running in OpenCode") {
 		t.Errorf("system does not start with the harness preamble: %s", sentRaw)
+	}
+	if strings.Contains(system, "# Code Mode") {
+		t.Errorf("Code Mode section must be stripped: %s", sentRaw)
+	}
+	if !strings.Contains(system, "inert placeholders") {
+		t.Errorf("direct-call note missing from the system text: %s", sentRaw)
 	}
 	// A forced choice naming a caller tool cannot travel; the intent does.
 	if sent["tool_choice"] != "required" {
