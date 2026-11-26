@@ -537,7 +537,7 @@ func TestEmbeddings_ForwardGeminiOutputDimensions(t *testing.T) {
 	mu.Unlock()
 	if exists {
 		t.Errorf("expected no outputDimensionality when dimensions omitted, got %v", capturedBody["outputDimensionality"])
-}
+	}
 }
 
 func TestEmbeddings_ForwardGeminiEncodingFormat(t *testing.T) {

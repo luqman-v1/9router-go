@@ -1070,6 +1070,8 @@ func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.
 	defer r.Body.Close()
 	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/transcriptions")
 }
+
+// HandleAudioTranslations handles /v1/audio/translations.
 func (h *MediaHandler) HandleAudioTranslations(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "stt"))
 	body, err := io.ReadAll(r.Body)
@@ -1077,10 +1079,9 @@ func (h *MediaHandler) HandleAudioTranslations(w http.ResponseWriter, r *http.Re
 		middleware.WriteBodyReadError(w, r, err)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/translations")
 }
-
 
 // HandleVideoGenerations handles /v1/videos/generations.
 func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Request) {
