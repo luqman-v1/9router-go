@@ -145,6 +145,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Delete("/providers/{id}/models", h.HandleDeleteProviderModels)
 		r.Get("/providers/{id}/overrides", h.HandleGetProviderOverrides)
 		r.Put("/providers/{id}/overrides", h.HandleSaveProviderOverrides)
+		// Per-model capability overrides (model editor). The model segment is
+		// percent-encoded because an id carries slashes and colons.
+		r.Get("/providers/{id}/models/{model}/caps", h.HandleGetModelCapsOverride)
+		r.Put("/providers/{id}/models/{model}/caps", h.HandleSaveModelCapsOverride)
 		r.Post("/providers/validate", h.HandleValidateProvider)
 		// The provider registry is the single source of truth for the dashboard's
 		// catalog (category, icon, colour, auth type, service kinds), so the SPA
