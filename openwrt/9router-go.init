@@ -71,23 +71,22 @@ start_service() {
 	procd_close_instance
 
 	# The probe is a separate script; cron must never invoke $PROG, which is
-	# the gateway wrapper itself. Rewrite rather than append so a repeated
-	# start does not stack duplicate lines, and drop the entry when the
-	# operator turned healthcheck off.
-	if [ -d /etc/crontabs ]; then
-		tmp=/etc/crontabs/root.9router-go.tmp
-		grep -vF "$HEALTHCHECK" /etc/crontabs/root > "$tmp" 2>/dev/null || true
-		if [ "$healthcheck" -eq 1 ]; then
-			printf '* * * * * %s\n' "$HEALTHCHECK" >> "$tmp"
-		fi
-		mv -f "$tmp" /etc/crontabs/root
-		/etc/init.d/cron restart >/dev/null 2>&1 || true
+	# the gateway wrapper itself. cron_sync rewrites the line instead of
+	# appending, and only touches the file and restarts cron when the content
+	# actually changed — a restart on every boot is churn on flash.
+	if [ "$healthcheck" -eq 1 ]; then
+		cron_sync 1
+	else
+		cron_sync 0
 	fi
 
-	# Open the LAN rule after the instance is configured, so a firewall rule
-	# never exists without a running gateway behind it.
+	# The LAN rule follows open_lan in both directions. Leaving the ACCEPT rule
+	# behind after open_lan=0 would keep the dashboard reachable from the LAN,
+	# which is the opposite of what the operator asked for.
 	if [ "$open_lan" -eq 1 ]; then
 		firewall_allow_lan "$port"
+	else
+		firewall_disallow_lan
 	fi
 
 	logger -t "$NAME" "started on port $port, data in $data_dir"
@@ -101,44 +100,104 @@ stop_service() {
 	return 0
 }
 
-# firewall_allow_lan creates an idempotent uci-firewall rule for the gateway
-# port. It is called from start_service when open_lan is set; the rule is named
-# so prerm and a later open_lan=0 can remove exactly it.
-firewall_allow_lan() {
-	port="${1:-20130}"
-	command -v uci >/dev/null 2>&1 || return 0
-	uci -q get firewall >/dev/null 2>&1 || return 0
-	# Idempotent: re-running after a restart must not create a second rule.
-	if uci -q get firewall.$RULE_NAME >/dev/null 2>&1; then
-		# The rule exists but may point at a stale port; keep it in sync.
-		uci -q set firewall.$RULE_NAME.dest_port="$port" >/dev/null 2>&1
-		uci -q commit firewall >/dev/null 2>&1
+# cron_sync installs (want=1) or removes (want=0) the healthcheck cron line.
+# It compares the result with the current table first: writing /etc/crontabs/root
+# and restarting cron on every boot is needless flash wear and needless work.
+cron_sync() {
+	local want="$1" tmp
+	[ -d /etc/crontabs ] || return 0
+	tmp=/etc/crontabs/root.9router-go.tmp
+	if [ -f /etc/crontabs/root ]; then
+		grep -vF "$HEALTHCHECK" /etc/crontabs/root > "$tmp" 2>/dev/null || true
+	else
+		: > "$tmp"
+	fi
+	if [ "$want" -eq 1 ]; then
+		printf '* * * * * %s\n' "$HEALTHCHECK" >> "$tmp"
+	fi
+	# cmp is a busybox applet present in every image this package targets; if
+	# it is missing, fall through and rewrite, which is always correct.
+	if [ -f /etc/crontabs/root ] && cmp -s "$tmp" /etc/crontabs/root 2>/dev/null; then
+		rm -f "$tmp"
 		return 0
 	fi
-	uci -q add firewall rule >/dev/null 2>&1 || return 0
-	uci -q set firewall.@rule[-1].name="$RULE_NAME" >/dev/null 2>&1
-	uci -q set firewall.@rule[-1].src="lan" >/dev/null 2>&1
-	uci -q set firewall.@rule[-1].proto="tcp udp" >/dev/null 2>&1
-	uci -q set firewall.@rule[-1].dest_port="$port" >/dev/null 2>&1
-	uci -q set firewall.@rule[-1].target="ACCEPT" >/dev/null 2>&1
-	uci -q set firewall.@rule[-1].enabled="1" >/dev/null 2>&1
-	uci -q commit firewall >/dev/null 2>&1
-	/etc/init.d/firewall reload >/dev/null 2>&1 || true
-	logger -t "$NAME" "opened port $port on the LAN firewall"
+	mv -f "$tmp" /etc/crontabs/root
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
-# firewall_disallow_lan removes the rule by name. uci section names are not
-# stable across config loads, so it matches the name field rather than an index.
-firewall_disallow_lan() {
+# firewall_rule_ids prints the section ids of every firewall rule this package
+# owns. `uci add` creates an anonymous section, so a rule can never be looked up
+# as firewall.$RULE_NAME; matching the name option is the only stable handle,
+# and returning all matches lets the caller repair duplicates a previous
+# version of this script may have left behind.
+firewall_rule_ids() {
+	uci -q show firewall 2>/dev/null | \
+		sed -n "s/^firewall\.\([^.=]*\)\.name='$RULE_NAME'\$/\1/p"
+}
+
+# firewall_set assigns one option on one section and records whether the stored
+# value differed, so the caller can commit and reload only on a real change.
+firewall_set() {
+	local section="$1" option="$2" value="$3" current
+	current=$(uci -q get "firewall.$section.$option" 2>/dev/null)
+	[ "$current" = "$value" ] && return 0
+	uci -q set "firewall.$section.$option=$value" >/dev/null 2>&1 && FW_CHANGED=1
+}
+
+# firewall_allow_lan creates or repairs the ACCEPT rule for the gateway port.
+# Every rule carrying the package's name is updated, not just the first, so a
+# duplicate left by an older package is healed instead of lingering.
+firewall_allow_lan() {
+	local port="${1:-20130}" ids id
+	# firewall_set raises FW_CHANGED through the caller's scope (ash has no
+	# closures), so it is reset here on every call and read once before commit.
+	FW_CHANGED=0
 	command -v uci >/dev/null 2>&1 || return 0
 	uci -q get firewall >/dev/null 2>&1 || return 0
-	idx=$(uci -q show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='$RULE_NAME'$/\1/p" | head -1)
-	if [ -n "$idx" ]; then
-		uci -q delete firewall.$idx >/dev/null 2>&1
+
+	ids=$(firewall_rule_ids)
+	if [ -z "$ids" ]; then
+		# `uci add` appends, so @rule[-1] is the section just created even on
+		# uci releases that print nothing from `add`. The name is set before
+		# the rule is looked up again, so the freshly added section is what
+		# comes back rather than nothing.
+		uci -q add firewall rule >/dev/null 2>&1 || return 0
+		uci -q set firewall.@rule[-1].name="$RULE_NAME" >/dev/null 2>&1
+		ids=$(uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$RULE_NAME'\$/\1/p")
+		[ -n "$ids" ] || ids=$(firewall_rule_ids)
+		FW_CHANGED=1
+	fi
+	[ -n "$ids" ] || return 0
+
+	for id in $ids; do
+		firewall_set "$id" src lan
+		firewall_set "$id" proto "tcp udp"
+		firewall_set "$id" dest_port "$port"
+		firewall_set "$id" target ACCEPT
+		firewall_set "$id" enabled 1
+	done
+
+	if [ "$FW_CHANGED" -eq 1 ]; then
 		uci -q commit firewall >/dev/null 2>&1
 		/etc/init.d/firewall reload >/dev/null 2>&1 || true
-		logger -t "$NAME" "closed the LAN firewall rule"
+		logger -t "$NAME" "LAN firewall rule allows port $port"
 	fi
+}
+
+# firewall_disallow_lan removes every rule this package owns. It deletes all
+# matches, so a config carrying duplicates ends up with none rather than one.
+firewall_disallow_lan() {
+	local ids id
+	command -v uci >/dev/null 2>&1 || return 0
+	uci -q get firewall >/dev/null 2>&1 || return 0
+	ids=$(firewall_rule_ids)
+	[ -n "$ids" ] || return 0
+	for id in $ids; do
+		uci -q delete "firewall.$id" >/dev/null 2>&1
+	done
+	uci -q commit firewall >/dev/null 2>&1
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	logger -t "$NAME" "LAN firewall rule removed (open_lan is off)"
 }
 
 reload_service() {

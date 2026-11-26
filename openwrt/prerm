@@ -23,12 +23,16 @@ if [ -d /etc/crontabs ] && [ -f /etc/crontabs/root ]; then
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 fi
 
-# Remove the LAN firewall rule the init script installed.
+# Remove every LAN firewall rule the init script installed. All matches are
+# deleted, not just the first: a config carrying duplicates from an older
+# package must not be left reachable from the LAN after removal.
 if command -v uci >/dev/null 2>&1 && uci -q get firewall >/dev/null 2>&1; then
 	rule="9router-go-allow-lan"
-	idx=$(uci -q show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='$rule'$/\1/p" | head -1)
-	if [ -n "$idx" ]; then
-		uci -q delete firewall.$idx
+	ids=$(uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$rule'$/\1/p")
+	if [ -n "$ids" ]; then
+		for id in $ids; do
+			uci -q delete "firewall.$id"
+		done
 		uci -q commit firewall
 		/etc/init.d/firewall reload >/dev/null 2>&1 || true
 		logger -t 9router-go "removed the LAN firewall rule"

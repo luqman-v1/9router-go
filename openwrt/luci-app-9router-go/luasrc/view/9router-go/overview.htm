@@ -41,6 +41,8 @@ local hostname = http.getenv("SERVER_NAME") or http.getenv("HTTP_HOST") or ""
 hostname = (hostname:gsub(":%d+$", ""))
 
 local action_url = url("admin", "services", "9router-go", "action")
+local ver = fs.readfile("/etc/9router-go/runtime-version")
+if ver and #ver > 0 then ver = ver:match("^%s*(.-)%s*$") else ver = nil end
 -%>
 
 <script type="text/javascript">
@@ -78,6 +80,7 @@ local action_url = url("admin", "services", "9router-go", "action")
 			<% if running then %><%:running%><% else %><%:stopped%><% end %>
 		</span>
 		<% if pid then %><code style="margin-left:1em">PID <%= pid %></code><% end %>
+		<% if ver then %><code style="margin-left:1em">v<%= ver %></code><% end %>
 		<a style="margin-left:1.5em" href="http://<%= hostname %>:<%= port %>/"
 			target="_blank" rel="noopener"><%:Open dashboard%></a>
 	</div>
