@@ -1616,7 +1616,20 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if isClientCanceled(ctx, fwdErr) {
 		return &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 	}
+	// The gateway's own end-to-end bound expiring is a gateway timeout, not a
+	// lost upstream socket: the client needs to know the request was cut by
+	// policy rather than by a broken connection, because only one of those is
+	// worth retrying unchanged.
+	if isRequestDeadline(ctx) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody()}
+	}
 	return fwdErr
+}
+
+// requestDeadlineBody is the JSON body that travels with a 504 caused by the
+// gateway's end-to-end request bound.
+func requestDeadlineBody() []byte {
+	return []byte(`{"error":{"message":"request exceeded the gateway's total request timeout","type":"server_error","code":"gateway_timeout"}}`)
 }
 
 // isClientCanceled reports whether the client that asked for this response

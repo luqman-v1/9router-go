@@ -492,7 +492,7 @@ var numericSettingKeys = []string{
 	"retentionDays", "maxRequestRecords", "usageHistoryRetentionDays",
 	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
 	"semanticCacheTTL", "semanticCacheMaxEntries",
-	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit",
+	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit", "totalRequestTimeoutMs",
 }
 
 func validateNumericSettings(updates map[string]any) error {
