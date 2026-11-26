@@ -20,6 +20,7 @@
 package dashboard
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -93,7 +94,8 @@ func (c *modelsCatalog) serve(
 	})
 
 	if err != nil {
-		if he, ok := err.(modelsHTTPError); ok {
+		var he modelsHTTPError
+		if errors.As(err, &he) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(he.code)
 			_, _ = w.Write(he.body)
