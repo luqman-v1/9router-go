@@ -108,6 +108,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
     prompt: string
     kind: string
     geminiSafety: boolean
+    enabled: boolean
     source: string
     keywords: JailbreakKeyword[]
     excludes: JailbreakKeyword[]
@@ -118,6 +119,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
     prompt: '',
     kind: '',
     geminiSafety: false,
+    enabled: true,
     source: '',
     keywords: [],
     excludes: [],
@@ -881,6 +883,10 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
       importStatus = 'Duplicate failed: ' + errorMessage(e)
     }
   }
+  function presetEnabled(preset: JailbreakDoc): boolean {
+    return preset.enabled ?? !preset.syncOrigin
+  }
+
   function openCreate() {
     editingId = null
     presetForm = {
@@ -889,6 +895,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
       prompt: '',
       kind: '',
       geminiSafety: false,
+      enabled: true,
       source: '',
       keywords: [],
       excludes: [],
@@ -908,6 +915,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
       prompt: preset.prompt || '',
       kind: preset.kind || '',
       geminiSafety: !!preset.geminiSafety,
+      enabled: presetEnabled(preset),
       source: preset.source || '',
       keywords: preset.keywords || [],
       excludes: preset.excludes || [],
@@ -930,6 +938,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
         name: presetForm.name.trim(),
         prompt: presetForm.prompt,
         geminiSafety: presetForm.geminiSafety,
+        enabled: presetForm.enabled,
         kind: presetForm.kind.trim() || undefined,
         source: presetForm.source.trim() || undefined,
         keywords: presetForm.keywords,
@@ -1293,7 +1302,7 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
                 {/if}
               </div>
               <div class="text-[11px] text-text-subtle truncate">
-                {preset.id}{preset.geminiSafety ? ' · safety' : ''}{preset.source ? ' · ' + preset.source : ''}{preset.keywords?.length
+                {preset.id}{preset.geminiSafety ? ' · safety' : ''}{presetEnabled(preset) ? '' : ' · off'}{preset.source ? ' · ' + preset.source : ''}{preset.keywords?.length
                   ? ' · ' + preset.keywords.length + ' keyword' + (preset.keywords.length > 1 ? 's' : '')
                   : ''}{preset.excludes?.length ? ' · ' + preset.excludes.length + ' excluded' : ''}
                 {#if presetUsage[preset.id ?? ''] !== undefined}
@@ -1916,6 +1925,13 @@ import JailbreakTester from './jailbreak/JailbreakTester.svelte'
           <option value={kind}></option>
         {/each}
       </datalist>
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" bind:checked={presetForm.enabled} class="w-4 h-4 accent-brand-500" />
+        <span class="text-sm text-text-main">Preset enabled</span>
+      </label>
+      <p class="text-xs text-text-muted">
+        Disabled presets stay in the library but never inject. Synced and uploaded presets start disabled.
+      </p>
       <label class="flex items-center gap-2 cursor-pointer select-none">
         <input type="checkbox" bind:checked={presetForm.geminiSafety} class="w-4 h-4 accent-brand-500" />
         <span class="text-sm text-text-main">Relax Gemini safety filters</span>

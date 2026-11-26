@@ -657,3 +657,52 @@ func TestJailbreakGithubTokenHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestJailbreakSyncPreservesEnabledChoice(t *testing.T) {
+	on := true
+	store := &fakeSyncStore{
+		sources: []JailbreakSyncSource{source()},
+		files:   []githubFile{{Path: "m.md"}},
+		texts:   map[string]string{"m.md": "new body"},
+		presets: []*db.JailbreakDoc{
+			{
+				ID: "togg53192-cmd_jailbreaks-m", Prompt: "old body",
+				SyncOrigin: "togg53192-cmd/jailbreaks@main", SyncPath: "m.md",
+				Enabled: &on,
+			},
+		},
+	}
+	s := newSync(store)
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved %d presets, want 1", len(store.saved))
+	}
+	p := store.saved[0]
+	if p.Enabled == nil || !*p.Enabled {
+		t.Errorf("enabled = %v, want the operator's explicit on preserved", p.Enabled)
+	}
+}
+
+func TestJailbreakSyncNewPresetStartsDisabled(t *testing.T) {
+	store := &fakeSyncStore{
+		sources: []JailbreakSyncSource{source()},
+		files:   []githubFile{{Path: "m.md"}},
+		texts:   map[string]string{"m.md": "new body"},
+	}
+	s := newSync(store)
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved %d presets, want 1", len(store.saved))
+	}
+	p := store.saved[0]
+	if p.Enabled != nil {
+		t.Errorf("enabled = %v, want no explicit choice on a new synced preset", *p.Enabled)
+	}
+	if p.EffectiveEnabled() {
+		t.Error("new synced preset is active, want it inert until switched on")
+	}
+}

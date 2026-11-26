@@ -234,8 +234,8 @@ func (r *Repo) ResolveJailbreakDoc(apiKeyID string, ids ...string) (*JailbreakDo
 					presetID = jailbreakDocKey
 				}
 				doc, ok := rs.presets[presetID]
-				if !ok {
-					continue // orphan binding: the preset is gone, keep looking
+				if !ok || !doc.EffectiveEnabled() {
+					continue // orphan or switched-off preset: keep looking
 				}
 				if rs.excluded(presetID, ids) {
 					return nil, nil // this preset denies the request
@@ -258,8 +258,8 @@ func (r *Repo) ResolveJailbreakDoc(apiKeyID string, ids ...string) (*JailbreakDo
 			presetID = jailbreakDocKey
 		}
 		doc, ok := rs.presets[presetID]
-		if !ok {
-			continue // orphan binding: the preset is gone, keep looking
+		if !ok || !doc.EffectiveEnabled() {
+			continue // orphan or switched-off preset: keep looking
 		}
 		if rs.excluded(presetID, ids) {
 			return nil, nil // this preset denies the request
@@ -452,8 +452,8 @@ func (r *Repo) buildJailbreakRuleset() (*jailbreakRuleset, error) {
 	sort.Strings(presetIDs)
 	for _, id := range presetIDs {
 		doc := rs.presets[id]
-		if doc == nil {
-			continue
+		if doc == nil || !doc.EffectiveEnabled() {
+			continue // a switched-off preset contributes no excludes or keywords
 		}
 		for _, kw := range doc.Excludes {
 			rule, err := newJailbreakKeywordRule(id, kw)
@@ -570,8 +570,8 @@ func (r *Repo) ExplainJailbreakDoc(apiKeyID string, ids ...string) (*JailbreakMa
 					presetID = jailbreakDocKey
 				}
 				doc, ok := rs.presets[presetID]
-				if !ok {
-					continue
+				if !ok || !doc.EffectiveEnabled() {
+					continue // orphan or switched-off preset: keep looking
 				}
 				if rs.excluded(presetID, ids) {
 					return &JailbreakMatch{
@@ -606,8 +606,8 @@ func (r *Repo) ExplainJailbreakDoc(apiKeyID string, ids ...string) (*JailbreakMa
 			presetID = jailbreakDocKey
 		}
 		doc, ok := rs.presets[presetID]
-		if !ok {
-			continue // orphan binding: the preset is gone, keep looking
+		if !ok || !doc.EffectiveEnabled() {
+			continue // orphan or switched-off preset: keep looking
 		}
 		if rs.excluded(presetID, ids) {
 			return &JailbreakMatch{
