@@ -24,6 +24,8 @@
   let formDescription = $state('')
   let formRpm = $state('0')
   let formTpm = $state('0')
+  let formRph = $state('0')
+  let formRpd = $state('0')
   let formConcurrency = $state('0')
   let formPeriod = $state<PlanPeriod>('monthly')
   let formBudgetUsd = $state('0')
@@ -68,6 +70,8 @@
     formDescription = ''
     formRpm = '0'
     formTpm = '0'
+    formRph = '0'
+    formRpd = '0'
     formConcurrency = '0'
     formPeriod = 'monthly'
     formBudgetUsd = '0'
@@ -86,6 +90,8 @@
     formDescription = plan.description ?? ''
     formRpm = String(plan.rpmLimit ?? 0)
     formTpm = String(plan.tpmLimit ?? 0)
+    formRph = String(plan.rphLimit ?? 0)
+    formRpd = String(plan.rpdLimit ?? 0)
     formConcurrency = String(plan.concurrencyLimit ?? 0)
     formPeriod = plan.period ?? 'monthly'
     formBudgetUsd = String((plan.limitMicros ?? 0) / 1_000_000)
@@ -129,6 +135,8 @@
       description: formDescription.trim(),
       rpmLimit: nonNegative(formRpm),
       tpmLimit: nonNegative(formTpm),
+      rphLimit: nonNegative(formRph),
+      rpdLimit: nonNegative(formRpd),
       concurrencyLimit: nonNegative(formConcurrency),
       period: formPeriod,
       limitMicros: microsFromUsd(formBudgetUsd),
@@ -179,6 +187,8 @@
     const parts: string[] = []
     if (plan.rpmLimit) parts.push(`${plan.rpmLimit} RPM`)
     if (plan.tpmLimit) parts.push(`${plan.tpmLimit} TPM`)
+    if (plan.rphLimit) parts.push(`${plan.rphLimit} RPH`)
+    if (plan.rpdLimit) parts.push(`${plan.rpdLimit} RPD`)
     if (plan.concurrencyLimit) parts.push(`${plan.concurrencyLimit} concurrent`)
     return parts.length ? parts.join(' · ') : 'no rate limits'
   }
@@ -369,6 +379,22 @@
           <span class="text-xs text-text-muted">Tokens / min (0 = unlimited)</span>
           <input
             bind:value={formTpm}
+            inputmode="numeric"
+            class="px-3 py-2 rounded-[10px] border border-border bg-surface-2 text-sm text-text-main"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-text-muted">Requests / hour (0 = unlimited)</span>
+          <input
+            bind:value={formRph}
+            inputmode="numeric"
+            class="px-3 py-2 rounded-[10px] border border-border bg-surface-2 text-sm text-text-main"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-text-muted">Requests / day (0 = unlimited)</span>
+          <input
+            bind:value={formRpd}
             inputmode="numeric"
             class="px-3 py-2 rounded-[10px] border border-border bg-surface-2 text-sm text-text-main"
           />

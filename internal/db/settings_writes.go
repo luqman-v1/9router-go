@@ -225,6 +225,16 @@ type RateLimitDefaults struct {
 	RPM         int
 	TPM         int
 	Concurrency int
+	// PerIP* is the per-client-address ceiling. It exists because a per-key
+	// limit protects each key, not the install: a caller holding or minting
+	// several keys spends a fresh budget per key while every one stays under
+	// its own limit, and the IP is what the upstream account actually sees.
+	// All zero means the axis is off, which is every install that never
+	// configured it.
+	PerIPMinute      int
+	PerIPHour        int
+	PerIPDay         int
+	PerIPConcurrency int
 	// WindowSeconds is the RPM/TPM window. Zero means the 60s default.
 	WindowSeconds int
 }
@@ -251,6 +261,10 @@ func (r *Repo) GetRateLimitDefaults() RateLimitDefaults {
 	out.RPM = settingsInt(raw["defaultRpm"])
 	out.TPM = settingsInt(raw["defaultTpm"])
 	out.Concurrency = settingsInt(raw["defaultConcurrency"])
+	out.PerIPMinute = settingsInt(raw["perIpRpm"])
+	out.PerIPHour = settingsInt(raw["perIpRph"])
+	out.PerIPDay = settingsInt(raw["perIpRpd"])
+	out.PerIPConcurrency = settingsInt(raw["perIpConcurrency"])
 	if w := settingsInt(raw["rateWindowSeconds"]); w > 0 {
 		out.WindowSeconds = w
 	}
@@ -264,6 +278,10 @@ func (r *Repo) SetRateLimitDefaults(d RateLimitDefaults) error {
 		"defaultRpm":         d.RPM,
 		"defaultTpm":         d.TPM,
 		"defaultConcurrency": d.Concurrency,
+		"perIpRpm":           d.PerIPMinute,
+		"perIpRph":           d.PerIPHour,
+		"perIpRpd":           d.PerIPDay,
+		"perIpConcurrency":   d.PerIPConcurrency,
 		"rateWindowSeconds":  d.WindowSeconds,
 	})
 }

@@ -191,6 +191,13 @@ type APIKey struct {
 	RateLimitRPM         *int `json:"rateLimitRpm,omitempty"`
 	RateLimitTPM         *int `json:"rateLimitTpm,omitempty"`
 	RateLimitConcurrency *int `json:"rateLimitConcurrency,omitempty"`
+	// RateLimitRPH and RateLimitRPD bound requests per hour and per day.
+	// RPM alone cannot express a reseller's "10k a day" tier without also
+	// capping the minute, and a daily ceiling is the axis abuse actually
+	// trips: a key can sit far under 60 rpm all day and still be the one
+	// draining the upstream account. 0 means unlimited, like RPM.
+	RateLimitRPH *int `json:"rateLimitRph,omitempty"`
+	RateLimitRPD *int `json:"rateLimitRpd,omitempty"`
 	// F-1b Budget & queue. TokenQuota caps the key's cumulative
 	// prompt+completion tokens across its lifetime (0 = unlimited).
 	// QueueTimeoutMs is how long a request waits for a free concurrency slot

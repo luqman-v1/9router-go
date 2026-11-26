@@ -149,6 +149,8 @@ export interface APIKey {
   keyDisplay?: string
   /** Rate limits. 0 means unlimited. */
   rateLimitRpm?: number
+  rateLimitRph?: number
+  rateLimitRpd?: number
   rateLimitTpm?: number
   rateLimitConcurrency?: number
   /** Lifetime prompt+completion token budget. 0 means unlimited. */
@@ -181,6 +183,8 @@ export interface APIKey {
 
 export interface APIKeyPolicy {
   rateLimitRpm?: number
+  rateLimitRph?: number
+  rateLimitRpd?: number
   rateLimitTpm?: number
   rateLimitConcurrency?: number
   /** Lifetime token budget. 0 means unlimited. */
@@ -257,6 +261,8 @@ export interface Plan {
   limitTokens: number
   rpmLimit: number
   tpmLimit: number
+  rphLimit: number
+  rpdLimit: number
   concurrencyLimit: number
   period: PlanPeriod
   alertPct: number

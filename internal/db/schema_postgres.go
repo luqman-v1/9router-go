@@ -348,6 +348,8 @@ var postgresTables = []pgTableDef{
 			{"limit_tokens", "BIGINT NOT NULL DEFAULT 0"},
 			{"rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"tpm_limit", "BIGINT NOT NULL DEFAULT 0"},
+			{"rph_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"rpd_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"concurrency_limit", "INTEGER NOT NULL DEFAULT 0"},
 			{"period", "TEXT NOT NULL DEFAULT 'monthly'"},
 			{"alert_pct", "INTEGER NOT NULL DEFAULT 80"},
@@ -423,6 +425,9 @@ var postgresAdditiveColumns = []pgAdditiveColumn{
 	{"apiKeys", "rateLimitRPM", "INTEGER DEFAULT 0"},
 	{"apiKeys", "rateLimitTPM", "INTEGER DEFAULT 0"},
 	{"apiKeys", "rateLimitConcurrency", "INTEGER DEFAULT 0"},
+	// Per-hour and per-day request ceilings, mirroring SQLite's goOnlyColumns.
+	{"apiKeys", "rateLimitRPH", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitRPD", "INTEGER DEFAULT 0"},
 	// F-1b Budget & queue
 	{"apiKeys", "tokenQuota", "INTEGER DEFAULT 0"},
 	{"apiKeys", "queueTimeoutMs", "INTEGER DEFAULT 0"},
