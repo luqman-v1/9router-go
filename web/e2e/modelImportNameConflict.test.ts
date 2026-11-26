@@ -13,6 +13,11 @@
  * already-aliased id FIRST, then a fresh one, with the alias in place. The
  * observable contract is both ids landing in /api/models/custom and no refusal
  * dialog — "the ids after the collision are imported" is the regression.
+ *
+ * The panel now stages the fetch (each chip is added, or "Add all" applies the
+ * matched ids), so the run starts at the "Add all" button rather than at
+ * "Import from /models". What the loop must still do is unchanged: walk past the
+ * refused id.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -121,12 +126,17 @@ describe('Import from /models with a duplicate name', () => {
         res.request().method() === 'POST' &&
         new URL(res.url()).pathname === '/api/models/custom' &&
         (res.request().postData() ?? '').includes(FRESH_ID),
-      { timeout: 30_000 },
+      { timeout: 30_000 }
     )
 
     // The button's accessible name carries its Material Symbols ligature
     // ("download Import from /models"), so an exact name match never hits.
     await page.getByRole('button', { name: /Import from \/models/ }).click()
+    // The panel stages the fetch; "Add all" is the apply step now. Wait for the
+    // staged count first so the click cannot land before the chips exist.
+    const addAll = page.getByRole('button', { name: /Add all/ })
+    await addAll.waitFor({ state: 'visible', timeout: 30_000 })
+    await addAll.click()
     expect((await savedFresh).ok()).toBe(true)
 
     const keys = await customModelKeys()
