@@ -1270,6 +1270,16 @@ func (h *ChatHandler) HandleResponsesCompact(w http.ResponseWriter, r *http.Requ
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if m == nil {
+		// Valid JSON that is not an object (`null`, `4`, `"x"`, `[]`) decodes
+		// into a nil map with a nil error, and the write below used to panic
+		// with "assignment to entry in nil map" — chi's Recoverer then answered
+		// a bare 500 with no payload. The body is client-controlled and checked
+		// nowhere else on this endpoint, so the boundary answers 400 the way
+		// the invalid-JSON branch above does.
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 	m["_compact"] = true
 	body, err = json.Marshal(m)
 	if err != nil {
