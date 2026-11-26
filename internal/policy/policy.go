@@ -40,8 +40,8 @@ type EffectivePolicy struct {
 	TPM    int
 	// RPH and RPD are the hourly and daily request ceilings. RPM alone cannot
 	// express a reseller tier like "10k a day" without also capping the minute.
-	RPH    int
-	RPD    int
+	RPH int
+	RPD int
 	// Concurrency caps how many requests the key may have in flight.
 	Concurrency int
 	// QueueTimeoutMs is a per-key wait budget for a free concurrency slot.

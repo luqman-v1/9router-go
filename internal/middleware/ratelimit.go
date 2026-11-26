@@ -263,8 +263,8 @@ func (rl *RateLimiter) blockedAxis(keyID string, spans []windowSpan) string {
 }
 
 // concurrencyFull reports whether the concurrency axis is the one that blocked,
-// used only to label a refusal. Must be called with rl.mu held by tryAdmit's
-// caller having released it; it re-takes the lock for a consistent read.
+// used only to label a refusal. It re-takes the lock for a consistent read,
+// so it must not be called with rl.mu already held.
 func (rl *RateLimiter) concurrencyFull(keyID string, limit int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -414,12 +414,6 @@ func (rl *RateLimiter) tryAdmitSpans(keyID string, spans []windowSpan, concurren
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	return rl.tryAdmitLocked(keyID, spans, concurrency)
-}
-
-// tryAdmit is the minute-only form, kept for the tests and callers that never
-// configured an hourly or daily ceiling.
-func (rl *RateLimiter) tryAdmit(keyID string, rpm, concurrency int) bool {
-	return rl.tryAdmitSpans(keyID, spansFor(rpm, 0, 0, rl.window), concurrency)
 }
 
 // tryAdmitLocked is tryAdmit under an already-held lock. It also runs the
@@ -1708,7 +1702,6 @@ func rejectIPRateLimited(w http.ResponseWriter, ip string) {
 // the caller the ceiling exists to slow down, so it is refused immediately
 // rather than parked. A zero value here is the policy, not an unset default.
 const ipQueueTimeout time.Duration = 0
-
 
 // ipLimits holds the operator's per-IP ceiling. It is an atomic pointer for the
 // same reason as plans: an operator can change it without a restart, and a
