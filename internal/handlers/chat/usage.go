@@ -25,13 +25,15 @@ import (
 	"9router/proxy/internal/usagetracker"
 )
 
-// shouldLogRequestDetail checks if request detail logging is enabled by settings.
-func shouldLogRequestDetail(repo *db.Repo, isError bool) bool {
-	if repo == nil {
+// shouldLogRequestDetail reports whether a request detail row may be written.
+// The settings row is the request's own holder, so the check costs no read of
+// its own on the request path.
+func (h *ChatHandler) shouldLogRequestDetail(ctx context.Context, isError bool) bool {
+	if h == nil || h.Repo == nil {
 		return true
 	}
-	settings, err := repo.GetSettings()
-	if err != nil || settings == nil {
+	settings := h.settingsForRequest(ctx)
+	if settings == nil {
 		return true
 	}
 	if settings.ObservabilityMode == "off" {
@@ -174,7 +176,7 @@ func (h *ChatHandler) LogFailure(
 	failureData := string(reqData)
 	failureAPIKey, failureEndpoint := info.APIKey, info.Endpoint
 
-	logDetail := shouldLogRequestDetail(h.Repo, true)
+	logDetail := h.shouldLogRequestDetail(ctx, true)
 
 	enqueueUsageWrite(func() {
 		if logDetail {
@@ -495,7 +497,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		return
 	}
 	// The settings read decides the row's fate now; only the write leaves.
-	if shouldLogRequestDetail(h.Repo, false) {
+	if h.shouldLogRequestDetail(ctx, false) {
 		detailRepo := h.Repo
 		detailID, detailProvider := reqID, info.Provider
 		detailModel, detailConn := info.Model, info.ConnectionID

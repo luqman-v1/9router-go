@@ -64,21 +64,21 @@ func TestTotalRequestTimeoutReadsSetting(t *testing.T) {
 	repo := newTestRepo(t)
 	h := NewChatHandler(repo)
 
-	if got := h.totalRequestTimeout(); got != 0 {
+	if got := h.totalRequestTimeout(context.Background()); got != 0 {
 		t.Fatalf("unset setting resolved to %v, want off", got)
 	}
 
 	if err := repo.UpdateSettingsRaw(map[string]any{TotalRequestTimeoutSetting: 1500}); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.totalRequestTimeout(); got != 1500*time.Millisecond {
+	if got := h.totalRequestTimeout(context.Background()); got != 1500*time.Millisecond {
 		t.Fatalf("resolved %v, want 1.5s", got)
 	}
 
 	if err := repo.UpdateSettingsRaw(map[string]any{TotalRequestTimeoutSetting: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.totalRequestTimeout(); got != 0 {
+	if got := h.totalRequestTimeout(context.Background()); got != 0 {
 		t.Fatalf("an explicit zero resolved to %v, want off", got)
 	}
 }

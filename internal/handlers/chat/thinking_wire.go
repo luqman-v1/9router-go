@@ -134,8 +134,8 @@ func (h *ChatHandler) providerThinkingMode(ctx context.Context, provider string)
 	if h == nil || h.Repo == nil {
 		return ""
 	}
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
+	settings := h.settingsForRequest(ctx)
+	if settings == nil {
 		return ""
 	}
 	pt, ok := settings.ProviderThinking[provider]
@@ -152,8 +152,8 @@ func (h *ChatHandler) withProviderThinkingModes(ctx context.Context) context.Con
 	if h == nil || h.Repo == nil {
 		return ctx
 	}
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
+	settings := h.settingsForRequest(ctx)
+	if settings == nil {
 		return thinking.WithProviderThinkingModes(ctx, nil)
 	}
 	modes := make(map[string]string, len(settings.ProviderThinking))
