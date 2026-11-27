@@ -33,6 +33,25 @@ feed_line() {
 	echo "src/gz $FEED_NAME $1"
 }
 
+# check_https_support warns before the operator hits it: opkg fetches https
+# through a libustream provider plus a CA bundle, and a minimal image can lack
+# either. opkg's own failure is `SSL support not available`, which names neither
+# the missing package nor the fix, and it arrives one command later with no
+# indication that the feed line itself is fine. The line is still written — the
+# provider has to be installable before the feed can be used, so refusing to
+# register would leave the operator with no path forward.
+check_https_support() {
+	command -v opkg >/dev/null 2>&1 || return 0
+	missing=""
+	opkg list-installed 2>/dev/null | grep -q '^libustream-' || missing="libustream-mbedtls"
+	[ -f /etc/ssl/certs/ca-certificates.crt ] || missing="${missing}${missing:+ }ca-bundle"
+	[ -n "$missing" ] || return 0
+	echo "9router-go-feed: warning: this image is missing $missing, so the https" >&2
+	echo "  feed cannot be fetched yet ('SSL support not available'). Install it with:" >&2
+	echo "    opkg install $missing" >&2
+	return 0
+}
+
 do_add() {
 	base="${1:-$FEED_BASE}"
 	arch=$(detect_arch) || {
@@ -41,6 +60,9 @@ do_add() {
 		exit 1
 	}
 	url="$base/$arch"
+	case "$url" in
+	https://*) check_https_support ;;
+	esac
 
 	mkdir -p "$(dirname "$CONF")"
 	touch "$CONF"

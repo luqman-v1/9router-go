@@ -61,6 +61,14 @@ is idempotent:
 9router-go-feed remove       # drop it
 ```
 
+The feed is `https`, and `opkg` needs a TLS provider plus a CA bundle to fetch
+it: `libustream-*` and `ca-bundle`. Both are present on any image with LuCI, and
+a minimal image can lack them — `opkg update` then fails with `SSL support not
+available`, which names neither. `9router-go-feed add` checks before it registers
+and prints the exact `opkg install` line when something is missing; the feed line
+is still written, because the provider has to be installable before the feed can
+be used.
+
 Manual install works too: download
 `9router-go_<version>_<arch>.ipk` from the release page and run
 `opkg install ./9router-go_<version>_<arch>.ipk`.
