@@ -6,9 +6,22 @@ the native desktop protocol at `https://autoglm-api.autoglm.ai`.
 
 **One-time login only.** The operator pastes `refresh_token|device_id` into the
 connection form once (copied from the AutoClaw app, glmproxy, or autoclawpi
-console). The gateway rotates the access token in the background via
-`/userapi/v1/refresh` (`internal/proxy/oauth/autoclaw.go`), so no browser OAuth
-dance, no per-request re-login, and no DeepSeek connection are required.
+console). The access token is then rotated automatically via
+`/userapi/v1/refresh` (`internal/proxy/oauth/autoclaw.go`), lazily on the
+request path and dedup-cached for 10s — the background OAuth refresher does
+*not* select these connections (it only picks `authType: oauth` rows carrying
+a `refreshToken` + `expiresAt`, while an Autoclaw row keeps its credential in
+`apiKey`), so an idle connection is re-rotated on its next request rather than
+proactively. No browser OAuth dance, no per-request re-login, and no DeepSeek
+connection are required.
+
+**Refresh-token rotation (unverified against a live login).** The refresher
+assumes the upstream echoes the same `refresh_token`: it keeps the stored one
+when the response omits the field. If AutoClaw actually rotates the refresh
+token, the rotated value is not persisted back to the connection (no executor
+owns a DB write on the request path), and the operator must re-paste
+`refresh_token|device_id` once the stored token is invalidated. Verify the
+real behavior with a live login before relying on long-lived connections.
 
 **Wire contract.** Each request is signed with the app's MD5 envelope
 (`x-auth-sign = md5("100003&<ts>&<APP_KEY>")`), the model rides in
@@ -18,7 +31,14 @@ the same endpoint: the executor calls `SendOnce` (not `DoRequest`), because
 `DoRequest` wraps every non-200 in an `*UpstreamError`, which made the 401
 branch unreachable on the first head; any non-200 that survives the retry is
 surfaced as an `*UpstreamError` so failover classifies it, never relayed as a
-200 SSE stream.
+200 SSE stream. The relay is per-chunk flushed (`proxy.SSECopy`), so the first
+frame reaches the client as soon as upstream sends it instead of when the
+stream closes. The upstream protocol is SSE-only, so it answers a
+`stream:false` ask with frames too: the non-stream lane folds them into one
+`chat.completion` with the shared `sseToOpenAIJSON` helper before labelling
+the body `application/json` (raw `data:` frames under a JSON header are
+unparseable for every OpenAI client), and an SSE body carrying no completion
+chunk answers 502 (`NoCompletionInStream`) so combo fallback can move on.
 
 **Verification (offline, no credentials).**
 - `internal/proxy/oauth/autoclaw_test.go` — refresh round-trip against an
@@ -29,6 +49,12 @@ surfaced as an `*UpstreamError` so failover classifies it, never relayed as a
   SSE stream, and the 401 path: first chat call 401s, the executor
   force-refreshes once, the retry hits the same overridable base URL, and the
   second call succeeds (`TestAutoclawExecutor401RetryHitsOverrideBaseURL`).
+  `TestAutoclawExecutorNonStreamFoldsSSEIntoJSON` — a `stream:false` request
+  is answered with one aggregated `chat.completion` (content `hello world`,
+  `finish_reason` `stop`, usage preserved) under `application/json`, never
+  raw `data:` frames. `TestAutoclawExecutorStreamFlushesBeforeUpstreamCloses`
+  — a real HTTP hop where the first frame lands while the upstream still
+  holds the stream open (TTFB != stream duration).
 - `internal/providers/catalog_sweep_test.go` — autoclaw models pinned to their
   published windows (1M / 200k), no floor hits.
 

@@ -3,11 +3,13 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/proxy/oauth"
 )
@@ -243,5 +245,177 @@ func TestAutoclawExecutor401RetryHitsOverrideBaseURL(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "retry-ok") {
 		t.Errorf("retry response body missing content: %s", w.Body.String())
+	}
+}
+
+// TestAutoclawExecutorNonStreamFoldsSSEIntoJSON covers the non-stream lane a
+// client actually sees: the upstream protocol is SSE-only, so a stream:false
+// ask still comes back as frames. The executor must fold them into one
+// chat.completion before labelling the body application/json — the reviewed
+// defect relayed the raw frames under the JSON header, which no OpenAI
+// client's parser can read. Replayed onto the pre-fix head this fails with
+// "body is not JSON a client can parse" on the `data: {…}` prefix.
+func TestAutoclawExecutorNonStreamFoldsSSEIntoJSON(t *testing.T) {
+	oauth.ResetRefreshCache()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/userapi/v1/refresh" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"at-2","refresh_token":"rt-2"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1730000000,"model":"zai_glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"hello "}}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1730000000,"model":"zai_glm-5.3-flash","choices":[{"index":0,"delta":{"content":"world"}}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1730000000,"model":"zai_glm-5.3-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}` + "\n\n" +
+				"data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	oldBase := autoclawExecutorBaseURL
+	autoclawExecutorBaseURL = srv.URL
+	defer func() { autoclawExecutorBaseURL = oldBase }()
+
+	oldRefreshBase := oauth.SetAutoclawBaseURLForTest(srv.URL)
+	defer func() { oauth.SetAutoclawBaseURLForTest(oldRefreshBase) }()
+
+	req := &Request{
+		Ctx:       t.Context(),
+		Client:    http.DefaultClient,
+		Provider:  "autoclaw",
+		APIKey:    "rt-orig|device-9",
+		Body:      []byte(`{"model":"zai_glm-5.3-flash","stream":false}`),
+		IsStream:  false,
+		ModelName: "zai_glm-5.3-flash",
+	}
+
+	w := httptest.NewRecorder()
+	if err := ForwardAutoclaw(w, req); err != nil {
+		t.Fatalf("ForwardAutoclaw: %v", err)
+	}
+
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var doc struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("body is not JSON a client can parse (%v): %s", err, w.Body.String())
+	}
+	if doc.Object != "chat.completion" {
+		t.Errorf("object = %q, want chat.completion", doc.Object)
+	}
+	if len(doc.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(doc.Choices))
+	}
+	if doc.Choices[0].Message.Content != "hello world" {
+		t.Errorf("content = %q, want %q", doc.Choices[0].Message.Content, "hello world")
+	}
+	if doc.Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", doc.Choices[0].FinishReason)
+	}
+	if doc.Usage.TotalTokens != 9 {
+		t.Errorf("usage.total_tokens = %d, want 9", doc.Usage.TotalTokens)
+	}
+}
+
+// TestAutoclawExecutorStreamFlushesBeforeUpstreamCloses covers the other
+// reviewed defect: the relay copied the upstream body without flushing, so
+// the client's first byte arrived only when the stream closed — TTFB equalled
+// the whole stream duration and a chat answer appeared all at once. A real
+// HTTP hop stands in for the client: the fake upstream sends the first frame
+// at once, holds the stream open, then closes. The first byte must land
+// while the stream is still open. On the pre-fix head the first read blocks
+// until close, so the elapsed time equals (or exceeds) the hold.
+func TestAutoclawExecutorStreamFlushesBeforeUpstreamCloses(t *testing.T) {
+	oauth.ResetRefreshCache()
+
+	const holdOpen = 400 * time.Millisecond
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/userapi/v1/refresh" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"at-2","refresh_token":"rt-2"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"content":"first"}}]}` + "\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(holdOpen)
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"content":" last"},"finish_reason":"stop"}]}` + "\n\n" + "data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	oldBase := autoclawExecutorBaseURL
+	autoclawExecutorBaseURL = upstream.URL
+	defer func() { autoclawExecutorBaseURL = oldBase }()
+
+	oldRefreshBase := oauth.SetAutoclawBaseURLForTest(upstream.URL)
+	defer func() { oauth.SetAutoclawBaseURLForTest(oldRefreshBase) }()
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		if err := ForwardAutoclaw(w, &Request{
+			Ctx:       r.Context(),
+			Client:    http.DefaultClient,
+			Provider:  "autoclaw",
+			APIKey:    "rt-orig|device-9",
+			Body:      body,
+			IsStream:  true,
+			ModelName: "zai_glm-5.3-flash",
+		}); err != nil {
+			t.Errorf("ForwardAutoclaw: %v", err)
+		}
+	}))
+	defer gateway.Close()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	start := time.Now()
+	resp, err := client.Post(gateway.URL+autoclawChatPath, "application/json",
+		strings.NewReader(`{"model":"zai_glm-5.3-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	buf := make([]byte, 64)
+	n, err := resp.Body.Read(buf)
+	if err != nil && n == 0 {
+		t.Fatalf("read first frame: %v", err)
+	}
+	firstByte := time.Since(start)
+
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read rest of stream: %v", err)
+	}
+	body := string(buf[:n]) + string(rest)
+	if !strings.Contains(body, "first") || !strings.Contains(body, " last") {
+		t.Errorf("stream body missing frames: %s", body)
+	}
+	if firstByte >= holdOpen/2 {
+		t.Errorf("first frame took %v while the upstream held the stream open %v: the relay buffered the whole stream", firstByte, holdOpen)
 	}
 }

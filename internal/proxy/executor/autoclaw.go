@@ -36,7 +36,11 @@ var autoclawExecutorBaseURL = autoclawBaseURL
 
 // ForwardAutoclaw signs each request with the app's MD5 scheme, moves the
 // model into X-Request-Model (the body's `model` field is ignored upstream),
-// forces stream:true, and relays the SSE response. The access token is
+// forces stream:true when the client asked for a stream, relays the SSE
+// response chunk-by-chunk with a flush (so TTFB is the first upstream frame,
+// not the stream duration), and folds the event stream into a single
+// chat.completion for a non-stream client — the upstream protocol is
+// SSE-only, so it answers stream:false with frames too. The access token is
 // rotated from the durable refresh_token|device_id stored in the connection's
 // apiKey field via oauth.Refresh, which is dedup-cached so a hot connection
 // does not hit the token endpoint on every turn.
@@ -112,17 +116,32 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	forwardUpstreamResponseHeaders(w, resp.Header)
 
 	if req.IsStream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-		_, copyErr := io.Copy(w, resp.Body)
-		return copyErr
+		// SSECopy relays each upstream chunk with a flush, so the first
+		// token reaches the client the moment upstream sends it; io.Copy
+		// left every byte in the server's write buffer until the stream
+		// closed (TTFB == total stream duration). It is the same relay
+		// every other OpenAI-lane executor uses, so a bare [DONE] or an
+		// in-band provider error is repaired the house way.
+		flusher := proxy.WriteSSEHeaders(w)
+		return proxy.SSECopy(w, resp.Body, flusher, func([]byte) { markTTFT(req, req.StartTime) })
 	}
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return fmt.Errorf("autoclaw: read non-stream response: %w", err)
+	}
+	// The upstream protocol is SSE-only, so a stream:false ask still comes
+	// back as an event stream. Fold it into one chat.completion before
+	// labelling it application/json (the openai.go/codebuddy.go path);
+	// raw SSE bytes under a JSON header fail every OpenAI client's parse.
+	if proxy.LooksLikeSSE(raw) {
+		folded, ok := sseToOpenAIJSON(raw)
+		if !ok {
+			// SSE-shaped but carrying no completion chunk: relabelling it
+			// repeats the bug, and a 502 lets combo fallback move on.
+			return proxy.UpstreamFailure(http.StatusBadGateway, proxy.NoCompletionInStream)
+		}
+		raw = folded
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)

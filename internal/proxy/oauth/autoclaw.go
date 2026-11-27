@@ -42,9 +42,15 @@ func SetAutoclawBaseURLForTest(url string) (old string) {
 
 // refreshAutoclaw rotates an Autoclaw access token from its durable refresh
 // token + device_id. One login supplies both; this function keeps them alive
-// for the lifetime of the connection. The background refresher
-// (internal/proxy/oauth/background.go) calls this for every due Autoclaw
-// connection, so the gateway never asks the operator to re-login.
+// for the lifetime of the connection.
+//
+// The rotation is lazy, not proactive: the executor calls this on the request
+// path (dedup-cached for 10s), and the background refresher
+// (internal/proxy/oauth/background.go) never selects Autoclaw connections —
+// it only picks authType "oauth" rows carrying a refreshToken + expiresAt,
+// while an Autoclaw row keeps its credential in apiKey
+// (`refresh_token|device_id`). A connection that sits idle therefore expires
+// upstream and is re-rotated on its next request.
 //
 // The refresh endpoint signs the request with the current access token when
 // one is present; it tolerates a missing/expired bearer for the refresh

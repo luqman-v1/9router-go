@@ -872,7 +872,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "cloud",
 		ServiceKinds: []string{"llm"},
 		Website:      "https://autoclaw.z.ai",
-		Notice:       &Notice{Text: "OpenAI-compatible gateway for Zhipu AutoClaw (GLM models) via its native desktop protocol. One refresh token is enough; the gateway rotates access tokens in the background.", APIKeyURL: "https://autoclaw.z.ai"},
+		Notice:       &Notice{Text: "OpenAI-compatible gateway for Zhipu AutoClaw (GLM models) via its native desktop protocol. One refresh token is enough; the gateway rotates the access token on demand (lazily, on the request path).", APIKeyURL: "https://autoclaw.z.ai"},
 	},
 	"anthropic": {
 		ID:            "anthropic",
