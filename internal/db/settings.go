@@ -223,6 +223,11 @@ type SettingsData struct {
 	ComboStrategy              string `json:"comboStrategy,omitempty"`
 	ComboStickyRoundRobinLimit int    `json:"comboStickyRoundRobinLimit,omitempty"`
 	SeatAttemptBudgetMs        int    `json:"seatAttemptBudgetMs,omitempty"`
+	// ComboMemberAttemptCap bounds the failed accounts one combo member may
+	// spend before the combo moves on. Off (0) by default: enabling it shortens
+	// a member's chance to find a healthy account, which is an operator's
+	// decision, not a default. See ComboMemberAttemptCapFor.
+	ComboMemberAttemptCap int `json:"comboMemberAttemptCap,omitempty"`
 	// TotalRequestTimeoutMs bounds one chat request end to end, headers plus
 	// body. Off (0) by default: it exists to reclaim a hung upstream, not to
 	// cut a slow one, and enabling it is the operator's call.

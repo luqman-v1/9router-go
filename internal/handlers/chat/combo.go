@@ -1220,8 +1220,22 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			// left it selectable, so without this the next connection attempt
 			// picked the same account and resent the same request.
 			var tried []string
+			// memberCap bounds the failed accounts this entry may spend before
+			// the combo moves on; 0 keeps the exhaustive ten-connection walk.
+			memberCap := db.ComboMemberAttemptCapFor(settings, modelInfo.Provider)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				// The cap counts failed accounts, not iterations: a connection
+				// skipped as locked or unavailable costs no attempt, so only
+				// `tried` is compared against it. Breaking here leaves the
+				// entry to the next combo member, which is the whole point of
+				// the setting.
+				if memberCap > 0 && len(tried) >= memberCap {
+					log.Warn("combo", "member attempt cap reached, next member",
+						"provider", modelInfo.Provider, "model", modelInfo.Model,
+						"failed", len(tried), "cap", memberCap)
+					break
+				}
 				var connID string
 				var picked *ProviderConnection
 				var connData *ConnectionData
@@ -1678,6 +1692,9 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
+	// Read once per request, like the chat loop: the member attempt cap is
+	// resolved per provider inside the entry loop.
+	settings, _ := h.Repo.GetSettings()
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -1769,8 +1786,19 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			// See the chat loop: never resend this entry to a connection it
 			// already tried.
 			var tried []string
+			// See the chat loop: the same cap, resolved from the same settings
+			// row, so a business request and a chat request agree on how long a
+			// member may grind its pool.
+			memberCap := db.ComboMemberAttemptCapFor(settings, modelInfo.Provider)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				// See the chat loop: only failed accounts count toward the cap.
+				if memberCap > 0 && len(tried) >= memberCap {
+					log.Warn("combo", "member attempt cap reached, next member",
+						"provider", modelInfo.Provider, "model", modelInfo.Model,
+						"failed", len(tried), "cap", memberCap)
+					break
+				}
 				var connID string
 				var picked *ProviderConnection
 				var connData *ConnectionData

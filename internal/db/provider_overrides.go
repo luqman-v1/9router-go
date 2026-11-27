@@ -13,6 +13,10 @@ import (
 type ProviderOverrides struct {
 	Headers      map[string]string `json:"headers,omitempty"`
 	SeatBudgetMs int               `json:"seatBudgetMs,omitempty"`
+	// ComboMemberAttemptCap overrides the combo member attempt cap for this
+	// provider. Nil inherits the global setting; 0 disables the cap here even
+	// when one is set globally.
+	ComboMemberAttemptCap *int `json:"comboMemberAttemptCap,omitempty"`
 }
 
 const (
