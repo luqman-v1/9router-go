@@ -14,14 +14,10 @@
 /etc/init.d/9router-go stop 2>/dev/null
 /etc/init.d/9router-go disable 2>/dev/null
 
-# Remove the health probe's cron entry. Rewrite rather than deleting the
-# whole file; this preserves jobs the operator added for other purposes.
-if [ -d /etc/crontabs ] && [ -f /etc/crontabs/root ]; then
-	tmp=/etc/crontabs/root.9router-go.tmp
-	grep -v '/usr/bin/9router-go-healthcheck' /etc/crontabs/root > "$tmp" 2>/dev/null || true
-	mv -f "$tmp" /etc/crontabs/root
-	/etc/init.d/cron restart >/dev/null 2>&1 || true
-fi
+# Remove the health probe's cron entry through the init script, which owns the
+# entry: it rewrites the line rather than the file, so jobs the operator added
+# for other purposes survive.
+/etc/init.d/9router-go sync_cron 0 >/dev/null 2>&1 || true
 
 # Remove the LAN firewall rule the init script installed. All matches are
 # deleted, not just the first: a config carrying duplicates from an older

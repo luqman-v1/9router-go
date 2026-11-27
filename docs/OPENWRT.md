@@ -185,6 +185,7 @@ flash write.
 
 ```sh
 /etc/init.d/9router-go start|stop|restart|status|enable|disable
+/etc/init.d/9router-go sync_cron 0|1   # remove / install the probe cron entry
 logread -e 9router-go          # service log
 wget -qO- http://127.0.0.1:20130/health
 ```
@@ -199,11 +200,14 @@ uci get 9router-go.main.healthcheck_threshold # failures before restart, 3
 uci get 9router-go.main.healthcheck_timeout   # seconds per probe, 5
 ```
 
-`start_service` adds the once-a-minute probe to `/etc/crontabs/root` and removes
-it again when `healthcheck` is `0`; the CRON entry is only rewritten and cron is
-only restarted when the table actually changes. Three consecutive `/health`
-failures restart the service; one is treated as load. The counter lives in
-`/var/run`, so it costs no flash writes and resets on reboot.
+`sync_cron` is the only thing that writes the once-a-minute probe into
+`/etc/crontabs/root`: `start_service` calls it on every start, `postinst` after
+an install or upgrade, and `prerm` on removal. It compares the result with the
+current table first, so the file is only rewritten and cron only restarted when
+the entry actually changes — an upgrade that changes nothing costs no flash
+write. Three consecutive `/health` failures restart the service; one is treated
+as load. The counter lives in `/var/run`, so it costs no flash writes and resets
+on reboot.
 
 The probe runs unless procd reports the service as stopped. A stopped
 gateway is procd's business — it respawns a crash, and applies its own backoff to

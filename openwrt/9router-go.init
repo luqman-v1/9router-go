@@ -16,6 +16,15 @@ PROG=/usr/bin/$NAME
 HEALTHCHECK=/usr/bin/9router-go-healthcheck
 PIDFILE=/var/run/$NAME.pid
 RULE_NAME=9router-go-allow-lan
+# sync_cron is the package's only owner of the health-check cron entry.
+# postinst and prerm used to rewrite /etc/crontabs/root themselves, which
+# meant the same job existed three times: their copies rewrote the file and
+# restarted cron on every install or removal, while this script compared
+# first and skipped the flash write when nothing changed. Declaring it in
+# EXTRA_COMMANDS is what makes `9router-go sync_cron <0|1>` dispatch here
+# (rc.common: ALL_COMMANDS="${ALL_COMMANDS} ${EXTRA_COMMANDS}").
+EXTRA_COMMANDS="sync_cron"
+EXTRA_HELP="	sync_cron <0|1>	Install or remove the health-check cron entry"
 
 start_service() {
 	local enabled port host data_dir auto_update jwt_secret log_level healthcheck open_lan
@@ -161,6 +170,11 @@ stop_service() {
 	return 0
 }
 
+# sync_cron is the rc.common entry point: `$action "$@"` means the requested
+# state arrives as $2, with the command name in $1.
+sync_cron() {
+	cron_sync "$2"
+}
 # cron_sync installs (want=1) or removes (want=0) the healthcheck cron line.
 # It compares the result with the current table first: writing /etc/crontabs/root
 # and restarting cron on every boot is needless flash wear and needless work.
