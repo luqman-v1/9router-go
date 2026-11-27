@@ -7,8 +7,9 @@ import (
 // Engine applies a resolved policy to text. It holds no state, so it is safe
 // for concurrent use without a lock.
 type Engine struct {
-	// detectors selects which detector sets run. "pii" and "injection" are the
-	// MVP names; an empty slice means the policy enables nothing.
+	// detectors selects which detector sets run. "pii", "injection" and
+	// "secrets" are the names; an empty slice means the policy enables
+	// nothing.
 	detectors []string
 	// action is what fires when any detector matches.
 	action Action
@@ -89,6 +90,9 @@ func (e *Engine) Scan(text string) *Decision {
 	}
 	if e.runs("injection") {
 		findings = append(findings, run(injectionDetectors, text)...)
+	}
+	if e.runs("secrets") {
+		findings = append(findings, run(secretDetectors, text)...)
 	}
 	if len(e.customDetectors) > 0 {
 		for _, f := range run(e.customDetectors, text) {

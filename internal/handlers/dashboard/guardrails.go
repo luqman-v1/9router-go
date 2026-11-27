@@ -226,7 +226,7 @@ func validateGuardrailConfig(raw string) error {
 		return errGuardrailNoDetectors
 	}
 	for _, d := range probe.Detectors {
-		if d != "pii" && d != "injection" && d != "custom" {
+		if d != "pii" && d != "injection" && d != "secrets" && d != "custom" {
 			return errGuardrailUnknownDetector
 		}
 	}
@@ -264,7 +264,7 @@ const (
 	errGuardrailConfigJSON                = guardrailConfigError("config must be a JSON object")
 	errGuardrailNoDetectors               = guardrailConfigError("config.detectors must list at least one detector or customPatterns must be provided")
 	errGuardrailUnknownAction             = guardrailConfigError("config.action must be one of allow, log_only, warn, mask, block")
-	errGuardrailUnknownDetector           = guardrailConfigError("config.detectors may only contain pii, injection, and custom")
+	errGuardrailUnknownDetector           = guardrailConfigError("config.detectors may only contain pii, injection, secrets, and custom")
 	errGuardrailCustomPatternEmptyRegex   = guardrailConfigError("custom pattern regex cannot be empty")
 	errGuardrailCustomPatternInvalidRegex = guardrailConfigError("custom pattern regex is invalid")
 )

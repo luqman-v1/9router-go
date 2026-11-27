@@ -41,6 +41,16 @@ func TestValidateGuardrailConfig_AcceptsCustomPatterns(t *testing.T) {
 			config:  `{"action":"block"}`,
 			wantErr: true,
 		},
+		{
+			name:    "secrets detector alone",
+			config:  `{"action":"mask","detectors":["secrets"]}`,
+			wantErr: false,
+		},
+		{
+			name:    "unknown detector name still rejected",
+			config:  `{"action":"mask","detectors":["credentials"]}`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

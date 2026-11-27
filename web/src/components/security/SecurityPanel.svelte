@@ -21,6 +21,7 @@
 
   const DETECTORS = [
     { id: 'pii', label: 'PII', hint: 'Email, IP, NIK, cards, IBAN' },
+    { id: 'secrets', label: 'Secrets', hint: 'API keys, bearer tokens, credentials' },
     { id: 'injection', label: 'Prompt injection', hint: 'Override and exfiltration attempts' },
     { id: 'custom', label: 'Custom pattern', hint: 'User-defined regular expressions' }
   ] as const
