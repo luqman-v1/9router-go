@@ -47,11 +47,17 @@ func (r *Repo) ListBlockedIPs() ([]BlockedIPEntry, error) {
 }
 
 // BlockIP adds an IP to the blacklist (upsert).
+// Loopback and unspecified addresses are refused so stored state matches enforcement.
 func (r *Repo) BlockIP(ip, country, reason, by string) (BlockedIPEntry, error) {
-	norm, err := normalizeBlockedIP(ip)
+	addr, err := netip.ParseAddr(strings.TrimSpace(ip))
 	if err != nil {
-		return BlockedIPEntry{}, err
+		return BlockedIPEntry{}, fmt.Errorf("invalid ip %q: %w", ip, err)
 	}
+	unmapped := addr.Unmap()
+	if unmapped.IsLoopback() || unmapped.IsUnspecified() {
+		return BlockedIPEntry{}, fmt.Errorf("cannot block loopback or unspecified ip %q", unmapped.String())
+	}
+	norm := unmapped.String()
 	entry := BlockedIPEntry{
 		IP:        norm,
 		Country:   country,

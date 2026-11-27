@@ -67,4 +67,11 @@ func TestBlockedIPsCRUD(t *testing.T) {
 	if blocked {
 		t.Error("expected 203.0.113.7 to be unblocked after UnblockIP")
 	}
+
+	// Refuses loopback and unspecified
+	for _, bad := range []string{"127.0.0.1", "::1", "0.0.0.0"} {
+		if _, err := repo.BlockIP(bad, "XX", "loopback", "admin"); err == nil {
+			t.Errorf("expected BlockIP(%q) to fail, got nil", bad)
+		}
+	}
 }
