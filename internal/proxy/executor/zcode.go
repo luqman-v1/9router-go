@@ -373,10 +373,16 @@ func ForwardZcode(w http.ResponseWriter, req *Request) error {
 
 	// The plan gateway reports drain conditions (1005 "exceed quota limit",
 	// 1113 grant spent, 3012 identity gate) as a JSON envelope with HTTP 200.
-	// Handing that to the Claude translator turns a rotate-worthy fault into a
-	// generic "no completion" 502, so surface it as an upstream error first.
+	// It also answers a request it decided not to dispatch with a bare ACK
+	// ("code":0 and a log id, but no message). Handing either to the Claude
+	// translator turns a rotate-worthy fault into a generic "no completion"
+	// 502, so surface both as upstream errors first.
 	if envBody, code, ok := zcodeEnvelopeError(resp); ok {
-		return &proxy.UpstreamError{StatusCode: code, Body: envBody, Header: resp.Header}
+		body := envBody
+		if code == http.StatusBadGateway && zcodeIsBareAck(envBody) {
+			body = zcodeAckErrorBody(envBody)
+		}
+		return &proxy.UpstreamError{StatusCode: code, Body: body, Header: resp.Header}
 	} else if envBody != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(envBody))
 	}
@@ -517,7 +523,19 @@ func zcodeEnvelopeError(resp *http.Response) ([]byte, int, bool) {
 		Code float64 `json:"code"`
 		Msg  string  `json:"msg"`
 	}
-	if json.Unmarshal(body, &env) != nil || env.Code == 0 {
+	if json.Unmarshal(body, &env) != nil {
+		return body, resp.StatusCode, false
+	}
+	// The plan gateway answers a request it decided not to dispatch with a
+	// bare ACK: {"code":0,"msg":"","logid":"..."}. There is no content block,
+	// no message type and no usage — only the success-shaped envelope. Letting
+	// that reach the Claude translator produces an empty chat.completion and a
+	// misleading "first choice carries no content" 502. Report it as this
+	// provider's own failure instead, so rotation sees the real reason.
+	if env.Code == 0 && zcodeIsBareAck(body) {
+		return body, http.StatusBadGateway, true
+	}
+	if env.Code == 0 {
 		return body, resp.StatusCode, false
 	}
 	status := http.StatusForbidden
@@ -536,4 +554,46 @@ func zcodeEnvelopeError(resp *http.Response) ([]byte, int, bool) {
 		status = http.StatusForbidden
 	}
 	return body, status, true
+}
+
+// zcodeIsBareAck reports whether a 200 body is the plan gateway's no-op ACK:
+// a success-shaped envelope with a log id but no completion payload. A real
+// Claude Messages reply always has a "type":"message" and a content array; an
+// error envelope carries a non-zero code. Only the narrow ACK shape qualifies.
+func zcodeIsBareAck(body []byte) bool {
+	var ack struct {
+		Code    json.RawMessage `json:"code"`
+		Msg     string          `json:"msg"`
+		LogID   string          `json:"logid"`
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(body, &ack) != nil {
+		return false
+	}
+	// A zero code is the ACK's success-shaped marker; accept both 0 and "0".
+	code := strings.TrimSpace(string(ack.Code))
+	if code != "0" && code != `"0"` {
+		return false
+	}
+	return ack.LogID != "" && strings.TrimSpace(ack.Msg) == "" &&
+		ack.Type == "" && len(ack.Content) == 0
+}
+
+// zcodeAckErrorBody renders a client-facing error for the plan gateway's bare
+// ACK. The original envelope is kept alongside the message so the log id can
+// be quoted to Z.ai support; json.Marshal keeps it safe to embed.
+func zcodeAckErrorBody(envelope []byte) []byte {
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": "ZCode start-plan gateway acknowledged the request without returning a completion",
+			"type":    "upstream_error",
+			"code":    http.StatusBadGateway,
+		},
+		"upstream_body": json.RawMessage(envelope),
+	})
+	if err != nil {
+		return envelope
+	}
+	return body
 }

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -57,5 +58,66 @@ func TestZcodeEnvelopeError_passesThroughRealResponses(t *testing.T) {
 	}
 	if len(buffered) == 0 {
 		t.Error("429 body was dropped")
+	}
+}
+
+// The plan gateway answers a request it chose not to dispatch with a bare
+// ACK: HTTP 200, code 0, an empty msg and a log id, but no message content.
+// It must reach the fallback layer as a 502 with a client-readable message,
+// not a translated empty chat.completion ("first choice carries no content").
+func TestZcodeEnvelopeError_reportsBareAckAsUpstreamFailure(t *testing.T) {
+	ack := `{"code":0,"msg":"","logid":"20261127164602aaf9208f5089c6fe9ba4"}`
+	buffered, status, isErr := zcodeEnvelopeError(envelopeResponse(http.StatusOK, ack))
+	if !isErr {
+		t.Fatal("bare ACK was not reported as an error")
+	}
+	if status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", status)
+	}
+	if !zcodeIsBareAck(buffered) {
+		t.Errorf("buffered body %q was not recognised as a bare ACK", buffered)
+	}
+
+	rendered := zcodeAckErrorBody(buffered)
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+		} `json:"error"`
+		UpstreamBody struct {
+			LogID string `json:"logid"`
+		} `json:"upstream_body"`
+	}
+	if err := json.Unmarshal(rendered, &parsed); err != nil {
+		t.Fatalf("rendered error body is not JSON: %v (%s)", err, rendered)
+	}
+	if parsed.Error.Code != http.StatusBadGateway {
+		t.Errorf("error.code = %d, want 502", parsed.Error.Code)
+	}
+	if !strings.Contains(parsed.Error.Message, "without returning a completion") {
+		t.Errorf("error.message = %q, want an explicit no-completion reason", parsed.Error.Message)
+	}
+	if parsed.UpstreamBody.LogID == "" {
+		t.Error("rendered error dropped the upstream log id")
+	}
+}
+
+// Only the narrow ACK shape qualifies: a real Claude completion, a gateway
+// error envelope and a success with content must all pass through untouched.
+func TestZcodeIsBareAck_excludesRealResponses(t *testing.T) {
+	for _, body := range []string{
+		`{"id":"msg_1","type":"message","content":[{"type":"text","text":"PONG"}]}`,
+		`{"code":1005,"msg":"exceed quota limit","logid":"x"}`,
+		`{"code":0,"msg":"success","logid":"x","data":{"answer":"hi"}}`,
+		`{"code":0,"msg":"","logid":"x","content":[{"type":"text","text":"hi"}]}`,
+		`{"code":0,"msg":""}`,
+		`not json`,
+	} {
+		if zcodeIsBareAck([]byte(body)) {
+			t.Errorf("real response misclassified as a bare ACK: %s", body)
+		}
+	}
+	if !zcodeIsBareAck([]byte(`{"code":"0","msg":"","logid":"x"}`)) {
+		t.Error("string-shaped code 0 must also be recognised as a bare ACK")
 	}
 }

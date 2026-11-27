@@ -633,3 +633,44 @@ func TestLiveE2E_SpaceBunny_Free(t *testing.T) {
 
 	requireLiveOK(t, rec.Code, rec.Body.String())
 }
+
+// TestLiveE2E_Zcode_BareAckDocumentsUpstream documents the live behaviour of
+// the free start-plan lane when the gateway answers with a bare ACK instead of
+// a completion. The gateway must report its own failure with an actionable
+// reason, not a translated empty chat.completion ("first choice carries no
+// content"). Gated behind 9ROUTER_LIVE_TESTS like every other live test.
+func TestLiveE2E_Zcode_BareAckDocumentsUpstream(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("zcode", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active zcode connection")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	reqBody := `{
+		"model": "zcode/glm-5.3-flash",
+		"messages": [{"role": "user", "content": "hi"}],
+		"max_tokens": 20,
+		"stream": false
+	}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("ZCode response code: %d", rec.Code)
+	t.Logf("ZCode response body: %s", rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Skip("upstream answered with a completion; the bare-ACK path was not exercised")
+	}
+	if strings.Contains(rec.Body.String(), "first choice carries no content") {
+		t.Fatalf("empty completion was misreported as a missing choice: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "acknowledged the request without returning a completion") {
+		t.Errorf("expected an explicit bare-ACK reason, got: %s", rec.Body.String())
+	}
+}
