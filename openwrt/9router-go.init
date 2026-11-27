@@ -19,6 +19,7 @@ RULE_NAME=9router-go-allow-lan
 
 start_service() {
 	local enabled port host data_dir auto_update jwt_secret log_level healthcheck open_lan
+	local mem_limit nofile_limit
 
 	config_load "$NAME"
 	config_get_bool enabled main enabled 1
@@ -29,6 +30,8 @@ start_service() {
 	config_get jwt_secret main jwt_secret ''
 	config_get_bool healthcheck main healthcheck 1
 	config_get_bool open_lan main open_lan 0
+	config_get mem_limit main mem_limit '0'
+	config_get nofile_limit main nofile_limit '4096'
 
 	if [ "$enabled" -ne 1 ]; then
 		logger -t "$NAME" "disabled in /etc/config/$NAME, not starting"
@@ -55,6 +58,51 @@ start_service() {
 	fi
 	if [ -n "$jwt_secret" ]; then
 		procd_set_param env JWT_SECRET="$jwt_secret"
+	fi
+	# A soft heap ceiling, not RLIMIT_AS: Go reserves a large virtual address
+	# space up front, so an address-space rlimit kills the process at startup
+	# instead of bounding the heap. GOMEMLIMIT makes the GC work harder as the
+	# heap approaches the value, which is what a 128 MB router needs — the OOM
+	# killer it avoids takes sshd or the kernel with it, not just the gateway.
+	# Numeric guard first: Go treats a malformed GOMEMLIMIT as a fatal error at
+	# startup, so an empty or non-numeric option must set no variable at all.
+	case "$mem_limit" in
+	''|*[!0-9]*) mem_limit=0 ;;
+	esac
+	# A magnitude ceiling too: Go throws `fatal error: malformed GOMEMLIMIT` on
+	# a value it cannot parse, so an operator typo like `9999999999999999` must
+	# not reach the runtime. 1 TiB is far above any box this package targets
+	# and below what Go can parse; larger values are clamped, not fatal.
+	while [ "${#mem_limit}" -gt 1 ] && [ "${mem_limit#0}" != "$mem_limit" ]; do
+		mem_limit="${mem_limit#0}"
+	done
+	if [ "${#mem_limit}" -gt 7 ] || [ "$mem_limit" -gt 1048576 ]; then
+		logger -t "$NAME" "mem_limit=$mem_limit out of range, clamped to 1048576 MiB"
+		mem_limit=1048576
+	fi
+	if [ "$mem_limit" -gt 0 ]; then
+		procd_set_param env GOMEMLIMIT="${mem_limit}MiB"
+	fi
+	# Every proxied stream holds a client socket and an upstream socket, so the
+	# default 1024 file limit is reached long before the gateway is busy. The
+	# value is given twice (soft and hard) because procd leaves rlim_max at the
+	# inherited hard limit when it is omitted: with a soft limit above that hard
+	# limit, setrlimit fails with EINVAL and nothing is raised at all.
+	case "$nofile_limit" in
+	''|*[!0-9]*) nofile_limit=0 ;;
+	esac
+	# Same magnitude ceiling: NR_OPEN on Linux is 1048576, so anything larger is
+	# rejected by setrlimit with EINVAL — and `procd_set_param limits` failure
+	# aborts the service start. Clamp instead of failing.
+	while [ "${#nofile_limit}" -gt 1 ] && [ "${nofile_limit#0}" != "$nofile_limit" ]; do
+		nofile_limit="${nofile_limit#0}"
+	done
+	if [ "${#nofile_limit}" -gt 7 ] || [ "$nofile_limit" -gt 1048576 ]; then
+		logger -t "$NAME" "nofile_limit=$nofile_limit out of range, clamped to 1048576"
+		nofile_limit=1048576
+	fi
+	if [ "$nofile_limit" -gt 0 ]; then
+		procd_set_param limits nofile="$nofile_limit $nofile_limit"
 	fi
 	# The pid file is the one liveness signal shared by procd, the LuCI page and
 	# the backup helper. It is written by the launcher, not by

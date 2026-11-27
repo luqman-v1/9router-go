@@ -65,6 +65,16 @@ o = s:option(Flag, "open_lan", translate("Open LAN firewall"),
 	translate("Allow the dashboard to be reached from the LAN. Disable this to keep it accessible only from the router itself."))
 o.default = "0"
 
+o = s:option(Value, "mem_limit", translate("Memory limit (MiB)"),
+	translate("Soft heap ceiling passed to the gateway as GOMEMLIMIT. The garbage collector works harder near it instead of letting the router's OOM killer choose a victim. 0 disables the limit; on a 128 MB device try 64."))
+o.datatype = "uinteger"
+o.placeholder = "0"
+
+o = s:option(Value, "nofile_limit", translate("Open file limit"),
+	translate("File descriptors the gateway may hold. Each proxied stream needs one for the client and one for the upstream. 0 keeps the system default (1024 on most images)."))
+o.datatype = "uinteger"
+o.placeholder = "4096"
+
 o = s:option(ListValue, "log_level", translate("Log level"))
 o:value("debug", "debug")
 o:value("info", "info")

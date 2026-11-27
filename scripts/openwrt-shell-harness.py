@@ -274,7 +274,7 @@ def main():
         prelude = (
             "procd_open_instance() { :; }\n"
             "procd_close_instance() { :; }\n"
-            "procd_set_param() { :; }\n"
+            "procd_set_param() { printf '%s\\n' \"$*\" >> \"${PROCD_LOG:-/dev/null}\"; }\n"
             "procd_add_reload_trigger() { :; }\n"
             "logger() { :; }\n"
             "config_load() { :; }\n"
@@ -296,7 +296,7 @@ def main():
             text = re.sub(r"/etc/init\.d/cron\s+restart", "true", text)
             return text
 
-        def start(open_lan, port):
+        def start(open_lan, port, mem_limit=0, nofile_limit=4096):
             injected = (
                 "CFG_enabled=1\n"
                 "CFG_port=%s\n"
@@ -306,11 +306,19 @@ def main():
                 "CFG_jwt_secret=''\n"
                 "CFG_log_level=info\n"
                 "CFG_healthcheck=1\n"
-                "CFG_open_lan=%s\n" % (port, data_dir, open_lan)
+                "CFG_open_lan=%s\n"
+                "CFG_mem_limit=%s\n"
+                "CFG_nofile_limit=%s\n" % (port, data_dir, open_lan, mem_limit, nofile_limit)
             )
             path = os.path.join(tmp, "start.sh")
             write(path, prelude + injected + retarget(body) + "\nstart_service\n")
-            return run([sh, path], env, cwd=tmp)
+            procd_log = os.path.join(tmp, "procd.log")
+            open(procd_log, "w").close()
+            env2 = dict(env)
+            env2["PROCD_LOG"] = procd_log
+            r = run([sh, path], env2, cwd=tmp)
+            r.procd = open(procd_log).read()
+            return r
 
         # 1. three starts create exactly one rule
         ok, detail = True, ""
@@ -345,6 +353,47 @@ def main():
         start(0, "20131")
         n = rules_named(db, "9router-go-allow-lan")
         case("open_lan=0 removes legacy duplicates", n == 0, "found %d rules" % n)
+        # 4b. resource limits reach procd, and a malformed value reaches nothing.
+        # GOMEMLIMIT is a soft heap ceiling rather than an address-space rlimit on
+        # purpose: Go reserves a large virtual address space, so RLIMIT_AS kills
+        # the process at startup. A non-numeric option must emit no variable at
+        # all, because Go treats a malformed GOMEMLIMIT as a fatal start-up error.
+        r = start(0, "20131", mem_limit=64, nofile_limit=4096)
+        case("mem_limit becomes GOMEMLIMIT", "env GOMEMLIMIT=64MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("nofile_limit sets soft and hard", "limits nofile=4096 4096" in r.procd,
+             "procd params: %r" % (r.procd,))
+        r = start(0, "20131", mem_limit=0, nofile_limit=0)
+        case("zero limits emit nothing", "GOMEMLIMIT" not in r.procd and "limits" not in r.procd,
+             "procd params: %r" % (r.procd,))
+        r = start(0, "20131", mem_limit="lots", nofile_limit="many")
+        case("malformed limits emit nothing",
+             "GOMEMLIMIT" not in r.procd and "limits" not in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("malformed limits do not abort start", r.returncode == 0,
+             "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
+        # An oversized value reaches neither procd nor the Go runtime untouched:
+        # Go throws `fatal error: malformed GOMEMLIMIT` on a number too large to
+        # parse (9000000000000 MiB), and Linux rejects an NR_OPEN above
+        # 1048576 with EINVAL — either way the service would not start. The
+        # guard clamps both to the largest safe value and logs the change.
+        r = start(0, "20131", mem_limit=9999999999999999, nofile_limit=9999999999999999)
+        case("oversized mem_limit clamped",
+             "env GOMEMLIMIT=1048576MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("oversized nofile_limit clamped",
+             "limits nofile=1048576 1048576" in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("oversized limits do not abort start", r.returncode == 0,
+             "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
+        r = start(0, "20131", mem_limit=9000000000000, nofile_limit=0)
+        case("large mem_limit at the parser edge clamped",
+             "env GOMEMLIMIT=1048576MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
+        r = start(0, "20131", mem_limit=64, nofile_limit=1048576)
+        case("nofile_limit at the ceiling passes through unchanged",
+             "limits nofile=1048576 1048576" in r.procd and "GOMEMLIMIT=64MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
 
         # 5. the probe survives a config that predates every option
         hc = retarget(open(os.path.join(src, "9router-go-healthcheck")).read())
