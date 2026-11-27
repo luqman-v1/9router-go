@@ -1507,7 +1507,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
 						}
 						retry.note(ue)
-						lastErr = ue
+						lastErr = classifiedComboError(modelInfo.Provider, modelInfo.Model, ue)
 						if isKnownNoAuth {
 							break
 						}
@@ -2054,7 +2054,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
 						}
 						retry.note(ue)
-						lastErr = ue
+						lastErr = classifiedComboError(modelInfo.Provider, modelInfo.Model, ue)
 						if isKnownNoAuth {
 							break
 						}

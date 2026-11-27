@@ -196,6 +196,68 @@ func TestComboExhaustedCarriesResetTiming(t *testing.T) {
 	}
 }
 
+// TestClassifiedComboError_SanitizesFreeTierRefusal pins the terminal form a
+// combo stores when a free-tier egress refuses: the raw gate body names
+// OpenCode Go as the remedy, which sends an agent loop down a dead end. The
+// classified body keeps the same cause but names a retry. A genuine 429 from
+// another provider must keep its own body untouched.
+func TestClassifiedComboError_SanitizesFreeTierRefusal(t *testing.T) {
+	const gateBody = `{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`
+	tests := []struct {
+		name        string
+		provider    string
+		body        string
+		wantType    string
+		wantRetry   bool
+		wantRawBody bool
+	}{
+		{
+			name:      "opencode free-tier refusal is classified",
+			provider:  "opencode",
+			body:      gateBody,
+			wantType:  "free_tier_quota_exhausted",
+			wantRetry: true,
+		},
+		{
+			name:        "another provider's 429 passes through",
+			provider:    "groq",
+			body:        exhaustedBody("quota exhausted", ""),
+			wantRawBody: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(tt.body)}
+			got := classifiedComboError(tt.provider, "some-model", raw)
+			var envelope struct {
+				Error struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(got.Body, &envelope); err != nil {
+				t.Fatalf("response is not a JSON error envelope: %v; body: %s", err, got.Body)
+			}
+			if tt.wantRawBody {
+				if !strings.Contains(string(got.Body), "quota exhausted") {
+					t.Errorf("body = %q, want the original upstream error", got.Body)
+				}
+				return
+			}
+			if strings.Contains(envelope.Error.Message, "subscribe to OpenCode Go") {
+				t.Errorf("error.message = %q, want the classified message without the upstream subscribe prompt", envelope.Error.Message)
+			}
+			if envelope.Error.Type != tt.wantType {
+				t.Errorf("error.type = %q, want %q", envelope.Error.Type, tt.wantType)
+			}
+			if got.Header.Get("Retry-After") == "" && tt.wantRetry {
+				t.Error("Retry-After header missing on classified free-tier refusal")
+			}
+		})
+	}
+}
+
 // TestPassRetryWriteError_ResetFieldBoundaries pins what the exhausted-combo
 // response carries at the edges. It drives passRetry.writeError directly
 // because the parsing it used to own (RFC3339 strings that could be

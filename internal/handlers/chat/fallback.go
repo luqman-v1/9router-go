@@ -564,6 +564,22 @@ func opencodeClosureError(provider, model string, err error) error {
 	}
 }
 
+// classifiedComboError returns the typed, client-facing form of an OpenCode
+// free-tier refusal for a combo loop. The classifier in opencodeClosureError
+// speaks `error` because the single-provider callers return it directly; a
+// combo stores the terminal error as *upstreamError, so the typed value is
+// unwrapped here rather than at each of the two loop call sites.
+func classifiedComboError(provider, model string, ue *upstreamError) *upstreamError {
+	if ue == nil || !isOpencodeFreeTierRefusal(provider, ue) {
+		return ue
+	}
+	var classified *upstreamError
+	if errors.As(opencodeClosureError(provider, model, ue), &classified) {
+		return classified
+	}
+	return ue
+}
+
 // upstreamRetryAfterSec reads the wait the upstream named, clamped like every
 // other announced cooldown. It reads the Retry-After header plus the body
 // carriers retryAfterWait already knows, so a gate that announces the window in
