@@ -103,9 +103,12 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// One settings read per request: every later helper that needs the row
+	// takes it from this holder instead of querying SQLite again.
+	ctx = withRequestSettingsHolder(ctx)
 	// The end-to-end bound goes on first, so every later stage shares it: a
 	// request parked in a combo fallback or a slow upstream still expires.
-	ctx, cancelDeadline := WithTotalRequestDeadline(ctx, h.totalRequestTimeout())
+	ctx, cancelDeadline := WithTotalRequestDeadline(ctx, h.totalRequestTimeout(ctx))
 	defer cancelDeadline()
 	ctx = executor.WithCodexLiteHeader(ctx, r.Header.Get(executor.CodexResponsesLiteHeader))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
@@ -458,8 +461,10 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// Same one-settings-holder install as the Chat Completions path.
+	ctx = withRequestSettingsHolder(ctx)
 	// Same end-to-end bound as the Chat Completions path.
-	ctx, cancelDeadline := WithTotalRequestDeadline(ctx, h.totalRequestTimeout())
+	ctx, cancelDeadline := WithTotalRequestDeadline(ctx, h.totalRequestTimeout(ctx))
 	defer cancelDeadline()
 	// A Messages client's own beta flags have to reach the upstream: the
 	// registry list is the gateway's choice of betas, not the caller's. Without
