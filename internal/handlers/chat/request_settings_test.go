@@ -38,18 +38,13 @@ func countIfSettingsRow(query string) {
 	}
 }
 
+// QueryContext is the only entry database/sql uses for a row read, and it is
+// the one the modernc driver implements, so the deprecated driver.Queryer
+// fallback is deliberately absent.
 func (c *countingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	countIfSettingsRow(query)
 	if q, ok := c.Conn.(driver.QueryerContext); ok {
 		return q.QueryContext(ctx, query, args)
-	}
-	return nil, driver.ErrSkip
-}
-
-func (c *countingConn) Query(query string, args []driver.Value) (driver.Rows, error) {
-	countIfSettingsRow(query)
-	if q, ok := c.Conn.(driver.Queryer); ok {
-		return q.Query(query, args)
 	}
 	return nil, driver.ErrSkip
 }
