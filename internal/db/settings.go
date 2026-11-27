@@ -231,7 +231,7 @@ type SettingsData struct {
 	// TotalRequestTimeoutMs bounds one chat request end to end, headers plus
 	// body. Off (0) by default: it exists to reclaim a hung upstream, not to
 	// cut a slow one, and enabling it is the operator's call.
-	TotalRequestTimeoutMs int `json:"totalRequestTimeoutMs,omitempty"`
+	TotalRequestTimeoutMs int                             `json:"totalRequestTimeoutMs,omitempty"`
 	ComboStrategies       map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
 	ProviderStrategies    map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter       map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
