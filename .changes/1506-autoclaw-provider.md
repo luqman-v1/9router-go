@@ -73,6 +73,14 @@ chunk answers 502 (`NoCompletionInStream`) so combo fallback can move on.
   is the embedded one, and a credential without a key was signed anyway).
 - `internal/providers/catalog_sweep_test.go` — all six autoclaw ids pinned
   to the 1M context window verified from the app's catalog snapshot.
+- `internal/integration/autoclaw_live_test.go` — live end-to-end through the
+  real router and database: a fake upstream mimics the 2.6.1 protocol
+  (signed headers, refresh-token rotation on every refresh, SSE-only chat).
+  It pins `X-Request-Model` from the body, `X-Version: 2.6.1`, the refresh
+  body fields, and a parseable `chat.completion` at status 200.
+- `TestAutoclawExecutorHonoursConnectionBaseURL` — a saved connection's
+  `data.baseUrl` is used for both refresh and chat (the dispatcher's
+  `/v1/chat/completions` suffix is stripped), so a custom node works.
 
 **Capability source (REA-verified).** The six ids, names, and limits are taken
 from the installed AutoClaw 2.6.1 client's signed model-catalog snapshot

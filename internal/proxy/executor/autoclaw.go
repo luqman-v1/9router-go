@@ -31,9 +31,26 @@ const (
 // now returns unix seconds; a test seam so the signer can be frozen.
 var now = func() int64 { return time.Now().Unix() }
 
-// autoclawExecutorBaseURL is a var so tests can point it at an httptest
-// server. Production value is the real upstream host.
+// autoclawExecutorBaseURL is the default; a connection's own data.baseUrl
+// (req.Config.BaseURL) takes precedence, so a custom node is honoured.
 var autoclawExecutorBaseURL = autoclawBaseURL
+
+// autoclawBase resolves the upstream base for this request. The chat path
+// accepts an explicit override (custom node), which must also be passed to
+// the refresher so both calls hit the same host.
+func autoclawBase(req *Request) string {
+	if req != nil && req.Config != nil {
+		if base := strings.TrimSpace(req.Config.BaseURL); base != "" {
+			base = strings.TrimRight(base, "/")
+			// The chat dispatcher normalises a connection's baseUrl to a
+			// full chat-completions URL. AutoClaw appends its own paths, so
+			// strip that suffix rather than producing a doubled path.
+			base = strings.TrimSuffix(base, "/v1/chat/completions")
+			return strings.TrimRight(base, "/")
+		}
+	}
+	return autoclawExecutorBaseURL
+}
 
 // ForwardAutoclaw signs each request with the app's MD5 scheme, moves the
 // model into X-Request-Model (the body's `model` field is ignored upstream),
@@ -56,7 +73,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 		Provider:             "autoclaw",
 		RefreshToken:         refreshToken,
 		AccessToken:          "",
-		ProviderSpecificData: map[string]string{"device_id": deviceID},
+		ProviderSpecificData: map[string]string{"device_id": deviceID, "base_url": autoclawBase(req)},
 	})
 	if err != nil {
 		return fmt.Errorf("autoclaw: rotate access token: %w", err)
@@ -80,7 +97,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	// response (not a wrapped *UpstreamError) to branch on 401. DoRequest
 	// converts every non-200 into an error, which made the 401 branch
 	// unreachable dead code on the first PR head.
-	resp, err := proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
+	resp, err := proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawBase(req)+autoclawChatPath, headers, body)
 	if err != nil {
 		return fmt.Errorf("autoclaw: upstream: %w", err)
 	}
@@ -99,13 +116,13 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 			RefreshToken:         refreshToken,
 			AccessToken:          accessToken,
 			Force:                true,
-			ProviderSpecificData: map[string]string{"device_id": deviceID},
+			ProviderSpecificData: map[string]string{"device_id": deviceID, "base_url": autoclawBase(req)},
 		})
 		if err != nil {
 			return fmt.Errorf("autoclaw: force refresh after 401: %w", err)
 		}
 		headers = autoclawHeaders(result.AccessToken, req.IsStream, model, appKey)
-		resp, err = proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
+		resp, err = proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawBase(req)+autoclawChatPath, headers, body)
 		if err != nil {
 			return fmt.Errorf("autoclaw: upstream retry: %w", err)
 		}

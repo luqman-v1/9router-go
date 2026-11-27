@@ -64,9 +64,12 @@ func refreshAutoclaw(ctx context.Context, p *Params) (*TokenResult, error) {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 
-	deviceID := ""
+	deviceID, baseURL := "", autoclawBaseURL
 	if p.ProviderSpecificData != nil {
 		deviceID = strings.TrimSpace(p.ProviderSpecificData["device_id"])
+		if custom := strings.TrimSpace(p.ProviderSpecificData["base_url"]); custom != "" {
+			baseURL = strings.TrimRight(custom, "/")
+		}
 	}
 
 	body := map[string]string{
@@ -80,22 +83,20 @@ func refreshAutoclaw(ctx context.Context, p *Params) (*TokenResult, error) {
 	}
 
 	// The desktop client (v2.6.1, r1n.refresh) falls back to the agent
-	// endpoint when the primary returns business code 400002.
-	result, code, err := requestAutoclawRefresh(ctx, client, autoclawRefreshPath, raw, p.AccessToken)
+	result, code, err := requestAutoclawRefresh(ctx, client, baseURL, autoclawRefreshPath, raw, p.AccessToken)
 	if err != nil {
 		return nil, err
 	}
 	if code == autoclawRefreshCodeAgent {
-		result, _, err = requestAutoclawRefresh(ctx, client, autoclawAgentRefreshPath, raw, p.AccessToken)
+		result, _, err = requestAutoclawRefresh(ctx, client, baseURL, autoclawAgentRefreshPath, raw, p.AccessToken)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return result, nil
 }
-
-func requestAutoclawRefresh(ctx context.Context, client *http.Client, path string, raw []byte, accessToken string) (*TokenResult, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, autoclawBaseURL+path, bytes.NewReader(raw))
+func requestAutoclawRefresh(ctx context.Context, client *http.Client, baseURL, path string, raw []byte, accessToken string) (*TokenResult, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader(raw))
 	if err != nil {
 		return nil, 0, fmt.Errorf("autoclaw: build refresh request: %w", err)
 	}

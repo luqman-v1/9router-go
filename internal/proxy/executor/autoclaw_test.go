@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/oauth"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"9router/proxy/internal/proxy/oauth"
 )
 
 // autoclawTestCredential is the credential shape the operator supplies:
@@ -421,5 +421,42 @@ func TestAutoclawExecutorStreamFlushesBeforeUpstreamCloses(t *testing.T) {
 	}
 	if firstByte >= holdOpen/2 {
 		t.Errorf("first frame took %v while the upstream held the stream open %v: the relay buffered the whole stream", firstByte, holdOpen)
+	}
+}
+
+func TestAutoclawExecutorHonoursConnectionBaseURL(t *testing.T) {
+	// A saved connection with data.baseUrl must be used for both the chat
+	// call and the refresh, not the compile-time constant.
+	oldBase := autoclawExecutorBaseURL
+	defer func() { autoclawExecutorBaseURL = oldBase }()
+	var chatHits, refreshHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/userapi/v1/"):
+			refreshHits++
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"at-2","refresh_token":"rt-2"}}`))
+		default:
+			chatHits++
+			_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"ok"}}]}` + "\n\n" + "data: [DONE]\n\n"))
+		}
+	}))
+	defer srv.Close()
+	autoclawExecutorBaseURL = "http://127.0.0.1:1" // would fail if used
+
+	rec := httptest.NewRecorder()
+	err := ForwardAutoclaw(rec, &Request{
+		Ctx:       t.Context(),
+		Client:    srv.Client(),
+		APIKey:    "rt-1|did-1|app-key-1",
+		Body:      []byte(`{"model":"zai_auto","messages":[]}`),
+		IsStream:  true,
+		StartTime: time.Now(),
+		Config:    &providers.ProviderConfig{BaseURL: srv.URL},
+	})
+	if err != nil {
+		t.Fatalf("ForwardAutoclaw: %v", err)
+	}
+	if chatHits != 1 || refreshHits != 1 {
+		t.Errorf("hits chat=%d refresh=%d, want 1/1 on the connection base URL", chatHits, refreshHits)
 	}
 }
