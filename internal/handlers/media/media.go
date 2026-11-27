@@ -1071,6 +1071,18 @@ func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.
 	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/transcriptions")
 }
 
+// HandleAudioTranslations handles /v1/audio/translations.
+func (h *MediaHandler) HandleAudioTranslations(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "stt"))
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		middleware.WriteBodyReadError(w, r, err)
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/translations")
+}
+
 // HandleVideoGenerations handles /v1/videos/generations.
 func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
@@ -1729,7 +1741,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
@@ -1738,7 +1750,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
 	// multipart body (model_id / language_code / xi-api-key).
-	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
 		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}

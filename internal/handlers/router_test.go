@@ -678,3 +678,24 @@ func TestSetupServerRouter_SSOLoginRoutesArePublic(t *testing.T) {
 		}
 	}
 }
+
+// TestSetupRoutes_AudioTranslationsRegistered asserts both spellings of the
+// translations route exist in the real route table. The media unit tests call
+// the handler directly, so without this a dropped r.Post leaves them green.
+func TestSetupRoutes_AudioTranslationsRegistered(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupRoutes(r, repo, nil)
+
+	for _, path := range []string{"/v1/audio/translations", "/audio/translations"} {
+		req := httptest.NewRequest("POST", path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code == http.StatusMethodNotAllowed || w.Code == http.StatusNotFound {
+			t.Errorf("expected %s to be registered, got status %d", path, w.Code)
+		}
+	}
+}
