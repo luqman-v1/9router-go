@@ -64,7 +64,7 @@ export function resolveModelPickerGroups(
 
   // 1. Catalog providers (active connections or noAuth)
   for (const catItem of PROVIDER_CATALOG) {
-    if (!isChatProvider(catItem)) {
+    if (!isChatProvider(catItem) && catItem.id !== 'searxng') {
       continue
     }
     const isConnected =
