@@ -57,7 +57,7 @@ var errorBannerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^(internal\s+)?server\s+error$`),
 	regexp.MustCompile(`(?i)^(bad\s+gateway|gateway\s+timeout)$`),
 	regexp.MustCompile(`(?i)^(an?\s+)?(unexpected\s+)?error\s+occurred` + bannerTail),
-	regexp.MustCompile(`(?i)^.*(is\s+)?no\s+longer\s+available(\.\s*please\s+switch\s+to\s+[^!\r\n]+)?$`),
+	regexp.MustCompile(`(?i)^(?:(?:the|this)\s+)?(?:model|claude(?:\s+[a-z0-9.\-]+)*|gemini(?:\s+[a-z0-9.\-]+)*|gpt(?:\s+[a-z0-9.\-]+)*)\s+is\s+no\s+longer\s+available(?:\.\s*please\s+switch\s+to\s+[^!\r\n]+)?$`),
 	regexp.MustCompile(`(?i)^(this\s+)?model\s+(has\s+been\s+)?(deprecated|retired|discontinued)` + bannerTail),
 	regexp.MustCompile(`(?i)^(the\s+)?(model|upstream)\s+(is\s+)?(currently\s+)?(overloaded|unavailable)` + bannerTail),
 }
@@ -90,10 +90,7 @@ var bannerLeadIns = []string{
 	"gateway timeout",
 	"bad gateway",
 	"internal server error",
-	"this model is no longer available",
 	"model is no longer available",
-	"claude",
-	"gemini",
 	"server error",
 }
 
