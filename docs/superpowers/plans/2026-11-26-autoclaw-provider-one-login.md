@@ -1,6 +1,6 @@
 # Autoclaw Provider — Full Execution Plan (one-time login)
 
-Goal: land `autoclaw` as a first-class 9router-go provider whose only durable credential is a `refresh_token|device_id` pair. One login anywhere (AutoClaw desktop app, glmproxy, or autoclawpi console), then the gateway refreshes its own access tokens forever via `/userapi/v1/refresh`. No DeepSeek connection, no real credentials, no network, is needed to prove the code.
+Goal: land `autoclaw` as a first-class 9router-go provider whose only durable credential is a `refresh_token|device_id|app_key` triple (shipped change: the desktop client's signing secret is operator-supplied, so no third-party secret lives in the tree — see PR #1506). One login anywhere (AutoClaw desktop app, glmproxy, or autoclawpi console), then the gateway refreshes its own access tokens forever via `/userapi/v1/refresh`. No DeepSeek connection, no real credentials, no network, is needed to prove the code.
 
 ## Non-goals (explicitly out of scope)
 
@@ -35,7 +35,7 @@ Base: https://autoglm-api.autoglm.ai
 Chat: POST /autoclaw-proxy/proxy/autoclaw/chat/completions
 Refresh: POST /userapi/v1/refresh body {"source_id":"autoclaw","device_id":"<did>","refresh_token":"<rt>"} -> {"code":0,"data":{"access_token":"NEW","refresh_token":"SAME"}}
 
-Signing headers (app build 1.18.5): x-auth-appid: 100003, x-auth-timestamp: <unix>, x-auth-sign: md5("100003&<ts>&38d2391985e2369a5fb8227d8e6cd5e5"), x-product: autoclaw, x-version: 1.18.5, x-tm: win, x-client-type: pc, x-channel: official, x-lang: zh-CN, x-trace-id: uuid, authorization: Bearer <access_token>, X-Request-Model: <route id> (model lives ONLY in this header; body model ignored), Content-Type: application/json.
+Signing headers (app build 1.18.5): x-auth-appid: 100003, x-auth-timestamp: <unix>, x-auth-sign: md5("100003&<ts>&<operator-supplied app_key>"), x-product: autoclaw, x-version: 1.18.5, x-tm: win, x-client-type: pc, x-channel: official, x-lang: zh-CN, x-trace-id: uuid, authorization: Bearer <access_token>, X-Request-Model: <route id> (model lives ONLY in this header; body model ignored), Content-Type: application/json.
 
 Durable credential: refresh_token + device_id. Access token lives ~20h; background refresher rotates it. Only refresh_token|device_id survives a restart.
 

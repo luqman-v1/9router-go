@@ -14,6 +14,10 @@ import (
 	"9router/proxy/internal/proxy/oauth"
 )
 
+// autoclawTestCredential is the credential shape the operator supplies:
+// refresh_token|device_id|app_key.
+func autoclawTestCredential() string { return "rt-test|device-9|app-key-1" }
+
 func TestAutoclawSignerHeaders(t *testing.T) {
 	fixed := int64(1730000000)
 	oldNow := now
@@ -21,9 +25,9 @@ func TestAutoclawSignerHeaders(t *testing.T) {
 	defer func() { now = oldNow }()
 
 	ts := fmt.Sprintf("%d", fixed)
-	wantSign := md5Sum(autoclawAppID + "&" + ts + "&" + autoclawAppKey)
+	wantSign := md5Sum(autoclawAppID + "&" + ts + "&" + "app-key-1")
 
-	headers := autoclawHeaders("at-1", true, "zai_glm-5.3-flash")
+	headers := autoclawHeaders("at-1", true, "zai_glm-5.3-flash", "app-key-1")
 
 	if headers["x-auth-appid"] != "100003" {
 		t.Errorf("x-auth-appid = %q, want 100003", headers["x-auth-appid"])
@@ -66,7 +70,7 @@ func TestAutoclawSignerHeaders(t *testing.T) {
 	}
 
 	// No stream: Accept stays */*, no Accept-Encoding forced.
-	headers = autoclawHeaders("", false, "")
+	headers = autoclawHeaders("", false, "", "app-key-1")
 	if headers["Accept"] != "*/*" {
 		t.Errorf("non-stream Accept = %q, want */*", headers["Accept"])
 	}
@@ -81,8 +85,8 @@ func TestAutoclawSignerIsDeterministic(t *testing.T) {
 	now = func() int64 { return fixed }
 	defer func() { now = oldNow }()
 
-	h1 := autoclawHeaders("k", false, "")
-	h2 := autoclawHeaders("k", false, "")
+	h1 := autoclawHeaders("k", false, "", "app-key-1")
+	h2 := autoclawHeaders("k", false, "", "app-key-1")
 	if h1["x-auth-sign"] != h2["x-auth-sign"] {
 		t.Errorf("signer not deterministic for fixed timestamp")
 	}
@@ -152,7 +156,7 @@ func TestAutoclawExecutorWireShape(t *testing.T) {
 		Ctx:       t.Context(),
 		Client:    http.DefaultClient,
 		Provider:  "autoclaw",
-		APIKey:    "rt-1|did-1",
+		APIKey:    autoclawTestCredential(),
 		Body:      []byte(`{"model":"zai_glm-5.3-flash","stream":false}`),
 		IsStream:  true,
 		ModelName: "zai_glm-5.3-flash",
@@ -223,7 +227,7 @@ func TestAutoclawExecutor401RetryHitsOverrideBaseURL(t *testing.T) {
 		Ctx:       t.Context(),
 		Client:    http.DefaultClient,
 		Provider:  "autoclaw",
-		APIKey:    fmt.Sprintf("rt-%d|%s", 42, "device-9"),
+		APIKey:    autoclawTestCredential(),
 		Body:      []byte(`{"model":"zai_glm-5.3-flash","stream":false}`),
 		IsStream:  true,
 		ModelName: "zai_glm-5.3-flash",
@@ -284,7 +288,7 @@ func TestAutoclawExecutorNonStreamFoldsSSEIntoJSON(t *testing.T) {
 		Ctx:       t.Context(),
 		Client:    http.DefaultClient,
 		Provider:  "autoclaw",
-		APIKey:    "rt-orig|device-9",
+		APIKey:    autoclawTestCredential(),
 		Body:      []byte(`{"model":"zai_glm-5.3-flash","stream":false}`),
 		IsStream:  false,
 		ModelName: "zai_glm-5.3-flash",
@@ -381,7 +385,7 @@ func TestAutoclawExecutorStreamFlushesBeforeUpstreamCloses(t *testing.T) {
 			Ctx:       r.Context(),
 			Client:    http.DefaultClient,
 			Provider:  "autoclaw",
-			APIKey:    "rt-orig|device-9",
+			APIKey:    autoclawTestCredential(),
 			Body:      body,
 			IsStream:  true,
 			ModelName: "zai_glm-5.3-flash",

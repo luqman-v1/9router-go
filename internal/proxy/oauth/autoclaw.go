@@ -15,13 +15,10 @@ func init() {
 	Register("autoclaw", refreshAutoclaw)
 }
 
-// Autoclaw app constants, captured from the desktop client build 1.18.5.
-// If the desktop app bumps its build, every signed request 403s until these
-// are re-dumped from the client.
+// Autoclaw refresh endpoint constants. The refresh grant is not signed with
+// the desktop client's app key (the refresh call carries the bearer token
+// only), so no app secret is needed here — and none is kept in this file.
 const (
-	autoclawAppID       = "100003"
-	autoclawAppKey      = "38d2391985e2369a5fb8227d8e6cd5e5"
-	autoclawVersion     = "1.18.5"
 	autoclawRefreshPath = "/userapi/v1/refresh"
 	autoclawSourceID    = "autoclaw"
 )
@@ -49,7 +46,7 @@ func SetAutoclawBaseURLForTest(url string) (old string) {
 // (internal/proxy/oauth/background.go) never selects Autoclaw connections —
 // it only picks authType "oauth" rows carrying a refreshToken + expiresAt,
 // while an Autoclaw row keeps its credential in apiKey
-// (`refresh_token|device_id`). A connection that sits idle therefore expires
+// (`refresh_token|device_id|app_key`). A connection that sits idle therefore expires
 // upstream and is re-rotated on its next request.
 //
 // The refresh endpoint signs the request with the current access token when

@@ -16,12 +16,13 @@ import (
 	"9router/proxy/internal/proxy/oauth"
 )
 
-// autoclawAppKey is the app secret the desktop client signs each request
-// with. It rotates when the desktop app bumps its build; a 403 on every
-// request means it changed and must be re-dumped from the client.
+// autoclawAppID and autoclawVersion are public identifiers taken from the
+// desktop client build. The app key that signs each request is NOT shipped
+// here: the operator supplies it together with the refresh token and the
+// device id, so no third-party secret lives in this tree. The app id and the
+// version are not secrets — they identify the client build.
 const (
 	autoclawAppID    = "100003"
-	autoclawAppKey   = "38d2391985e2369a5fb8227d8e6cd5e5"
 	autoclawVersion  = "1.18.5"
 	autoclawChatPath = "/autoclaw-proxy/proxy/autoclaw/chat/completions"
 	autoclawBaseURL  = "https://autoglm-api.autoglm.ai"
@@ -41,11 +42,14 @@ var autoclawExecutorBaseURL = autoclawBaseURL
 // not the stream duration), and folds the event stream into a single
 // chat.completion for a non-stream client — the upstream protocol is
 // SSE-only, so it answers stream:false with frames too. The access token is
-// rotated from the durable refresh_token|device_id stored in the connection's
+// rotated from the durable refresh_token|device_id|app_key stored in the connection's
 // apiKey field via oauth.Refresh, which is dedup-cached so a hot connection
 // does not hit the token endpoint on every turn.
 func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
-	refreshToken, deviceID := splitAutoclawCredential(req.APIKey)
+	refreshToken, deviceID, appKey := splitAutoclawCredential(req.APIKey)
+	if appKey == "" {
+		return fmt.Errorf("autoclaw: credential must be refresh_token|device_id|app_key: the app key is the desktop client's signing secret and is not shipped with the gateway")
+	}
 
 	result, err := oauth.Refresh(req.Ctx, &oauth.Params{
 		Provider:             "autoclaw",
@@ -63,7 +67,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 		return fmt.Errorf("autoclaw: prepare body: %w", err)
 	}
 
-	headers := autoclawHeaders(accessToken, req.IsStream, req.ModelName)
+	headers := autoclawHeaders(accessToken, req.IsStream, req.ModelName, appKey)
 
 	// SendOnce rather than DoRequest: the 401 branch below is this
 	// executor's own single forced-refresh retry, so the generic transient
@@ -94,7 +98,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 		if err != nil {
 			return fmt.Errorf("autoclaw: force refresh after 401: %w", err)
 		}
-		headers = autoclawHeaders(result.AccessToken, req.IsStream, req.ModelName)
+		headers = autoclawHeaders(result.AccessToken, req.IsStream, req.ModelName, appKey)
 		resp, err = proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawExecutorBaseURL+autoclawChatPath, headers, body)
 		if err != nil {
 			return fmt.Errorf("autoclaw: upstream retry: %w", err)
@@ -149,13 +153,19 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	return writeErr
 }
 
-// splitAutoclawCredential splits "refresh_token|device_id" into its parts.
-// A bare refresh token (no device id) is also accepted.
-func splitAutoclawCredential(cred string) (refreshToken, deviceID string) {
-	parts := strings.SplitN(cred, "|", 2)
+// splitAutoclawCredential splits "refresh_token|device_id|app_key" into its
+// parts. The app key is the desktop client's signing secret: the operator
+// supplies it, so this tree carries no third-party secret. A bare refresh
+// token (no device id, no app key) is accepted as far as the refresh call,
+// but the request cannot be signed without the app key.
+func splitAutoclawCredential(cred string) (refreshToken, deviceID, appKey string) {
+	parts := strings.SplitN(cred, "|", 3)
 	refreshToken = strings.TrimSpace(parts[0])
-	if len(parts) == 2 {
+	if len(parts) > 1 {
 		deviceID = strings.TrimSpace(parts[1])
+	}
+	if len(parts) > 2 {
+		appKey = strings.TrimSpace(parts[2])
 	}
 	return
 }
@@ -177,10 +187,12 @@ func autoclawBody(raw []byte, isStream bool) ([]byte, error) {
 }
 
 // autoclawHeaders builds the per-request signing envelope. The timestamp and
-// MD5 signature change on every call, so they are never StaticHeaders.
-func autoclawHeaders(accessToken string, isStream bool, model string) map[string]string {
+// MD5 signature change on every call, so they are never StaticHeaders. The
+// app key comes from the operator's credential, never from a constant in
+// this tree.
+func autoclawHeaders(accessToken string, isStream bool, model, appKey string) map[string]string {
 	ts := fmt.Sprintf("%d", now())
-	sign := md5Sum(autoclawAppID + "&" + ts + "&" + autoclawAppKey)
+	sign := md5Sum(autoclawAppID + "&" + ts + "&" + appKey)
 
 	headers := map[string]string{
 		"Content-Type":     "application/json",

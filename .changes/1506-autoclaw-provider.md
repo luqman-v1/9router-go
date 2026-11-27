@@ -4,10 +4,15 @@ Adds `autoclaw` (alias `au`) as a first-class API-key provider serving Zhipu
 AutoClaw's GLM models (GLM-5.3, GLM-5-Turbo, GLM-5.3-Flash, DeepSeek-V4) via
 the native desktop protocol at `https://autoglm-api.autoglm.ai`.
 
-**One-time login only.** The operator pastes `refresh_token|device_id` into the
-connection form once (copied from the AutoClaw app, glmproxy, or autoclawpi
-console). The access token is then rotated automatically via
-`/userapi/v1/refresh` (`internal/proxy/oauth/autoclaw.go`), lazily on the
+**One-time login only.** The operator pastes `refresh_token|device_id|app_key`
+into the connection form once (copied from the AutoClaw app, glmproxy, or
+autoclawpi console). The `app_key` is the desktop client's signing secret: it
+is **not** shipped with the gateway, so no third-party secret lives in this
+tree. The app id (`100003`) and the client version (`1.18.5`) are public
+identifiers and stay in the code.
+
+The access token is then rotated automatically via `/userapi/v1/refresh`
+(`internal/proxy/oauth/autoclaw.go`), lazily on the
 request path and dedup-cached for 10s — the background OAuth refresher does
 *not* select these connections (it only picks `authType: oauth` rows carrying
 a `refreshToken` + `expiresAt`, while an Autoclaw row keeps its credential in
@@ -20,11 +25,12 @@ assumes the upstream echoes the same `refresh_token`: it keeps the stored one
 when the response omits the field. If AutoClaw actually rotates the refresh
 token, the rotated value is not persisted back to the connection (no executor
 owns a DB write on the request path), and the operator must re-paste
-`refresh_token|device_id` once the stored token is invalidated. Verify the
+`refresh_token|device_id|app_key` once the stored token is invalidated. Verify the
 real behavior with a live login before relying on long-lived connections.
 
 **Wire contract.** Each request is signed with the app's MD5 envelope
-(`x-auth-sign = md5("100003&<ts>&<APP_KEY>")`), the model rides in
+(`x-auth-sign = md5("100003&<ts>&<app_key>")`, where `app_key` is the
+operator's credential field), the model rides in
 `X-Request-Model` (not the body), and `stream: true` is forced when the
 client asked for a stream. A 401 triggers one forced refresh + retry against
 the same endpoint: the executor calls `SendOnce` (not `DoRequest`), because
@@ -55,6 +61,12 @@ chunk answers 502 (`NoCompletionInStream`) so combo fallback can move on.
   raw `data:` frames. `TestAutoclawExecutorStreamFlushesBeforeUpstreamCloses`
   — a real HTTP hop where the first frame lands while the upstream still
   holds the stream open (TTFB != stream duration).
+  `TestAutoclawExecutorSignsWithOperatorSuppliedAppKey` — the request is
+  signed with the operator's `app_key`, never with a key from this tree.
+  `TestAutoclawExecutorRejectsMissingAppKey` — a credential without the
+  `app_key` is refused with the expected format and never reaches upstream.
+  Both fail on the head that still embedded the app key (the signature there
+  is the embedded one, and a credential without a key was signed anyway).
 - `internal/providers/catalog_sweep_test.go` — autoclaw models pinned to their
   published windows (1M / 200k), no floor hits.
 
@@ -83,7 +95,7 @@ private app protocol. The pins are effective-value checks
 floor) but are not sourced from a live Autoclaw feed — verify against a real
 `refresh_token|device_id` login before trusting them in production.
 
-**Maintenance note.** `APP_ID`/`APP_KEY`/`X-Version` are captured from desktop
-client build 1.18.5. If Autoclaw bumps the build, every signed request 403s
-until the constants are re-dumped. `X-Tm: win` is the working fallback; some
-accounts refuse `linux`.
+**Maintenance note.** `APP_ID` and `X-Version` are captured from desktop client
+build 1.18.5. If Autoclaw bumps the build, every signed request 403s until the
+operator re-pastes the new `app_key` (and the version constant is bumped).
+`X-Tm: win` is the working fallback; some accounts refuse `linux`.
