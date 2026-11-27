@@ -470,7 +470,6 @@ def main():
         run([sh, hc_path], env2)
         case("a healthy probe clears the counter", not os.path.exists(counter),
              "counter file still present")
-<<<<<<< HEAD
         # 7b. a deliberately stopped service is not a failure. backup stops
         # the gateway to copy the database; counting that as a failed probe
         # could reach the threshold and restart it mid-copy.

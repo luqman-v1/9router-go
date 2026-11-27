@@ -29,3 +29,23 @@ empty one exports nothing. Reverting `openwrt/9router-go.init` fails the first
 (9/10), so it is not passing vacuously. The harness block defines its own
 `procd_set_param` recorder and shares no line with the resource-limit cases, so
 the two changes merge without a conflict.
+
+Reviewer follow-up (PR #1539):
+
+- **The harness did not cover special characters in the value.** Its own two
+  cases passed `s3cret-pass` and an empty string, so a password carrying a
+  space, a single quote or a `$` was never asserted. The block now routes the
+  injected option through a `shquote` helper and covers `s3cret-pass`,
+  `has space`, `has'single`, `has$dollar` and `has"quote`, each asserted to
+  reach `INITIAL_PASSWORD` byte-exact. An empty value still exports nothing
+  and does not abort the start. Reverting `openwrt/9router-go.init` gives
+  **10/15**, failing exactly the five set-password cases.
+- **LuCI before/after captures attached** (see
+  `screenshots/openwrt-luci-password-{before,after}.png` and the PR body). Both sides
+  were rendered from the real LuCI Lua CBI renderer on an OpenWrt 21.02.7
+  x86-64 rootfs with `luci-compat` and `uhttpd-mod-lua` installed and the app
+  files copied from the tree under test; the before side is the pre-PR tree
+  (`33afbf4c`), the after side is the PR head, same UCI config and viewport.
+  `Dashboard password` renders between `Self-update` and `Health check` with
+  masking and the `change on first login` placeholder; `o.password = true` is
+  confirmed by the rendered input's own `type="password"`.
