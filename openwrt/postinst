@@ -52,6 +52,19 @@ uci -q commit 9router-go
 
 mkdir -p "$data_dir/bin" "$data_dir/db" "$STATE_DIR"
 
+# sysupgrade keeps the default layout through this package's keep.d drop-in
+# (/lib/upgrade/keep.d/9router-go). That file is static, so it cannot follow a
+# custom data_dir: record the operator's choice in /etc/sysupgrade.conf, which
+# sysupgrade reads for the same purpose. This is the difference between "the
+# database survives a firmware flash" and a silent wipe of every provider
+# connection and API key.
+if [ "$data_dir" != "$DEFAULT_DATA_DIR" ] && [ -f /etc/sysupgrade.conf ]; then
+	if ! grep -qxF "$data_dir/db" /etc/sysupgrade.conf 2>/dev/null; then
+		printf '%s\n' "$data_dir/db" "$data_dir/uploads" >> /etc/sysupgrade.conf
+		logger -t 9router-go "added $data_dir to /etc/sysupgrade.conf so sysupgrade keeps it"
+	fi
+fi
+
 runtime="$data_dir/bin/9router-go"
 recorded=$(cat "$STATE_DIR/runtime-version" 2>/dev/null)
 
