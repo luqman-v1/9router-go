@@ -133,8 +133,30 @@ Set limits with `PUT /api/provider-nodes/{id}/limits` and lift a spent quota wit
 `POST /api/provider-nodes/{id}/quota/reset` (it moves the watermark, it does not
 delete history).
 
-## Models
+## Transient upstream retries
+A gateway-level failure on the upstream call — not a refusal, a **transient** one
+— is retried before the account is blamed:
 
+| Status | Attempts | Delay between them |
+|---|---|---|
+| `502` Bad Gateway | 3 | 3 s |
+| `503` Service Unavailable | 3 | 2 s |
+| `504` Gateway Timeout | 2 | 3 s |
+
+`429` is deliberately **not** on that list. A throttled credential belongs to the
+account-fallback path, not to a retry against the same window, and retrying it
+would spend the window twice.
+The whole retry run can be bounded, because three 3-second retries is nine
+seconds a client sits through for a lane that is simply down. `seatAttemptBudgetMs`
+in settings, a provider's own `seatBudgetMs` override, or the
+`SEAT_ATTEMPT_BUDGET_MS` / `NINEROUTER_SEAT_ATTEMPT_BUDGET_MS` environment
+variable (resolved in that order) caps the elapsed time: a retry whose *delay*
+would carry the run past the budget is skipped and the failure is returned
+immediately. `0` or unset means unbounded.
+The wait itself is context-aware — a client that hangs up during the backoff ends
+the attempt there instead of holding the goroutine for the rest of the delay.
+
+## Models
 Browse a provider's models with `GET /api/providers/{id}/models`, export keys
 with `GET /api/providers/{id}/export-keys`, and remove many at once with
 `DELETE /api/providers/{id}/models`.
@@ -150,10 +172,58 @@ modal's "Custom request body" field) that the gateway shallow-merges into the
 outbound request body — pin `temperature` or `reasoning.effort` without the
 client sending them.
 
+### Live model lists
+
+`GET /v1/models` prefers a connection's **own** catalog over the static registry
+when a connection exists and the connection has no explicit `enabledModels` — the
+registry cannot know which models an account may actually use, and it lags model
+launches. That is why `kiro` publishes `auto`/`minimax-m2.1` variants the
+registry does not carry, and `grok-cli` publishes only the model its account is
+allowed to call.
+
+- Sources differ per provider: OpenCode and Qoder sign their lists per account,
+  Anthropic answers `/v1/models` on the token, command-code has its own shape,
+  custom `*-compatible` nodes publish whatever their own endpoint reports, and a
+  provider with an OpenAI-style models feed (nous, openrouter, tokenharbor,
+  opencode zen/go, …) is read through it. That feed is the provider's own
+  declaration of each window, so it outranks the static tables.
+- Cached for **5 minutes** per credential, with a **60-second negative cache**:
+  a provider whose endpoint times out used to be re-fetched by every combo leaf,
+  which turned `/v1/models` into minutes of sequential timeouts at thousands of
+  connections.
+- One upstream call per credential even when many requests race a cold cache —
+  the losers wait for the winner. The shared call is detached from the leader's
+  cancellation, so one client hanging up does not empty everyone else's cache.
+- A 401/403 on the fetch refreshes the OAuth token and retries once. A fetch that
+  still yields nothing falls back to the registry: the listing degrades to the
+  static catalog, it never fails.
+
+### Aliases
 **Aliases** (`/api/models/alias`) let a client write a short name for a long
 model id. **Deprecations** (`/api/models/deprecations`) surface models upstream
 has retired, and **auto-disable** (`/api/models/auto-disable`) turns off the ones
 that stopped working.
+### Per-model capabilities
+Detection knows what a catalog vendor publishes; it cannot know that *your*
+gateway-only model accepts PDFs, or that a resold model has a 32k context. One
+row per model pins what detection got wrong, without touching the catalog:
+`GET|PUT /api/providers/{id}/models/{model}/caps`.
+Eleven fields can be pinned — `vision`, `pdf`, `audioInput`, `videoInput`,
+`imageOutput`, `audioOutput`, `search`, `tools`, `reasoning`, `contextWindow`,
+`maxOutput`. The override is **sparse**: a field left on **Auto** is simply absent
+from the stored row, so detection keeps answering that field and only the pinned
+ones stop moving. Saving an all-Auto row deletes it instead of storing an empty
+one.
+Normalization follows upstream's rule — drop what is not usable, keep the rest:
+unknown keys are dropped, a boolean must be a real boolean, and a limit must be
+an integer in 1…10,000,000 (`0` is dropped rather than stored, because "no
+opinion" and "zero tokens" would be indistinguishable to a client, and anything
+above ten million is a typo, not a model). A payload that is not a JSON object
+at all answers `400` instead of silently clearing a stored override.
+The row is cached for five seconds and the whole path **fails open**: a missing
+loader, a failed read or a corrupt row all mean "no override", which is exactly
+detection. A capability the gateway cannot read is never a reason to refuse a
+request that would otherwise be sent.
 
 ## Important notes
 
