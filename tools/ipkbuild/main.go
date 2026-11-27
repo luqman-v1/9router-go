@@ -291,6 +291,11 @@ func loadAssets(srcDir string) (assets, error) {
 	files := []assetFile{
 		{src: "9router-go.init", dest: "/etc/init.d/9router-go", mode: 0o755},
 		{src: "9router-go.config", dest: "/etc/config/9router-go", mode: 0o644},
+		// Without this drop-in sysupgrade discards the database on every flash:
+		// OpenWrt's default keep set (/lib/upgrade/keep.d/base-files-essential
+		// plus a commented-out /etc/sysupgrade.conf) names nothing this package
+		// owns. See the file for what is deliberately excluded.
+		{src: "9router-go.keep.d", dest: "/lib/upgrade/keep.d/9router-go", mode: 0o644},
 		{src: "postinst", dest: "/control/postinst", mode: 0o755},
 		{src: "prerm", dest: "/control/prerm", mode: 0o755},
 		{src: "9router-go.wrapper", dest: "/usr/bin/9router-go", mode: 0o755},

@@ -48,12 +48,16 @@ const TotalRequestTimeoutSetting = db.TotalRequestTimeoutSetting
 // read) means off: an unbounded request is the behaviour that existed before
 // this setting, and turning a new bound on by default would cut generations
 // that are merely long.
-func (h *ChatHandler) totalRequestTimeout() time.Duration {
-	if h.Repo == nil {
+// totalRequestTimeout reads the operator's end-to-end bound from the request's
+// settings row. It returns 0 when there is none.
+func (h *ChatHandler) totalRequestTimeout(ctx context.Context) time.Duration {
+	if h == nil || h.Repo == nil {
 		return 0
 	}
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
+	settings := h.settingsForRequest(ctx)
+	if settings == nil {
+		// The row could not be read. An unbounded request is the "off" state,
+		// and a database that is already unhappy must not become a panic.
 		return 0
 	}
 	ms := settings.TotalRequestTimeoutMs

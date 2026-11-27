@@ -113,7 +113,7 @@ func TestRenderWikiPageLinks(t *testing.T) {
 		t.Fatalf("MkdirAll(out): %v", err)
 	}
 
-	p, err := renderWikiPage(page, out)
+	p, err := renderWikiPage(page, out, map[string]struct{}{"installation": {}, "api": {}})
 	if err != nil {
 		t.Fatalf("renderWikiPage: %v", err)
 	}
@@ -151,12 +151,61 @@ func TestRenderWikiPageFailsOnMissingImage(t *testing.T) {
 		t.Fatalf("MkdirAll(out): %v", err)
 	}
 
-	_, err := renderWikiPage(page, out)
+	_, err := renderWikiPage(page, out, nil)
 	if err == nil {
 		t.Fatal("renderWikiPage() succeeded with a missing image, want an error")
 	}
 	if !strings.Contains(err.Error(), "gone.png") {
 		t.Errorf("error does not name the missing file: %v", err)
+	}
+}
+
+// A cross-reference between wiki pages is written the way the published site
+// names the page — `settings.html` — and it has to survive as a relative link.
+// It used to be rewritten into a github.com blob URL for a file that exists in
+// neither place, so every cross-reference on the site 404'd while the build
+// stayed green; the unknown-`.html` half of the same test is what keeps the fix
+// from claiming links that name something else entirely.
+func TestRenderWikiPageKeepsIntraWikiHTMLLinksRelative(t *testing.T) {
+	root := t.TempDir()
+	page := filepath.Join(root, "wiki", "security.md")
+	if err := os.MkdirAll(filepath.Dir(page), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeFixture(t, page, strings.Join([]string{
+		"---",
+		"title: Security",
+		"---",
+		"",
+		"Mirror image of [guardrails](security.html), see",
+		"[advanced features](advanced-features.html#model-breakers).",
+		"",
+		"A [vendored page](NOTES.html) is not a wiki page.",
+		"",
+	}, "\n"))
+	out := filepath.Join(root, "_site")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatalf("MkdirAll(out): %v", err)
+	}
+	p, err := renderWikiPage(page, out, map[string]struct{}{"security": {}, "advanced-features": {}})
+	if err != nil {
+		t.Fatalf("renderWikiPage: %v", err)
+	}
+	body := string(p.Body)
+	for _, want := range []string{
+		`href="security.html"`,
+		`href="advanced-features.html#model-breakers"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body is missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "blob/main/security.html") ||
+		strings.Contains(body, "blob/main/advanced-features.html") {
+		t.Errorf("a wiki cross-reference was sent to github.com:\n%s", body)
+	}
+	if !strings.Contains(body, "blob/main/NOTES.html") {
+		t.Errorf("a non-wiki .html link should still resolve against the repository:\n%s", body)
 	}
 }
 

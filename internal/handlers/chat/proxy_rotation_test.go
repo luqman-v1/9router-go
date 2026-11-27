@@ -207,11 +207,11 @@ func TestResolveProviderProxyPoolID_AllPoolsExcludedFallsThrough(t *testing.T) {
 	if got := h.ResolveProviderProxyPoolID("opencode", excluded); got != "" {
 		t.Fatalf("pool = %q, want empty (direct attempt instead of a hard failure)", got)
 	}
-	if _, err := h.resolveProviderProxyPoolID("opencode", excluded); !errors.Is(err, errNoUsablePool) {
+	if _, err := h.resolveProviderProxyPoolID(context.Background(), "opencode", excluded); !errors.Is(err, errNoUsablePool) {
 		t.Fatalf("err = %v, want errNoUsablePool", err)
 	}
 	connData := &ConnectionData{}
-	h.applyProviderProxyPool(connData, "opencode", excluded)
+	h.applyProviderProxyPool(context.Background(), connData, "opencode", excluded)
 	if connData.ProxyPoolID != "" {
 		t.Fatalf("bound pool = %q, want empty once every pool is excluded", connData.ProxyPoolID)
 	}

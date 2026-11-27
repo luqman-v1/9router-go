@@ -41,6 +41,21 @@ binds — including a `.env` file — so they never probe the wrong address.
 > Windows stops the process with `TerminateProcess` instead of `SIGTERM`, so
 > `stop` skips the graceful drain. Use the dashboard's Shutdown button or
 > `9router-go restart` when you want in-flight streams to finish first.
+## Doctor
+```bash
+9router-go doctor             # why is the gateway not answering?
+9router-go doctor --port 20129  # diagnose an address other than the resolved one
+```
+`status` answers *whether* a daemon is alive; `doctor` answers *why it is not*.
+It checks the resolved port, the pid claim in `DATA_DIR/run/gateway.pid`, whether
+the listening socket belongs to the gateway at all — a wedged gateway's own
+daemon versus a foreign process holding the port — the data directory's
+writability, the database file, and any failed-bind marker in the run log.
+
+Each failing line names the command that fixes it on that platform (`netstat`
+and `taskkill` on Windows, `lsof` and `kill` elsewhere), and the process exits
+non-zero, so it works unchanged as a pre-flight gate in a script or a cron job.
+`--port` diagnoses an address other than the one `PORT` resolves.
 
 ## Service (start on boot)
 

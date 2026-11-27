@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -13,6 +14,11 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/headroom"
+)
+
+const (
+	headroomClientTimeout         = 30 * time.Second
+	maxHeadroomDashboardHTMLBytes = 8 << 20
 )
 
 // hopByHopHeaders are stripped from both forwarded requests and responses.
@@ -41,17 +47,31 @@ type HeadroomHandler struct {
 	mcp     *headroom.MCPServer
 }
 
+var defaultHeadroomHTTPClient = newHeadroomHTTPClient()
+
+func newHeadroomHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: headroomClientTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // redirect: "manual"
+		},
+	}
+}
+
+func (h *HeadroomHandler) headroomHTTPClient() *http.Client {
+	if h != nil && h.Client != nil {
+		return h.Client
+	}
+	return defaultHeadroomHTTPClient
+}
+
 // NewHeadroomHandler creates a HeadroomHandler bound to the app data dir.
 func NewHeadroomHandler(repo *db.Repo) *HeadroomHandler {
 	return &HeadroomHandler{
 		Repo:    repo,
 		DataDir: config.ResolveDataDir(),
-		Client: &http.Client{
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse // redirect: "manual"
-			},
-		},
-		mcp: headroom.NewMCPServer(headroom.NewBuiltinEngine()),
+		Client:  newHeadroomHTTPClient(),
+		mcp:     headroom.NewMCPServer(headroom.NewBuiltinEngine()),
 	}
 }
 
@@ -71,6 +91,9 @@ func (h *HeadroomHandler) HandleMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HeadroomHandler) headroomURL() string {
+	if h == nil || h.Repo == nil {
+		return headroom.DefaultURL
+	}
 	s, err := h.Repo.GetSettings()
 	if err != nil || s == nil || s.HeadroomUrl == "" {
 		return headroom.DefaultURL
@@ -79,6 +102,9 @@ func (h *HeadroomHandler) headroomURL() string {
 }
 
 func (h *HeadroomHandler) headroomFlags() (codeAware, kompress bool) {
+	if h == nil || h.Repo == nil {
+		return false, true
+	}
 	s, _ := h.Repo.GetSettings()
 	if s == nil {
 		return false, true
@@ -234,8 +260,8 @@ func (h *HeadroomHandler) HandleHeadroomExtras(w http.ResponseWriter, r *http.Re
 // HandleHeadroomProxy reverse-proxies the Headroom dashboard (all methods).
 func (h *HeadroomHandler) HandleHeadroomProxy(w http.ResponseWriter, r *http.Request) {
 	target, err := url.Parse(h.headroomURL())
-	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
-		writeHeadroomError(w, http.StatusInternalServerError, "Headroom URL must use http or https", "")
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
+		writeHeadroomError(w, http.StatusInternalServerError, "Headroom URL must use http or https with a non-empty host", "")
 		return
 	}
 	sub := chi.URLParam(r, "*")
@@ -270,15 +296,15 @@ func (h *HeadroomHandler) HandleHeadroomProxy(w http.ResponseWriter, r *http.Req
 		req.Header.Del("Authorization")
 	}
 
-	resp, err := h.Client.Do(req)
+	resp, err := h.headroomHTTPClient().Do(req)
 	if err != nil {
 		writeHeadroomError(w, http.StatusBadGateway, err.Error(), "")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if sub == "dashboard" && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-		html, err := io.ReadAll(resp.Body)
+		html, err := io.ReadAll(io.LimitReader(resp.Body, maxHeadroomDashboardHTMLBytes))
 		if err != nil {
 			writeHeadroomError(w, http.StatusInternalServerError, err.Error(), "")
 			return

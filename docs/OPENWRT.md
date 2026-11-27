@@ -88,8 +88,13 @@ squashfs the package file cannot be rewritten, so a self-update would either
 fail or corrupt the image. The launcher prefers `/opt/9router/bin/9router-go`,
 which is writable, and postinst installs it.
 
-`/opt` keeps its contents across a sysupgrade that keeps settings. `/tmp` and
-`/var` do not, which is why the database is not there.
+`/opt` keeps its contents across a sysupgrade that keeps settings, but only
+because this package ships `/lib/upgrade/keep.d/9router-go` naming
+`/opt/9router/db` and `/opt/9router/uploads`. Without that drop-in OpenWrt's
+default keep set (`/lib/upgrade/keep.d/base-files-essential` plus a
+commented-out `/etc/sysupgrade.conf`) names nothing this package owns, and the
+database would be discarded on every flash. `/tmp` and `/var` are still not
+preserved, which is why the database is not there.
 
 The pid file is written by the launcher (`echo $$` before `exec`), not by
 `procd_set_param pidfile`: that parameter does not exist in every procd release

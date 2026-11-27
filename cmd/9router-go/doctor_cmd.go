@@ -22,7 +22,6 @@ import (
 // of those is already known to the code that starts the daemon; doctor reads
 // the same probes and prints them together with the fix for the platform.
 func doctorCommand() *cli.Command {
-	var port int
 	return &cli.Command{
 		Name:  "doctor",
 		Usage: "Diagnose why the gateway is not reachable, with a platform-aware fix",
@@ -30,10 +29,7 @@ func doctorCommand() *cli.Command {
 			&cli.IntFlag{Name: "port", Usage: "port to diagnose (overrides PORT and .env)"},
 		},
 		Action: func(cCtx *cli.Context) error {
-			if cCtx.IsSet("port") {
-				port = cCtx.Int("port")
-			}
-			return runDoctor(port)
+			return runDoctorWithPort(cCtx.Int("port"), cCtx.IsSet("port"))
 		},
 	}
 }
@@ -64,9 +60,13 @@ func (c DoctorCheck) Format() string {
 // `9router-go doctor` exits non-zero in a script the same way it reads in a
 // terminal.
 func runDoctor(portOverride int) error {
+	return runDoctorWithPort(portOverride, portOverride != 0)
+}
+
+func runDoctorWithPort(portOverride int, portSet bool) error {
 	cfg := config.LoadConfig()
 	probePort := portOverride
-	if probePort <= 0 {
+	if !portSet && probePort <= 0 {
 		probePort = cfg.Port
 	}
 	url := urlForPort(cfg, probePort)
@@ -136,7 +136,7 @@ func checkDaemon(url string) DoctorCheck {
 	c := DoctorCheck{Name: "daemon"}
 	pid := runningPID()
 	switch {
-	case pid > 0 && !daemon.Healthy(url):
+	case pid > 0 && !healthyAt(url):
 		// A live claim is not a working gateway.
 		c.Detail = fmt.Sprintf("pid %d is alive but /health does not answer: wedged", pid)
 		c.Fix = "9router-go restart"
@@ -249,6 +249,12 @@ func checkDatabase(cfg *config.Config) DoctorCheck {
 		c.OK = false
 		c.Detail += " does not exist"
 		c.Fix = "the gateway creates it on first boot; run 9router-go start"
+		return c
+	}
+	if fi.IsDir() {
+		c.OK = false
+		c.Detail += " is a directory"
+		c.Fix = "point SQLITE_PATH or DATA_DIR to a database file rather than a directory"
 		return c
 	}
 	f, err := os.Open(path)

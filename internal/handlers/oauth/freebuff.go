@@ -23,6 +23,8 @@ import (
 	"9router/proxy/internal/proxy/executor"
 )
 
+const maxFreebuffBodyBytes = 1 << 20
+
 var freebuffAuthBaseURL = "https://freebuff.com"
 var freebuffPendingSessions sync.Map
 
@@ -86,9 +88,9 @@ func (h *OAuthHandler) HandleFreebuffInitiate(w http.ResponseWriter, r *http.Req
 			upReq.Header.Set("User-Agent", "Freebuff-CLI/0.2.36")
 			resp, doErr := executor.DoFreebuffHTTP(r.Context(), nil, upReq)
 			if doErr == nil {
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				if resp.StatusCode == http.StatusOK {
-					respBytes, _ := io.ReadAll(resp.Body)
+					respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxFreebuffBodyBytes))
 					var data struct {
 						FingerprintID   string `json:"fingerprintId"`
 						FingerprintHash string `json:"fingerprintHash"`
@@ -140,12 +142,12 @@ func (h *OAuthHandler) HandleFreebuffPoll(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxFreebuffBodyBytes))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req struct {
 		FingerprintID        string `json:"fingerprintId"`
@@ -213,9 +215,9 @@ func (h *OAuthHandler) HandleFreebuffPoll(w http.ResponseWriter, r *http.Request
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("freebuff status failed: %v", err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxFreebuffBodyBytes))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to read freebuff status response")
 		return
@@ -382,19 +384,12 @@ func (h *OAuthHandler) HandleFreebuffPoll(w http.ResponseWriter, r *http.Request
 		log.Info("oauth", "saving freebuff connection", "connID", connID, "name", connName, "email", email)
 
 		if h.Repo != nil && h.Repo.RawDB() != nil {
-			now := currentTimestamp()
-			var exists int
-			_ = h.Repo.RawDB().QueryRow("SELECT COUNT(*) FROM providerConnections WHERE id = ?", connID).Scan(&exists)
-			if exists > 0 {
-				_, err = h.Repo.RawDB().Exec(
-					"UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?",
-					connName, string(dataBytes), now, connID,
-				)
+			existing, getErr := h.Repo.GetProviderConnectionByID(connID)
+			if getErr == nil && existing != nil {
+				err = h.Repo.ReplaceProviderConnectionPayload(r.Context(), connID, connName, string(dataBytes))
 			} else {
-				_, err = h.Repo.RawDB().Exec(
-					"INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, 'freebuff', 'oauth', ?, 1, ?, ?, ?)",
-					connID, connName, string(dataBytes), now, now,
-				)
+				priority := h.Repo.ResolveDefaultPriority(r.Context(), "freebuff")
+				err = h.Repo.CreateProviderConnectionFull(r.Context(), connID, "freebuff", "oauth", connName, &priority, string(dataBytes))
 			}
 			if err != nil {
 				log.Error("oauth", "save freebuff connection failed", "conn", connID, "error", err)

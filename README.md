@@ -206,6 +206,10 @@ docker run -d --name 9router-go --restart unless-stopped \
 - 🧪 Dashboard Playground: a streaming, multi-turn conversation through the engine's own dispatch, with no engine key — attributed to a picked key, budget and allowlist enforced, nothing persisted (inspired by [new-api](wiki/new-api-ports.md))
 - 📡 Uptime heartbeat (Push-Monitor / Uptime Kuma) — from [new-api](wiki/new-api-ports.md)
 - 🔀 Vertex `v1beta1` per-connection switch, and an optional HTTP/2 PING health check for idle upstream connections — from [new-api](wiki/new-api-ports.md)
+- 🚦 Rate ceilings per key — RPM/TPM/RPH/RPD/concurrency with a FIFO queue — plus a per-client-IP gate checked before every key window, so a caller holding or minting many keys cannot escape the host ceiling
+- 🧭 Connection strategies: failover, round-robin, sticky and **least-busy** (the key with the fewest turns in flight goes next), plus per-custom-provider capacity limits — RPM/TPM/concurrency, a FIFO queue timeout, a lifetime token quota and a contract expiry — and a sparse per-model capability override that leaves an untouched field on detection
+- 📅 Usage periods from one hour to sixty days **and month-to-date**, with the Claude and Codex seat tier and its lapse date in the quota tracker
+- ⏱️ Optional end-to-end request timeout (`totalRequestTimeoutMs`, off by default) to reclaim a hung upstream without cutting a slow reasoning stream
 
 For sequential combo routing, set **Model response timeout** in seconds (decimals
 such as `5.3` are fine) in the combo's Edit dialog, or from the compact field on the

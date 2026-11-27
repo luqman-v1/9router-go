@@ -154,7 +154,7 @@ func TestPinnedConnectionIneligible_CodexEnabledModels(t *testing.T) {
 			h, cleanup := setupHandlerForForward(t)
 			defer cleanup()
 
-			ineligible, reason := h.pinnedConnectionIneligible(tt.conn, nil, codexLuna)
+			ineligible, reason := h.pinnedConnectionIneligible(context.Background(), tt.conn, nil, codexLuna)
 			if ineligible != tt.wantIneligible {
 				t.Fatalf("ineligible = %v (%s), want %v", ineligible, reason, tt.wantIneligible)
 			}

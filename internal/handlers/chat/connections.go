@@ -50,23 +50,20 @@ func excludedFrom(excludePools []map[string]bool) map[string]bool {
 // ResolveProviderProxyPoolID returns the provider-level pool one attempt should
 // use. excludePools carries the pools already refused during this turn, so a
 // rotated attempt never lands back on an egress that just failed.
+//
+// Callers inside the request path use resolveProviderProxyPoolID with the
+// request context, so the settings row is read once per request; this wrapper
+// is for callers that hold no context (dashboard probes, tests).
 func (h *ChatHandler) ResolveProviderProxyPoolID(provider string, excludePools ...map[string]bool) string {
-	id, _ := h.resolveProviderProxyPoolID(provider, excludedFrom(excludePools))
+	id, _ := h.resolveProviderProxyPoolID(context.Background(), provider, excludedFrom(excludePools))
 	return id
 }
 
 // resolveProviderProxyPoolID is ResolveProviderProxyPoolID with the sentinel:
 // errNoUsablePool means the pool binding was dropped on purpose (direct
 // attempt), not that the provider is unusable.
-func (h *ChatHandler) resolveProviderProxyPoolID(provider string, excluded map[string]bool) (string, error) {
-	if h.Repo == nil {
-		return "", nil
-	}
-	settings, err := h.Repo.GetSettings()
-	if err != nil {
-		return "", nil
-	}
-	return h.resolveProviderProxyPoolIDFrom(provider, excluded, settings)
+func (h *ChatHandler) resolveProviderProxyPoolID(ctx context.Context, provider string, excluded map[string]bool) (string, error) {
+	return h.resolveProviderProxyPoolIDFrom(provider, excluded, h.settingsForRequest(ctx))
 }
 
 // resolveProviderProxyPoolIDFrom is resolveProviderProxyPoolID against an
@@ -347,7 +344,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		// row never matches and the request falls through to the configured
 		// strategy. Honouring the pin unconditionally made the dashboard's
 		// enable/disable toggle a no-op for every pinned request.
-		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model, serviceKind)
+		ineligible, reason := h.pinnedConnectionIneligible(ctx, conn, excludeIDs, model, serviceKind)
 		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
 			// A reauth_required account whose park has run out returns as a
 			// normal probe candidate; while parked it stays ineligible.
@@ -403,7 +400,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				connData := &ConnectionData{
 					AccessToken: "public",
 				}
-				connData.ProxyPoolID = h.ResolveProviderProxyPoolID(provider, excludePools...)
+				connData.ProxyPoolID, _ = h.resolveProviderProxyPoolID(ctx, provider, excludedFrom(excludePools))
 				publicName := "Public"
 				conn := &models.ProviderConnection{
 					ID:       "noauth",
@@ -416,7 +413,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
 		}
 
-		settings, settingsErr := h.Repo.GetSettings()
+		settings := h.settingsForRequest(ctx)
 		connections = filterConnectionsForModel(provider, connections, model, settings)
 
 		if len(connections) == 0 {
@@ -480,7 +477,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		var strat db.ProviderStrategy
 		hasStrat := false
 		affinityEligible := false
-		if settingsErr == nil && settings != nil {
+		if settings != nil {
 			strat = connRotationStrategy(settings, provider)
 			hasStrat = strat.RotateStrategy != "" && strat.RotateStrategy != "none"
 			affinityEligible = isAffinityEligibleStrategy(strat.RotateStrategy)
@@ -643,7 +640,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 	// provider itself. It used to be read only for the synthesized no-auth
 	// connection, so a stored connection carrying its own key went out
 	// directly — the assignment the dashboard shows was never dialled.
-	h.applyProviderProxyPool(&connData, provider, excludePools...)
+	h.applyProviderProxyPool(ctx, &connData, provider, excludePools...)
 
 	return conn, &connData, nil
 }
@@ -675,7 +672,7 @@ func (h *ChatHandler) connectionModelBlocked(c *models.ProviderConnection, provi
 // in the turn's exclusion set: the bound egress just refused, so retrying it
 // would loop. With every pool excluded the binding is dropped and the attempt
 // goes direct (errNoUsablePool), which keeps the failover loop moving.
-func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider string, excludePools ...map[string]bool) {
+func (h *ChatHandler) applyProviderProxyPool(ctx context.Context, connData *ConnectionData, provider string, excludePools ...map[string]bool) {
 	if connData == nil {
 		return
 	}
@@ -686,7 +683,7 @@ func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider 
 		}
 		connData.ProxyPoolID = ""
 	}
-	if poolID := h.ResolveProviderProxyPoolID(provider, excludePools...); poolID != "" {
+	if poolID, _ := h.resolveProviderProxyPoolID(ctx, provider, excluded); poolID != "" {
 		connData.ProxyPoolID = poolID
 	}
 }
@@ -696,7 +693,7 @@ func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider 
 // before it looks for a preferred connection (src/sse/services/auth.js:100-148):
 // disabled rows, explicitly excluded rows, active model locks, and connections
 // the provider's strict model assignment does not bind to this model.
-func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection, excludeIDs []string, model string, serviceKind ...string) (bool, string) {
+func (h *ChatHandler) pinnedConnectionIneligible(ctx context.Context, conn *models.ProviderConnection, excludeIDs []string, model string, serviceKind ...string) (bool, string) {
 	if conn == nil {
 		return true, "nil connection"
 	}
@@ -733,10 +730,7 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 		return true, "model not enabled on account"
 	}
 
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
-		return false, ""
-	}
+	settings := h.settingsForRequest(ctx)
 	filtered := filterConnectionsForModel(conn.Provider, []*models.ProviderConnection{conn}, model, settings)
 	if len(filtered) == 0 {
 		return true, "strict model assignment"
