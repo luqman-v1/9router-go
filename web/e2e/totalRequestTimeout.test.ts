@@ -1,6 +1,6 @@
 /**
- * Total Request Timeout (#1526): the dashboard control for the end-to-end
- * request bound.
+ * Total Request Timeout: the dashboard control for the end-to-end request
+ * bound added in PR #1527.
  *
  * The bound's arithmetic is unit-tested against a hung upstream. What this e2e
  * adds is the half a unit test cannot see: the operator types a value, saves,

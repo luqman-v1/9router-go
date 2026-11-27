@@ -157,6 +157,11 @@ type PerModelRateLimitOverride struct {
 	WindowMs int   `json:"windowMs,omitempty"`
 }
 
+// TotalRequestTimeoutSetting is the settings key for the end-to-end request
+// bound. It lives beside the parser that reads it, so the key is named once
+// instead of in a literal the parser and a caller could drift apart on.
+const TotalRequestTimeoutSetting = "totalRequestTimeoutMs"
+
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
 	RTKEnabled              bool            `json:"rtkEnabled"`

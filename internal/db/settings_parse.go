@@ -79,7 +79,7 @@ func applyPerModelRateLimit(s *SettingsData, raw map[string]any) {
 // applyTotalRequestTimeout reads the end-to-end request bound. A negative value
 // is stored as 0 (off) rather than as a request that may run for no time.
 func applyTotalRequestTimeout(s *SettingsData, raw map[string]any) {
-	if ms, ok := raw["totalRequestTimeoutMs"].(float64); ok {
+	if ms, ok := raw[TotalRequestTimeoutSetting].(float64); ok {
 		if ms < 0 {
 			ms = 0
 		}

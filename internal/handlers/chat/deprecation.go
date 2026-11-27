@@ -90,6 +90,13 @@ func (h *ChatHandler) recordModelCooldown(ctx context.Context, provider, model, 
 	if h.Repo == nil || provider == "" || model == "" || ue == nil {
 		return
 	}
+	// A refusal this gateway produced itself never exercised the account: the
+	// credential is fine, the gateway stopped waiting or refused to dial. Cooling
+	// it would park a healthy connection for something no upstream said, which
+	// is the same reason UpstreamError.Local exists for a full local queue.
+	if ue.Local {
+		return
+	}
 
 	isGatewayFault := ue.StatusCode >= 500 && ue.StatusCode <= 504
 	errorText := extractErrorText(ue.Body)

@@ -3,6 +3,8 @@ package chat
 import (
 	"context"
 	"time"
+
+	"9router/proxy/internal/db"
 )
 
 // totalRequestDeadlineKey marks a context whose deadline the gateway set for
@@ -38,9 +40,9 @@ func isRequestDeadline(ctx context.Context) bool {
 	return marked
 }
 
-// TotalRequestTimeoutSetting is the settings key, named once so the parser, the
-// resolver and the dashboard cannot drift apart.
-const TotalRequestTimeoutSetting = "totalRequestTimeoutMs"
+// TotalRequestTimeoutSetting is the settings key, named in the db package where
+// the parser reads it.
+const TotalRequestTimeoutSetting = db.TotalRequestTimeoutSetting
 
 // totalRequestTimeout resolves the configured bound. Zero (or a failed settings
 // read) means off: an unbounded request is the behaviour that existed before

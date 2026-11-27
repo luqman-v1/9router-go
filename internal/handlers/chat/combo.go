@@ -1388,7 +1388,9 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						// the client is still there and needs to know the cut
 						// was policy, not a hangup.
 						if isRequestDeadline(ctx) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-							lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody()}
+							// Local: the account was never exercised, so the 504
+							// must not cool it (see the same branch in fallback.go).
+							lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody(), Local: true}
 							break
 						}
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
@@ -1927,7 +1929,9 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						// the client is still there and needs to know the cut
 						// was policy, not a hangup.
 						if isRequestDeadline(ctx) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-							lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody()}
+							// Local: the account was never exercised, so the 504
+							// must not cool it (see the same branch in fallback.go).
+							lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody(), Local: true}
 							break
 						}
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
