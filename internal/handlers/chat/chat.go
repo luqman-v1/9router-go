@@ -103,6 +103,10 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// The end-to-end bound goes on first, so every later stage shares it: a
+	// request parked in a combo fallback or a slow upstream still expires.
+	ctx, cancelDeadline := WithTotalRequestDeadline(ctx, h.totalRequestTimeout())
+	defer cancelDeadline()
 	ctx = executor.WithCodexLiteHeader(ctx, r.Header.Get(executor.CodexResponsesLiteHeader))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver; the flag travels on ctx to applyTokenSavers.
@@ -454,6 +458,9 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// Same end-to-end bound as the Chat Completions path.
+	ctx, cancelDeadline := WithTotalRequestDeadline(ctx, h.totalRequestTimeout())
+	defer cancelDeadline()
 	// A Messages client's own beta flags have to reach the upstream: the
 	// registry list is the gateway's choice of betas, not the caller's. Without
 	// this the Chat Completions handler carried them and this one dropped them,

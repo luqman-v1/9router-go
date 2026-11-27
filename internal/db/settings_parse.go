@@ -30,6 +30,7 @@ func parseSettings(rawData string) (*SettingsData, bool) {
 	applyCapacityAdapters(s, raw)
 	applyProviderOverrides(s, raw)
 	applySeatAttemptBudget(s, raw)
+	applyTotalRequestTimeout(s, raw)
 	applyPerModelRateLimit(s, raw)
 	return s, true
 }
@@ -73,6 +74,17 @@ func applyPerModelRateLimit(s *SettingsData, raw map[string]any) {
 		}
 	}
 	s.PerModelRateLimit = cfg
+}
+
+// applyTotalRequestTimeout reads the end-to-end request bound. A negative value
+// is stored as 0 (off) rather than as a request that may run for no time.
+func applyTotalRequestTimeout(s *SettingsData, raw map[string]any) {
+	if ms, ok := raw[TotalRequestTimeoutSetting].(float64); ok {
+		if ms < 0 {
+			ms = 0
+		}
+		s.TotalRequestTimeoutMs = int(ms)
+	}
 }
 
 func applySeatAttemptBudget(s *SettingsData, raw map[string]any) {

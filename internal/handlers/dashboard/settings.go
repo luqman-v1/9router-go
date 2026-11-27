@@ -493,6 +493,9 @@ var numericSettingKeys = []string{
 	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
 	"semanticCacheTTL", "semanticCacheMaxEntries",
 	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit",
+	// db owns the key name; the validator is the third reader, not a fourth
+	// literal.
+	db.TotalRequestTimeoutSetting,
 }
 
 func validateNumericSettings(updates map[string]any) error {
