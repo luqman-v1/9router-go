@@ -100,6 +100,8 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"rateLimitRpm":         intOrZero(k.RateLimitRPM),
 			"rateLimitTpm":         intOrZero(k.RateLimitTPM),
 			"rateLimitConcurrency": intOrZero(k.RateLimitConcurrency),
+			"rateLimitRph":         intOrZero(k.RateLimitRPH),
+			"rateLimitRpd":         intOrZero(k.RateLimitRPD),
 			"tokenQuota":           intOrZero(k.TokenQuota),
 			"queueTimeoutMs":       intOrZero(k.QueueTimeoutMs),
 			// F-2 per-period budget. They travel with the row for the same

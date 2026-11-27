@@ -145,7 +145,7 @@ const (
 // usageSupportedProviders mirrors upstream USAGE_SUPPORTED_PROVIDERS
 // (registry features.usage).
 var usageSupportedProviders = []string{
-	"antigravity", "claude", "clinepass", "cloudflare-ai", "codebuddy-cn", "codebuddy-intl", "codex",
+	"agy-acp", "antigravity", "claude", "clinepass", "cloudflare-ai", "codebuddy-cn", "codebuddy-intl", "codex",
 	"commandcode", "commandcode-goat", "deeprelay", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
 	"minimax-code-global", "ollama", "opendesign",
@@ -614,7 +614,7 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 			// Overwriting rewrites the row in place, keeping its id and its
 			// place in the rotation; adding a second row with the same name would
 			// leave the account picker with two candidates it cannot tell apart.
-			if err := h.Repo.ReplaceProviderConnectionPayload(existing.ID, name, dataStr); err != nil {
+			if err := h.Repo.ReplaceProviderConnectionPayload(r.Context(), existing.ID, name, dataStr); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -658,7 +658,7 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			if err := h.Repo.ReplaceProviderConnectionPayload(dup.ID, connectionDisplayName(dup), dataStr); err != nil {
+			if err := h.Repo.ReplaceProviderConnectionPayload(r.Context(), dup.ID, connectionDisplayName(dup), dataStr); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -672,7 +672,7 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 		}
 	}
 
-	if err := h.Repo.CreateProviderConnectionFull(req.ID, req.Provider, req.AuthType, name, req.Priority, dataStr); err != nil {
+	if err := h.Repo.CreateProviderConnectionFull(r.Context(), req.ID, req.Provider, req.AuthType, name, req.Priority, dataStr); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -960,6 +960,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	if hasIsActive && a {
 		chat.ClearCodexQuotaBlock(id)
 	}
+	// The edit may have changed the node's baseUrl or the credential; the
+	// cached catalogue belongs to the previous configuration.
+	liveModelsCatalog.invalidate(id)
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":        "ok",
@@ -1121,6 +1124,7 @@ func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http
 		return
 	}
 	connlimit.Close(id) // release breaker/backoff state so nothing leaks
+	liveModelsCatalog.invalidate(id)
 	if provider != "" && remaining == 0 {
 		h.pruneDeletedProviderFromCombosBestEffort(r.Context(), provider)
 	}
@@ -1141,7 +1145,15 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
-	h.writeConnectionModels(w, r, id)
+	// Reopening the panel, a double click and the free-only press right after a
+	// plain import all ask the same question within seconds. serve collapses
+	// them into one upstream call and replays the answer for a minute, so the
+	// second open of a 460-model catalogue is not another 2.6 s round trip.
+	// Cache-Control: no-store below is set by the JSON writers; the replay sets
+	// X-Models-Cache so a hit is visible in the network panel.
+	liveModelsCatalog.serve(w, r, id, func(cw http.ResponseWriter, cr *http.Request) {
+		h.writeConnectionModels(cw, cr, id)
+	})
 }
 
 // writeConnectionModels is HandleGetConnectionModels with the connection id

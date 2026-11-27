@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -168,7 +169,7 @@ func (h *OAuthHandler) HandleFreebuffSessionStatus(w http.ResponseWriter, r *htt
 				refused = "country_blocked"
 			}
 		}
-		updateConnectionFreebuffModel(h.Repo, conn, "")
+	updateConnectionFreebuffModel(r.Context(), h.Repo, conn, "")
 		handlerutil.WriteJSON(w, http.StatusOK, freebuffSessionResponse(conn, map[string]any{
 			"status": refused,
 		}))
@@ -291,15 +292,15 @@ func (h *OAuthHandler) HandleFreebuffSessionStatus(w http.ResponseWriter, r *htt
 		respMap["rateLimit"] = rateLimit
 	}
 	if status == "active" && currentModel != "" {
-		updateConnectionFreebuffModel(h.Repo, conn, currentModel)
-	} else if status == "none" || status == "unauthorized" || status == "banned" {
-		updateConnectionFreebuffModel(h.Repo, conn, "")
+		updateConnectionFreebuffModel(r.Context(), h.Repo, conn, currentModel)
+		} else if status == "none" || status == "unauthorized" || status == "banned" {
+		updateConnectionFreebuffModel(r.Context(), h.Repo, conn, "")
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, freebuffSessionResponse(conn, respMap))
 }
 
-func updateConnectionFreebuffModel(repo *db.Repo, conn *models.ProviderConnection, model string) {
+func updateConnectionFreebuffModel(ctx context.Context, repo *db.Repo, conn *models.ProviderConnection, model string) {
 	if repo == nil || conn == nil {
 		return
 	}
@@ -332,5 +333,5 @@ func updateConnectionFreebuffModel(repo *db.Repo, conn *models.ProviderConnectio
 	if err != nil {
 		return
 	}
-	_ = repo.UpdateConnectionData(conn.ID, string(newData))
+	_ = repo.UpdateConnectionData(ctx, conn.ID, string(newData))
 }

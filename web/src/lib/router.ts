@@ -1,6 +1,7 @@
 export type ActiveTab =
   | 'login'
   | 'endpoint'
+  | 'playground'
   | 'connections'
   | 'combos'
   | 'analytics'
@@ -33,6 +34,7 @@ export type ActiveTab =
 export const TAB_ROUTES: Record<ActiveTab, string> = {
   login: '/login',
   endpoint: '/dashboard/endpoint',
+  playground: '/dashboard/playground',
   connections: '/dashboard/providers',
   combos: '/dashboard/combos',
   analytics: '/dashboard/usage',
@@ -69,6 +71,8 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/': 'endpoint',
   '/dashboard': 'endpoint',
   '/dashboard/endpoint': 'endpoint',
+  '/dashboard/playground': 'playground',
+  '/playground': 'playground',
   '/endpoint': 'endpoint',
 
   // connections / providers

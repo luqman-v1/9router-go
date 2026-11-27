@@ -315,6 +315,7 @@ func (s *jailbreakSync) runOne(ctx context.Context, src JailbreakSyncSource) Jai
 			doc.Excludes = existing.Excludes
 			doc.Position = existing.Position
 			doc.Mode = existing.Mode
+			doc.Enabled = existing.Enabled
 		}
 		if err := s.store.SavePreset(ctx, doc); err != nil {
 			result.Failed++

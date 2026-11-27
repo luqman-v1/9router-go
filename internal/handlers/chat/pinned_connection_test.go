@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -25,7 +27,7 @@ func TestGetBestConnection_PinnedConditions(t *testing.T) {
 	// primary is the account a client pins; secondary is the account that must
 	// take over once primary becomes ineligible.
 	seed := func(id string, priority int) {
-		if err := repo.CreateProviderConnection(id, "pinned-test", "apikey", id, `{"apiKey":"sk-`+id+`"}`); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), id, "pinned-test", "apikey", id, `{"apiKey":"sk-`+id+`"}`); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 		if err := repo.SetConnectionPriority(id, priority); err != nil {
@@ -71,7 +73,7 @@ func TestGetBestConnection_PinnedConditions(t *testing.T) {
 
 	// 4. A model lock on the pinned row pushes the request off it too.
 	lockKey := canonicalLockModel("pinned-test", "test-model")
-	if err := repo.LockConnectionModel("primary", lockKey, 300, 0); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "primary", lockKey, 300, 0); err != nil {
 		t.Fatalf("lock primary: %v", err)
 	}
 	conn, _, err = handler.getBestConnection("pinned-test", "primary", nil, "test-model")

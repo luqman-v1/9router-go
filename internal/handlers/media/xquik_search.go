@@ -190,12 +190,12 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 		}
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, errBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 			log.Warn("search", "xquik account locked, trying next", "conn", conn.ID[:min(8, len(conn.ID))], "status", resp.StatusCode, "cooldown_s", cooldownSec)
 		}
 		return &searchUpstreamError{Status: resp.StatusCode, Message: fmt.Sprintf("Xquik upstream error (status %d): %s", resp.StatusCode, errText), Retryable: classification.ShouldFallback}
@@ -280,7 +280,7 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 		// Probes read production state; they never clear it (see
 		// tts_forward.go for the same reasoning on the failure path).
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, model)
 		}
 	}
 

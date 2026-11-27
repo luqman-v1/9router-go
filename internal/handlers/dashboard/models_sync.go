@@ -106,6 +106,9 @@ func errText(err error) string {
 // 400 for those, and treating that as an error would make every provider
 // without a catalogue report a broken sync.
 func (h *DashboardHandler) fetchLiveModelIDs(r *http.Request, conn *models.ProviderConnection) (map[string]bool, error, bool) {
+	// Sync exists to re-read the catalogue, so it must not be answered from the
+	// cache it is trying to refresh.
+	liveModelsCatalog.invalidate(conn.ID)
 	capture := newModelsCapture()
 	h.writeConnectionModels(capture, r, conn.ID)
 	if capture.status == http.StatusBadRequest {

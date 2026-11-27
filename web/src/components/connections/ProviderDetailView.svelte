@@ -34,10 +34,7 @@
   import { inferModelKind, customModelKeyFor } from '../../lib/modelKindInference'
   import type { CustomModelType } from './modelTypeOptions'
   import {
-    importCustomModelsBestEffort,
     notifyCustomModelsChanged,
-    type CustomModelImportOutcome,
-    type CustomModelWrite,
   } from '../../lib/customModels'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { loadDeprecations, refreshDeprecations, subscribeDeprecations, deprecationFor } from '../../lib/modelDeprecations.svelte'
@@ -85,6 +82,8 @@
     type ProbeStatus
   } from './connectionProbe'
   import EditConnectionModal, { type ConnectionUpdate } from './EditConnectionModal.svelte'
+  import ModelImportPreview from './ModelImportPreview.svelte'
+  import { buildImportPreviewActiveIds, type ImportPreviewModel } from './modelImportPreview'
   import AddConnectionModal from './AddConnectionModal.svelte'
   import { buildEditedRow, pruneDisabledAfterDelete } from '../../lib/customModelEdit'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
@@ -94,6 +93,7 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { PauseCircle } from 'lucide-svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
+  import ModelCapsEditorModal from './ModelCapsEditorModal.svelte'
   import FreePiConnectModal from './FreePiConnectModal.svelte'
   import FreePiAdBanner from './FreePiAdBanner.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
@@ -511,6 +511,248 @@
   let isRemovingCompatibleModels = $state(false)
   let canImportCompatible = $derived(providerConnections.some((c) => c.isActive !== 0))
 
+  // Staging panel for "Import from /models": the fetched catalog lives here,
+  // not in the active list, until the operator adds a chip. Both import
+  // buttons (compatible nodes and the live-catalog providers) share it.
+  let showImportPreview = $state(false)
+  let isImportPreviewLoading = $state(false)
+  let importPreviewModels = $state<ImportPreviewModel[]>([])
+  let importPreviewSearch = $state('')
+  let importPreviewActiveIds = $derived(
+    buildImportPreviewActiveIds(
+      compatibleRows.map((r) => r.id),
+      providerCustomModels.map((c) => c.id),
+      builtInModels.map((b) => b.id),
+    )
+  )
+  let importPreviewTestStatuses = $state<Record<string, ModelTestStatus>>({})
+  let importPreviewTestErrors = $state<Record<string, string | null>>({})
+  let importPreviewTestLatency = $state<Record<string, number | undefined>>({})
+  let isImportPreviewTesting = $state(false)
+
+  function closeImportPreview() {
+    showImportPreview = false
+    importPreviewSearch = ''
+    importPreviewModels = []
+    importPreviewTestStatuses = {}
+    importPreviewTestErrors = {}
+    importPreviewTestLatency = {}
+    isImportPreviewTesting = false
+  }
+
+  async function openImportPreview(freeOnly = false) {
+    if (isImportPreviewLoading) return
+    const active = providerConnections.find((c) => c.isActive !== 0)
+    if (!active) return
+    // Open first, fill second. The panel appears on the click, showing its
+    // loading state, instead of the button sitting inert for the length of an
+    // upstream fetch (2.6 s for a 460-model catalogue). isImportPreviewLoading
+    // drives that state, and the fetch below replaces it with chips.
+    isImportPreviewLoading = true
+    showImportPreview = true
+    try {
+      const res = await api.getConnectionModels(active.id)
+      const models = res.models || []
+      if (models.length === 0) {
+        closeImportPreview()
+        alert('No models returned from /models.')
+        return
+      }
+      const list: typeof importPreviewModels = []
+      for (const m of models) {
+        const modelId = typeof m === 'string' ? m : (m.id || m.name || m.model || '')
+        if (!modelId) continue
+        const providerFree =
+          typeof m === 'object' && m !== null && 'isFree' in m && m.isFree === true
+        if (freeOnly && !isFreeTierModelId(modelId) && !providerFree) continue
+        let caps =
+          typeof m === 'object' && m !== null && 'capabilities' in m && m.capabilities
+            ? ({ ...(m.capabilities as { vision?: boolean; reasoning?: boolean; free?: boolean }) })
+            : undefined
+        // Qoder does not suffix free models with "-free"; its catalog carries
+        // an is_free flag instead. Carry it into caps so the staged add writes
+        // the flag /api/models/caps uses for the Free badge.
+        if (providerFree) {
+          if (caps) caps.free = true
+          else caps = { free: true }
+        }
+        const obj = typeof m === 'object' && m !== null ? m : ({} as Record<string, unknown>)
+        const ctxLen =
+          typeof obj.context_length === 'number' ? obj.context_length
+          : typeof obj.contextLength === 'number' ? obj.contextLength
+          : undefined
+        const maxOut =
+          typeof obj.max_completion_tokens === 'number' ? obj.max_completion_tokens
+          : typeof obj.maxOutputTokens === 'number' ? obj.maxOutputTokens
+          : undefined
+        list.push({
+          id: modelId,
+          contextWindow: ctxLen || undefined,
+          maxOutput: maxOut || undefined,
+          ...(caps ? { caps } : {}),
+        })
+      }
+      list.sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: 'base' }))
+      importPreviewModels = list
+    } catch (err) {
+      closeImportPreview()
+      alert(err instanceof Error ? err.message : 'Failed to fetch models')
+    } finally {
+      isImportPreviewLoading = false
+    }
+  }
+
+  // A chip add writes the same row the old import-all path wrote: the kind is
+  // inferred from the id, and the endpoint-reported limits travel with it so
+  // /v1/models keeps publishing them after the row outlives the panel.
+  async function handlePreviewAdd(modelId: string) {
+    const meta = importPreviewModels.find((m) => m.id === modelId)
+    try {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId), {
+        id: modelId,
+        providerAlias: storageAlias,
+        type: inferModelKind(modelId),
+        ...(meta?.caps ? { caps: meta.caps } : {}),
+        ...(meta?.contextWindow ? { contextWindow: meta.contextWindow } : {}),
+        ...(meta?.maxOutput ? { maxOutput: meta.maxOutput } : {}),
+      })
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to add model')
+    }
+  }
+
+  async function handlePreviewRemove(modelId: string) {
+    const row = compatibleRows.find((r) => r.id === modelId)
+    try {
+      if (row?.source === 'legacyAlias' && row.alias) {
+        await api.deleteModelAlias(row.alias)
+      } else {
+        await api.deleteCustomModel(customModelKeyFor(storageAlias, modelId, row?.kind))
+        await pruneDeletedFromDisabled([modelId])
+      }
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+    } catch (err) {
+      alert(`Failed to remove model: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Bulk add for the filtered set: one request for the whole list so a refused
+  // id cannot stop the ones after it, and the response names what landed. Each
+  // entry carries the same caps and limits a single chip add forwards, or the
+  // bulk path would store rows the rest of the gateway cannot size while the
+  // one-by-one path sized them correctly.
+  async function handlePreviewAddAll(modelIds: string[]) {
+    if (isImportPreviewLoading || modelIds.length === 0) return
+    isImportPreviewLoading = true
+    try {
+      const byId = new Map(importPreviewModels.map((m) => [m.id, m]))
+      const out = await api.saveCustomModelsBulk({
+        providerAlias: storageAlias,
+        models: modelIds.map((id) => {
+          const meta = byId.get(id)
+          return {
+            id,
+            type: inferModelKind(id),
+            ...(meta?.caps?.vision ? { vision: true } : {}),
+            ...(meta?.caps?.reasoning ? { reasoning: true } : {}),
+            ...(meta?.contextWindow ? { contextWindow: meta.contextWindow } : {}),
+            ...(meta?.maxOutput ? { maxOutput: meta.maxOutput } : {}),
+          }
+        }),
+      })
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+      if (out.skipped.length > 0) {
+        alert(
+          `Added ${out.added.length} of ${modelIds.length}.\n\nNot added:\n` +
+            out.skipped.map((s) => `${s.id} — ${s.reason}`).join('\n'),
+        )
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to add models')
+    } finally {
+      isImportPreviewLoading = false
+    }
+  }
+
+  // Bulk remove for the filtered set. Each id is its own row (or legacy alias),
+  // so the deletes are collected and reported together rather than aborting on
+  // the first failure.
+  async function handlePreviewRemoveAll(modelIds: string[]) {
+    if (isImportPreviewLoading || modelIds.length === 0) return
+    if (!confirm(`Remove ${modelIds.length} model(s) from ${displayAlias()}? This cannot be undone.`)) return
+    isImportPreviewLoading = true
+    const failures: string[] = []
+    try {
+      for (const id of modelIds) {
+        const row = compatibleRows.find((r) => r.id === id)
+        try {
+          if (row?.source === 'legacyAlias' && row.alias) {
+            await api.deleteModelAlias(row.alias)
+          } else {
+            await api.deleteCustomModel(customModelKeyFor(storageAlias, id, row?.kind))
+          }
+        } catch (err) {
+          failures.push(`${id} — ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      await pruneDeletedFromDisabled(
+        compatibleRows.filter((r) => r.source === 'custom' && modelIds.includes(r.id)).map((r) => r.id)
+      )
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+      if (failures.length > 0) {
+        alert(`Removed ${modelIds.length - failures.length} of ${modelIds.length}.\n\nNot removed:\n` + failures.join('\n'))
+      }
+    } finally {
+      isImportPreviewLoading = false
+    }
+  }
+
+  // Batch probe for the panel's selection. Bounded like Test all
+  // (COMPATIBLE_TEST_CONCURRENCY): each probe is a real completion that
+  // consumes account quota, so this does not fan out per selected chip.
+  async function handlePreviewTestSelected(modelIds: string[]) {
+    if (isImportPreviewTesting || modelIds.length === 0) return
+    const pid = providerId
+    isImportPreviewTesting = true
+    try {
+      let cursor = 0
+      const workers = Array.from({ length: Math.min(COMPATIBLE_TEST_CONCURRENCY, modelIds.length) }, async () => {
+        while (cursor < modelIds.length && pid === providerId) {
+          await handlePreviewTest(modelIds[cursor++])
+        }
+      })
+      await Promise.allSettled(workers)
+    } finally {
+      if (pid === providerId) isImportPreviewTesting = false
+    }
+  }
+
+  // Same probe as the row-level Test button, but the verdict is stored in the
+  // panel's own maps so it survives a chip moving between state A and B.
+  async function handlePreviewTest(modelId: string) {
+    if (importPreviewTestStatuses[modelId] === 'testing') return
+    const pid = providerId
+    importPreviewTestStatuses[modelId] = 'testing'
+    importPreviewTestErrors[modelId] = null
+    try {
+      const res = await api.testModel(`${storageAlias}/${modelId}`)
+      if (pid !== providerId) return
+      if (res.latencyMs !== undefined) importPreviewTestLatency[modelId] = res.latencyMs
+      const verdict = parseModelTestVerdict(res)
+      importPreviewTestStatuses[modelId] = verdict.status
+      importPreviewTestErrors[modelId] = verdict.error
+    } catch (err) {
+      if (pid !== providerId) return
+      importPreviewTestStatuses[modelId] = 'error'
+      importPreviewTestErrors[modelId] = err instanceof Error ? err.message : 'Model test failed'
+    }
+  }
+
   // Settings & Strategies
   let settings = $state<Settings | null>(null)
   let isRoundRobin = $state(false)
@@ -823,6 +1065,29 @@
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
   let editingModel = $state<CustomModelData | null>(null)
+  // Per-model capability editor (the model editor): one modal, pointed at
+  // whichever row's tune button was pressed.
+  let showCapsEditor = $state(false)
+  let capsEditorProvider = $state('')
+  let capsEditorModel = $state('')
+
+  // After an edit the pinned fields outrank detection, so the row's capability
+  // chips are now stale. One read of the provider's capability map refreshes
+  // every row on this view, which is cheaper than a per-model endpoint and is
+  // the same call the initial load makes.
+  async function refreshModelCaps(provider: string) {
+    if (!provider) return
+    try {
+      const data = await api.getModelCaps(provider)
+      const next = data?.caps || {}
+      // Only overlay entries the server returned; a model absent from the map
+      // keeps its previous chips rather than blinking to all-false.
+      modelCaps = { ...modelCaps, ...next }
+    } catch {
+      // A failed refresh leaves the last known chips in place. The edit itself
+      // already succeeded, so a stale icon is better than an error state.
+    }
+  }
   let showEditNodeModal = $state(false)
   let showExportKeysModal = $state(false)
   let showShareProviderModal = $state(false)
@@ -2940,48 +3205,16 @@
     return id.endsWith(':free') || id.endsWith('/free') || id.endsWith('-free')
   }
 
-  // The server names the occupant in the refusal body, so the summary can say
-  // what has to be renamed instead of only that the id was skipped.
-  function reportImportRefusals(outcome: CustomModelImportOutcome) {
-    if (outcome.refused.length === 0) return
-    const noun = outcome.refused.length === 1 ? 'model' : 'models'
-    alert(
-      `Imported ${outcome.imported} model${outcome.imported === 1 ? '' : 's'}. ` +
-        `${outcome.refused.length} ${noun} could not be registered:\n\n` +
-        outcome.refused.map((r) => `${r.id} — ${r.reason}`).join('\n'),
-    )
-  }
-
+  // The old import-all wrote every /models row at once; the panel stages them
+  // instead, so the operator filters and picks. "Import free only" keeps its
+  // meaning as the same fetch pre-filtered to free-tier ids.
   async function handleImportCompatibleModels(freeOnly = false) {
     if (isImportingCompatibleModels) return
     const active = providerConnections.find((c) => c.isActive !== 0)
     if (!active) return
     isImportingCompatibleModels = true
     try {
-      const res = await api.getConnectionModels(active.id)
-      const models = res.models || []
-      if (models.length === 0) {
-        alert('No models returned from /models.')
-        return
-      }
-      const pending: CustomModelWrite[] = []
-      for (const m of models) {
-        const modelId = typeof m === 'string' ? m : (m.id || m.name || m.model || '')
-        if (!modelId || compatibleRows.some((r) => r.id === modelId)) continue
-        if (freeOnly && !isFreeTierModelId(modelId)) continue
-        pending.push({
-          id: modelId,
-          key: customModelKeyFor(storageAlias, modelId),
-          value: { id: modelId, providerAlias: storageAlias, type: inferModelKind(modelId) },
-        })
-      }
-      const outcome = await importCustomModelsBestEffort(pending, api.saveCustomModel)
-      await refreshCompatibleModels()
-      if (outcome.imported > 0) notifyCustomModelsChanged()
-      else if (outcome.refused.length === 0 && freeOnly) alert('No free models found in /models.')
-      reportImportRefusals(outcome)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import models')
+      await openImportPreview(freeOnly)
     } finally {
       isImportingCompatibleModels = false
     }
@@ -3005,6 +3238,9 @@
     return ''
   }
 
+  // Live-catalog providers stage through the same panel: fetch first, add per
+  // chip. The per-model metadata (caps, context window, max output) travels
+  // with the add so a row keeps the limits the endpoint declared.
   async function handleImportLiveCatalogModels() {
     if (isImportingLiveCatalogModels) return
     const active = providerConnections.find((c) => c.isActive !== 0)
@@ -3014,68 +3250,7 @@
     }
     isImportingLiveCatalogModels = true
     try {
-      const res = await api.getConnectionModels(active.id)
-      const models = res.models || []
-      if (models.length === 0) {
-        alert('No models returned from /models.')
-        return
-      }
-      const pending: CustomModelWrite[] = []
-      for (const m of models) {
-        const modelId = typeof m === 'string' ? m : (m.id || m.name || m.model || '')
-        if (!modelId) continue
-        const alreadyBuiltin = builtInModels.some((b) => b.id === modelId)
-        const alreadyCustom = providerCustomModels.some((c) => c.id === modelId)
-        if (alreadyBuiltin || alreadyCustom) continue
-        const caps =
-          typeof m === 'object' &&
-          m !== null &&
-          'capabilities' in m &&
-          m.capabilities &&
-          typeof m.capabilities === 'object'
-            ? (m.capabilities as { vision?: boolean; reasoning?: boolean })
-            : undefined
-        // An endpoint that reports its own limits is the authoritative source;
-        // saving them means /v1/models keeps publishing them after the row
-        // outlives this import. OpenRouter-style feeds spell them snake_case
-        // (context_length / max_completion_tokens); normalized catalogues
-        // (nous, qoder, zed) spell them camelCase (contextLength /
-        // maxOutputTokens) — reading only the first shape dropped the 1M
-        // window nous/qwen4-max declares and published the 131k name guess.
-        const declaredCtxLen =
-          typeof m === 'object' && m !== null
-            ? Number(
-                ('context_length' in m ? m.context_length : undefined) ??
-                  ('contextLength' in m ? m.contextLength : undefined),
-              ) || 0
-            : 0
-        const declaredMaxOut =
-          typeof m === 'object' && m !== null
-            ? Number(
-                ('max_completion_tokens' in m ? m.max_completion_tokens : undefined) ??
-                  ('maxOutputTokens' in m ? m.maxOutputTokens : undefined),
-              ) || 0
-            : 0
-        pending.push({
-          id: modelId,
-          key: customModelKeyFor(storageAlias, modelId),
-          value: {
-            id: modelId,
-            providerAlias: storageAlias,
-            type: inferModelKind(modelId),
-            ...(caps ? { caps } : {}),
-            ...(declaredCtxLen > 0 ? { contextWindow: declaredCtxLen } : {}),
-            ...(declaredMaxOut > 0 ? { maxOutput: declaredMaxOut } : {}),
-          },
-        })
-      }
-      const outcome = await importCustomModelsBestEffort(pending, api.saveCustomModel)
-      const modelsData = await fetchProviderModelsData(providerId, storageAlias)
-      customModels = modelsData.customModels
-      if (outcome.imported > 0) notifyCustomModelsChanged()
-      reportImportRefusals(outcome)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import models')
+      await openImportPreview(false)
     } finally {
       isImportingLiveCatalogModels = false
     }
@@ -3113,6 +3288,18 @@
     compatibleTestErrors = {}
     compatibleTestLatency = {}
     compatibleTestAllRunning = false
+    // The staging panel holds the previous provider's fetched catalog; on a
+    // switch it would list ids the new node does not serve. Reset the fields
+    // directly: calling closeImportPreview() here would read showImportPreview
+    // inside this effect, making the effect depend on it and re-run the moment
+    // the panel opens — closing it immediately after openImportPreview sets it.
+    showImportPreview = false
+    importPreviewSearch = ''
+    importPreviewModels = []
+    importPreviewTestStatuses = {}
+    importPreviewTestErrors = {}
+    importPreviewTestLatency = {}
+    isImportPreviewTesting = false
     // The toolbar's filter and selection describe the previous provider's
     // rows; carrying them over would select ids that do not exist here and
     // hide the new provider's models behind a stale chip set.
@@ -3796,6 +3983,27 @@
             Need at least 2 active proxy pools for rotation.
           </p>
         {/if}
+      </div>
+
+      <!-- A no-auth provider sends requests too, so its outbound headers are
+           just as fixable as an authenticated provider's. This is a deliberate
+           fork-side addition, not upstream parity: at decolua/9router
+           5ae63d22, CustomConfigCard.js returns null when the provider has no
+           registry builtins and no saved override, so a no-auth provider with
+           neither shows no card there. The free lanes are exactly where a
+           vendor's UA gate bites hardest, so the button is offered here. -->
+      <div class="flex items-center gap-2 border-t border-border-subtle pt-4">
+        <button
+          type="button"
+          onclick={() => (showHeaderOverrides = true)}
+          class="inline-flex h-7 items-center gap-1.5 rounded-[8px] px-3 text-xs font-medium text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+        >
+          <span class="material-symbols-outlined text-[18px]" aria-hidden="true">tune</span>
+          Custom headers
+        </button>
+        <p class="text-xs text-text-muted">
+          Override headers this provider sends upstream.
+        </p>
       </div>
     </div>
   {:else}
@@ -4621,17 +4829,17 @@
             type="button"
             onclick={() => handleImportCompatibleModels(false)}
             disabled={!canImportCompatible || isImportingCompatibleModels}
-            title="Fetch this endpoint's /models and add everything it lists"
+            title="Fetch this endpoint's /models into a preview panel; add models one by one from there"
             class="inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] border border-border bg-surface-2 px-3 text-xs font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
           >
             <span class="material-symbols-outlined text-[16px]">download</span>
-            {isImportingCompatibleModels ? 'Importing...' : 'Import from /models'}
+            {isImportingCompatibleModels ? 'Fetching...' : 'Import from /models'}
           </button>
           <button
             type="button"
             onclick={() => handleImportCompatibleModels(true)}
             disabled={!canImportCompatible || isImportingCompatibleModels}
-            title="Same as import, but skip anything that is not on the provider's free tier"
+            title="Same fetch as Import, but the preview panel only lists the provider's free-tier ids"
             class="inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] border border-border bg-surface-2 px-3 text-xs font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
           >
             <span class="material-symbols-outlined text-[16px]">savings</span>
@@ -5109,6 +5317,22 @@
                 <span class="material-symbols-outlined text-sm">edit</span>
               </button>
             {/if}
+            <!-- Capability editor: works on registry models too, which have no
+                 custom row. Pinning a field here outranks every detection
+                 level, so it is the way to correct a model the tables get
+                 wrong without editing the catalog. -->
+            <button
+              type="button"
+              onclick={() => {
+                capsEditorProvider = providerId
+                capsEditorModel = model.id
+                showCapsEditor = true
+              }}
+              class="shrink-0 rounded p-0.5 text-text-muted hover:bg-sidebar hover:text-primary cursor-pointer"
+              title="Edit capabilities"
+            >
+              <span class="material-symbols-outlined text-sm">tune</span>
+            </button>
             <!-- Disable button -->
             <button
               type="button"
@@ -5287,6 +5511,29 @@
 </div>
 
 <!-- Modals -->
+
+<!-- Import from /models staging panel: the fetched catalog lives only here
+     until the operator adds a chip; nothing is written on open. -->
+{#if showImportPreview}
+  <ModelImportPreview
+    models={importPreviewModels}
+    activeIds={importPreviewActiveIds}
+    search={importPreviewSearch}
+    busy={isImportPreviewLoading}
+    testStatuses={importPreviewTestStatuses}
+    testErrors={importPreviewTestErrors}
+    testLatency={importPreviewTestLatency}
+    onSearch={(q) => (importPreviewSearch = q)}
+    onAdd={handlePreviewAdd}
+    onRemove={handlePreviewRemove}
+    onTest={handlePreviewTest}
+    onAddAll={handlePreviewAddAll}
+    onRemoveAll={handlePreviewRemoveAll}
+    onTestSelected={handlePreviewTestSelected}
+    testing={isImportPreviewTesting}
+    onClose={closeImportPreview}
+  />
+{/if}
 
 <!-- 1. Risk Notice Modal -->
 {#if showRiskNoticeModal}
@@ -5797,6 +6044,14 @@
   isOpen={showHeaderOverrides}
   providerId={providerId}
   onClose={() => (showHeaderOverrides = false)}
+/>
+
+<ModelCapsEditorModal
+  isOpen={showCapsEditor}
+  providerId={capsEditorProvider}
+  model={capsEditorModel}
+  onClose={() => (showCapsEditor = false)}
+  onSaved={() => refreshModelCaps(providerId)}
 />
 
 <FreePiConnectModal

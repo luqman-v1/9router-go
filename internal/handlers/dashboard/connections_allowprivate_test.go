@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"bytes"
 	json "encoding/json/v2"
 	"net/http"
@@ -51,7 +53,7 @@ func TestHandleUpdateConnection_AllowPrivateNetworkingPersistence(t *testing.T) 
 	router := setupTestRouter(repo)
 
 	connID := "conn-gw-toggle"
-	if err := repo.CreateProviderConnection(connID, "deepseek", "apikey", "Local Gateway", "sk-local"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), connID, "deepseek", "apikey", "Local Gateway", "sk-local"); err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
 

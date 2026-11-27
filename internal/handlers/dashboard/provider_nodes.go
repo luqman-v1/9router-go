@@ -417,7 +417,7 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	syncNodeConnections(h, renamedID, prefix, apiType, nodeType, baseURL, name, customJSON)
+	syncNodeConnections(r.Context(), h, renamedID, prefix, apiType, nodeType, baseURL, name, customJSON)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"node": ProviderNodeResponse{
 			ID:                 updated.ID,
@@ -438,7 +438,7 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 // syncNodeConnections propagates edited node fields into the
 // providerSpecificData of every attached connection, mirroring upstream
 // updateProviderConnection calls after updateProviderNode.
-func syncNodeConnections(h *DashboardHandler, nodeID, prefix, apiType, nodeType, baseURL, nodeName string, customJSON jsontext.Value) {
+func syncNodeConnections(ctx context.Context, h *DashboardHandler, nodeID, prefix, apiType, nodeType, baseURL, nodeName string, customJSON jsontext.Value) {
 	conns, err := h.Repo.GetProviderConnections(nodeID, false)
 	if err != nil || len(conns) == 0 {
 		return
@@ -480,7 +480,7 @@ func syncNodeConnections(h *DashboardHandler, nodeID, prefix, apiType, nodeType,
 		if err != nil {
 			continue
 		}
-		_ = h.Repo.UpdateConnectionData(conn.ID, string(dataBytes))
+		_ = h.Repo.UpdateConnectionData(ctx, conn.ID, string(dataBytes))
 	}
 }
 

@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"encoding/base64"
 	"io"
 	"net/http"
@@ -43,7 +45,7 @@ func addBedrockConnection(t *testing.T, env *Env, up *Upstream) {
 	const id = "conn-bedrock"
 	data := `{"apiKey":"wJalrXUtnFEMI-secret","baseUrl":"` + up.URL + `",` +
 		`"providerSpecificData":{"accessKeyId":"AKIAIOSFODNN7EXAMPLE","region":"us-east-1"}}`
-	if err := env.Repo.CreateProviderConnectionFull(id, "bedrock", "apikey",
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), id, "bedrock", "apikey",
 		"Bedrock Integration", nil, data); err != nil {
 		t.Fatalf("create bedrock connection: %v", err)
 	}

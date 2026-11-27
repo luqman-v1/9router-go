@@ -67,7 +67,7 @@ export interface CustomModelData {
   providerAlias?: string
   type?: string
   /** Capability flags saved from the Add Custom Model modal (upstream parity). */
-  caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean }
+  caps?: { vision?: boolean; reasoning?: boolean; jailbreak?: boolean; free?: boolean }
   contextWindow?: number
   maxOutput?: number
   extraBody?: unknown

@@ -325,8 +325,10 @@
   }
 
   // planBadgeOf reads the plan block off one connection's usage response. The
-  // tier and its end date are not quota windows, so they are drawn as a badge
-  // in the card header rather than as a row in the table.
+  // tier and, where the provider reports one, its end date are not quota
+  // windows, so they are drawn as a badge in the card header rather than as a
+  // row in the table. Only Codex carries an expiry: Anthropic's OAuth profile
+  // reports the seat and never when it lapses.
   function planBadgeOf(connectionId: string) {
     return getPlanBadge(quotaData[connectionId]?.raw)
   }
@@ -1424,7 +1426,7 @@
                   {#if getConnectionSecondaryLabel(conn)}
                     <p class="truncate text-[11px] text-text-muted/80">{formatEmailLabel(getConnectionSecondaryLabel(conn), $emailPrivacy)}</p>
                   {/if}
-                  {#if conn.provider === 'codex'}
+                  {#if conn.provider === 'codex' || conn.provider === 'claude'}
                     {@const badge = planBadgeOf(conn.id)}
                     {@const tierLabel = planLabel(badge?.plan)}
                     {@const expiry = formatPlanExpiry(badge?.expiresAt)}

@@ -198,7 +198,7 @@ func TestCheckMiniMaxCode_RefreshesOn401(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	data := `{"accessToken":"old","refreshToken":"rt-unique","providerSpecificData":{"realUserID":"42"}}`
-	if err := repo.CreateProviderConnectionFull("c1", "minimax-code", "oauth", "acct", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "c1", "minimax-code", "oauth", "acct", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -270,7 +270,7 @@ func TestCheckMiniMaxCode_DoesNotRefreshOn403(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	data := `{"accessToken":"old","refreshToken":"rt-403","providerSpecificData":{"realUserID":"42"}}`
-	if err := repo.CreateProviderConnectionFull("c1", "minimax-code", "oauth", "acct", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "c1", "minimax-code", "oauth", "acct", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +315,7 @@ func TestCheckMiniMaxCode_DoesNotRefreshOnBusinessRefusal(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	data := `{"accessToken":"old","refreshToken":"rt-biz","providerSpecificData":{"realUserID":"42"}}`
-	if err := repo.CreateProviderConnectionFull("c1", "minimax-code", "oauth", "acct", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "c1", "minimax-code", "oauth", "acct", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

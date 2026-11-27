@@ -17,6 +17,21 @@ import (
 	"9router/proxy/internal/db"
 )
 
+func enableImportedJailbreakPresets(t *testing.T, repo *db.Repo) {
+	t.Helper()
+	docs, err := repo.ListJailbreakPresets()
+	if err != nil {
+		t.Fatalf("list presets: %v", err)
+	}
+	for _, doc := range docs {
+		on := true
+		doc.Enabled = &on
+		if err := repo.SaveJailbreakPreset(doc); err != nil {
+			t.Fatalf("enable preset %s: %v", doc.ID, err)
+		}
+	}
+}
+
 // The target is operator input and the only thing standing between it and the
 // gateway's own network, so every accepted shape is pinned and every rejected
 // one is named.
@@ -367,6 +382,16 @@ func TestJailbreakImportFromGithubEndToEnd(t *testing.T) {
 		t.Fatalf("refused = %+v, want none", res.Refused)
 	}
 
+	// A freshly imported preset is inert until the operator enables it.
+	inert, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-v4")
+	if err != nil {
+		t.Fatalf("resolve before enable: %v", err)
+	}
+	if inert != nil {
+		t.Fatalf("imported preset injected before enable: %+v", inert)
+	}
+	enableImportedJailbreakPresets(t, repo)
+
 	// A request for the model on a provider the collection never names still
 	// resolves: the keyword chain covers the family.
 	doc, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-v4")
@@ -625,6 +650,14 @@ func TestHandleUploadJailbreakPreset(t *testing.T) {
 		if doc.Source != "upload:deepseek v4.md" {
 			t.Fatalf("source = %q, want the upload marker", doc.Source)
 		}
+		inert, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-v4")
+		if err != nil {
+			t.Fatalf("resolve before enable: %v", err)
+		}
+		if inert != nil {
+			t.Fatalf("uploaded preset injected before enable: %+v", inert)
+		}
+		enableImportedJailbreakPresets(t, repo)
 		// And it resolves for the model it names, on any provider.
 		resolved, err := repo.ResolveJailbreakDoc("", "providerx/deepseek-v4")
 		if err != nil {
@@ -1219,5 +1252,37 @@ func TestJailbreakImportServesSecondPassFromCache(t *testing.T) {
 	}
 	if len(presets) != 1 || presets[0].Prompt != "RULE" {
 		t.Fatalf("presets = %+v, want one preset with the cached prompt", presets)
+	}
+}
+
+func TestHTMLToText_HeaderAndSelfClosingTagsDoNotSwallowBody(t *testing.T) {
+	tests := []struct {
+		name string
+		html string
+		want string
+	}{
+		{
+			name: "header_tag_does_not_match_head_skip",
+			html: `<html><head><title>Ignore</title></head><body><header>Nav</header><main><p>Follow these rules.</p></main></body></html>`,
+			want: "Nav\nFollow these rules.",
+		},
+		{
+			name: "self_closing_script_tag_does_not_swallow_body",
+			html: `<script src="bundle.js" /><p>Prompt body</p>`,
+			want: "Prompt body",
+		},
+		{
+			name: "closing_style_tag_with_trailing_space_exits_skip",
+			html: `<style>body{color:red}</style ><p>Visible text</p>`,
+			want: "Visible text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := htmlToText(tt.html); got != tt.want {
+				t.Fatalf("htmlToText() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

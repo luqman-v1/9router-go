@@ -193,7 +193,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	httpReq.Header.Set("X-Client-Name", "antigravity")
-	httpReq.Header.Set("X-Client-Version", providers.AntigravityIDEVersion)
+	httpReq.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -211,7 +211,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		log.Warn("media", "antigravity image error", "status", resp.StatusCode, "body", errText)
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
@@ -222,7 +222,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 			if resetSec, ok := geminiQuotaResetSeconds(respBody); ok {
 				cooldownSec = int(resetSec)
 			}
-			_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
 			var rawModel string
 			var rawBody struct {
 				Model string `json:"model"`
@@ -231,7 +231,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 				rawModel = rawBody.Model
 			}
 			if rawModel != "" && rawModel != cleanModel {
-				_ = h.Repo.LockConnectionModel(conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
+				_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
 			}
 		}
 		err := fmt.Errorf("antigravity image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
@@ -255,7 +255,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		// Probes read production state; they never clear it (see
 		// tts_forward.go for the same reasoning on the failure path).
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, cleanModel)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, cleanModel)
 		}
 	}
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{

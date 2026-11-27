@@ -440,7 +440,7 @@ func (h *OAuthHandler) completePKCEExchange(ctx context.Context, ex *pkceExchang
 	}
 	connName := connectionDisplayName(ex.provider, ex.name, email, ex.cfg.display)
 	connID := ex.cfg.connPrefix + shortHash(tokens.AccessToken)
-	if err := h.persistConnection(connID, ex.provider, connName, dataMap, tokens.RefreshToken); err != nil {
+	if err := h.persistConnection(ctx, connID, ex.provider, connName, dataMap, tokens.RefreshToken); err != nil {
 		return pkceExchangeResult{}, exchangeFail(http.StatusInternalServerError, "failed to save connection: %v", err)
 	}
 	return pkceExchangeResult{ConnectionID: connID, Name: connName, Email: email}, nil
@@ -449,18 +449,16 @@ func (h *OAuthHandler) completePKCEExchange(ctx context.Context, ex *pkceExchang
 // persistConnection upserts a connection row, keeping the stored refresh token
 // when the provider's response omitted one (Codex only rotates it on the
 // first exchange).
-func (h *OAuthHandler) persistConnection(connID, provider, connName string, dataMap map[string]any, refreshToken string) error {
-	if h.Repo == nil || h.Repo.RawDB() == nil {
+func (h *OAuthHandler) persistConnection(ctx context.Context, connID, provider, connName string, dataMap map[string]any, refreshToken string) error {
+	if h.Repo == nil {
 		return nil
 	}
-	if refreshToken == "" {
-		var existing string
-		if err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&existing); err == nil && existing != "" {
-			var old map[string]any
-			if jerr := json.Unmarshal([]byte(existing), &old); jerr == nil {
-				if rt, ok := old["refreshToken"].(string); ok && rt != "" {
-					dataMap["refreshToken"] = rt
-				}
+	existing, _ := h.Repo.GetProviderConnectionByID(connID)
+	if refreshToken == "" && existing != nil {
+		var old map[string]any
+		if jerr := json.Unmarshal([]byte(existing.Data), &old); jerr == nil {
+			if rt, ok := old["refreshToken"].(string); ok && rt != "" {
+				dataMap["refreshToken"] = rt
 			}
 		}
 	}
@@ -468,24 +466,11 @@ func (h *OAuthHandler) persistConnection(connID, provider, connName string, data
 	if err != nil {
 		return fmt.Errorf("marshal connection data: %w", err)
 	}
-	now := currentTimestamp()
-	var existing string
-	if err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&existing); err == nil && existing != "" {
-		_, err = h.Repo.RawDB().Exec(
-			"UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?",
-			connName, string(dataBytes), now, connID,
-		)
-	} else {
-		priority := 1
-		if h.Repo != nil {
-			priority = h.Repo.ResolveDefaultPriority(provider)
-		}
-		_, err = h.Repo.RawDB().Exec(
-			"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",
-			connID, provider, connName, priority, string(dataBytes), now, now,
-		)
+	if existing != nil {
+		return h.Repo.ReplaceProviderConnectionPayload(ctx, connID, connName, string(dataBytes))
 	}
-	return err
+	priority := h.Repo.ResolveDefaultPriority(ctx, provider)
+	return h.Repo.CreateProviderConnectionFull(ctx, connID, provider, "oauth", connName, &priority, string(dataBytes))
 }
 
 // HandlePKCEExchange exchanges the authorization code and stores the connection.

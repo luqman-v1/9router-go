@@ -73,6 +73,9 @@ func (h *ChatHandler) handleAccountFallback(
 	if FallbackAttemptRecorderFrom(ctx) == nil {
 		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
 	}
+	// Per-model admission moved into tryForwardWithConnection, which every
+	// dispatch path (this one, the combo loops, fusion) calls: one choke
+	// point instead of one per path.
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
@@ -365,7 +368,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
-			currentBackoffLevel := h.Repo.GetConnectionBackoffLevel(connObj.ID)
+			currentBackoffLevel := h.Repo.GetConnectionBackoffLevel(ctx, connObj.ID)
 			// Classify error to get dynamic cooldown; provider-scoped rules
 			// key off the canonical provider the request routed to.
 			classification := providers.ClassifyErrorForProvider(ue.StatusCode, errorText, currentBackoffLevel, provider, ue.Body)
@@ -375,9 +378,9 @@ func (h *ChatHandler) handleAccountFallback(
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
 			}
 			lockKey := canonicalLockModel(provider, model)
-			h.Repo.LockConnectionModel(connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(ctx, connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
 			if lockKey != model {
-				_ = h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
+				_ = h.Repo.LockConnectionModel(ctx, connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
 			}
 			// Account-scoped cooldown alongside the per-model locks, so the
 			// selector can skip this account before spending a request
@@ -386,7 +389,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// itself such as an NVIDIA NIM degraded cluster), so unrelated
 			// models stay available.
 			if classification.ModelScoped || isModelScopedError(ue.StatusCode, errorText, model, ue.Body) {
-				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+				if recErr := h.Repo.RecordConnectionScopedError(ctx, connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
 			} else {
@@ -401,7 +404,7 @@ func (h *ChatHandler) handleAccountFallback(
 					}
 				}
 				until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
+				if lockErr := h.Repo.LockConnectionRateLimit(ctx, connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
 					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
 				}
 				h.getSessionAffinity().EvictConnection(connObj.ID)
@@ -684,6 +687,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// when it failed, so the answer is final: no account rotation, no combo
 	// fallback, and no zero-content probe that would replay an empty answer.
 	customJSON := isCustomJSONConn(connData)
+	// Per-model admission for custom providers, here rather than only in
+	// handleAccountFallback: the combo dispatch paths (combo.go's OpenAI and
+	// Messages loops, combo_fusion.go's panel calls) reach the upstream through
+	// this one function, so a cap on a combo member is enforced on the combo
+	// path too — the member fails over to the next one instead of serving.
+	// A refusal carries Local=true, so failover moves on without cooling the
+	// credential — it was never exercised.
+	if err := h.admitPerModel(ctx, provider, model); err != nil {
+		return err
+	}
 	// Unified thinking normalisation, inbound half: capture the client's
 	// reasoning intent before any converter rewrites the body. model stays
 	// the requested id for logs/usage; wireModel is suffix-free.
@@ -1427,16 +1440,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 		// Clear any existing model lock on success (matching Next.js clearAccountError).
 		lockKey := canonicalLockModel(provider, model)
-		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, lockKey); unlockErr != nil {
+		if unlockErr := h.Repo.UnlockConnectionModel(ctx, connectionID, lockKey); unlockErr != nil {
 			log.Warn("fallback", "unlock failed", "provider", provider, "model", lockKey, "error", unlockErr)
 		}
 		if lockKey != model {
-			_ = h.Repo.UnlockConnectionModel(connectionID, model)
+			_ = h.Repo.UnlockConnectionModel(ctx, connectionID, model)
 		}
 		// A served request also clears the account-scoped cooldown, so an
 		// account that recovered is not kept out of rotation until the
 		// cooldown expires on its own.
-		if clearErr := h.Repo.ClearConnectionRateLimit(connectionID); clearErr != nil {
+		if clearErr := h.Repo.ClearConnectionRateLimit(ctx, connectionID); clearErr != nil {
 			log.Warn("fallback", "rate limit clear failed", "conn", connectionID, "error", clearErr)
 		}
 		// A served request proves the account is usable again, so drop the
@@ -1603,7 +1616,25 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if isClientCanceled(ctx, fwdErr) {
 		return &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 	}
+	// The gateway's own end-to-end bound expiring is a gateway timeout, not a
+	// lost upstream socket: the client needs to know the request was cut by
+	// policy rather than by a broken connection, because only one of those is
+	// worth retrying unchanged.
+	//
+	// Local is set for the same reason a full local queue sets it: the account
+	// was never exercised, the gateway simply stopped waiting. Without it the
+	// 504 would fall into the gateway-fault branch of recordModelCooldown and
+	// park a healthy connection for a delay the operator configured.
+	if isRequestDeadline(ctx) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody(), Local: true}
+	}
 	return fwdErr
+}
+
+// requestDeadlineBody is the JSON body that travels with a 504 caused by the
+// gateway's end-to-end request bound.
+func requestDeadlineBody() []byte {
+	return []byte(`{"error":{"message":"request exceeded the gateway's total request timeout","type":"server_error","code":"gateway_timeout"}}`)
 }
 
 // isClientCanceled reports whether the client that asked for this response
@@ -1685,6 +1716,12 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 	}
 	out := body
 	var origTokens, savedTokens, savedPct int
+	if h.TokenSaver.ReaAllowEnabled() {
+		format := detectReaFormat(out, claudeNative)
+		if next, did := tokensaver.ApplyReaAllow(out, format); did {
+			out = next
+		}
+	}
 	if h.TokenSaver.RTKEnabled() {
 		rtkCfg := h.TokenSaver.RTKConfig()
 		if next, did := tokensaver.CompressMessagesWithConfig(out, rtkCfg); did {
@@ -2502,4 +2539,39 @@ func bodySpeaksClaudeMessages(body []byte) bool {
 		}
 	}
 	return false
+}
+
+func detectReaFormat(body []byte, claudeNative bool) string {
+	if claudeNative {
+		return "claude"
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "openai"
+	}
+	if _, ok := m["conversationState"]; ok {
+		return "kiro"
+	}
+	if _, ok := m["systemInstruction"]; ok {
+		return "gemini"
+	}
+	if _, ok := m["system_instruction"]; ok {
+		return "gemini"
+	}
+	if _, ok := m["instructions"]; ok {
+		if _, ok := m["input"]; ok {
+			return "openai-responses"
+		}
+	}
+	if _, ok := m["input"]; ok {
+		// responses if input is array of items
+		if arr, ok := m["input"].([]any); ok && len(arr) > 0 {
+			if it, ok := arr[0].(map[string]any); ok {
+				if _, ok := it["type"]; ok {
+					return "openai-responses"
+				}
+			}
+		}
+	}
+	return "openai"
 }

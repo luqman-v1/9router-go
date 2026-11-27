@@ -98,10 +98,17 @@ func ForwardBedrock(ctx context.Context, client *http.Client, cfg *providers.Pro
 	}
 	// Content-Length is deliberately not signed: the transport sets it itself, and signing
 	// a value the runtime may normalise differently is a needless SignatureDoesNotMatch.
+	//
+	// The operator's Custom Headers join the map *before* signing, so SigV4 covers them
+	// and the request stays valid. Applying them after the signature would send headers
+	// AWS did not authenticate, which Bedrock rejects when the header is signed by its
+	// own service-side policy.
+	baseHeaders := map[string]string{"Content-Type": "application/json", "Accept": accept}
+	baseHeaders = providers.ApplyHeaderOverrides(baseHeaders, cfg.HeaderOverrides)
 	headers, err := aws.SignRequest(aws.SignOptions{
 		Method:  http.MethodPost,
 		URL:     endpoint,
-		Headers: map[string]string{"Content-Type": "application/json", "Accept": accept},
+		Headers: baseHeaders,
 		Body:    string(payload),
 		Region:  resolved.Region,
 		Service: providers.BedrockService,

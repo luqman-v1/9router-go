@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+
 	"encoding/json"
 	"io"
 	"net/http"
@@ -27,7 +29,7 @@ func TestHandleSystemone_FieldsPayload(t *testing.T) {
 		w.Write([]byte(`{"values":{"invoice_number":{"value":"99812","confidence":0.99}}}`))
 	}))
 	defer server.Close()
-	if err := repo.CreateProviderConnectionFull("conn-cf-1", "cloudflare-ai", "apikey", "Cloudflare AI Test", &p, `{"apiKey":"cf-token","baseUrl":"`+server.URL+`","providerSpecificData":{"accountId":"acc_12345"}}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-cf-1", "cloudflare-ai", "apikey", "Cloudflare AI Test", &p, `{"apiKey":"cf-token","baseUrl":"`+server.URL+`","providerSpecificData":{"accountId":"acc_12345"}}`); err != nil {
 		t.Fatalf("seed conn: %v", err)
 	}
 	handler := newTestMediaHandler(repo)

@@ -213,3 +213,48 @@ func TestPersistentLRUStore_InvalidateByModelAndPrefix_PrefixOnlyRealDB(t *testi
 		t.Error("prefixB-model1 missing after hydration")
 	}
 }
+
+// TestPersistentLRUStore_HydrateSurfacesScanError pins that a row which cannot
+// be read is reported rather than skipped. Hydrate used to ignore the Scan
+// error and never read rows.Err(), so one corrupt row ended the loop early and
+// returned nil: the gateway booted with whatever prefix had loaded and no
+// indication that the rest of the cache was never read, which reads as a cache
+// that simply misses a lot.
+//
+// A non-numeric hitCount is the deterministic trigger. The column is declared
+// INTEGER, but SQLite's permissive affinity keeps a non-numeric string as TEXT,
+// so the row is stored and only fails when it is scanned into an int64.
+func TestPersistentLRUStore_HydrateSurfacesScanError(t *testing.T) {
+	db, cleanup := setupTestSQLite(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// A healthy row first, so hydration reads at least one entry before it
+	// reaches the corrupt one.
+	store := NewPersistentStore(db, 10, time.Hour)
+	defer store.Close()
+	if err := store.Put(ctx, "healthy", Entry{
+		Key:          "healthy",
+		Model:        "gpt-4o",
+		ResponseBody: []byte(`{"id":"ok"}`),
+		ContentType:  "application/json",
+		StoredAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("put healthy entry: %v", err)
+	}
+
+	if _, err := db.Exec(`INSERT INTO semanticCacheEntries
+		(key, model, responseBody, contentType, storedAt, hitCount, tokensSaved)
+		VALUES ('corrupt', 'gpt-4o', x'7b7d', 'application/json', ?, 'not-a-number', 0)`,
+		formatStoredAt(time.Now()),
+	); err != nil {
+		t.Fatalf("insert corrupt row: %v", err)
+	}
+
+	fresh := NewPersistentStore(db, 10, time.Hour)
+	defer fresh.Close()
+	if err := fresh.Hydrate(ctx); err == nil {
+		t.Fatal("Hydrate() error = nil, want an error from the unreadable row; a nil error here means the cache silently dropped every entry after the corrupt one")
+	}
+}

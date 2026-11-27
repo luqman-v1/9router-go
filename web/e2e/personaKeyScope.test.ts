@@ -204,4 +204,51 @@ describe('persona page, per-key scope', () => {
     },
     SLOW,
   )
+  test(
+    'offers the model catalog as suggestions on every model-id input',
+    async () => {
+      // The datalist is page-level: one list, referenced by id from the
+      // single-bind modal, the per-key editor and the resolver check. The
+      // regression this pins is a catalog that loads but never reaches the
+      // inputs — the picker would be free text again, which no other gate
+      // renders.
+      await page.goto(`${app.baseURL}/dashboard/jailbreak`)
+      await page.waitForLoadState('domcontentloaded')
+
+      const datalist = page.locator('datalist#jailbreak-model-catalog')
+      // A datalist is hidden by design, so 'attached' rather than the default
+      // 'visible': the element exists in the DOM and feeds the inputs without
+      // ever painting.
+      await datalist.waitFor({ state: 'attached', timeout: SLOW })
+      // The static catalog ships with the binary, so a fresh gateway always
+      // has at least one id; this is the readiness signal for the fetch.
+      await datalist.locator('option').first().waitFor({ state: 'attached', timeout: SLOW })
+      // Exact value, not hasText: hasText is a substring match, and the
+      // catalog also carries deepseek/deepseek-v4-flash-vision-exp.
+      expect(await datalist.locator('option[value="deepseek/deepseek-v4-flash"]').count()).toBe(1)
+
+      // Each input keeps its own label, so the three locators cannot
+      // collapse onto one field the way a positional one would.
+      const perKeyInput = page.getByLabel('Model id for this key')
+      await perKeyInput.waitFor({ timeout: SLOW })
+      expect(await perKeyInput.getAttribute('list')).toBe('jailbreak-model-catalog')
+
+      const resolverInput = page.getByLabel('Model id to resolve')
+      await resolverInput.waitFor({ timeout: SLOW })
+      expect(await resolverInput.getAttribute('list')).toBe('jailbreak-model-catalog')
+
+      // The modal input only exists while the modal is open. The Add button is
+      // addressed by its position after the "Model bindings" heading rather than
+      // by accessible name: the icon ligature pollutes the name, and a bare
+      // "Add" is not unique on this page.
+      await page
+        .getByRole('heading', { name: /^Model bindings/ })
+        .locator('xpath=following::button[1]')
+        .click()
+      const modalInput = page.getByLabel('Model / provider / combo id')
+      await modalInput.waitFor({ timeout: SLOW })
+      expect(await modalInput.getAttribute('list')).toBe('jailbreak-model-catalog')
+    },
+    SLOW,
+  )
 })

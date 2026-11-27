@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"context"
+
 	"io"
 	"time"
 
@@ -116,7 +118,7 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	pointCodexResetURLs(t, srv.URL)
 	insertResetCreditConn(t, repo, "codex-1", "codex", "oauth", codexOAuthData("tok-1", "acct-1"))
 	chat.BlockCodexConnectionUntil("codex-1", time.Now().UTC().Add(time.Hour))
-	repo.LockConnectionModel("codex-1", "gpt-6.1-sol", 3600, 1)
+	repo.LockConnectionModel(context.Background(), "codex-1", "gpt-6.1-sol", 3600, 1)
 	if !chat.IsCodexConnectionExhausted("codex-1") {
 		t.Fatal("precondition: expected codex-1 to be blocked in quota cache")
 	}
@@ -134,7 +136,7 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	if chat.IsCodexConnectionExhausted("codex-1") {
 		t.Error("expected reset-credit consume to unblock quota cache")
 	}
-	if locked, _ := repo.IsConnectionModelLocked("codex-1", "gpt-6.1-sol"); locked {
+	if locked, _ := repo.IsConnectionModelLocked(context.Background(), "codex-1", "gpt-6.1-sol"); locked {
 		t.Error("expected reset-credit consume to clear model lock")
 	}
 
@@ -176,8 +178,8 @@ func TestCodexResetCreditConsumeDoesNotUnlockOtherConnections(t *testing.T) {
 	insertResetCreditConn(t, repo, "codex-2", "codex", "oauth", codexOAuthData("tok-2", "acct-2"))
 
 	// Both connections carry a model lock and a quota backoff.
-	repo.LockConnectionModel("codex-1", "gpt-6.1-sol", 3600, 1)
-	repo.LockConnectionModel("codex-2", "gpt-6.1-sol", 3600, 1)
+	repo.LockConnectionModel(context.Background(), "codex-1", "gpt-6.1-sol", 3600, 1)
+	repo.LockConnectionModel(context.Background(), "codex-2", "gpt-6.1-sol", 3600, 1)
 	chat.BlockCodexConnectionUntil("codex-1", time.Now().UTC().Add(time.Hour))
 	chat.BlockCodexConnectionUntil("codex-2", time.Now().UTC().Add(time.Hour))
 
@@ -192,7 +194,7 @@ func TestCodexResetCreditConsumeDoesNotUnlockOtherConnections(t *testing.T) {
 	}
 
 	// codex-1: lock cleared, quota unblocked.
-	if locked, _ := repo.IsConnectionModelLocked("codex-1", "gpt-6.1-sol"); locked {
+	if locked, _ := repo.IsConnectionModelLocked(context.Background(), "codex-1", "gpt-6.1-sol"); locked {
 		t.Error("expected codex-1 model lock to be cleared")
 	}
 	if chat.IsCodexConnectionExhausted("codex-1") {
@@ -200,7 +202,7 @@ func TestCodexResetCreditConsumeDoesNotUnlockOtherConnections(t *testing.T) {
 	}
 
 	// codex-2: lock and backoff must remain untouched.
-	if locked, _ := repo.IsConnectionModelLocked("codex-2", "gpt-6.1-sol"); !locked {
+	if locked, _ := repo.IsConnectionModelLocked(context.Background(), "codex-2", "gpt-6.1-sol"); !locked {
 		t.Error("expected codex-2 model lock to remain locked")
 	}
 	if !chat.IsCodexConnectionExhausted("codex-2") {

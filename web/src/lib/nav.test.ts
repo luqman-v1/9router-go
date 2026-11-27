@@ -220,9 +220,15 @@ describe('sidebar arrangement', () => {
   })
 
   it('moves a row one place inside its own container', () => {
-    expect(moveNavEntry([], 'connections', -1).slice(0, 2)).toEqual(['connections', 'endpoint'])
+    // Declaration order is endpoint, playground, connections; moving
+    // connections up one swaps it with playground, so endpoint stays first.
+    expect(moveNavEntry([], 'connections', -1).slice(0, 3)).toEqual([
+      'endpoint',
+      'connections',
+      'playground',
+    ])
     // Past an end: unchanged, which is what a disabled arrow relies on.
-    expect(moveNavEntry([], 'endpoint', -1).slice(0, 2)).toEqual(['endpoint', 'connections'])
+    expect(moveNavEntry([], 'endpoint', -1).slice(0, 2)).toEqual(['endpoint', 'playground'])
   })
 
   it('keeps an accordion whole and its children in their own container', () => {

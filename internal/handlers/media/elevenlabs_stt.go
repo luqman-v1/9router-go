@@ -319,11 +319,11 @@ func (h *MediaHandler) tryElevenLabsSTTConn(w http.ResponseWriter, r *http.Reque
 		snippet := string(respBody[:min(300, len(respBody))])
 		log.Warn("media", "elevenlabs stt upstream error", "status", resp.StatusCode, "body", snippet)
 		if h.Repo != nil {
-			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff := h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 			if !handlerutil.IsProbeContext(r.Context()) {
 				if classification := providers.ClassifyError(resp.StatusCode, snippet, backoff, respBody); classification.ShouldFallback {
 					cooldownSec := max(classification.CooldownMs/1000, 1)
-					_ = h.Repo.LockConnectionModel(conn.ID, form.Model, cooldownSec, classification.NewBackoffLevel)
+					_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, form.Model, cooldownSec, classification.NewBackoffLevel)
 				}
 			}
 		}
@@ -336,7 +336,7 @@ func (h *MediaHandler) tryElevenLabsSTTConn(w http.ResponseWriter, r *http.Reque
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
 		// Probes read production state; they never clear it.
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, form.Model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, form.Model)
 		}
 	}
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{

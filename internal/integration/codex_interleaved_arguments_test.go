@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"fmt"
 	"net/http"
 	"reflect"
@@ -48,7 +50,7 @@ func TestCodexInterleavedArgumentsClientFormats(t *testing.T) {
 	})
 	priority := 1
 	data := fmt.Sprintf(`{"apiKey":"sk-codex","baseUrl":%q}`, up.URL+"/responses")
-	if err := env.Repo.CreateProviderConnectionFull("conn-codex-interleaved", "codex", "apikey", "Codex", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-codex-interleaved", "codex", "apikey", "Codex", &priority, data); err != nil {
 		t.Fatalf("create Codex connection: %v", err)
 	}
 	stored, err := env.Repo.GetProviderConnectionByID("conn-codex-interleaved")

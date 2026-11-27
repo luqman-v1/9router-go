@@ -67,7 +67,7 @@ func (r *Repo) MigratePlaintextCredentials(ctx context.Context, dbPath string) (
 	}
 
 	for _, c := range candidates {
-		sealed, sErr := r.sealOnWrite(c.ID, c.Data)
+		sealed, sErr := r.sealOnWrite(ctx, c.ID, c.Data)
 		if sErr != nil {
 			// One bad row must not stop the pass: the remaining connections
 			// still need sealing, and this one keeps working plaintext.

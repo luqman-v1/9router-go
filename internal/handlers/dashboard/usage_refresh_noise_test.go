@@ -161,7 +161,7 @@ func TestHandleGetConnectionUsage_RefreshesAtMostOnceWhenGrantIsDead(t *testing.
 
 	expired := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
 	payload := `{"accessToken":"dead","apiKey":"dead","refreshToken":"rt","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-dead", provider, "oauth", "Dead", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-dead", provider, "oauth", "Dead", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestHandleGetConnectionUsage_NoRefreshCallWithoutRefresher(t *testing.T) {
 
 	expired := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
 	payload := `{"accessToken":"tok","apiKey":"tok","refreshToken":"rt","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-noref", "ollama", "oauth", "NoRef", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-noref", "ollama", "oauth", "NoRef", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -257,7 +257,7 @@ func TestHandleGetConnectionUsage_SkipsRefreshForParkedDeadGrant(t *testing.T) {
 	expired := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
 	future := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 	payload := `{"accessToken":"dead","apiKey":"dead","refreshToken":"rt","expiresAt":"` + expired + `","oauthLockedUntil":"` + future + `","testStatus":"reauth_required"}`
-	if err := repo.CreateProviderConnectionFull("conn-parked", provider, "oauth", "Parked", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-parked", provider, "oauth", "Parked", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 

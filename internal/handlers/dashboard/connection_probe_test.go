@@ -101,7 +101,7 @@ func TestTestConnection_OpenAICompatibleNode(t *testing.T) {
 
 	const id = "openai-compatible-chat-probe1"
 	data := `{"apiKey":"sk-live","providerSpecificData":{"baseUrl":"https://node.example.com/v1"}}`
-	if err := repo.CreateProviderConnectionFull(id, id, "apikey", "Node", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), id, id, "apikey", "Node", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestTestConnection_OpenAICompatibleNodeRejectsBadKey(t *testing.T) {
 
 	const id = "openai-compatible-chat-probe2"
 	data := `{"apiKey":"sk-bad","providerSpecificData":{"baseUrl":"https://node.example.com/v1/"}}`
-	if err := repo.CreateProviderConnectionFull(id, id, "apikey", "Node", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), id, id, "apikey", "Node", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	stubProbeDo(t, func(string, string) (int, []byte) { return http.StatusUnauthorized, nil })
@@ -157,7 +157,7 @@ func TestTestConnection_AnthropicCompatibleNode(t *testing.T) {
 
 	const id = "anthropic-compatible-chat-probe3"
 	data := `{"apiKey":"sk-ant","providerSpecificData":{"baseUrl":"https://node.example.com/v1/messages"}}`
-	if err := repo.CreateProviderConnectionFull(id, id, "apikey", "Node", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), id, id, "apikey", "Node", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestTestConnection_CompatibleNodeFromNodeRow(t *testing.T) {
 	if _, err := repo.CreateProviderNode(nodeID, "openai-compatible", "Node 9", `{"prefix":"n9","baseUrl":"https://from-node.example.com/v1"}`); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull(nodeID, nodeID, "apikey", "Node Key", nil, `{"apiKey":"sk-live"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), nodeID, nodeID, "apikey", "Node Key", nil, `{"apiKey":"sk-live"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestTestConnection_APIKeyProviderReusesKeyProbe(t *testing.T) {
 	repo, cleanup := setupProbeTestDB(t)
 	defer cleanup()
 
-	if err := repo.CreateProviderConnectionFull("conn-openai", "openai", "apikey", "OpenAI", nil, `{"apiKey":"sk-test"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-openai", "openai", "apikey", "OpenAI", nil, `{"apiKey":"sk-test"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -253,7 +253,7 @@ func TestTestConnection_UnknownProviderIsUnsupported(t *testing.T) {
 	repo, cleanup := setupProbeTestDB(t)
 	defer cleanup()
 
-	if err := repo.CreateProviderConnectionFull("conn-unknown", "totally-unknown", "apikey", "X", nil, `{"apiKey":"k"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-unknown", "totally-unknown", "apikey", "X", nil, `{"apiKey":"k"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	_, body := postTestConnection(t, repo, "conn-unknown")
@@ -282,7 +282,7 @@ func TestTestConnection_OAuthTokenExists(t *testing.T) {
 	repo, cleanup := setupProbeTestDB(t)
 	defer cleanup()
 
-	if err := repo.CreateProviderConnectionFull("conn-cursor", "cursor", "oauth", "Cursor", nil, `{"accessToken":"cursor-token"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-cursor", "cursor", "oauth", "Cursor", nil, `{"accessToken":"cursor-token"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	_, body := postTestConnection(t, repo, "conn-cursor")
@@ -297,7 +297,7 @@ func TestTestConnection_OAuthExpiredWithoutRefreshToken(t *testing.T) {
 
 	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	payload := `{"accessToken":"old","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-claude", "claude", "oauth", "Claude", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-claude", "claude", "oauth", "Claude", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -326,7 +326,7 @@ func TestTestConnection_OAuthRefreshesExpiredToken(t *testing.T) {
 
 	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	payload := `{"accessToken":"old","refreshToken":"rt","expiresAt":"` + expired + `"}`
-	if err := repo.CreateProviderConnectionFull("conn-refresh", provider, "oauth", "Refresh", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-refresh", provider, "oauth", "Refresh", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -351,7 +351,7 @@ func TestTestConnection_GrokCLISoftFailKeepsConnectionActive(t *testing.T) {
 	repo, cleanup := setupProbeTestDB(t)
 	defer cleanup()
 
-	if err := repo.CreateProviderConnectionFull("conn-grok", "grok-cli", "oauth", "Grok", nil, `{"accessToken":"tok","expiresAt":"2099-01-01T00:00:00Z"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-grok", "grok-cli", "oauth", "Grok", nil, `{"accessToken":"tok","expiresAt":"2099-01-01T00:00:00Z"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	stubProbeDo(t, func(string, string) (int, []byte) { return http.StatusPaymentRequired, nil })
@@ -377,7 +377,7 @@ func TestTestConnection_OAuthRefreshRetryOn401(t *testing.T) {
 	defer cleanup()
 
 	const provider = "grok-cli"
-	if err := repo.CreateProviderConnectionFull("conn-grok-401", provider, "oauth", "Grok", nil,
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-grok-401", provider, "oauth", "Grok", nil,
 		`{"accessToken":"dead","refreshToken":"rt","expiresAt":"2099-01-01T00:00:00Z"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestTestConnection_ProxyPrecheckFailure(t *testing.T) {
 
 	// Unreachable local proxy: the pre-check must fail before any provider call.
 	payload := `{"apiKey":"sk-live","connectionProxyEnabled":true,"connectionProxyUrl":"http://127.0.0.1:1","providerSpecificData":{"baseUrl":"https://node.example.com/v1"}}`
-	if err := repo.CreateProviderConnectionFull("conn-proxy", "openai-compatible-chat-proxy", "apikey", "Node", nil, payload); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-proxy", "openai-compatible-chat-proxy", "apikey", "Node", nil, payload); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -551,7 +551,7 @@ func TestHandleTestConnectionReadsRequestBody(t *testing.T) {
 	repo, cleanup := setupProbeTestDB(t)
 	defer cleanup()
 
-	if err := repo.CreateProviderConnectionFull("conn-cursor2", "cursor", "oauth", "Cursor", nil, `{"accessToken":"tok"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-cursor2", "cursor", "oauth", "Cursor", nil, `{"accessToken":"tok"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 	router := setupTestRouter(repo)
@@ -568,7 +568,7 @@ func TestTestConnection_CodexProbeSendsAccountIDHeader(t *testing.T) {
 	defer cleanup()
 
 	data := `{"accessToken":"tok","expiresAt":"2099-01-01T00:00:00Z","providerSpecificData":{"chatgptAccountId":"acct-123"}}`
-	if err := repo.CreateProviderConnectionFull("conn-codex", "codex", "oauth", "Codex", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-codex", "codex", "oauth", "Codex", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -598,7 +598,7 @@ func TestTestConnection_NousOAuthUsesMintedAPIKey(t *testing.T) {
 	defer cleanup()
 
 	data := `{"accessToken":"oauth-access-token","apiKey":"sk-nous-agent-minted","expiresAt":"2099-01-01T00:00:00Z"}`
-	if err := repo.CreateProviderConnectionFull("conn-nous-oauth", "nous", "oauth", "Nous OAuth", nil, data); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-nous-oauth", "nous", "oauth", "Nous OAuth", nil, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -634,7 +634,7 @@ func TestTestConnection_OpencodeQuotaLimit(t *testing.T) {
 	defer cleanup()
 
 	connID := "conn-opencode-test"
-	if err := repo.CreateProviderConnectionFull(connID, "opencode", "apikey", "OpenCode Free", nil, `{"defaultModel":"deepseek-v4.1-flash-free"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(context.Background(), connID, "opencode", "apikey", "OpenCode Free", nil, `{"defaultModel":"deepseek-v4.1-flash-free"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 

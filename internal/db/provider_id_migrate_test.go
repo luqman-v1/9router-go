@@ -1,21 +1,24 @@
 package db
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestMigrateLegacyProviderIDs(t *testing.T) {
 	repo := openEphemeralSchemaDB(t)
 
-	if err := repo.CreateProviderConnectionFull(
+	if err := repo.CreateProviderConnectionFull(context.Background(),
 		"conn-legacy", "ollama-cloud", "apikey", "legacy@example.com", nil, "{}",
 	); err != nil {
 		t.Fatalf("seed legacy connection: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull(
+	if err := repo.CreateProviderConnectionFull(context.Background(),
 		"conn-canonical", "ollama", "apikey", "canonical@example.com", nil, "{}",
 	); err != nil {
 		t.Fatalf("seed canonical connection: %v", err)
 	}
-	if err := repo.CreateProviderConnectionFull(
+	if err := repo.CreateProviderConnectionFull(context.Background(),
 		"conn-other", "antigravity", "oauth", "other@example.com", nil, "{}",
 	); err != nil {
 		t.Fatalf("seed unrelated connection: %v", err)

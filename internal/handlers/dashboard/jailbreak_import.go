@@ -832,6 +832,9 @@ func importJailbreakDocument(repo *db.Repo, filePath, source, text string, claim
 		Source:   source,
 		Kind:     jailbreakImportKind(stem),
 		Keywords: jailbreakImportKeywords(stem, claimed),
+		// An imported preset joins the library, but it does not inject until
+		// the operator turns it on. Keep that choice explicit.
+		Enabled: new(false),
 	}
 	if err := repo.SaveJailbreakPreset(doc); err != nil {
 		return nil, err
@@ -1110,13 +1113,13 @@ func htmlToText(s string) string {
 		if end < 0 {
 			break
 		}
-		tag := strings.ToLower(s[i+1 : i+end])
+		name, closing, selfClosing := parseHTMLTag(s[i+1 : i+end])
 		i += end + 1
-		switch {
-		case strings.HasPrefix(tag, "script"), strings.HasPrefix(tag, "style"), strings.HasPrefix(tag, "head"):
+		if !closing && !selfClosing && (name == "script" || name == "style" || name == "head") {
 			skip++
 			continue
-		case tag == "/script" || tag == "/style" || tag == "/head":
+		}
+		if closing && (name == "script" || name == "style" || name == "head") {
 			if skip > 0 {
 				skip--
 			}
@@ -1125,9 +1128,7 @@ func htmlToText(s string) string {
 		if skip > 0 {
 			continue
 		}
-		if strings.HasPrefix(tag, "br") || strings.HasPrefix(tag, "/p") ||
-			strings.HasPrefix(tag, "/div") || strings.HasPrefix(tag, "/li") ||
-			strings.HasPrefix(tag, "/h") || strings.HasPrefix(tag, "/tr") {
+		if name == "br" || (closing && isBlockBreakTag(name)) {
 			b.WriteByte('\n')
 		}
 	}
@@ -1150,6 +1151,38 @@ func htmlToText(s string) string {
 		kept = append(kept, t)
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// parseHTMLTag extracts the lowercase tag name and closing/self-closing flags
+// from the inner text between '<' and '>'.
+func parseHTMLTag(raw string) (name string, closing, selfClosing bool) {
+	t := strings.TrimSpace(raw)
+	if t == "" || t[0] == '!' || t[0] == '?' {
+		return "", false, false
+	}
+	if t[0] == '/' {
+		closing = true
+		t = strings.TrimSpace(t[1:])
+	} else if strings.HasSuffix(t, "/") {
+		selfClosing = true
+		t = strings.TrimSpace(strings.TrimSuffix(t, "/"))
+	}
+	for idx := 0; idx < len(t); idx++ {
+		c := t[idx]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' {
+			return strings.ToLower(t[:idx]), closing, selfClosing
+		}
+	}
+	return strings.ToLower(t), closing, selfClosing
+}
+
+func isBlockBreakTag(name string) bool {
+	switch name {
+	case "p", "div", "li", "tr", "header", "section", "article":
+		return true
+	default:
+		return len(name) == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6'
+	}
 }
 
 // htmlUnescape decodes the entities a page is likely to carry. It is a small

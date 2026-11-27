@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"strings"
 	"testing"
@@ -139,7 +141,7 @@ func TestModelTestReachesUpstreamEvenWhenConnectionIsPreCooled(t *testing.T) {
 
 	// Pre-cool the connection
 	until := time.Now().UTC().Add(10 * time.Minute)
-	if err := env.Repo.LockConnectionRateLimit("conn-deepseek", until, 1, http.StatusTooManyRequests, "rate limited"); err != nil {
+	if err := env.Repo.LockConnectionRateLimit(context.Background(), "conn-deepseek", until, 1, http.StatusTooManyRequests, "rate limited"); err != nil {
 		t.Fatalf("pre-cooling connection: %v", err)
 	}
 
@@ -189,10 +191,10 @@ func TestModelTestFailingProbeDoesNotMutateCooldownState(t *testing.T) {
 	if until, ok := db.ConnectionCooldownUntil(conn.Data); ok {
 		t.Errorf("rateLimitedUntil should not be set by probe, got: %v", until)
 	}
-	if locked, _ := env.Repo.IsConnectionModelLocked("conn-fail", "deepseek-chat"); locked {
+	if locked, _ := env.Repo.IsConnectionModelLocked(context.Background(), "conn-fail", "deepseek-chat"); locked {
 		t.Error("modelLock should not be set by probe")
 	}
-	if level := env.Repo.GetConnectionBackoffLevel("conn-fail"); level != 0 {
+	if level := env.Repo.GetConnectionBackoffLevel(context.Background(), "conn-fail"); level != 0 {
 		t.Errorf("backoffLevel = %d, want 0", level)
 	}
 }
@@ -204,7 +206,7 @@ func TestModelTestPassingProbeDoesNotEraseProductionCooldownState(t *testing.T) 
 
 	// Pre-cool connection with specific backoffLevel
 	until := time.Now().UTC().Add(time.Hour)
-	if err := env.Repo.LockConnectionRateLimit("conn-deepseek", until, 3, http.StatusTooManyRequests, "quota exhausted"); err != nil {
+	if err := env.Repo.LockConnectionRateLimit(context.Background(), "conn-deepseek", until, 3, http.StatusTooManyRequests, "quota exhausted"); err != nil {
 		t.Fatalf("lock connection: %v", err)
 	}
 
@@ -230,7 +232,7 @@ func TestModelTestPassingProbeDoesNotEraseProductionCooldownState(t *testing.T) 
 	if !ok || gotUntil.Before(time.Now()) {
 		t.Error("probe success should not clear production rateLimitedUntil")
 	}
-	if level := env.Repo.GetConnectionBackoffLevel("conn-deepseek"); level != 3 {
+	if level := env.Repo.GetConnectionBackoffLevel(context.Background(), "conn-deepseek"); level != 3 {
 		t.Errorf("backoffLevel = %d, want 3 (probe should not reset backoffLevel)", level)
 	}
 }
@@ -257,7 +259,7 @@ func TestModelTest410DoesNotRecordDeprecationOr24HourLock(t *testing.T) {
 	}
 
 	// Verify no modelLock written on conn-410
-	if locked, _ := env.Repo.IsConnectionModelLocked("conn-410", "deepseek-chat"); locked {
+	if locked, _ := env.Repo.IsConnectionModelLocked(context.Background(), "conn-410", "deepseek-chat"); locked {
 		t.Error("probe 410 should not write modelLock")
 	}
 

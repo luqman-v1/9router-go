@@ -1,9 +1,11 @@
 package dashboard
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +32,7 @@ func seedProvidersClient(t *testing.T, repo *db.Repo) {
 		{"c-long", "trae", "oauth", "abcdefghijklmnopqrstuvwxyz0123456789ABCD", "secret-trae"},
 	}
 	for _, s := range seed {
-		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.name, s.key); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), s.id, s.provider, s.authType, s.name, s.key); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
 	}
@@ -173,10 +175,10 @@ func TestSanitizeProviderConnection_LastErrorString(t *testing.T) {
 	h := NewDashboardHandler(repo)
 
 	connID := "c-err"
-	if err := repo.CreateProviderConnection(connID, "codex", "oauth", "Codex Err", "secret-codex"); err != nil {
+	if err := repo.CreateProviderConnection(context.Background(), connID, "codex", "oauth", "Codex Err", "secret-codex"); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
-	if err := repo.LockConnectionRateLimit(connID, time.Now().Add(time.Minute), 1, 429, "Rate limit reached"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), connID, time.Now().Add(time.Minute), 1, 429, "Rate limit reached"); err != nil {
 		t.Fatalf("lock rate limit: %v", err)
 	}
 
@@ -214,7 +216,7 @@ func TestHiddenProvidersStayOutOfTheQuotaList(t *testing.T) {
 		// four hidden entries are TTS-only.
 		{"c-mmf", "mmf", "apikey"},
 	} {
-		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
 			t.Fatalf("seed %s: %v", s.provider, err)
 		}
 	}
@@ -236,6 +238,40 @@ func TestHiddenProvidersStayOutOfTheQuotaList(t *testing.T) {
 	}
 }
 
+// agy-acp shares Antigravity's Google quota RPCs (usage.go), but its own
+// connection rows are only listed when the usage allowlist names the provider.
+// Without that entry the quota tracker never renders an ACP row at all, even
+// though /api/usage/{id} can answer for it.
+func TestProvidersClientIncludesAGYACP(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	h := NewDashboardHandler(repo)
+	if err := repo.CreateProviderConnection(context.Background(), "agcpy-1", "agy-acp", "oauth", "Antigravity CLI", "sk-agcpy"); err != nil {
+		t.Fatalf("seed agy-acp: %v", err)
+	}
+
+	out := getProvidersClient(t, setupProvidersClientRouter(h), "")
+	rawOpts, _ := out["providerOptions"].([]any)
+	if !slices.Contains(rawOpts, "agy-acp") {
+		t.Errorf("providerOptions = %v, want agy-acp", rawOpts)
+	}
+	conns, _ := out["connections"].([]any)
+	var found bool
+	for _, c := range conns {
+		m, _ := c.(map[string]any)
+		if m["id"] == "agcpy-1" && m["provider"] == "agy-acp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("agy-acp connection missing from quota tracker list: %v", conns)
+	}
+	tot, _ := out["totals"].(map[string]any)
+	if tot["eligibleConnections"] != float64(1) {
+		t.Errorf("eligibleConnections = %v, want 1", tot["eligibleConnections"])
+	}
+}
+
 func TestProvidersClientFilters_CooldownAndStatus(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -243,27 +279,27 @@ func TestProvidersClientFilters_CooldownAndStatus(t *testing.T) {
 
 	ids := []string{"c-unlocked", "c-expired", "c-locked", "c-ratelimited", "c-exhausted"}
 	for _, id := range ids {
-		if err := repo.CreateProviderConnection(id, "codex", "oauth", id, "secret-"+id); err != nil {
+		if err := repo.CreateProviderConnection(context.Background(), id, "codex", "oauth", id, "secret-"+id); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
 
-	if err := repo.LockConnectionModel("c-unlocked", "gpt-5", 3600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "c-unlocked", "gpt-5", 3600, 1); err != nil {
 		t.Fatalf("lock c-unlocked: %v", err)
 	}
-	if err := repo.UnlockConnectionModel("c-unlocked", "gpt-5"); err != nil {
+	if err := repo.UnlockConnectionModel(context.Background(), "c-unlocked", "gpt-5"); err != nil {
 		t.Fatalf("unlock c-unlocked: %v", err)
 	}
-	if err := repo.LockConnectionModel("c-expired", "gpt-5", -3600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "c-expired", "gpt-5", -3600, 1); err != nil {
 		t.Fatalf("lock c-expired: %v", err)
 	}
-	if err := repo.LockConnectionModel("c-locked", "gpt-5", 3600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "c-locked", "gpt-5", 3600, 1); err != nil {
 		t.Fatalf("lock c-locked: %v", err)
 	}
-	if err := repo.LockConnectionRateLimit("c-ratelimited", time.Now().Add(time.Hour), 1, 429, "Rate limit reached"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), "c-ratelimited", time.Now().Add(time.Hour), 1, 429, "Rate limit reached"); err != nil {
 		t.Fatalf("lock c-ratelimited: %v", err)
 	}
-	if err := repo.UpdateConnectionData("c-exhausted", `{"testStatus":"unavailable","lastError":"credit insufficient balance: balance=0"}`); err != nil {
+	if err := repo.UpdateConnectionData(context.Background(), "c-exhausted", `{"testStatus":"unavailable","lastError":"credit insufficient balance: balance=0"}`); err != nil {
 		t.Fatalf("update c-exhausted: %v", err)
 	}
 

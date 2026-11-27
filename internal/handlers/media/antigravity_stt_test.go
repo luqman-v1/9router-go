@@ -22,6 +22,14 @@ func TestHandleSTT_Antigravity(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer ag-token-stt-123" {
 			t.Errorf("expected Bearer ag-token-stt-123, got %q", auth)
 		}
+		// Same identity pair as the image lane: the UA says cli/1.5.9, so
+		// X-Client-Version must carry that version too.
+		if v := r.Header.Get("X-Client-Version"); v != providers.AntigravityCLIVersion {
+			t.Errorf("X-Client-Version = %q, want %q", v, providers.AntigravityCLIVersion)
+		}
+		if ua := r.Header.Get("User-Agent"); ua != providers.AntigravityCLIUserAgent {
+			t.Errorf("User-Agent = %q, want %q", ua, providers.AntigravityCLIUserAgent)
+		}
 
 		var reqBody struct {
 			Project string `json:"project"`

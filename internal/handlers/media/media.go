@@ -293,12 +293,12 @@ func (h *MediaHandler) tryJSONMediaLaneConn(
 		snippet := string(errBody[:min(500, len(errBody))])
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
 		}
 		return &jsonMediaAttemptErr{
 			status:    resp.StatusCode,
@@ -314,7 +314,7 @@ func (h *MediaHandler) tryJSONMediaLaneConn(
 	if h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, modelInfo.Model)
 		}
 	}
 	latencyMs := time.Since(start).Milliseconds()
@@ -737,13 +737,13 @@ func (h *MediaHandler) trySystemoneConn(
 		}
 		backoff := 0
 		if conn != nil && h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		snippet := string(errBody[:min(500, len(errBody))])
 		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
 		if classification.ShouldFallback && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
 		}
 		return &mediaForwardAttemptErr{
 			status:    resp.StatusCode,
@@ -788,7 +788,7 @@ func (h *MediaHandler) trySystemoneConn(
 	if resp.StatusCode == http.StatusOK && conn != nil && h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, modelInfo.Model)
 		}
 	}
 	return nil
@@ -1005,13 +1005,13 @@ func (h *MediaHandler) tryMiMoSpeechConn(
 		}
 		backoff := 0
 		if conn != nil && h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		snippet := string(respBody[:min(500, len(respBody))])
 		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, respBody)
 		if classification.ShouldFallback && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
 		}
 		return &mediaForwardAttemptErr{status: http.StatusBadGateway, jsonMsg: msg, retryable: classification.ShouldFallback}
 	}
@@ -1036,7 +1036,7 @@ func (h *MediaHandler) tryMiMoSpeechConn(
 		if conn != nil && h.Repo != nil {
 			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 			if !handlerutil.IsProbeContext(r.Context()) {
-				_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+				_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, modelInfo.Model)
 			}
 		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]string{"audio": audio, "format": format})
@@ -1049,7 +1049,7 @@ func (h *MediaHandler) tryMiMoSpeechConn(
 	if conn != nil && h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, modelInfo.Model)
 		}
 	}
 	w.Header().Set("Content-Type", "audio/"+format)
@@ -1069,6 +1069,18 @@ func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.
 	}
 	defer r.Body.Close()
 	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/transcriptions")
+}
+
+// HandleAudioTranslations handles /v1/audio/translations.
+func (h *MediaHandler) HandleAudioTranslations(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "stt"))
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		middleware.WriteBodyReadError(w, r, err)
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/translations")
 }
 
 // HandleVideoGenerations handles /v1/videos/generations.
@@ -1729,7 +1741,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
@@ -1738,7 +1750,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
 	// multipart body (model_id / language_code / xi-api-key).
-	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
 		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
@@ -2145,7 +2157,7 @@ func (h *MediaHandler) tryMediaForwardConn(
 		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "status", resp.StatusCode, "body", string(errBody[:min(1024, len(errBody))]))
 		backoff := 0
 		if conn != nil && h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		snippet := string(errBody[:min(500, len(errBody))])
 		classification := providers.ClassifyErrorForProvider(resp.StatusCode, snippet, backoff, modelInfo.Provider, errBody)
@@ -2155,7 +2167,7 @@ func (h *MediaHandler) tryMediaForwardConn(
 		}
 		if shouldRotate && conn != nil && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
 		}
 		return &mediaForwardAttemptErr{
 			status:    resp.StatusCode,
@@ -2173,7 +2185,7 @@ func (h *MediaHandler) tryMediaForwardConn(
 		if h.Repo != nil {
 			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 			if !handlerutil.IsProbeContext(r.Context()) {
-				_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+				_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, modelInfo.Model)
 			}
 		}
 		latencyMs := time.Since(start).Milliseconds()

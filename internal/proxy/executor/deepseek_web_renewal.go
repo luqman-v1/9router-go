@@ -151,13 +151,13 @@ func deepSeekStoreCredential(ctx context.Context, repo *db.Repo, conn *models.Pr
 	if err != nil {
 		return fmt.Errorf("renew the DeepSeek credential: encode the new credential: %w", err)
 	}
-	if err := repo.UpdateConnectionData(conn.ID, string(encoded)); err != nil {
+	if err := repo.UpdateConnectionData(ctx, conn.ID, string(encoded)); err != nil {
 		return fmt.Errorf("renew the DeepSeek credential: store the new credential: %w", err)
 	}
 	// The old credential was what got the account parked; a renewal that left
 	// the park in place would keep the freshly authenticated row out of
 	// rotation for the rest of the old cooldown.
-	if err := repo.ClearConnectionRateLimit(conn.ID); err != nil {
+	if err := repo.ClearConnectionRateLimit(ctx, conn.ID); err != nil {
 		return fmt.Errorf("renew the DeepSeek credential: clear the old cooldown: %w", err)
 	}
 	if err := repo.ClearConnectionModelLocks(ctx, conn.ID); err != nil {

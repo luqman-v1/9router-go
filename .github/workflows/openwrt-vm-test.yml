@@ -1,0 +1,189 @@
+name: OpenWrt package test
+
+# Boots a real OpenWrt image in QEMU and installs the built .ipk inside it, so
+# the test exercises the parts a unit test cannot: procd as PID 1 running
+# /etc/init.d/9router-go, uci config created by postinst, the gateway binding its
+# port, and the helper scripts on a 18.06 userspace.
+#
+# Why a VM and not a chroot or docker rootfs: opkg install works in all three,
+# but only a booted kernel starts the service through procd. The service start
+# is the part that has regressed before, so it is the part that has to be tested
+# for real.
+#
+# The guest reaches the host through QEMU's user-mode network: slirp maps
+# 10.0.2.2:<port> to the host's loopback, where a local HTTP server serves the
+# built packages. No ssh keys, no shared folders.
+#
+# Two releases are booted, oldest first:
+#
+#   18.06.9  the oldest release the package supports and the strictest target:
+#            its userspace is the smallest (no base64, no pgrep), so a package
+#            that runs there runs on 19.07 and later.
+#   23.05.5  the current LTS line, where LuCI is JS-only. The Lua page needs
+#            luci-compat there and the postinst says so; the gateway, the
+#            helpers and the service start are what this boot proves.
+#
+# Both run inside one job on purpose: the package is built once, and the job
+# name stays stable so a required-status-check rule keyed to it keeps working.
+# Each image is pinned by sha256 from the official release's own sha256sums, and
+# verified before boot: everything that runs in this job trusts the image, so a
+# compromised mirror must not be able to substitute one.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref, matching ci.yml: a superseded run would otherwise keep a
+# 25-minute VM job burning runner minutes to a conclusion nobody reads.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vm-test:
+    name: OpenWrt VM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+          qemu-system-x86_64 --version | head -1
+          # /dev/kvm makes the boot ~30s instead of ~5min under TCG. The
+          # driver falls back to TCG automatically, so this is an optimization,
+          # not a requirement.
+          if [ -e /dev/kvm ]; then echo "KVM available"; else echo "no KVM, TCG fallback"; fi
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Build Web SPA
+        run: |
+          cd web
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Warm the module cache (retried)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod download all; then
+              echo "module graph cached on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::go mod download failed 3 times; the proxy is unreachable."
+              exit 1
+            fi
+            echo "attempt ${attempt} failed (transient proxy error); retrying in 5s"
+            sleep 5
+          done
+
+      # Build only what the test installs. The Makefile compiles just the Go
+      # targets the requested architecture names need, so this is one
+      # cross-build instead of four; the release job still builds all eight.
+      - name: Build the x86_64 packages
+        run: |
+          set -euo pipefail
+          make ipk IPK_ARCHES='x86_64=dist/ipk-bin/linux-amd64'
+          find dist/ipk/x86_64 -maxdepth 1 -name '*.ipk' -printf '%s %p\n' | sort
+          test "$(find dist/ipk/x86_64 -maxdepth 1 -name '*.ipk' | wc -l)" -ge 2
+
+      - name: Shell-logic harness (no VM)
+        run: |
+          set -euo pipefail
+          python3 scripts/openwrt-shell-harness.py --src openwrt
+
+      # Both images are identical for every run of this revision, so caching
+      # them keyed on their pinned digests turns a multi-minute download into a
+      # cache hit on every PR after the first.
+      - name: Cache the OpenWrt images
+        uses: actions/cache@v4
+        with:
+          path: openwrt-*-x86-64-*.img
+          key: openwrt-images-18.06.9-483a38be-23.05.5-f5c77659
+
+      - name: Download the official OpenWrt images
+        run: |
+          set -euo pipefail
+          # release|image|sha256, oldest first. The sha256 is copied from that
+          # release's own sha256sums rather than fetched at run time, so a
+          # compromised mirror cannot substitute a booted image. This file is
+          # reused verbatim by the boot step below: one list, one place to bump.
+          cat > /tmp/images.txt <<'EOF'
+          18.06.9|openwrt-18.06.9-x86-64-combined-ext4.img|483a38be503b2ce8d90bba973a46b0e89771532bb12c74ce39d9037046824311
+          23.05.5|openwrt-23.05.5-x86-64-generic-ext4-combined.img|f5c77659a33bd43cba105cf2f75e56d054fa9e0b9a73dc9f2a5bcb0e126ff7d5
+          EOF
+          while IFS='|' read -r R IMG SHA; do
+            [ -n "${R}" ] || continue
+            if [ -f "${IMG}" ]; then
+              echo "${IMG} present from cache, skipping download"
+              continue
+            fi
+            BASE="https://archive.openwrt.org/releases/${R}/targets/x86/64"
+            curl -fsSL -o "${IMG}.gz" "${BASE}/${IMG}.gz"
+            echo "${SHA}  ${IMG}.gz" | sha256sum -c -
+            # The published 23.05.5 image carries bytes after the gzip stream;
+            # gzip decompresses it correctly and then exits 2 with "trailing
+            # garbage ignored". Exit 2 is therefore tolerated when the .gz
+            # digest above already matched the release's own checksum: the
+            # bytes are exactly what OpenWrt published, and a real truncation
+            # would have failed the digest first. Any other status is fatal.
+            rc=0
+            gzip -dc "${IMG}.gz" > "${IMG}" 2>/dev/null || rc=$?
+            if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 2 ]; then
+              echo "::error::gzip failed on ${IMG}.gz (exit ${rc})"
+              exit 1
+            fi
+            if [ ! -s "${IMG}" ]; then
+              echo "::error::${IMG} is empty after decompression"
+              exit 1
+            fi
+            rm -f "${IMG}.gz"
+            ls -lh "${IMG}"
+          done < /tmp/images.txt
+
+      - name: Boot each OpenWrt image and test the package
+        run: |
+          set -euo pipefail
+          VERSION="$(cat VERSION)"
+          # /tmp/images.txt was written by the download step above and is the
+          # single source for both releases. Only release and image name are
+          # read here; the digest was already verified before decompression.
+          failed=""
+          while IFS='|' read -r R IMG _; do
+            [ -n "${R}" ] || continue
+            echo "::group::OpenWrt ${R}"
+            if python3 scripts/openwrt-vm-test.py \
+                 --image "${IMG}" \
+                 --ipk-dir dist/ipk/x86_64 \
+                 --version "${VERSION}"; then
+              echo "OpenWrt ${R}: PASS"
+            else
+              echo "OpenWrt ${R}: FAIL"
+              failed="${failed} ${R}"
+            fi
+            echo "::endgroup::"
+          done < /tmp/images.txt
+          if [ -n "${failed}" ]; then
+            echo "::error::VM test failed on:${failed}"
+            exit 1
+          fi
+        timeout-minutes: 40

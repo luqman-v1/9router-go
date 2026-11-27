@@ -261,7 +261,6 @@ func (h *OAuthHandler) HandleAuthCodeExchange(w http.ResponseWriter, r *http.Req
 		connName = cfg.display
 	}
 	connID := cfg.connPrefix + shortHash(credential)
-	now := currentTimestamp()
 	dataMap := map[string]any{"apiKey": credential, "accessToken": tokens.AccessToken}
 	if tokens.RefreshToken != "" {
 		dataMap["refreshToken"] = tokens.RefreshToken
@@ -280,28 +279,22 @@ func (h *OAuthHandler) HandleAuthCodeExchange(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal connection data")
 		return
 	}
-	if h.Repo != nil && h.Repo.RawDB() != nil {
-		var existing string
-		err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&existing)
-		if err == nil && existing != "" {
+	if h.Repo != nil {
+		existing, err := h.Repo.GetProviderConnectionByID(connID)
+		if err == nil && existing != nil {
 			if tokens.RefreshToken == "" {
 				var old map[string]any
-				if jerr := json.Unmarshal([]byte(existing), &old); jerr == nil {
+				if jerr := json.Unmarshal([]byte(existing.Data), &old); jerr == nil {
 					if rt, ok := old["refreshToken"].(string); ok && rt != "" {
 						dataMap["refreshToken"] = rt
 					}
 				}
-				dataBytes, _ = json.Marshal(dataMap)
 			}
-			_, err = h.Repo.RawDB().Exec(
-				"UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?",
-				connName, string(dataBytes), now, connID,
-			)
+			dataBytes, _ = json.Marshal(dataMap)
+			err = h.Repo.ReplaceProviderConnectionPayload(r.Context(), connID, connName, string(dataBytes))
 		} else {
-			_, err = h.Repo.RawDB().Exec(
-				"INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, 1, ?, ?, ?)",
-				connID, body.Provider, connName, string(dataBytes), now, now,
-			)
+			priority := h.Repo.ResolveDefaultPriority(r.Context(), body.Provider)
+			err = h.Repo.CreateProviderConnectionFull(r.Context(), connID, body.Provider, "oauth", connName, &priority, string(dataBytes))
 		}
 		if err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save connection: %v", err))

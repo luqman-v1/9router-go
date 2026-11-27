@@ -338,3 +338,16 @@ func splitHostPort(url string) (string, string, bool) {
 	}
 	return host, port, true
 }
+
+// PortStatus reports whether url's port already answers, and who holds it.
+// Exported so the doctor command can explain a refused start without the
+// pid-and-port probing rules living in two places.
+func PortStatus(url string) (busy bool, owner string) {
+	return portBusy(url)
+}
+
+// SplitHostPort pulls the dialable host and port out of a dashboard URL.
+// Exported for the doctor command, which names the port in its platform hint.
+func SplitHostPort(url string) (host, port string, ok bool) {
+	return splitHostPort(url)
+}

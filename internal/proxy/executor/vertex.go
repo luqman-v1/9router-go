@@ -20,6 +20,7 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -382,6 +383,11 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	}
 	if req.IsStream && httpReq.Header.Get("Accept-Encoding") == "" {
 		httpReq.Header.Set("Accept-Encoding", "identity")
+	}
+	// Operator Custom Headers are applied last so they win over the defaults
+	// above, matching ForwardOpenAI's order.
+	for k, v := range providers.ApplyHeaderOverrides(nil, req.Config.HeaderOverrides) {
+		httpReq.Header.Set(k, v)
 	}
 	client := req.Client
 	if client == nil {

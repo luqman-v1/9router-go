@@ -153,3 +153,51 @@ func TestCodebuddyHeadersCNVersion(t *testing.T) {
 		t.Errorf("intl User-Agent = %q, must NOT carry CN CLI %s", hi["User-Agent"], codebuddyCLIVersion)
 	}
 }
+
+// TestCodebuddyTelemetryHeadersCarryOverrides proves the operator's Custom
+// Headers reach the telemetry senders, not only the chat call. Before this the
+// override was applied inside ForwardOpenAI, so the chat request carried it and
+// every /v2/report POST and the aegis GET went out with the default headers.
+func TestCodebuddyTelemetryHeadersCarryOverrides(t *testing.T) {
+	c := codebuddyCredential{
+		APIKey:          "ck_test",
+		AccessToken:     "ck_test",
+		HeaderOverrides: map[string]string{"x-operator-trace": "abc123", "User-Agent": "operator-ua/9"},
+	}
+	h := codebuddyTelemetryAuthHeaders(c)
+	if h["x-operator-trace"] != "abc123" {
+		t.Errorf("x-operator-trace = %q, want abc123", h["x-operator-trace"])
+	}
+	if h["User-Agent"] != "operator-ua/9" {
+		t.Errorf("User-Agent = %q, want the operator override", h["User-Agent"])
+	}
+	// A case-variant operator entry must collapse onto the existing name, not
+	// leave both in the map where map iteration decides the winner.
+	variants := codebuddyTelemetryAuthHeaders(codebuddyCredential{
+		APIKey:          "ck_test",
+		HeaderOverrides: map[string]string{"user-agent": "lower/1"},
+	})
+	count := 0
+	for k := range variants {
+		if strings.EqualFold(k, "user-agent") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("User-Agent present %d times, want exactly 1 after a case-variant override", count)
+	}
+}
+
+// TestCredentialFromRequestCarriesOverrides is the wiring half: the hook must
+// populate the credential from req.Config, or the header never reaches the
+// sender no matter what the sender does with it.
+func TestCredentialFromRequestCarriesOverrides(t *testing.T) {
+	req := &Request{
+		APIKey: "ck_test",
+		Config: &providers.ProviderConfig{HeaderOverrides: map[string]string{"x-operator-trace": "abc123"}},
+	}
+	c := codebuddyCredentialFromRequest(req)
+	if c.HeaderOverrides["x-operator-trace"] != "abc123" {
+		t.Errorf("credential dropped the request's header overrides: %#v", c.HeaderOverrides)
+	}
+}

@@ -37,6 +37,7 @@ type TokenSaverConfig struct {
 	systemPromptPrefix      string
 	systemPromptSuffix      string
 	injectionGuardEnabled   bool
+	reaAllowEnabled         bool
 	semanticCacheEnabled    bool
 	semanticCacheTTL        int
 	semanticCacheMaxEntries int
@@ -397,6 +398,7 @@ func (c *TokenSaverConfig) UpdateFromSettings(s *db.SettingsData) {
 	c.systemPromptEnabled = s.SystemPromptEnabled
 	c.systemPromptPrefix = s.SystemPromptPrefix
 	c.systemPromptSuffix = s.SystemPromptSuffix
+	c.reaAllowEnabled = s.ReaAllowEnabled
 	c.semanticCacheEnabled = s.SemanticCacheEnabled
 	if s.SemanticCacheTTL > 0 {
 		c.semanticCacheTTL = s.SemanticCacheTTL
@@ -413,6 +415,20 @@ func (c *TokenSaverConfig) UpdateFromSettings(s *db.SettingsData) {
 	if s.HeadroomTimeoutMs > 0 {
 		c.headroomTimeoutMs = s.HeadroomTimeoutMs
 	}
+}
+
+// ReaAllowEnabled reports whether REA allow mode is on.
+func (c *TokenSaverConfig) ReaAllowEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.reaAllowEnabled
+}
+
+// SetReaAllow toggles REA allow mode.
+func (c *TokenSaverConfig) SetReaAllow(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reaAllowEnabled = v
 }
 
 // ClaudeCacheTTL returns the head-anchor prompt-cache window for Claude

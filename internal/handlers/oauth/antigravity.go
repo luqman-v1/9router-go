@@ -2,6 +2,7 @@ package oauth
 
 import (
 	json "encoding/json/v2"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -190,7 +191,7 @@ func (h *OAuthHandler) exchangeGoogleCode(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	h.storeGoogleConnection(w, tokenData, target)
+	h.storeGoogleConnection(r.Context(), w, tokenData, target)
 }
 
 // requestGoogleTokens performs the authorization-code exchange against the
@@ -253,7 +254,7 @@ func requestGoogleTokens(w http.ResponseWriter, r *http.Request, code, redirectU
 
 // storeGoogleConnection upserts the connection row for a completed Google
 // login and writes the success response.
-func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *googleTokenData, target googleLoginTarget) {
+func (h *OAuthHandler) storeGoogleConnection(ctx context.Context, w http.ResponseWriter, tokenData *googleTokenData, target googleLoginTarget) {
 	email := ""
 	if tokenData.IDToken != "" {
 		email = extractEmailFromJWT(tokenData.IDToken)
@@ -270,7 +271,6 @@ func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *g
 
 	connName := connectionDisplayName(target.provider, "", email, target.namePrefix)
 
-	now := currentTimestamp()
 	dataMap := map[string]any{
 		"apiKey":      tokenData.AccessToken,
 		"accessToken": tokenData.AccessToken,
@@ -299,12 +299,11 @@ func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *g
 		return
 	}
 
-	if h.Repo != nil && h.Repo.RawDB() != nil {
-		var existingDataStr string
-		err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&existingDataStr)
-		if err == nil && existingDataStr != "" {
+	if h.Repo != nil {
+		existing, _ := h.Repo.GetProviderConnectionByID(connID)
+		if existing != nil {
 			var existingData map[string]any
-			if err := json.Unmarshal([]byte(existingDataStr), &existingData); err == nil {
+			if jerr := json.Unmarshal([]byte(existing.Data), &existingData); jerr == nil {
 				if tokenData.RefreshToken == "" {
 					if rt, ok := existingData["refreshToken"].(string); ok && rt != "" {
 						dataMap["refreshToken"] = rt
@@ -319,16 +318,10 @@ func (h *OAuthHandler) storeGoogleConnection(w http.ResponseWriter, tokenData *g
 				}
 			}
 			dataBytes, _ = json.Marshal(dataMap)
-			_, err = h.Repo.RawDB().Exec(
-				"UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?",
-				connName, string(dataBytes), now, connID,
-			)
+			err = h.Repo.ReplaceProviderConnectionPayload(ctx, connID, connName, string(dataBytes))
 		} else {
-			priority := h.Repo.ResolveDefaultPriority(target.provider)
-			_, err = h.Repo.RawDB().Exec(
-				"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, ?, 1, ?, ?, ?)",
-				connID, target.provider, connName, priority, string(dataBytes), now, now,
-			)
+			priority := h.Repo.ResolveDefaultPriority(ctx, target.provider)
+			err = h.Repo.CreateProviderConnectionFull(ctx, connID, target.provider, "oauth", connName, &priority, string(dataBytes))
 		}
 		if err != nil {
 			log.Error("oauth", "save "+target.provider+" connection failed", "conn", connID, "error", err)

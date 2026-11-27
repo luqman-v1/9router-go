@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -128,7 +129,7 @@ func (h *OAuthHandler) HandleLeaseConnect(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	connID, err := h.createLeaseConnection(provider, name, dataDir)
+	connID, err := h.createLeaseConnection(r.Context(), provider, name, dataDir)
 	if err != nil {
 		log.Error("oauth", "lease connection create failed", "provider", provider, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to save lease connection")
@@ -168,13 +169,13 @@ func (h *OAuthHandler) findLeaseConnection(provider, dataDir string) string {
 // createLeaseConnection stores the connection. No credential is written: the
 // data column holds only the data dir the broker is resolved from, and the
 // desktop app owns the token.
-func (h *OAuthHandler) createLeaseConnection(provider, name, dataDir string) (string, error) {
+func (h *OAuthHandler) createLeaseConnection(ctx context.Context, provider, name, dataDir string) (string, error) {
 	connID := provider + "-lease-" + randomString(12)
 	data, err := json.Marshal(map[string]any{"mcodeDataDir": dataDir})
 	if err != nil {
 		return "", err
 	}
-	if err := h.Repo.CreateProviderConnectionFull(connID, provider, "mcode-lease", name, nil, string(data)); err != nil {
+	if err := h.Repo.CreateProviderConnectionFull(ctx, connID, provider, "mcode-lease", name, nil, string(data)); err != nil {
 		return "", err
 	}
 	return connID, nil

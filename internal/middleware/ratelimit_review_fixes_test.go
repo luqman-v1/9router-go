@@ -252,7 +252,7 @@ func TestEvictionSparesAdmittingKey(t *testing.T) {
 	// Fill the map to the cap, the admitting key among them.
 	for _, name := range []string{keep, "idle-1", "idle-2", "idle-3"} {
 		rl.mu.Lock()
-		rl.windowForLocked(name)
+		rl.stampListForLocked(name)
 		rl.mu.Unlock()
 	}
 

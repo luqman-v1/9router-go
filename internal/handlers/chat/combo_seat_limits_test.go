@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -222,7 +224,7 @@ func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T)
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
-	if err := db.NewRepo(database).CreateProviderConnection("custom-conn-id", "openai", "apikey", "my-openai-alias", `{"apiKey":"sk-test"}`); err != nil {
+	if err := db.NewRepo(database).CreateProviderConnection(context.Background(), "custom-conn-id", "openai", "apikey", "my-openai-alias", `{"apiKey":"sk-test"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 
@@ -301,6 +303,79 @@ func TestHandleModels_ComboCustomModeWithoutWindowFallsBackToMin(t *testing.T) {
 
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(repo)), "custom-combo")
 	wantLimit(t, "context_length", entry.ContextLength, 128000)
+}
+
+// A nested combo's own mode is resolved before its parent folds it, which is
+// what upstream does (route.js comboSeatLimits calls resolveComboContextWindow
+// on each nested result). Folding raw leaves instead made inner's "max" choice
+// invisible: outer in the default min mode advertised inner's narrowest leaf
+// even though inner promised its widest.
+func TestHandleModels_NestedComboModeResolvedBeforeParentFolds(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	// inner spans 128000 (deepseek-chat) to 1000000 (claude-sonnet-4-6) and
+	// advertises the widest. Outer holds only inner plus another 1000000 seat,
+	// so folding inner's raw leaves would publish 128000 while folding inner's
+	// resolved window publishes 1000000 — the two readings differ only when the
+	// nested mode is honoured.
+	if err := repo.SetComboStrategy("inner-max", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeMax,
+	}); err != nil {
+		t.Fatalf("set inner strategy: %v", err)
+	}
+	seeds := []struct{ id, name, models string }{
+		{"c-inner", "inner-max", `["deepseek/deepseek-chat","anthropic/claude-sonnet-4-6"]`},
+		{"c-outer", "outer-wrap", `["inner-max","openai/gpt-4.1"]`},
+	}
+	for _, s := range seeds {
+		if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, 'llm', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+			s.id, s.name, s.models); err != nil {
+			t.Fatalf("seed combo %s: %v", s.name, err)
+		}
+	}
+
+	entries := comboModelsResponse(t, NewChatHandler(repo))
+	wantLimit(t, "inner context_length", comboEntry(t, entries, "inner-max").ContextLength, 1000000)
+	wantLimit(t, "outer context_length", comboEntry(t, entries, "outer-wrap").ContextLength, 1000000)
+}
+
+// The same propagation in max mode: a parent in max mode must see the nested
+// combo's resolved window, not its widest raw leaf, so a nested combo pinned to
+// a small custom window does not widen the parent past what it can serve.
+func TestHandleModels_NestedComboCustomWindowCapsParentMax(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetComboStrategy("inner-capped", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeCustom,
+		ContextWindow:     200000,
+	}); err != nil {
+		t.Fatalf("set inner strategy: %v", err)
+	}
+	if err := repo.SetComboStrategy("outer-max", db.ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: db.ComboWindowModeMax,
+	}); err != nil {
+		t.Fatalf("set outer strategy: %v", err)
+	}
+	seeds := []struct{ id, name, models string }{
+		{"c-inner2", "inner-capped", `["deepseek/deepseek-chat","anthropic/claude-sonnet-4-6"]`},
+		{"c-outer2", "outer-max", `["inner-capped"]`},
+	}
+	for _, s := range seeds {
+		if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, 'llm', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+			s.id, s.name, s.models); err != nil {
+			t.Fatalf("seed combo %s: %v", s.name, err)
+		}
+	}
+
+	entries := comboModelsResponse(t, NewChatHandler(repo))
+	// Max over the single nested effective window (200000), not over the raw
+	// leaves (which would give 1000000).
+	wantLimit(t, "outer context_length", comboEntry(t, entries, "outer-max").ContextLength, 200000)
 }
 
 // Invalid mode strings resolve to min instead of publishing a bogus window.

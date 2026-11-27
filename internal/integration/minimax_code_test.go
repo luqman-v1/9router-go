@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"net/http"
 	"strings"
 	"testing"
@@ -18,7 +20,7 @@ func addMCodeConnection(t *testing.T, env *Env, id string, up *Upstream) {
 	t.Helper()
 	priority := 1
 	data := `{"apiKey":"mcode-access","baseUrl":"` + up.URL + `/mavis/api/v1/llm/v1/messages"}`
-	if err := env.Repo.CreateProviderConnectionFull(id, "minimax-code", "oauth", "MiniMax Code", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), id, "minimax-code", "oauth", "MiniMax Code", &priority, data); err != nil {
 		t.Fatalf("create connection %s: %v", id, err)
 	}
 	stored, err := env.Repo.GetProviderConnectionByID(id)
@@ -185,7 +187,7 @@ func TestMiniMaxCodeGlobalSiteIsRoutable(t *testing.T) {
 
 	priority := 1
 	data := `{"apiKey":"mcode-access","baseUrl":"` + upstream.URL + `/mavis/api/v1/llm/v1/messages"}`
-	if err := env.Repo.CreateProviderConnectionFull("conn-mcode-global", "minimax-code-global", "oauth", "MiniMax Code Global", &priority, data); err != nil {
+	if err := env.Repo.CreateProviderConnectionFull(context.Background(), "conn-mcode-global", "minimax-code-global", "oauth", "MiniMax Code Global", &priority, data); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
 

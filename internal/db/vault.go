@@ -128,12 +128,12 @@ func (r *Repo) GetConnectionSealed(id, field string) (wrappedDEK, ciphertext str
 // SetConnectionSealed writes one slot's sealed pair with a single UPDATE. It
 // never reads the row first: two background writers race on this table, and a
 // read-modify-write here would let one clobber the other's column.
-func (r *Repo) SetConnectionSealed(id, field, wrappedDEK, ciphertext string) error {
+func (r *Repo) SetConnectionSealed(ctx context.Context, id, field, wrappedDEK, ciphertext string) error {
 	cols, known := slotColumns[field]
 	if !known {
 		return fmt.Errorf("set connection sealed %s: unknown slot %q", id, field)
 	}
-	res, err := r.db.Exec(
+	res, err := r.db.ExecContext(ctx,
 		`UPDATE providerConnections SET `+cols[0]+` = ?, `+cols[1]+` = ?, updatedAt = ? WHERE id = ?`,
 		wrappedDEK, ciphertext, nowUTC(), id)
 	if err != nil {
@@ -220,11 +220,11 @@ func (r *Repo) VaultCounts(ctx context.Context) (sealed, plaintext int, err erro
 // ciphertext untouched. Rows whose DEK cannot be unwrapped (wrong current key,
 // tampered) are skipped and named in failures, never rewritten: a rotation
 // must not destroy the rows it cannot read.
-func (r *Repo) RewrapConnectionDEKs(v *vault.Vault, newMasterKey []byte) (rewrapped int, failures []string, err error) {
+func (r *Repo) RewrapConnectionDEKs(ctx context.Context, v *vault.Vault, newMasterKey []byte) (rewrapped int, failures []string, err error) {
 	if v == nil || !v.Enabled() {
 		return 0, nil, vault.ErrDisabled
 	}
-	rows, err := r.db.Query(`SELECT id, ` + sealedColumns + ` FROM providerConnections
+	rows, err := r.db.QueryContext(ctx, `SELECT id, `+sealedColumns+` FROM providerConnections
 		WHERE secretWrappedDEK <> '' OR tokenWrappedDEK <> '' OR refreshWrappedDEK <> ''`)
 	if err != nil {
 		return 0, nil, fmt.Errorf("rewrap connection DEKs: %w", err)
@@ -264,7 +264,7 @@ func (r *Repo) RewrapConnectionDEKs(v *vault.Vault, newMasterKey []byte) (rewrap
 			failures = append(failures, t.id+"/"+t.slot)
 			continue
 		}
-		if setErr := r.SetConnectionSealed(t.id, t.slot, wrapped, ciphertext); setErr != nil {
+		if setErr := r.SetConnectionSealed(ctx, t.id, t.slot, wrapped, ciphertext); setErr != nil {
 			failures = append(failures, t.id+"/"+t.slot)
 			continue
 		}
@@ -277,7 +277,7 @@ func (r *Repo) RewrapConnectionDEKs(v *vault.Vault, newMasterKey []byte) (rewrap
 // and into the sealed columns, returning the redacted payload to store. It
 // returns data unchanged when the vault is disabled or the payload is not a
 // JSON object, so every writer keeps one code path.
-func (r *Repo) sealConnectionData(id, data string) (string, error) {
+func (r *Repo) sealConnectionData(ctx context.Context, id, data string) (string, error) {
 	if !r.sealingEnabled() || data == "" {
 		return data, nil
 	}
@@ -314,7 +314,7 @@ func (r *Repo) sealConnectionData(id, data string) (string, error) {
 		if err != nil {
 			return data, fmt.Errorf("seal connection %s/%s: %w", id, slot, err)
 		}
-		if err = r.SetConnectionSealed(id, slot, wrapped, ciphertext); err != nil {
+		if err = r.SetConnectionSealed(ctx, id, slot, wrapped, ciphertext); err != nil {
 			return data, err
 		}
 		// Redact exactly the sealed fields
@@ -356,7 +356,7 @@ func (r *Repo) sealConnectionData(id, data string) (string, error) {
 			if err != nil {
 				return data, fmt.Errorf("seal connection %s/nested: %w", id, err)
 			}
-			if err = r.SetConnectionSealed(id, SlotSecret, wrapped, ciphertext); err != nil {
+			if err = r.SetConnectionSealed(ctx, id, SlotSecret, wrapped, ciphertext); err != nil {
 				return data, err
 			}
 			sealedAny = true
@@ -510,6 +510,6 @@ func (r *Repo) sealedPairFor(id string) (sealed [6]string) {
 // and returns the payload to store. Writers call it once the row exists, so a
 // create is insert-then-seal and an update is seal-then-write. A vault-less
 // install gets data back unchanged and issues no statement at all.
-func (r *Repo) sealOnWrite(id, data string) (string, error) {
-	return r.sealConnectionData(id, data)
+func (r *Repo) sealOnWrite(ctx context.Context, id, data string) (string, error) {
+	return r.sealConnectionData(ctx, id, data)
 }

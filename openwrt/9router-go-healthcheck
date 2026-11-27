@@ -1,0 +1,67 @@
+#!/bin/sh
+# 9router-go-healthcheck — restart a gateway that is up but not answering.
+#
+# procd respawn covers a process that exits. It does not cover one that stays
+# alive with its listener wedged: the PID is there, /health never answers, and
+# every proxied request hangs until the client times out. This closes that gap.
+#
+# Installed automatically when `option healthcheck '1'` (the default) is set:
+# postinst adds the cron entry and init.d manages it on start. It can also be
+# installed by hand with:
+#   echo '* * * * * /usr/bin/9router-go-healthcheck' >> /etc/crontabs/root
+#   /etc/init.d/cron restart
+#
+# Runs on OpenWrt 18.06: the failure counter lives in /var/run (tmpfs) rather
+# than /etc, because rewriting a file on flash every minute is a wear problem,
+# and losing the counter on reboot is the desired behaviour anyway.
+
+set -e
+
+RUN_DIR=/var/run
+FAIL_FILE="$RUN_DIR/9router-go-healthcheck.failures"
+THRESHOLD=$(uci -q get 9router-go.main.healthcheck_threshold 2>/dev/null || echo 3)
+TIMEOUT=$(uci -q get 9router-go.main.healthcheck_timeout 2>/dev/null || echo 5)
+case "$THRESHOLD" in ''|*[!0-9]*) THRESHOLD=3 ;; esac
+case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=5 ;; esac
+
+healthcheck=$(uci -q get 9router-go.main.healthcheck 2>/dev/null || echo 1)
+[ "$healthcheck" = "0" ] && exit 0
+enabled=$(uci -q get 9router-go.main.enabled 2>/dev/null || echo 1)
+[ "$enabled" = "1" ] || exit 0
+
+port=$(uci -q get 9router-go.main.port 2>/dev/null || echo 20130)
+port=${port:-20130}
+host=$(uci -q get 9router-go.main.host 2>/dev/null || true)
+case "$host" in
+	''|0.0.0.0|'::') host=127.0.0.1 ;;
+esac
+
+# With no HTTP client there is nothing to probe. Exiting 0 rather than treating
+# the missing client as a failure keeps a box without busybox wget from
+# restarting a healthy gateway once a minute.
+command -v wget >/dev/null 2>&1 || exit 0
+
+mkdir -p "$RUN_DIR"
+
+if wget -q -T "$TIMEOUT" -O /dev/null "http://$host:$port/health" 2>/dev/null; then
+	rm -f "$FAIL_FILE"
+	exit 0
+fi
+
+fails=$(cat "$FAIL_FILE" 2>/dev/null || echo 0)
+case "$fails" in
+	''|*[!0-9]*) fails=0 ;;
+esac
+fails=$((fails + 1))
+printf '%s\n' "$fails" > "$FAIL_FILE"
+
+logger -t 9router-go "health check failed ($fails/$THRESHOLD) on port $port"
+
+# One failed probe is a busy box, a slow SQLite write, a provider stall. Only a
+# run of failures means the listener is actually dead, and restarting on the
+# first one would flap a healthy gateway.
+if [ "$fails" -ge "$THRESHOLD" ]; then
+	logger -t 9router-go "restarting after $fails failed probes"
+	/etc/init.d/9router-go restart >/dev/null 2>&1 || true
+	rm -f "$FAIL_FILE"
+fi

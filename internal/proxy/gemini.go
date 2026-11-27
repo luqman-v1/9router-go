@@ -139,6 +139,13 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		headers["User-Agent"] = translator.GeminiCLIUserAgent(modelName)
 		headers["X-Goog-Api-Client"] = translator.GeminiCLIApiClient
 	}
+	// The operator's Custom Headers are applied last, after every default and
+	// after the gemini-cli identity pair, so an override always wins. This is
+	// the same order ForwardOpenAI uses (open-sse/executors/base.js:132).
+	// Without this the dashboard accepted an override for antigravity and the
+	// request went out without it, because this forwarder assembles its own
+	// header map and never reads cfg.StaticHeaders.
+	headers = providers.ApplyHeaderOverrides(headers, cfg.HeaderOverrides)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(sendBody))
 	if err != nil {
@@ -171,7 +178,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		if isBareResourceExhausted(errBody) {
 			// Translate the OpenAI body to Gemini, move the systemInstruction,
 			// then re-wrap for Antigravity.
-			geminiBody, terr := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
+			geminiBody, terr := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx), apiKeyID)
 			if terr == nil {
 				if rewritten, ok := translator.MoveSystemInstructionToContents(geminiBody); ok {
 					sessID := handlerutil.GetSessionID(ctx)

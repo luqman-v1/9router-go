@@ -242,7 +242,7 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	httpReq.Header.Set("X-Client-Name", "antigravity")
-	httpReq.Header.Set("X-Client-Version", providers.AntigravityIDEVersion)
+	httpReq.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -259,12 +259,12 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		log.Warn("media", "antigravity stt upstream error", "status", resp.StatusCode, "body", errText)
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 		}
 		err := fmt.Errorf("antigravity stt failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
 		if !classification.ShouldFallback {
@@ -310,7 +310,7 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		// Probes read production state; they never clear it (see
 		// tts_forward.go for the same reasoning on the failure path).
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, model)
 		}
 	}
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{

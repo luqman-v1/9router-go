@@ -115,6 +115,11 @@ func setupTestDB(t *testing.T) (*db.Repo, func()) {
 }
 
 func setupTestRouter(repo *db.Repo) chi.Router {
+	// Every test gets a cold models cache. The cache is package-level (the
+	// dashboard is a singleton in production), so without this two subtests
+	// that seed the same connection id would share a cached catalogue and the
+	// second would never reach its probe stub.
+	liveModelsCatalog = &modelsCatalog{entries: make(map[string]modelsCatalogEntry)}
 	return setupTestRouterWith(repo, NewDashboardHandler(repo))
 }
 

@@ -1215,21 +1215,30 @@ func (h *ChatHandler) comboSeatCapabilities(seat string, connMap ...map[string]*
 // cycles are cut: a name already on the walk contributes nothing, which bounds
 // a self-referencing combo (upstream's `visiting` set).
 func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string, settings *db.SettingsData, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
+	var cm map[string]*ModelInfo
+	if len(connMap) > 0 {
+		cm = connMap[0]
+	}
 	visiting := make(map[string]bool, 4)
 	visiting[comboName] = true
-	window, maxOut := h.minComboSeatLimits(index, index[comboName], visiting, connMap...)
+	minWindow, maxWindow, maxOut := h.comboSeatWindowRange(index, index[comboName], visiting, settings, cm)
 	cs := comboStrategyFor(settings, comboName)
-	switch cs.ContextWindowMode {
-	case db.ComboWindowModeMax:
-		return h.maxComboSeatLimits(index, comboName, visiting, connMap...)
-	case db.ComboWindowModeCustom:
-		if cs.ContextWindow > 0 {
-			return cs.ContextWindow, maxOut
-		}
-		return window, maxOut
-	default:
-		return window, maxOut
+	return resolveComboContextWindow(cs.ContextWindowMode, cs.ContextWindow, minWindow, maxWindow), maxOut
+}
+
+// resolveComboContextWindow picks the window a combo advertises from its
+// stored mode and the range its seats span. It mirrors upstream's
+// resolveComboContextWindow (src/lib/db/repos/combosRepo.js): "custom" wins
+// with a positive stored value, "max" advertises the widest seat, and
+// everything else (including an unset mode) advertises the narrowest.
+func resolveComboContextWindow(mode string, custom, minWindow, maxWindow int) int {
+	if mode == db.ComboWindowModeCustom && custom > 0 {
+		return custom
 	}
+	if mode == db.ComboWindowModeMax && maxWindow > 0 {
+		return maxWindow
+	}
+	return minWindow
 }
 
 // comboStrategyFor returns the stored strategy row for a combo, or the zero
@@ -1242,16 +1251,22 @@ func comboStrategyFor(settings *db.SettingsData, comboName string) db.ComboStrat
 	return settings.ComboStrategies[comboName]
 }
 
-// minComboSeatLimits walks one level of a combo's seat list and folds every
-// seat's result with foldTokenMinimum, so the combo advertises only what its
-// narrowest seat can serve. A seat that is itself a combo name contributes its
-// own leaves' minimum, and cycles are cut: a name already on the walk
-// contributes nothing.
-func (h *ChatHandler) minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
-	var cm map[string]*ModelInfo
-	if len(connMap) > 0 {
-		cm = connMap[0]
-	}
+// comboSeatWindowRange walks one level of a combo's seat list and returns the
+// narrowest and widest context window its seats span, plus the narrowest max
+// output. The widest window is what "max" mode advertises; the narrowest is
+// what the default mode promises.
+//
+// A seat that is itself a combo name contributes *its own effective window*,
+// not just its leaves': upstream resolves the nested combo's mode before the
+// parent folds it (route.js comboSeatLimits calls resolveComboContextWindow on
+// each nested result). Folding raw leaves instead made a nested combo's "max"
+// or "custom" choice invisible to its parent, so a parent in min mode
+// advertised the nested combo's narrowest leaf even when the nested combo
+// promised more.
+//
+// Cycles are cut: a name already on the walk contributes nothing, which bounds
+// a self-referencing combo (upstream's `visiting` set).
+func (h *ChatHandler) comboSeatWindowRange(index comboIndex, seats []string, visiting map[string]bool, settings *db.SettingsData, cm map[string]*ModelInfo) (minWindow, maxWindow, maxOutput int) {
 	for _, seat := range seats {
 		if !strings.Contains(seat, "/") {
 			nested, ok := index[seat]
@@ -1259,73 +1274,38 @@ func (h *ChatHandler) minComboSeatLimits(index comboIndex, seats []string, visit
 				continue
 			}
 			visiting[seat] = true
-			nestedWindow, nestedMax := h.minComboSeatLimits(index, nested, visiting, cm)
+			nestedMin, nestedMax, nestedOut := h.comboSeatWindowRange(index, nested, visiting, settings, cm)
 			delete(visiting, seat)
-			contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, nestedWindow, nestedMax)
+			ncs := comboStrategyFor(settings, seat)
+			effective := resolveComboContextWindow(ncs.ContextWindowMode, ncs.ContextWindow, nestedMin, nestedMax)
+			minWindow, maxWindow, maxOutput = foldWindowRange(minWindow, maxWindow, maxOutput, effective, nestedOut)
 			continue
 		}
 		if isNonLLMComboSeat(seat) {
 			continue
 		}
 		caps := h.comboSeatCapabilities(seat, cm)
-		contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
+		minWindow, maxWindow, maxOutput = foldWindowRange(minWindow, maxWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
 	}
-	return contextWindow, maxOutput
+	return minWindow, maxWindow, maxOutput
 }
 
-// maxComboSeatLimits folds every seat with foldTokenMaximum, so a fallback
-// chain advertises its widest window: a seat the chain can fail past still
-// counts toward what a long-prompt turn could run on.
-func (h *ChatHandler) maxComboSeatLimits(index comboIndex, comboName string, visiting map[string]bool, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
-	var cm map[string]*ModelInfo
-	if len(connMap) > 0 {
-		cm = connMap[0]
-	}
-	seats := index[comboName]
-	for _, seat := range seats {
-		if !strings.Contains(seat, "/") {
-			_, ok := index[seat]
-			if !ok || visiting[seat] {
-				continue
-			}
-			visiting[seat] = true
-			nestedWindow, nestedMax := h.maxComboSeatLimits(index, seat, visiting, cm)
-			delete(visiting, seat)
-			contextWindow, maxOutput = foldTokenMaximum(contextWindow, maxOutput, nestedWindow, nestedMax)
-			continue
+// foldWindowRange widens the observed window range with one candidate and
+// narrows max output to the smallest positive value. Zero means "unknown", so
+// it never becomes a bound and never suppresses a value another seat knows.
+func foldWindowRange(minWindow, maxWindow, maxOutput, candidateWindow, candidateMax int) (int, int, int) {
+	if candidateWindow > 0 {
+		if minWindow == 0 || candidateWindow < minWindow {
+			minWindow = candidateWindow
 		}
-		if isNonLLMComboSeat(seat) {
-			continue
+		if candidateWindow > maxWindow {
+			maxWindow = candidateWindow
 		}
-		caps := h.comboSeatCapabilities(seat, cm)
-		contextWindow, maxOutput = foldTokenMaximum(contextWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
 	}
-	return contextWindow, maxOutput
-}
-
-// foldTokenMinimum keeps the smallest positive value seen for each limit. Zero
-// means "unknown", so it never becomes the minimum and never suppresses a
-// value another seat does know.
-func foldTokenMinimum(currentWindow, currentMax, candidateWindow, candidateMax int) (int, int) {
-	if candidateWindow > 0 && (currentWindow == 0 || candidateWindow < currentWindow) {
-		currentWindow = candidateWindow
+	if candidateMax > 0 && (maxOutput == 0 || candidateMax < maxOutput) {
+		maxOutput = candidateMax
 	}
-	if candidateMax > 0 && (currentMax == 0 || candidateMax < currentMax) {
-		currentMax = candidateMax
-	}
-	return currentWindow, currentMax
-}
-
-// foldTokenMaximum keeps the largest positive value seen for each limit. Zero
-// means "unknown" and never wins.
-func foldTokenMaximum(currentWindow, currentMax, candidateWindow, candidateMax int) (int, int) {
-	if candidateWindow > 0 && (currentWindow == 0 || candidateWindow > currentWindow) {
-		currentWindow = candidateWindow
-	}
-	if candidateMax > 0 && (currentMax == 0 || candidateMax > currentMax) {
-		currentMax = candidateMax
-	}
-	return currentWindow, currentMax
+	return minWindow, maxWindow, maxOutput
 }
 
 // appendCombos lists combo names with the union of their leaf capabilities,

@@ -488,10 +488,14 @@ func validateProviderThinking(v any) error {
 // unlimited while the rate limiter stays on.
 var numericSettingKeys = []string{
 	"defaultRpm", "defaultTpm", "defaultConcurrency", "rateWindowSeconds",
+	"perIpRpm", "perIpRph", "perIpRpd", "perIpConcurrency",
 	"retentionDays", "maxRequestRecords", "usageHistoryRetentionDays",
 	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
 	"semanticCacheTTL", "semanticCacheMaxEntries",
 	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit",
+	// db owns the key name; the validator is the third reader, not a fourth
+	// literal.
+	db.TotalRequestTimeoutSetting,
 }
 
 func validateNumericSettings(updates map[string]any) error {

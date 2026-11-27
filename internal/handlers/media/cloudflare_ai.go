@@ -263,7 +263,7 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 				return nil
 			}
 			if h.Repo != nil && conn != nil && !handlerutil.IsProbeContext(r.Context()) {
-				_ = h.Repo.LockConnectionRateLimit(
+				_ = h.Repo.LockConnectionRateLimit(r.Context(),
 					conn.ID,
 					cloudflareCooldownUntil(time.Now().UTC(), failure.quota),
 					1,

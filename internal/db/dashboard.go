@@ -39,17 +39,17 @@ func (r *Repo) UpdateProviderConnection(id string, name string, priority *int, i
 // Background writers (token refresh, node sync, probe persist) must use this:
 // a full-row update writes back the name/isActive/priority they read before the
 // write, which reverts a reorder or a toggle the user just performed.
-func (r *Repo) UpdateConnectionData(id string, data string) error {
+func (r *Repo) UpdateConnectionData(ctx context.Context, id string, data string) error {
 	// Seal before the data write so a credential is never briefly readable in
 	// `data` after this call returns. A payload with no whitelisted credential
 	// (a background writer touching only expiresAt) is stored verbatim and the
 	// existing sealed slots are left alone.
-	sealed, err := r.sealOnWrite(id, data)
+	sealed, err := r.sealOnWrite(ctx, id, data)
 	if err != nil {
 		return err
 	}
 	now := nowUTC()
-	if _, err = r.db.Exec(
+	if _, err = r.db.ExecContext(ctx,
 		`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`,
 		sealed, now, id,
 	); err != nil {
@@ -368,9 +368,17 @@ func (r *Repo) UpdateApiKeyUsage(keyID string) error {
 
 // SetApiKeyRateLimit updates rate limit columns for an API key.
 func (r *Repo) SetApiKeyRateLimit(keyID string, rpm, tpm, concurrency int) error {
+	return r.SetApiKeyRateWindows(keyID, rpm, tpm, 0, 0, concurrency)
+}
+
+// SetApiKeyRateWindows updates every request-rate column, including the hourly
+// and daily ceilings. It exists beside SetApiKeyRateLimit so a caller that only
+// knows about a minute cap keeps working, while the policy editor writes the
+// full set and cannot leave a cleared daily limit stale.
+func (r *Repo) SetApiKeyRateWindows(keyID string, rpm, tpm, rph, rpd, concurrency int) error {
 	_, err := r.db.Exec(
-		`UPDATE apiKeys SET rateLimitRPM = ?, rateLimitTPM = ?, rateLimitConcurrency = ? WHERE id = ?`,
-		rpm, tpm, concurrency, keyID,
+		`UPDATE apiKeys SET rateLimitRPM = ?, rateLimitTPM = ?, rateLimitRPH = ?, rateLimitRPD = ?, rateLimitConcurrency = ? WHERE id = ?`,
+		rpm, tpm, rph, rpd, concurrency, keyID,
 	)
 	if err != nil {
 		return fmt.Errorf("set api key rate limit %s: %w", keyID, err)

@@ -17,6 +17,8 @@
   // 0 rather than blank: the operator sees "no limit" without guessing.
   let rpm = $state(apiKey.rateLimitRpm ?? 0)
   let tpm = $state(apiKey.rateLimitTpm ?? 0)
+  let rph = $state(apiKey.rateLimitRph ?? 0)
+  let rpd = $state(apiKey.rateLimitRpd ?? 0)
   let concurrency = $state(apiKey.rateLimitConcurrency ?? 0)
   // The lifetime budget and the concurrency wait are the two governance columns
   // the modal gained alongside the per-window rates. Both read 0 as "unset":
@@ -317,6 +319,8 @@
       }
       const policy: APIKeyPolicy = {
         rateLimitRpm: nonNegative(rpm),
+        rateLimitRph: nonNegative(rph),
+        rateLimitRpd: nonNegative(rpd),
         rateLimitTpm: nonNegative(tpm),
         rateLimitConcurrency: nonNegative(concurrency),
         tokenQuota: quota,
@@ -480,6 +484,32 @@
               min="0"
               step="1"
               bind:value={tpm}
+              class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
+            />
+          </div>
+          <div>
+            <label for="pol-rph" class="block font-semibold text-text-muted mb-1">
+              Requests / hour
+            </label>
+            <input
+              id="pol-rph"
+              type="number"
+              min="0"
+              step="1"
+              bind:value={rph}
+              class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
+            />
+          </div>
+          <div>
+            <label for="pol-rpd" class="block font-semibold text-text-muted mb-1">
+              Requests / day
+            </label>
+            <input
+              id="pol-rpd"
+              type="number"
+              min="0"
+              step="1"
+              bind:value={rpd}
               class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
             />
           </div>

@@ -51,7 +51,7 @@ func TestNVIDIModelScopedDegradedDoesNotLockAPIKey(t *testing.T) {
 		t.Fatal("expected the degraded upstream error to surface")
 	}
 
-	if locked, err := h.Repo.IsConnectionModelLocked("conn-nv-deg", "nvidia/nemotron-3-ultra-550b-a55b"); err != nil || !locked {
+	if locked, err := h.Repo.IsConnectionModelLocked(context.Background(), "conn-nv-deg", "nvidia/nemotron-3-ultra-550b-a55b"); err != nil || !locked {
 		t.Errorf("degraded model must be locked, err=%v locked=%v", err, locked)
 	}
 
@@ -96,7 +96,7 @@ func TestNVIDIModelScopedDegradedInComboLocksModelOnly(t *testing.T) {
 	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-nv-combo",
 		"nvidia", "nvidia/nemotron-3-ultra-550b-a55b", ue)
 
-	if locked, err := repo.IsConnectionModelLocked("conn-nv-combo", "nvidia/nemotron-3-ultra-550b-a55b"); err != nil || !locked {
+	if locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-nv-combo", "nvidia/nemotron-3-ultra-550b-a55b"); err != nil || !locked {
 		t.Errorf("degraded model must be locked, err=%v locked=%v", err, locked)
 	}
 	var rawData string

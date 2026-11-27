@@ -196,12 +196,12 @@ func (h *MediaHandler) tryElevenLabsSoundConn(
 		log.Warn("media", "elevenlabs sound-generation upstream error", "status", resp.StatusCode, "body", snippet)
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, snippet, backoff, errBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 		}
 		return &elevenLabsSoundAttemptErr{
 			status:    resp.StatusCode,
@@ -219,7 +219,7 @@ func (h *MediaHandler) tryElevenLabsSoundConn(
 	if h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, model)
 		}
 	}
 	latencyMs := time.Since(start).Milliseconds()
