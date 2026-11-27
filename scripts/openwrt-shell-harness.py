@@ -204,6 +204,19 @@ def sh_path(path):
     return path.replace(os.sep, "/").replace("\\", "/")
 
 
+def shquote(value):
+    """Return `value` as a single-quoted shell literal.
+
+    Every CFG injection site passes through this, so a value carrying a space,
+    a single quote or a `$` reaches the init script byte-exact instead of being
+    re-interpreted by the shell. The empty string becomes `''`, which keeps a
+    value visibly set in the config file (the init's `config_get … ''` default
+    is only consulted when the option is absent, not when it is present and
+    empty).
+    """
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def run(cmd, env, cwd=None):
     return subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True)
 
@@ -457,6 +470,7 @@ def main():
         run([sh, hc_path], env2)
         case("a healthy probe clears the counter", not os.path.exists(counter),
              "counter file still present")
+<<<<<<< HEAD
         # 7b. a deliberately stopped service is not a failure. backup stops
         # the gateway to copy the database; counting that as a failed probe
         # could reach the threshold and restart it mid-copy.
@@ -594,6 +608,55 @@ def main():
              os.path.exists(db_file + "-wal")
              and open(db_file + "-wal").read() == "frames-from-the-backup\n",
              "wal: %r" % (os.path.exists(db_file + "-wal"),))
+        # 9. the dashboard password reaches procd as INITIAL_PASSWORD, and an
+        # empty one exports nothing. The gateway has no built-in password: with
+        # none set, a fresh install refuses a remote login until the password is
+        # changed on the router itself, which is the right default but leaves an
+        # operator who reaches the dashboard over the LAN stuck without a shell.
+        # Self-contained recorder: this block defines its own procd_set_param so
+        # it shares no line with the other harness cases.
+        def start_pw(pw):
+            captured = os.path.join(tmp, "procd_pw.log")
+            open(captured, "w").close()
+            injected = (
+                "CFG_enabled=1\n"
+                "CFG_port=20130\n"
+                "CFG_host=''\n"
+                "CFG_data_dir=" + sh_path(data_dir) + "\n"
+                "CFG_auto_update=0\n"
+                "CFG_jwt_secret=''\n"
+                "CFG_log_level=info\n"
+                "CFG_healthcheck=0\n"
+                "CFG_open_lan=0\n"
+                "CFG_initial_password=" + shquote(pw) + "\n"
+            )
+            recorder = ("procd_set_param() { printf '%s\\n' \"$*\" >> \""
+                        + sh_path(captured) + "\"; }\n")
+            path = os.path.join(tmp, "start_pw.sh")
+            write(path, prelude + recorder + injected + retarget(body) + "\nstart_service\n")
+            r = run([sh, path], env, cwd=tmp)
+            r.procd = open(captured).read()
+            return r
+
+        def contains_pw(procd, pw):
+            """True when `procd_set_param env INITIAL_PASSWORD=<pw>` appears."""
+            return ("env INITIAL_PASSWORD=" + pw) in procd
+
+        # An operator-chosen password may contain anything: a space, a single
+        # quote, a `$` that the shell would otherwise expand. The injected
+        # option goes through `shquote` so each value reaches the init script
+        # byte-exact, and the case pins that.
+        for pw in ("s3cret-pass", "has space", "has'single", "has$dollar", "has\"quote"):
+            r = start_pw(pw)
+            case("initial_password %r becomes INITIAL_PASSWORD" % pw,
+                 contains_pw(r.procd, pw),
+                 "procd params: %r" % (r.procd,))
+        r = start_pw("")
+        case("empty initial_password exports nothing",
+             "INITIAL_PASSWORD" not in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("empty initial_password does not abort start", r.returncode == 0,
+             "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

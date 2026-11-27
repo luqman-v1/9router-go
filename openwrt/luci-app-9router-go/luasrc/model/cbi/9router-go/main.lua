@@ -43,6 +43,11 @@ o.rmempty = false
 
 o = s:option(Flag, "auto_update", translate("Self-update"),
 	translate("Let the gateway replace its own binary under the data directory. Leave off to update through opkg only."))
+o = s:option(Value, "initial_password", translate("Dashboard password"),
+	translate("Password for the first dashboard login. Without it a fresh install refuses remote logins until the password is changed on the router itself. Stored in plain text in /etc/config; change it from the dashboard and clear this field afterwards."))
+o.datatype = "string"
+o.password = true
+o.placeholder = translate("change on first login")
 
 o = s:option(Flag, "healthcheck", translate("Health check"),
 	translate("Probe /health once a minute and restart the gateway after a run of failures."))
