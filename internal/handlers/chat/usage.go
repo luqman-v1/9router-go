@@ -163,6 +163,10 @@ func (h *ChatHandler) LogFailure(
 			failurePayload["attempts"] = attempts
 		}
 	}
+	// A failed request is the one an operator re-reads most, and it is written
+	// to disk like any other row: mask the pasted credentials out of it too.
+	failurePayload = redactStoredSecrets(failurePayload)
+
 	reqData, marshalErr := json.Marshal(failurePayload)
 	if marshalErr != nil {
 		return
@@ -491,6 +495,9 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 			detailPayload["attempts"] = attempts
 		}
 	}
+	// The row is written to disk, so a credential the client pasted is masked
+	// out of it before the marshal.
+	detailPayload = redactStoredSecrets(detailPayload)
 	reqData, err := json.Marshal(detailPayload)
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
