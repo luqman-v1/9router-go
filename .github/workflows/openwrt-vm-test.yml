@@ -1,23 +1,33 @@
 name: OpenWrt package test
 
-# Boots a real OpenWrt 18.06.9 x86-64 image in QEMU and installs the built
-# .ipk inside it, so the test exercises the parts a unit test cannot: procd as
-# PID 1 running /etc/init.d/9router-go, uci config created by postinst, the
-# gateway binding its port, and the helper scripts on a 18.06 userspace.
+# Boots a real OpenWrt image in QEMU and installs the built .ipk inside it, so
+# the test exercises the parts a unit test cannot: procd as PID 1 running
+# /etc/init.d/9router-go, uci config created by postinst, the gateway binding its
+# port, and the helper scripts on a 18.06 userspace.
 #
 # Why a VM and not a chroot or docker rootfs: opkg install works in all three,
 # but only a booted kernel starts the service through procd. The service start
-# is the part that has regressed before, so it is the part that has to be
-# tested for real.
+# is the part that has regressed before, so it is the part that has to be tested
+# for real.
 #
 # The guest reaches the host through QEMU's user-mode network: slirp maps
 # 10.0.2.2:<port> to the host's loopback, where a local HTTP server serves the
 # built packages. No ssh keys, no shared folders.
 #
-# The image is the official 18.06.9 release (the oldest release this package
-# supports), verified against the published sha256sum before boot. 18.06 is
-# the strictest target: its userspace is the smallest (no base64, no pgrep),
-# so a package that runs there runs on 19.07 and later.
+# Two releases are booted, oldest first:
+#
+#   18.06.9  the oldest release the package supports and the strictest target:
+#            its userspace is the smallest (no base64, no pgrep), so a package
+#            that runs there runs on 19.07 and later.
+#   23.05.5  the current LTS line, where LuCI is JS-only. The Lua page needs
+#            luci-compat there and the postinst says so; the gateway, the
+#            helpers and the service start are what this boot proves.
+#
+# Both run inside one job on purpose: the package is built once, and the job
+# name stays stable so a required-status-check rule keyed to it keeps working.
+# Each image is pinned by sha256 from the official release's own sha256sums, and
+# verified before boot: everything that runs in this job trusts the image, so a
+# compromised mirror must not be able to substitute one.
 
 on:
   push:
@@ -35,12 +45,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  OPENWRT_RELEASE: 18.06.9
-
 jobs:
   vm-test:
-    name: OpenWrt 18.06 VM
+    name: OpenWrt VM
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,8 +96,8 @@ jobs:
             sleep 5
           done
 
-      # Build only what the test installs. The Makefile now compiles just the
-      # Go targets the requested architecture names need, so this is one
+      # Build only what the test installs. The Makefile compiles just the Go
+      # targets the requested architecture names need, so this is one
       # cross-build instead of four; the release job still builds all eight.
       - name: Build the x86_64 packages
         run: |
@@ -104,42 +111,63 @@ jobs:
           set -euo pipefail
           python3 scripts/openwrt-shell-harness.py --src openwrt
 
-      # The 273 MB image is identical for every run: it is the official
-      # 18.06.9 release, pinned by sha256. Caching it keyed on that hash turns
-      # a multi-minute download into a cache hit on every PR after the first.
-      - name: Cache the OpenWrt image
+      # Both images are identical for every run of this revision, so caching
+      # them keyed on their pinned digests turns a multi-minute download into a
+      # cache hit on every PR after the first.
+      - name: Cache the OpenWrt images
         uses: actions/cache@v4
         with:
-          path: openwrt-${{ env.OPENWRT_RELEASE }}-x86-64-combined-ext4.img
-          key: openwrt-${{ env.OPENWRT_RELEASE }}-x86-64-combined-ext4-483a38be503b2ce8
+          path: openwrt-*-x86-64-*.img
+          key: openwrt-images-18.06.9-483a38be-23.05.5-f5c77659
 
-      - name: Download the official OpenWrt image
+      - name: Download the official OpenWrt images
         run: |
           set -euo pipefail
-          R="${OPENWRT_RELEASE}"
-          IMG="openwrt-${R}-x86-64-combined-ext4.img"
-          # A cache restore (step above) leaves the decompressed image behind;
-          # only fetch when it is absent.
-          if [ -f "${IMG}" ]; then
-            echo "image present from cache, skipping download"
-            exit 0
-          fi
-          BASE="https://archive.openwrt.org/releases/${R}/targets/x86/64"
-          SHA="483a38be503b2ce8d90bba973a46b0e89771532bb12c74ce39d9037046824311"
-          # The sha256sum is pinned rather than fetched from the same host:
-          # a compromised mirror must not be able to substitute a booted image,
-          # because everything that runs in this job trusts it.
-          curl -fsSL -o "${IMG}.gz" "${BASE}/${IMG}.gz"
-          echo "${SHA}  ${IMG}.gz" | sha256sum -c -
-          gunzip -f "${IMG}.gz"
-          ls -lh "${IMG}"
+          # release|image|sha256, oldest first. The sha256 comes from that
+          # release's own sha256sums, copied here rather than fetched at run
+          # time so a compromised mirror cannot substitute a booted image.
+          cat > /tmp/images.txt <<'EOF'
+          18.06.9|openwrt-18.06.9-x86-64-combined-ext4.img|483a38be503b2ce8d90bba973a46b0e89771532bb12c74ce39d9037046824311
+          23.05.5|openwrt-23.05.5-x86-64-generic-ext4-combined.img|f5c77659a33bd43cba105cf2f75e56d054fa9e0b9a73dc9f2a5bcb0e126ff7d5
+          EOF
+          while IFS='|' read -r R IMG SHA; do
+            [ -n "${R}" ] || continue
+            if [ -f "${IMG}" ]; then
+              echo "${IMG} present from cache, skipping download"
+              continue
+            fi
+            BASE="https://archive.openwrt.org/releases/${R}/targets/x86/64"
+            curl -fsSL -o "${IMG}.gz" "${BASE}/${IMG}.gz"
+            echo "${SHA}  ${IMG}.gz" | sha256sum -c -
+            gunzip -f "${IMG}.gz"
+            ls -lh "${IMG}"
+          done < /tmp/images.txt
 
-      - name: Boot OpenWrt and test the package
+      - name: Boot each OpenWrt image and test the package
         run: |
           set -euo pipefail
           VERSION="$(cat VERSION)"
-          python3 scripts/openwrt-vm-test.py \
-            --image "openwrt-${OPENWRT_RELEASE}-x86-64-combined-ext4.img" \
-            --ipk-dir dist/ipk/x86_64 \
-            --version "${VERSION}"
-        timeout-minutes: 25
+          cat > /tmp/images.txt <<'EOF'
+          18.06.9|openwrt-18.06.9-x86-64-combined-ext4.img|483a38be503b2ce8d90bba973a46b0e89771532bb12c74ce39d9037046824311
+          23.05.5|openwrt-23.05.5-x86-64-generic-ext4-combined.img|f5c77659a33bd43cba105cf2f75e56d054fa9e0b9a73dc9f2a5bcb0e126ff7d5
+          EOF
+          failed=""
+          while IFS='|' read -r R IMG SHA; do
+            [ -n "${R}" ] || continue
+            echo "::group::OpenWrt ${R}"
+            if python3 scripts/openwrt-vm-test.py \
+                 --image "${IMG}" \
+                 --ipk-dir dist/ipk/x86_64 \
+                 --version "${VERSION}"; then
+              echo "OpenWrt ${R}: PASS"
+            else
+              echo "OpenWrt ${R}: FAIL"
+              failed="${failed} ${R}"
+            fi
+            echo "::endgroup::"
+          done < /tmp/images.txt
+          if [ -n "${failed}" ]; then
+            echo "::error::VM test failed on:${failed}"
+            exit 1
+          fi
+        timeout-minutes: 40
