@@ -1741,7 +1741,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions" || endpoint == "/v1/audio/translations" || endpoint == "/audio/translations") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
@@ -1750,7 +1750,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
 	// multipart body (model_id / language_code / xi-api-key).
-	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions" || endpoint == "/v1/audio/translations" || endpoint == "/audio/translations") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
 		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
@@ -1968,12 +1968,6 @@ func (h *MediaHandler) tryMediaForwardConn(
 			targetURL = providerCfg.TTSURL
 		} else {
 			targetURL = strings.TrimSuffix(baseURL, "/v1") + "/v1/audio/speech"
-		}
-	case "/v1/audio/translations", "/audio/translations":
-		if !hasCustomBaseURL && providerCfg.STTURL != "" {
-			targetURL = providerCfg.STTURL
-		} else {
-			targetURL = strings.TrimSuffix(baseURL, "/v1") + "/v1/audio/translations"
 		}
 	case "/v1/audio/transcriptions", "/audio/transcriptions":
 		if !hasCustomBaseURL && providerCfg.STTURL != "" {
@@ -2306,8 +2300,6 @@ func buildSystemoneURL(override, cfgURL, cfgPath string) string {
 
 // forwardGeminiEmbeddingDimensions maps incoming OpenAI "dimensions" to
 // Google Gemini's "outputDimensionality" property (upstream decolua/9router#1366 parity).
-// encoding_format (base64/float) is also forwarded as-is since Gemini OpenAI-compatible
-// endpoints accept it.
 func forwardGeminiEmbeddingDimensions(body []byte) []byte {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -2330,9 +2322,6 @@ func forwardGeminiEmbeddingDimensions(body []byte) []byte {
 		return body
 	}
 	payload["outputDimensionality"] = dims
-	// encoding_format is optional on the wire; forward whatever the client sent.
-	// It lives in the same payload object as dimensions, so it survives the
-	// Unmarshal→re-Marshal round-trip unless explicitly dropped here.
 	if updated, err := json.Marshal(payload); err == nil {
 		return updated
 	}

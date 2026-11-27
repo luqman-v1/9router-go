@@ -540,6 +540,11 @@ func TestEmbeddings_ForwardGeminiOutputDimensions(t *testing.T) {
 	}
 }
 
+// TestEmbeddings_ForwardGeminiEncodingFormat pins a contract, not a fix: the
+// Gemini transform unmarshals the body into a map, adds outputDimensionality and
+// re-marshals, so every client field survives by construction. The test exists
+// because that construction is easy to break (a struct-based rebuild would drop
+// encoding_format silently, and a base64 client would then get float arrays).
 func TestEmbeddings_ForwardGeminiEncodingFormat(t *testing.T) {
 	var mu sync.Mutex
 	var captured map[string]any
@@ -1025,10 +1030,11 @@ func TestHandleEmbeddings_ConnectionRotation(t *testing.T) {
 	})
 }
 
-// TestHandleEmbeddings_ForwardsEncodingFormatAndDimensions verifies that for a
-// non-Gemini (OpenAI-compatible) provider the client's encoding_format and
-// dimensions reach upstream unchanged: UpdateModelInBody only rewrites "model",
-// so a field dropped here would mean a transformation pass discarded it.
+// TestHandleEmbeddings_ForwardsEncodingFormatAndDimensions pins the same
+// contract on the generic lane: UpdateModelInBody only rewrites "model", so both
+// fields reach an OpenAI-compatible upstream unchanged. Asserting the body the
+// upstream received is what makes it meaningful; a status-only check would pass
+// even if the gateway sent nothing.
 func TestHandleEmbeddings_ForwardsEncodingFormatAndDimensions(t *testing.T) {
 	var mu sync.Mutex
 	var captured map[string]any
