@@ -215,6 +215,16 @@ func applyProviderOverrides(s *SettingsData, raw map[string]any) {
 		if sb, ok := entry["seatBudgetMs"].(float64); ok && sb >= 0 {
 			ov.SeatBudgetMs = int(sb)
 		}
+		// A pointer keeps "not configured" distinct from "disabled here": 0 is
+		// a real value that turns the cap off for this provider, so it cannot
+		// be the zero value of the field.
+		if mc, ok := entry["comboMemberAttemptCap"].(float64); ok {
+			v := int(mc)
+			if v < 0 {
+				v = 0
+			}
+			ov.ComboMemberAttemptCap = &v
+		}
 		s.ProviderOverrides[k] = ov
 	}
 }

@@ -245,6 +245,11 @@
   }
   let stickyRoundRobinLimit = $state(3)
   let comboStrategy = $state('first-model')
+  // 0 means off: the member walk keeps its exhaustive behaviour until an
+  // operator asks for a bound.
+  let comboMemberAttemptCap = $state(0)
+  // Milliseconds; 0 means off, so an upgrade never shortens a generation.
+  let totalRequestTimeoutMs = $state(0)
   let forceFallback = $state(false)
   let qoderCheckin = $state(false)
   let minimaxCheckin = $state(false)
@@ -326,6 +331,8 @@
       if (typeof settings.fallbackStrategy === 'string') fallbackStrategy = settings.fallbackStrategy
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
       if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
+      if (typeof settings.comboMemberAttemptCap === 'number') comboMemberAttemptCap = settings.comboMemberAttemptCap
+      if (typeof settings.totalRequestTimeoutMs === 'number') totalRequestTimeoutMs = settings.totalRequestTimeoutMs
       if (typeof settings.forceFallback === 'boolean') forceFallback = settings.forceFallback
       if (typeof settings.qoderCheckin === 'boolean') qoderCheckin = settings.qoderCheckin
       if (typeof settings.minimaxCheckin === 'boolean') minimaxCheckin = settings.minimaxCheckin
@@ -378,6 +385,8 @@
         hiddenNav = orderHiddenNav(s.navVisibility)
         navOrder = normalizeNavOrder(s.navVisibility)
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
+        if (typeof s.comboMemberAttemptCap === 'number') comboMemberAttemptCap = s.comboMemberAttemptCap
+        if (typeof s.totalRequestTimeoutMs === 'number') totalRequestTimeoutMs = s.totalRequestTimeoutMs
         if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
         enableSystemPrompt = !!s.systemPromptEnabled
         if (typeof s.systemPromptPrefix === 'string') systemPromptPrefix = s.systemPromptPrefix
@@ -556,6 +565,8 @@
         usageHistoryRetentionDays,
         stickyRoundRobinLimit,
         comboStrategy,
+        comboMemberAttemptCap,
+        totalRequestTimeoutMs,
         forceFallback,
         qoderCheckin,
         minimaxCheckin,
@@ -1239,6 +1250,47 @@
             <option value="first-model">First Model (Always try primary model first)</option>
             <option value="round-robin">Round Robin (Rotate starting model)</option>
           </select>
+        </div>
+
+        <div class="space-y-1">
+          <label for="combo-member-cap" class="block font-semibold text-text-main"
+            >Combo Member Attempt Cap</label
+          >
+          <input
+            id="combo-member-cap"
+            type="number"
+            bind:value={comboMemberAttemptCap}
+            min="0"
+            max="10"
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
+          />
+          <p class="text-[11px] text-text-subtle">
+            How many failed accounts one combo member may spend before the combo moves to its
+            next model. <strong>0 (default) means off</strong>: the member tries every account it
+            has. <strong>3</strong> is the suggested value when you turn it on. Values are
+            capped at 10, which is the most the member loop will ever try.
+          </p>
+        </div>
+
+        <div class="space-y-1">
+          <label for="total-request-timeout" class="block font-semibold text-text-main"
+            >Total Request Timeout (ms)</label
+          >
+          <input
+            id="total-request-timeout"
+            type="number"
+            bind:value={totalRequestTimeoutMs}
+            min="0"
+            step="1000"
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
+          />
+          <p class="text-[11px] text-text-subtle">
+            How long one chat request may run end to end, headers plus body. <strong
+              >0 (default) means off.</strong
+            > This exists to reclaim a hung upstream, not to cut a slow one: reasoning models
+            legitimately stream for many minutes, so keep this well above any real generation.
+            A request cut by it fails with HTTP 504.
+          </p>
         </div>
 
         <Toggle

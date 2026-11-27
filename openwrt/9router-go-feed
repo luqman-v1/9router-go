@@ -1,0 +1,83 @@
+#!/bin/sh
+# 9router-go-feed — manage the opkg feed that carries this package.
+#
+# Editing /etc/opkg/customfeeds.conf by hand is the step people get wrong (a
+# missing trailing newline silently merges two feed lines), so it lives here.
+#
+#   9router-go-feed add [URL]   register this architecture's feed
+#   9router-go-feed remove      drop it
+#   9router-go-feed status      show what is registered
+#
+# Default URL is the project's GitHub Pages feed. Override it with the argument
+# or with FEED_BASE=/some/mirror in the environment.
+
+set -e
+
+FEED_NAME=9router-go
+FEED_BASE="${FEED_BASE:-https://luqman-v1.github.io/9router-go/openwrt}"
+CONF=/etc/opkg/customfeeds.conf
+
+detect_arch() {
+	if [ -r /etc/openwrt_release ]; then
+		arch=$(sed -n "s/^DISTRIB_ARCH=['\"]\\(.*\\)['\"]$/\\1/p" /etc/openwrt_release)
+		[ -n "$arch" ] && { echo "$arch"; return 0; }
+	fi
+	if command -v opkg >/dev/null 2>&1; then
+		arch=$(opkg print-architecture 2>/dev/null | awk '$1 == "arch" && $2 != "all" && $2 != "noarch" { print $2; exit }')
+		[ -n "$arch" ] && { echo "$arch"; return 0; }
+	fi
+	return 1
+}
+
+feed_line() {
+	echo "src/gz $FEED_NAME $1"
+}
+
+do_add() {
+	base="${1:-$FEED_BASE}"
+	arch=$(detect_arch) || {
+		echo "9router-go-feed: cannot determine the OpenWrt architecture." >&2
+		echo "Set it with: 9router-go-feed add $base/<architecture>" >&2
+		exit 1
+	}
+	url="$base/$arch"
+
+	mkdir -p "$(dirname "$CONF")"
+	touch "$CONF"
+	# Rewrite rather than append: re-running `add` must not stack duplicates,
+	# and every other line in the file is preserved.
+	tmp="$CONF.tmp"
+	grep -v "^src/gz $FEED_NAME " "$CONF" > "$tmp" 2>/dev/null || true
+	feed_line "$url" >> "$tmp"
+	mv -f "$tmp" "$CONF"
+
+	echo "9router-go-feed: $url"
+	echo "Run 'opkg update' to refresh, then 'opkg upgrade 9router-go'."
+}
+
+do_remove() {
+	[ -f "$CONF" ] || { echo "9router-go-feed: no $CONF"; return 0; }
+	tmp="$CONF.tmp"
+	grep -v "^src/gz $FEED_NAME " "$CONF" > "$tmp" 2>/dev/null || true
+	mv -f "$tmp" "$CONF"
+	echo "9router-go-feed: removed from $CONF"
+}
+
+do_status() {
+	if [ -f "$CONF" ] && grep -q "^src/gz $FEED_NAME " "$CONF"; then
+		grep "^src/gz $FEED_NAME " "$CONF"
+	else
+		echo "9router-go-feed: not registered (run '9router-go-feed add')"
+		return 1
+	fi
+}
+
+case "$1" in
+	add) shift; do_add "$@" ;;
+	remove|rm) do_remove ;;
+	status) do_status ;;
+	*)
+		echo "usage: 9router-go-feed {add [url] | remove | status}" >&2
+		exit 1
+		;;
+esac

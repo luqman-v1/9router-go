@@ -1,12 +1,16 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"9router/proxy/internal/providers"
 )
 
 func TestRefreshNousToken(t *testing.T) {
@@ -146,4 +150,135 @@ func mintNousAgentKeyTest(ctx context.Context, client *http.Client, targetURL, t
 	}
 	defer resp.Body.Close()
 	return "sk-nous-agent-refreshed"
+}
+
+func TestRefreshNous_SurfacesOAuthRefreshErrorAndTruncatesBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     []byte
+		wantUnau bool
+		wantDead bool
+	}{
+		{
+			name:     "401 revoked grant truncates long body",
+			status:   http.StatusUnauthorized,
+			body:     bytes.Repeat([]byte("s"), 4096),
+			wantUnau: true,
+			wantDead: true,
+		},
+		{
+			name:     "400 invalid_grant marks grant dead",
+			status:   http.StatusBadRequest,
+			body:     []byte(`{"error":"invalid_grant"}`),
+			wantUnau: false,
+			wantDead: true,
+		},
+		{
+			name:     "500 server error is retryable",
+			status:   http.StatusInternalServerError,
+			body:     []byte(`upstream unavailable`),
+			wantUnau: false,
+			wantDead: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{
+				Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: tt.status,
+						Body:       io.NopCloser(bytes.NewReader(tt.body)),
+						Header:     make(http.Header),
+					}, nil
+				}),
+			}
+			_, err := refreshNous(context.Background(), &Params{
+				Client:       client,
+				Provider:     "nous",
+				RefreshToken: "rt-1",
+			})
+			var refreshErr *providers.OAuthRefreshError
+			if !errors.As(err, &refreshErr) {
+				t.Fatalf("expected *providers.OAuthRefreshError, got %T (%v)", err, err)
+			}
+			if refreshErr.Status != tt.status {
+				t.Fatalf("Status = %d, want %d", refreshErr.Status, tt.status)
+			}
+			if len(refreshErr.Body) > 200 {
+				t.Fatalf("Body length = %d, want <= 200", len(refreshErr.Body))
+			}
+			if got := providers.IsRefreshUnauthorized(err); got != tt.wantUnau {
+				t.Fatalf("IsRefreshUnauthorized = %v, want %v", got, tt.wantUnau)
+			}
+			if got := providers.IsRefreshGrantDead(err); got != tt.wantDead {
+				t.Fatalf("IsRefreshGrantDead = %v, want %v", got, tt.wantDead)
+			}
+		})
+	}
+}
+
+func TestRefreshZcode_SurfacesOAuthRefreshError(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     []byte
+		wantUnau bool
+		wantDead bool
+	}{
+		{
+			name:     "401 revoked grant truncates long body",
+			status:   http.StatusUnauthorized,
+			body:     bytes.Repeat([]byte("z"), 4096),
+			wantUnau: true,
+			wantDead: true,
+		},
+		{
+			name:     "400 invalid_grant marks grant dead",
+			status:   http.StatusBadRequest,
+			body:     []byte(`{"error":"invalid_grant"}`),
+			wantUnau: false,
+			wantDead: true,
+		},
+		{
+			name:     "500 server error is retryable",
+			status:   http.StatusInternalServerError,
+			body:     []byte(`internal error`),
+			wantUnau: false,
+			wantDead: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write(tt.body)
+			}))
+			defer srv.Close()
+
+			_, err := refreshZcodeJWT(context.Background(), &Params{
+				Client:       srv.Client(),
+				Provider:     "zcode",
+				RefreshToken: "rt-1",
+			}, srv.URL)
+			var refreshErr *providers.OAuthRefreshError
+			if !errors.As(err, &refreshErr) {
+				t.Fatalf("expected *providers.OAuthRefreshError, got %T (%v)", err, err)
+			}
+			if refreshErr.Status != tt.status {
+				t.Fatalf("Status = %d, want %d", refreshErr.Status, tt.status)
+			}
+			if len(refreshErr.Body) > 200 {
+				t.Fatalf("Body length = %d, want <= 200", len(refreshErr.Body))
+			}
+			if got := providers.IsRefreshUnauthorized(err); got != tt.wantUnau {
+				t.Fatalf("IsRefreshUnauthorized = %v, want %v", got, tt.wantUnau)
+			}
+			if got := providers.IsRefreshGrantDead(err); got != tt.wantDead {
+				t.Fatalf("IsRefreshGrantDead = %v, want %v", got, tt.wantDead)
+			}
+		})
+	}
 }

@@ -194,7 +194,7 @@ func (h *DashboardHandler) HandleConsumeCodexResetCredit(w http.ResponseWriter, 
 	}
 	chat.ClearCodexQuotaBlock(target.ConnectionID)
 	if h.Repo != nil {
-		if err := h.Repo.ResetConnectionHealthState(target.ConnectionID); err != nil {
+		if err := h.Repo.ResetConnectionHealthState(r.Context(), target.ConnectionID); err != nil {
 			log.Warn("failed to reset connection health state", "connId", target.ConnectionID, "error", err)
 		}
 	}

@@ -1,0 +1,4 @@
+### Exact tag matching in jailbreak htmlToText
+
+- Updated `htmlToText` in `internal/handlers/dashboard/jailbreak_import.go` via `parseHTMLTag` so prefix matches like `<header>` no longer increment the `<head>` skip depth and drop the rest of the page, self-closing `<script/>` / `<style/>` tags stay skipped only when paired, and whitespace-padded closing tags such as `</style >` properly exit skip mode.
+- Verified with `TestHTMLToText_HeaderAndSelfClosingTagsDoNotSwallowBody` in `internal/handlers/dashboard/jailbreak_import_test.go` (`go test -count=1 ./internal/handlers/dashboard/...`, `go vet ./internal/handlers/dashboard/...`).

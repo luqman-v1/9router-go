@@ -157,3 +157,35 @@ func sealValue(t *testing.T, key []byte, version, value string) []byte {
 	}
 	return sealed
 }
+
+// TestReadChromiumRowsSurfacesScanErrors pins that a row the reader cannot
+// scan is an error, not an empty cookie jar. Schema drift across Chromium
+// versions can move the expiry columns into a shape the six-column scan
+// cannot read; before the fix every such row was skipped silently and the
+// caller reported a healthy "session not found" for a login that exists.
+func TestReadChromiumRowsSurfacesScanErrors(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "Cookies")
+	writeCookieDatabase(t, dbPath, []cookieRow{
+		{host: ".google.com", name: "__Secure-1PSIDTS", encrypted: nil, plain: []byte("a-session-value")},
+	})
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open the database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Corrupt one row the way schema drift would: expires_utc as text where
+	// the reader scans an int64. Every row then fails to scan.
+	if _, err := db.Exec(`UPDATE cookies SET expires_utc = 'not-a-number'`); err != nil {
+		t.Fatalf("corrupt the row: %v", err)
+	}
+
+	_, err = readChromiumRows(t.Context(), db, "google.com")
+	if err == nil {
+		t.Fatal("readChromiumRows() error = nil, want the scan failure surfaced; nil here means the row was silently skipped")
+	}
+	if !strings.Contains(err.Error(), "scan chromium cookie row") {
+		t.Errorf("readChromiumRows() error = %v, want it to name the cookie-row scan", err)
+	}
+}

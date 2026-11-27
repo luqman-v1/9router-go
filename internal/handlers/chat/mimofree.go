@@ -32,6 +32,17 @@ const mimoChatURL = "https://api.xiaomimimimo.com/api/free-ai/openai/chat"
 // mimoProviderID is the provider key the thinking-level table is filed under.
 const mimoProviderID = "mimo-free"
 
+const maxMimoBootstrapBytes = 1 << 20
+
+var mimoDefaultHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+func mimoHTTPClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return mimoDefaultHTTPClient
+}
+
 const sessionIDLength = 24
 const sessionAffixPrefix = "ses_"
 const sessionChars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -79,7 +90,8 @@ func clampMimoFreeReasoning(body []byte, model string) []byte {
 // It bootstraps a JWT if needed, injects the anti-abuse system message marker,
 // and forwards the request to the MiMo free endpoint.
 func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, body []byte, isStream bool, metrics *streamMetrics) error {
-	jwt, err := getMimoJWT(ctx)
+	client := mimoHTTPClient(h.Client)
+	jwt, err := getMimoJWT(ctx, client)
 	if err != nil {
 		return fmt.Errorf("mimo bootstrap: %w", err)
 	}
@@ -105,34 +117,41 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
-	resp, err := h.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("mimo upstream: %w", err)
 	}
 
 	// On auth failure, re-bootstrap and retry once
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		mimoJWTMu.Lock()
 		mimoJWT = ""
 		mimoJWTExp = time.Time{}
 		mimoJWTMu.Unlock()
 
-		jwt, err = getMimoJWT(ctx)
+		jwt, err = getMimoJWT(ctx, client)
 		if err != nil {
 			return fmt.Errorf("mimo re-bootstrap: %w", err)
 		}
+		if req.GetBody != nil {
+			rewindBody, rErr := req.GetBody()
+			if rErr != nil {
+				return fmt.Errorf("mimo rewind request: %w", rErr)
+			}
+			req.Body = rewindBody
+		}
 		req.Header.Set(constants.HeaderAuthorization, constants.AuthPrefixBearer+jwt)
-		resp, err = h.Client.Do(req)
+		resp, err = client.Do(req)
 		if err != nil {
 			return fmt.Errorf("mimo retry: %w", err)
 		}
 	}
 
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 
@@ -156,7 +175,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 }
 
 // getMimoJWT returns a valid JWT, bootstrapping one if necessary.
-func getMimoJWT(ctx context.Context) (string, error) {
+func getMimoJWT(ctx context.Context, client *http.Client) (string, error) {
 	mimoJWTMu.Lock()
 	defer mimoJWTMu.Unlock()
 
@@ -175,11 +194,11 @@ func getMimoJWT(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("bootstrap request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mimoHTTPClient(client).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("bootstrap status: %d", resp.StatusCode)
@@ -188,7 +207,7 @@ func getMimoJWT(ctx context.Context) (string, error) {
 	var result struct {
 		JWT string `json:"jwt"`
 	}
-	if err := json.UnmarshalRead(resp.Body, &result); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(resp.Body, maxMimoBootstrapBytes), &result); err != nil {
 		return "", fmt.Errorf("bootstrap decode: %w", err)
 	}
 	if result.JWT == "" {

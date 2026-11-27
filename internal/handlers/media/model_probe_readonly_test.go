@@ -7,6 +7,8 @@
 package media
 
 import (
+	"context"
+
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,7 +76,7 @@ func dialNvidiaTTS(t *testing.T, h *MediaHandler, repo *db.Repo, mi *chat.ModelI
 // A PROBE must not clear a production model lock, even when the turn succeeds.
 func TestProbeTTS_SuccessKeepsProductionLock(t *testing.T) {
 	h, repo, mi, cd, req := setupNvidiaTTS(t)
-	if err := repo.LockConnectionModel("conn-nv", "fastpitch/alloy", 3600, 2); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "conn-nv", "fastpitch/alloy", 3600, 2); err != nil {
 		t.Fatalf("lock: %v", err)
 	}
 
@@ -82,7 +84,7 @@ func TestProbeTTS_SuccessKeepsProductionLock(t *testing.T) {
 		req.WithContext(handlerutil.WithProbeContext(req.Context())))
 
 	conn, _ := repo.GetProviderConnectionByID("conn-nv")
-	if locked, _ := repo.IsConnectionModelLocked("conn-nv", "fastpitch/alloy"); !locked {
+	if locked, _ := repo.IsConnectionModelLocked(context.Background(), "conn-nv", "fastpitch/alloy"); !locked {
 		t.Errorf("probe cleared the production model lock: %s", conn.Data)
 	}
 }
@@ -90,14 +92,14 @@ func TestProbeTTS_SuccessKeepsProductionLock(t *testing.T) {
 // A REAL request must still clear it — the gate must not be a blanket.
 func TestProbeTTS_ProductionSuccessStillUnlocks(t *testing.T) {
 	h, repo, mi, cd, req := setupNvidiaTTS(t)
-	if err := repo.LockConnectionModel("conn-nv", "fastpitch/alloy", 3600, 2); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "conn-nv", "fastpitch/alloy", 3600, 2); err != nil {
 		t.Fatalf("lock: %v", err)
 	}
 
 	dialNvidiaTTS(t, h, repo, mi, cd, req)
 
 	conn, _ := repo.GetProviderConnectionByID("conn-nv")
-	if locked, _ := repo.IsConnectionModelLocked("conn-nv", "fastpitch/alloy"); locked {
+	if locked, _ := repo.IsConnectionModelLocked(context.Background(), "conn-nv", "fastpitch/alloy"); locked {
 		t.Errorf("REGRESSION: production success no longer clears the lock: %s", conn.Data)
 	}
 }

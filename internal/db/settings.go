@@ -157,6 +157,11 @@ type PerModelRateLimitOverride struct {
 	WindowMs int   `json:"windowMs,omitempty"`
 }
 
+// TotalRequestTimeoutSetting is the settings key for the end-to-end request
+// bound. It lives beside the parser that reads it, so the key is named once
+// instead of in a literal the parser and a caller could drift apart on.
+const TotalRequestTimeoutSetting = "totalRequestTimeoutMs"
+
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
 	RTKEnabled              bool            `json:"rtkEnabled"`
@@ -210,18 +215,27 @@ type SettingsData struct {
 	// differently — a cache write costs 1.25x at 5m and 2x at 1h — and which is
 	// cheaper depends on how long the operator's sessions pause between turns.
 	// Empty means "5m", so a row that never set it keeps the default.
-	ClaudeCacheTTL             string                          `json:"claudeCacheTtl,omitempty"`
-	AutoUpdate                 bool                            `json:"autoUpdate"`
-	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
-	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
-	ForceFallback              bool                            `json:"forceFallback,omitempty"`
-	ComboStrategy              string                          `json:"comboStrategy,omitempty"`
-	ComboStickyRoundRobinLimit int                             `json:"comboStickyRoundRobinLimit,omitempty"`
-	SeatAttemptBudgetMs        int                             `json:"seatAttemptBudgetMs,omitempty"`
-	ComboStrategies            map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
-	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
-	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
-	ProviderOverrides          map[string]ProviderOverrides    `json:"providerOverrides,omitempty"`
+	ClaudeCacheTTL             string `json:"claudeCacheTtl,omitempty"`
+	AutoUpdate                 bool   `json:"autoUpdate"`
+	FallbackStrategy           string `json:"fallbackStrategy,omitempty"`
+	StickyRoundRobinLimit      int    `json:"stickyRoundRobinLimit,omitempty"`
+	ForceFallback              bool   `json:"forceFallback,omitempty"`
+	ComboStrategy              string `json:"comboStrategy,omitempty"`
+	ComboStickyRoundRobinLimit int    `json:"comboStickyRoundRobinLimit,omitempty"`
+	SeatAttemptBudgetMs        int    `json:"seatAttemptBudgetMs,omitempty"`
+	// ComboMemberAttemptCap bounds the failed accounts one combo member may
+	// spend before the combo moves on. Off (0) by default: enabling it shortens
+	// a member's chance to find a healthy account, which is an operator's
+	// decision, not a default. See ComboMemberAttemptCapFor.
+	ComboMemberAttemptCap int `json:"comboMemberAttemptCap,omitempty"`
+	// TotalRequestTimeoutMs bounds one chat request end to end, headers plus
+	// body. Off (0) by default: it exists to reclaim a hung upstream, not to
+	// cut a slow one, and enabling it is the operator's call.
+	TotalRequestTimeoutMs int                             `json:"totalRequestTimeoutMs,omitempty"`
+	ComboStrategies       map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
+	ProviderStrategies    map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
+	CapacityAdapter       map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
+	ProviderOverrides     map[string]ProviderOverrides    `json:"providerOverrides,omitempty"`
 	// PerModelRateLimit caps requests per model on CUSTOM providers, so one hot
 	// model cannot drain a shared endpoint's quota. Nil means "not configured",
 	// which the resolver reads as the built-in default.

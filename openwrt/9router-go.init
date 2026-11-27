@@ -1,0 +1,217 @@
+#!/bin/sh /etc/rc.common
+# procd service for 9router-go.
+#
+# Written for OpenWrt 18.06 and later: nothing here needs a procd or rc.common
+# feature newer than that. In particular `respawn` is given the two-argument
+# form (threshold, timeout) because the third `retry` argument only exists in
+# procd builds new enough for 19.07; with two arguments procd keeps restarting
+# at `timeout` intervals, which is the behaviour 18.06 scripts have.
+
+START=99
+STOP=10
+USE_PROCD=1
+
+NAME=9router-go
+PROG=/usr/bin/$NAME
+HEALTHCHECK=/usr/bin/9router-go-healthcheck
+PIDFILE=/var/run/$NAME.pid
+RULE_NAME=9router-go-allow-lan
+
+start_service() {
+	local enabled port host data_dir auto_update jwt_secret log_level healthcheck open_lan
+
+	config_load "$NAME"
+	config_get_bool enabled main enabled 1
+	config_get port main port '20130'
+	config_get host main host ''
+	config_get data_dir main data_dir '/opt/9router'
+	config_get_bool auto_update main auto_update 0
+	config_get jwt_secret main jwt_secret ''
+	config_get_bool healthcheck main healthcheck 1
+	config_get_bool open_lan main open_lan 0
+
+	if [ "$enabled" -ne 1 ]; then
+		logger -t "$NAME" "disabled in /etc/config/$NAME, not starting"
+		return 0
+	fi
+
+	if ! mkdir -p "$data_dir/db"; then
+		logger -t "$NAME" "cannot create $data_dir, refusing to start"
+		return 1
+	fi
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param env DATA_DIR="$data_dir"
+	procd_set_param env PORT="$port"
+	procd_set_param env LOG_LEVEL="$log_level"
+	if [ "$auto_update" -eq 1 ]; then
+		procd_set_param env AUTO_UPDATE="true"
+	else
+		procd_set_param env AUTO_UPDATE="false"
+	fi
+	if [ -n "$host" ]; then
+		procd_set_param env HOST="$host"
+	fi
+	if [ -n "$jwt_secret" ]; then
+		procd_set_param env JWT_SECRET="$jwt_secret"
+	fi
+	# The pid file is the one liveness signal shared by procd, the LuCI page and
+	# the backup helper. It is written by the launcher, not by
+	# `procd_set_param pidfile`: that parameter does not exist in every procd
+	# release this package supports (18.06 predates it), and passing an unknown
+	# parameter makes procd.sh complain on every boot.
+	procd_set_param env NINE_ROUTER_PIDFILE="$PIDFILE"
+	# respawn <threshold> <timeout>: the third `retry` argument only exists in
+	# procd builds from 19.07 onward, so it is not passed. With two arguments
+	# procd restarts at `timeout` intervals, which is what 18.06 scripts do.
+	procd_set_param respawn 3600 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	# The probe is a separate script; cron must never invoke $PROG, which is
+	# the gateway wrapper itself. cron_sync rewrites the line instead of
+	# appending, and only touches the file and restarts cron when the content
+	# actually changed — a restart on every boot is churn on flash.
+	if [ "$healthcheck" -eq 1 ]; then
+		cron_sync 1
+	else
+		cron_sync 0
+	fi
+
+	# The LAN rule follows open_lan in both directions. Leaving the ACCEPT rule
+	# behind after open_lan=0 would keep the dashboard reachable from the LAN,
+	# which is the opposite of what the operator asked for.
+	if [ "$open_lan" -eq 1 ]; then
+		firewall_allow_lan "$port"
+	else
+		firewall_disallow_lan
+	fi
+
+	logger -t "$NAME" "started on port $port, data in $data_dir"
+}
+
+stop_service() {
+	# No work here: procd stops the instance itself. The LAN rule is owned by
+	# the operator's open_lan setting and by prerm, not by a transient stop,
+	# so a `stop; start` cycle keeps the rule and a boot with open_lan=0
+	# removes it on the next start.
+	return 0
+}
+
+# cron_sync installs (want=1) or removes (want=0) the healthcheck cron line.
+# It compares the result with the current table first: writing /etc/crontabs/root
+# and restarting cron on every boot is needless flash wear and needless work.
+cron_sync() {
+	local want="$1" tmp
+	[ -d /etc/crontabs ] || return 0
+	tmp=/etc/crontabs/root.9router-go.tmp
+	if [ -f /etc/crontabs/root ]; then
+		grep -vF "$HEALTHCHECK" /etc/crontabs/root > "$tmp" 2>/dev/null || true
+	else
+		: > "$tmp"
+	fi
+	if [ "$want" -eq 1 ]; then
+		printf '* * * * * %s\n' "$HEALTHCHECK" >> "$tmp"
+	fi
+	# cmp is a busybox applet present in every image this package targets; if
+	# it is missing, fall through and rewrite, which is always correct.
+	if [ -f /etc/crontabs/root ] && cmp -s "$tmp" /etc/crontabs/root 2>/dev/null; then
+		rm -f "$tmp"
+		return 0
+	fi
+	mv -f "$tmp" /etc/crontabs/root
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+}
+
+# firewall_rule_ids prints the section ids of every firewall rule this package
+# owns. `uci add` creates an anonymous section, so a rule can never be looked up
+# as firewall.$RULE_NAME; matching the name option is the only stable handle,
+# and returning all matches lets the caller repair duplicates a previous
+# version of this script may have left behind.
+firewall_rule_ids() {
+	uci -q show firewall 2>/dev/null | \
+		sed -n "s/^firewall\.\([^.=]*\)\.name='$RULE_NAME'\$/\1/p"
+}
+
+# firewall_set assigns one option on one section and records whether the stored
+# value differed, so the caller can commit and reload only on a real change.
+firewall_set() {
+	local section="$1" option="$2" value="$3" current
+	current=$(uci -q get "firewall.$section.$option" 2>/dev/null)
+	[ "$current" = "$value" ] && return 0
+	uci -q set "firewall.$section.$option=$value" >/dev/null 2>&1 && FW_CHANGED=1
+}
+
+# firewall_allow_lan creates or repairs the ACCEPT rule for the gateway port.
+# Every rule carrying the package's name is updated, not just the first, so a
+# duplicate left by an older package is healed instead of lingering.
+firewall_allow_lan() {
+	local port="${1:-20130}" ids id
+	# firewall_set raises FW_CHANGED through the caller's scope (ash has no
+	# closures), so it is reset here on every call and read once before commit.
+	FW_CHANGED=0
+	command -v uci >/dev/null 2>&1 || return 0
+	# A config with no rules yet makes `uci get firewall` return 1; the package
+	# is still installed, so the guard tests for the config file instead of the
+	# exit status of a lookup.
+	[ -f /etc/config/firewall ] || return 0
+
+	ids=$(firewall_rule_ids)
+	if [ -z "$ids" ]; then
+		# `uci add` appends, so @rule[-1] is the section just created even on
+		# uci releases that print nothing from `add`. The name is set before
+		# the rule is looked up again, so the freshly added section is what
+		# comes back rather than nothing.
+		uci -q add firewall rule >/dev/null 2>&1 || return 0
+		uci -q set firewall.@rule[-1].name="$RULE_NAME" >/dev/null 2>&1
+		ids=$(uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$RULE_NAME'\$/\1/p")
+		[ -n "$ids" ] || ids=$(firewall_rule_ids)
+		FW_CHANGED=1
+	fi
+	[ -n "$ids" ] || return 0
+
+	for id in $ids; do
+		firewall_set "$id" src lan
+		firewall_set "$id" proto "tcp udp"
+		firewall_set "$id" dest_port "$port"
+		firewall_set "$id" target ACCEPT
+		firewall_set "$id" enabled 1
+	done
+
+	if [ "$FW_CHANGED" -eq 1 ]; then
+		uci -q commit firewall >/dev/null 2>&1
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+		logger -t "$NAME" "LAN firewall rule allows port $port"
+	fi
+}
+
+# firewall_disallow_lan removes every rule this package owns. It deletes all
+# matches, so a config carrying duplicates ends up with none rather than one.
+firewall_disallow_lan() {
+	local ids id
+	command -v uci >/dev/null 2>&1 || return 0
+	[ -f /etc/config/firewall ] || return 0
+	ids=$(firewall_rule_ids)
+	[ -n "$ids" ] || return 0
+	for id in $ids; do
+		uci -q delete "firewall.$id" >/dev/null 2>&1
+	done
+	uci -q commit firewall >/dev/null 2>&1
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	logger -t "$NAME" "LAN firewall rule removed (open_lan is off)"
+}
+
+reload_service() {
+	stop
+	start
+}
+
+# Reload the service when its UCI file changes, so `uci commit` followed by
+# `reload_config` picks up a port change without a manual restart. This is not
+# what makes an upgrade take effect: `opkg upgrade` only replaces files and the
+# running process keeps the old inode, so postinst restarts the service itself.
+service_triggers() {
+	procd_add_reload_trigger "$NAME"
+}

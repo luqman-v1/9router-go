@@ -178,7 +178,7 @@ func TestSanitizeProviderConnection_LastErrorString(t *testing.T) {
 	if err := repo.CreateProviderConnection(context.Background(), connID, "codex", "oauth", "Codex Err", "secret-codex"); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
-	if err := repo.LockConnectionRateLimit(connID, time.Now().Add(time.Minute), 1, 429, "Rate limit reached"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), connID, time.Now().Add(time.Minute), 1, 429, "Rate limit reached"); err != nil {
 		t.Fatalf("lock rate limit: %v", err)
 	}
 
@@ -284,19 +284,19 @@ func TestProvidersClientFilters_CooldownAndStatus(t *testing.T) {
 		}
 	}
 
-	if err := repo.LockConnectionModel("c-unlocked", "gpt-5", 3600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "c-unlocked", "gpt-5", 3600, 1); err != nil {
 		t.Fatalf("lock c-unlocked: %v", err)
 	}
-	if err := repo.UnlockConnectionModel("c-unlocked", "gpt-5"); err != nil {
+	if err := repo.UnlockConnectionModel(context.Background(), "c-unlocked", "gpt-5"); err != nil {
 		t.Fatalf("unlock c-unlocked: %v", err)
 	}
-	if err := repo.LockConnectionModel("c-expired", "gpt-5", -3600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "c-expired", "gpt-5", -3600, 1); err != nil {
 		t.Fatalf("lock c-expired: %v", err)
 	}
-	if err := repo.LockConnectionModel("c-locked", "gpt-5", 3600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "c-locked", "gpt-5", 3600, 1); err != nil {
 		t.Fatalf("lock c-locked: %v", err)
 	}
-	if err := repo.LockConnectionRateLimit("c-ratelimited", time.Now().Add(time.Hour), 1, 429, "Rate limit reached"); err != nil {
+	if err := repo.LockConnectionRateLimit(context.Background(), "c-ratelimited", time.Now().Add(time.Hour), 1, 429, "Rate limit reached"); err != nil {
 		t.Fatalf("lock c-ratelimited: %v", err)
 	}
 	if err := repo.UpdateConnectionData(context.Background(), "c-exhausted", `{"testStatus":"unavailable","lastError":"credit insufficient balance: balance=0"}`); err != nil {

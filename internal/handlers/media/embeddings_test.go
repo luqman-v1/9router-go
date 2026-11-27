@@ -540,6 +540,53 @@ func TestEmbeddings_ForwardGeminiOutputDimensions(t *testing.T) {
 	}
 }
 
+// TestEmbeddings_ForwardGeminiEncodingFormat pins a contract, not a fix: the
+// Gemini transform unmarshals the body into a map, adds outputDimensionality and
+// re-marshals, so every client field survives by construction. The test exists
+// because that construction is easy to break (a struct-based rebuild would drop
+// encoding_format silently, and a base64 client would then get float arrays).
+func TestEmbeddings_ForwardGeminiEncodingFormat(t *testing.T) {
+	var mu sync.Mutex
+	var captured map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		_ = json.Unmarshal(body, &captured)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupEmbeddingsTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	connDataJSON, _ := json.Marshal(map[string]any{"apiKey": "gemini-key", "baseUrl": upstream.URL + "/v1beta/openai/embeddings"})
+	if err := repo.CreateProviderConnectionFull(context.Background(), "conn-gemini-fmt", "gemini", "apikey", "Gemini Fmt", nil, string(connDataJSON)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	handler := newTestMediaHandler(repo)
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"gemini/text-embedding-004","input":"hello","encoding_format":"base64","dimensions":1536}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if captured["encoding_format"] != "base64" {
+		t.Errorf("expected encoding_format=base64 forwarded, got %v", captured["encoding_format"])
+	}
+	if captured["outputDimensionality"] == nil {
+		t.Errorf("expected outputDimensionality forwarded, got %v", captured)
+	}
+}
+
 // seedCopilotConn inserts a github (Copilot) connection whose BaseURL points at
 // the fake upstream.
 func seedCopilotConn(t *testing.T, database *sql.DB, baseURL string) {
@@ -981,4 +1028,49 @@ func TestHandleEmbeddings_ConnectionRotation(t *testing.T) {
 			t.Errorf("follow-up hits = (%d, %d), want (2, 2)", conn1Hits.Load(), conn2Hits.Load())
 		}
 	})
+}
+
+// TestHandleEmbeddings_ForwardsEncodingFormatAndDimensions pins the same
+// contract on the generic lane: UpdateModelInBody only rewrites "model", so both
+// fields reach an OpenAI-compatible upstream unchanged. Asserting the body the
+// upstream received is what makes it meaningful; a status-only check would pass
+// even if the gateway sent nothing.
+func TestHandleEmbeddings_ForwardsEncodingFormatAndDimensions(t *testing.T) {
+	var mu sync.Mutex
+	var captured map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		_ = json.Unmarshal(body, &captured)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupEmbeddingsTestDB(t)
+	defer cleanup()
+	seedJSONMediaConn(t, database, "conn-openai-fmt", "openai", "sk-openai-fmt", upstream.URL, 1)
+	handler := newTestMediaHandler(db.NewRepo(database))
+
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"openai/text-embedding-3-small","input":"hello","encoding_format":"base64","dimensions":256}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if captured["encoding_format"] != "base64" {
+		t.Errorf("encoding_format = %v, want base64", captured["encoding_format"])
+	}
+	if captured["dimensions"] != float64(256) {
+		t.Errorf("dimensions = %v, want 256", captured["dimensions"])
+	}
+	if captured["outputDimensionality"] != nil {
+		t.Errorf("outputDimensionality must not be set for a non-Gemini provider, got %v", captured["outputDimensionality"])
+	}
 }

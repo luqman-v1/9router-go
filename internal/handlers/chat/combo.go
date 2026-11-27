@@ -1220,8 +1220,22 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			// left it selectable, so without this the next connection attempt
 			// picked the same account and resent the same request.
 			var tried []string
+			// memberCap bounds the failed accounts this entry may spend before
+			// the combo moves on; 0 keeps the exhaustive ten-connection walk.
+			memberCap := db.ComboMemberAttemptCapFor(settings, modelInfo.Provider)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				// The cap counts failed accounts, not iterations: a connection
+				// skipped as locked or unavailable costs no attempt, so only
+				// `tried` is compared against it. Breaking here leaves the
+				// entry to the next combo member, which is the whole point of
+				// the setting.
+				if memberCap > 0 && len(tried) >= memberCap {
+					log.Warn("combo", "member attempt cap reached, next member",
+						"provider", modelInfo.Provider, "model", modelInfo.Model,
+						"failed", len(tried), "cap", memberCap)
+					break
+				}
 				var connID string
 				var picked *ProviderConnection
 				var connData *ConnectionData
@@ -1384,6 +1398,15 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						break
 					}
 					if ctx.Err() != nil {
+						// The gateway's own bound expiring is a 504, not a 499:
+						// the client is still there and needs to know the cut
+						// was policy, not a hangup.
+						if isRequestDeadline(ctx) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+							// Local: the account was never exercised, so the 504
+							// must not cool it (see the same branch in fallback.go).
+							lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody(), Local: true}
+							break
+						}
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 						break
 					}
@@ -1669,6 +1692,9 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
+	// Read once per request, like the chat loop: the member attempt cap is
+	// resolved per provider inside the entry loop.
+	settings, _ := h.Repo.GetSettings()
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -1760,8 +1786,19 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			// See the chat loop: never resend this entry to a connection it
 			// already tried.
 			var tried []string
+			// See the chat loop: the same cap, resolved from the same settings
+			// row, so a business request and a chat request agree on how long a
+			// member may grind its pool.
+			memberCap := db.ComboMemberAttemptCapFor(settings, modelInfo.Provider)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				// See the chat loop: only failed accounts count toward the cap.
+				if memberCap > 0 && len(tried) >= memberCap {
+					log.Warn("combo", "member attempt cap reached, next member",
+						"provider", modelInfo.Provider, "model", modelInfo.Model,
+						"failed", len(tried), "cap", memberCap)
+					break
+				}
 				var connID string
 				var picked *ProviderConnection
 				var connData *ConnectionData
@@ -1916,6 +1953,15 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						break
 					}
 					if ctx.Err() != nil {
+						// The gateway's own bound expiring is a 504, not a 499:
+						// the client is still there and needs to know the cut
+						// was policy, not a hangup.
+						if isRequestDeadline(ctx) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+							// Local: the account was never exercised, so the 504
+							// must not cool it (see the same branch in fallback.go).
+							lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: requestDeadlineBody(), Local: true}
+							break
+						}
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 						break
 					}
@@ -2199,7 +2245,7 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 			"provider", provider, "model", model, "conn", connID)
 		return
 	}
-	currentLevel := h.Repo.GetConnectionBackoffLevel(connID)
+	currentLevel := h.Repo.GetConnectionBackoffLevel(ctx, connID)
 	cls := providers.ClassifyErrorForProvider(ue.StatusCode, extractErrorText(ue.Body), currentLevel, provider, ue.Body)
 	// Upstream parity (checkFallbackError): request-scoped 4xx (400/404/405/
 	// 409/422/...) must not lock the account — the bug is in the request,
@@ -2209,11 +2255,11 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	}
 	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue, provider)
 	lockKey := canonicalLockModel(provider, model)
-	if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
+	if err := h.Repo.LockConnectionModel(ctx, connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
 		log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", lockKey, "error", err)
 	}
 	if lockKey != model {
-		_ = h.Repo.LockConnectionModel(connID, model, cooldownSec, cls.NewBackoffLevel)
+		_ = h.Repo.LockConnectionModel(ctx, connID, model, cooldownSec, cls.NewBackoffLevel)
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
 	// can skip this account before spending a request (upstream applyErrorState).
@@ -2221,12 +2267,12 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	// issues, or a rule that declared itself model-scoped such as an NVIDIA
 	// NIM degraded cluster), so unrelated models stay available.
 	if cls.ModelScoped || isModelScopedError(ue.StatusCode, extractErrorText(ue.Body), model, ue.Body) {
-		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+		if recErr := h.Repo.RecordConnectionScopedError(ctx, connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
 			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
 		}
 	} else {
 		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
+		if err := h.Repo.LockConnectionRateLimit(ctx, connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
 			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
 		}
 	}

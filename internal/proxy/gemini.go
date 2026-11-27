@@ -178,7 +178,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		if isBareResourceExhausted(errBody) {
 			// Translate the OpenAI body to Gemini, move the systemInstruction,
 			// then re-wrap for Antigravity.
-			geminiBody, terr := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
+			geminiBody, terr := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx), apiKeyID)
 			if terr == nil {
 				if rewritten, ok := translator.MoveSystemInstructionToContents(geminiBody); ok {
 					sessID := handlerutil.GetSessionID(ctx)

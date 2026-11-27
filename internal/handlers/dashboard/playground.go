@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"io"
 	"net/http"
+	"time"
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/middleware"
@@ -63,10 +64,21 @@ func (h *DashboardHandler) HandlePlaygroundChat(w http.ResponseWriter, r *http.R
 	// silent downgrade to the global scope.
 	var key *models.APIKey
 	if req.KeyID != "" {
+		if h.Repo == nil {
+			handlerutil.WriteJSONError(w, http.StatusServiceUnavailable, "repository unavailable")
+			return
+		}
 		key, err = h.Repo.GetApiKeyByID(req.KeyID)
 		if err != nil || key == nil || key.IsActive != 1 {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "unknown or inactive key")
 			return
+		}
+		if key.ExpiresAt != nil && *key.ExpiresAt != "" {
+			expires, parseErr := time.Parse(time.RFC3339, *key.ExpiresAt)
+			if parseErr != nil || !time.Now().Before(expires) {
+				handlerutil.WriteJSONError(w, http.StatusBadRequest, "expired API key")
+				return
+			}
 		}
 	}
 

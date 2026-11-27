@@ -8376,6 +8376,12 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "type": "tts"
     }
   ],
+  "searxng": [
+    {
+      "id": "search",
+      "name": "SearXNG Web Search"
+    }
+  ],
 };
 export const PROVIDER_MODELS = BUILTIN_MODELS_BY_PROVIDER;
 

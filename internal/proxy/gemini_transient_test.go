@@ -17,6 +17,7 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/translator"
 )
 
 func TestForwardGemini_TransportTimeout_IsRetryable(t *testing.T) {
@@ -259,6 +260,84 @@ func TestForwardGemini_ExplicitQuota429DoesNotRetry(t *testing.T) {
 // TestForwardGemini_Bare429RetryFails_ReturnsOriginal429 pins the fallback:
 // when the retry also fails, the original 429 is returned so the combo loop
 // can rotate the connection (local hardening).
+// TestForwardGemini_Bare429RetryCarriesAPIKeyID pins that the bare-429 retry
+// translates the body with the caller's apiKeyID. Without it the retry reads
+// the unscoped signature keys, so a bare-key request (no session header) loses
+// the thought signature it stored on the previous turn and the retried body
+// falls back to the generic default instead.
+func TestForwardGemini_Bare429RetryCarriesAPIKeyID(t *testing.T) {
+	const (
+		apiKeyID   = "proxy-test-key-bare429"
+		toolCallID = "call_bare429_proxy_test"
+		signature  = "c2lnLWZyb20tdGhlLXN0b3Jl"
+	)
+	translator.StoreGeminiThoughtSignature(toolCallID, signature, "", "gemini-3-flash", apiKeyID)
+
+	var secondBody atomic.Value
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if n == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}`)
+			return
+		}
+		secondBody.Store(string(body))
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	body := `{"model":"gemini-3-flash","messages":[` +
+		`{"role":"system","content":"You are a helpful assistant."},` +
+		`{"role":"user","content":"list files"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"` + toolCallID + `","type":"function","function":{"name":"bash","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"` + toolCallID + `","content":"a.txt"}]}`
+
+	resp, err := ForwardGemini(context.Background(), srv.Client(), cfg, "ya29.fake", body, false, "proj-1", "gemini-3-flash", apiKeyID)
+	if err != nil {
+		t.Fatalf("ForwardGemini() error = %v, want nil", err)
+	}
+	defer resp.Body.Close()
+	if hits.Load() != 2 {
+		t.Fatalf("ForwardGemini() made %d requests, want 2 (original + retry)", hits.Load())
+	}
+
+	var envelope struct {
+		Request jsontext.Value `json:"request"`
+	}
+	if jsonErr := json.Unmarshal([]byte(secondBody.Load().(string)), &envelope); jsonErr != nil {
+		t.Fatalf("unmarshal retry envelope: %v", jsonErr)
+	}
+	// The signature rides on the PART, beside functionCall, not inside it.
+	var inner struct {
+		Contents []struct {
+			Parts []struct {
+				ThoughtSignature string `json:"thoughtSignature"`
+				FunctionCall     *struct {
+					Name string `json:"name"`
+				} `json:"functionCall"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if jsonErr := json.Unmarshal([]byte(envelope.Request), &inner); jsonErr != nil {
+		t.Fatalf("unmarshal retry request: %v", jsonErr)
+	}
+	got := ""
+	for _, c := range inner.Contents {
+		for _, p := range c.Parts {
+			if p.FunctionCall != nil && p.ThoughtSignature != "" {
+				got = p.ThoughtSignature
+			}
+		}
+	}
+	if got != signature {
+		t.Errorf("retry functionCall thoughtSignature = %q, want the stored %q (the apiKeyID was not threaded into the retry)", got, signature)
+	}
+}
+
 func TestForwardGemini_Bare429RetryFails_ReturnsOriginal429(t *testing.T) {
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

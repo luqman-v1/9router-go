@@ -50,7 +50,7 @@ func waitHealthy(url string, pid int) error {
 		if !proc.Alive(pid) {
 			return fmt.Errorf("daemon.Start: process %d exited before becoming ready — see %s", pid, LogPath())
 		}
-		if probeHealthy(target) {
+		if Healthy(url) {
 			return nil
 		}
 		if bindFailureSeen() {
@@ -125,4 +125,20 @@ func probeHealthy(url string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// BindFailureLogged reports whether the run log carries a failed-listen
+// marker.
+//
+// waitHealthy uses the same scan to turn a dead child into one clear error;
+// doctor uses it to explain a start that failed before the CLI could report
+// anything, from a process that has already exited.
+func BindFailureLogged() bool { return bindFailureSeen() }
+
+// Healthy reports whether the gateway at baseURL answers /health with 200.
+//
+// baseURL is the dashboard root, not the health URL: the path is appended
+// here so every caller probes the same address waitHealthy polls.
+func Healthy(baseURL string) bool {
+	return probeHealthy(strings.TrimSuffix(baseURL, "/") + HealthPath)
 }

@@ -22,11 +22,15 @@ import (
 const maxAPIKeyMetadataBytes = 2048
 
 // Bounds on the individual metadata fields. priceCents is a count of cents, so
-// it stays an integer far inside the range a float64 represents exactly.
+// it stays a whole number far inside the range a float64 represents exactly.
 const (
 	maxMetadataCustomerIDLen = 128
 	maxMetadataTextLen       = 500
-	maxMetadataPriceCents    = 100_000_000_000
+	// Typed float64, and compared against the float64 the JSON decoder
+	// produces: an untyped int constant here does not fit in a 32-bit int, so
+	// the package failed to compile for armv7 and mips, which are the router
+	// targets this ships to.
+	maxMetadataPriceCents float64 = 100_000_000_000
 )
 
 // metadataBillingCycles is the accepted vocabulary for a contract's billing
@@ -103,7 +107,7 @@ func metadataPriceCents(value any) error {
 		return errValue("must be a whole number of cents")
 	}
 	if cents < 0 || cents > maxMetadataPriceCents {
-		return errValue(fmt.Sprintf("must be between 0 and %d", maxMetadataPriceCents))
+		return errValue(fmt.Sprintf("must be between 0 and %.0f", maxMetadataPriceCents))
 	}
 	return nil
 }

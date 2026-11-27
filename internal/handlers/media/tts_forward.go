@@ -235,11 +235,11 @@ func (h *MediaHandler) tryNvidiaTTSConn(w http.ResponseWriter, r *http.Request, 
 		}
 		log.Warn("media", "nvidia tts upstream error", "status", resp.StatusCode, "body", errText)
 		if h.Repo != nil {
-			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff := h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 			if classification := providers.ClassifyError(resp.StatusCode, errText, backoff, errBytes); classification.ShouldFallback {
 				cooldownSec := max(classification.CooldownMs/1000, 1)
 				if !handlerutil.IsProbeContext(r.Context()) {
-					_ = h.Repo.LockConnectionModel(conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
+					_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, modelInfo.Model, cooldownSec, classification.NewBackoffLevel)
 				}
 				return resp.StatusCode, errText, true
 			}
@@ -259,7 +259,7 @@ func (h *MediaHandler) tryNvidiaTTSConn(w http.ResponseWriter, r *http.Request, 
 		// operator is relying on. UpdateConnectionLastUsed still runs — the
 		// probe really did reach the provider.
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, modelInfo.Model)
 		}
 	}
 	h.trackTTSUsage("nvidia", modelInfo.Model)

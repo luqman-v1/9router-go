@@ -1,0 +1,53 @@
+#!/bin/sh
+# prerm — stop the service before its files disappear, so no orphan daemon holds
+# the port after a clean removal.
+#
+# `opkg upgrade` calls this with "upgrade" as the argument. Replacing files is
+# atomic (postinst installs the runtime copy with mv), so the old process can
+# keep running until the new one is started; stopping it here would drop
+# in-flight proxied requests for no benefit.
+
+[ -n "$IPKG_INSTROOT" ] && exit 0
+
+[ "$1" = "upgrade" ] && exit 0
+
+/etc/init.d/9router-go stop 2>/dev/null
+/etc/init.d/9router-go disable 2>/dev/null
+
+# Remove the health probe's cron entry. Rewrite rather than deleting the
+# whole file; this preserves jobs the operator added for other purposes.
+if [ -d /etc/crontabs ] && [ -f /etc/crontabs/root ]; then
+	tmp=/etc/crontabs/root.9router-go.tmp
+	grep -v '/usr/bin/9router-go-healthcheck' /etc/crontabs/root > "$tmp" 2>/dev/null || true
+	mv -f "$tmp" /etc/crontabs/root
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
+# Remove the LAN firewall rule the init script installed. All matches are
+# deleted, not just the first: a config carrying duplicates from an older
+# package must not be left reachable from the LAN after removal.
+if command -v uci >/dev/null 2>&1 && [ -f /etc/config/firewall ]; then
+	rule="9router-go-allow-lan"
+	ids=$(uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$rule'$/\1/p")
+	if [ -n "$ids" ]; then
+		for id in $ids; do
+			uci -q delete "firewall.$id"
+		done
+		uci -q commit firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+		logger -t 9router-go "removed the LAN firewall rule"
+	fi
+fi
+
+# Remove the program artifacts this package put in data_dir (the runtime binary
+# copy and the downloaded cloudflared), but never the user's own state: the
+# database, its uploads and the JWT secret stay put so a reinstall picks up
+# where the old install left off, and an operator who uninstalled by mistake
+# does not lose every provider connection and API key.
+data_dir=$(uci -q get 9router-go.main.data_dir 2>/dev/null)
+data_dir=${data_dir:-/opt/9router}
+rm -f "$data_dir/bin/9router-go" 2>/dev/null
+rm -f "$data_dir/bin/cloudflared" 2>/dev/null
+rmdir "$data_dir/bin" 2>/dev/null || true
+
+exit 0

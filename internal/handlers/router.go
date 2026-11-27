@@ -140,6 +140,8 @@ func SetupRoutes(r interface {
 	r.Get("/api/media-providers/tts/deepgram/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/elevenlabs/voices", mediaH.HandleAudioVoices)
 	r.Post("/audio/transcriptions", mediaH.HandleAudioTranscriptions)
+	r.Post("/audio/translations", mediaH.HandleAudioTranslations)
+	r.Post("/v1/audio/translations", mediaH.HandleAudioTranslations)
 	r.Post("/audio/sound-generation", mediaH.HandleAudioSoundGeneration)
 	r.Post("/v1/audio/sound-generation", mediaH.HandleAudioSoundGeneration)
 	r.Post("/videos/generations", mediaH.HandleVideoGenerations)
@@ -795,7 +797,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
 			provider := r.URL.Query().Get("provider")
 			model := r.URL.Query().Get("model")
-			if err := repo.ResetProviderHealth(provider, model); err != nil {
+			if err := repo.ResetProviderHealth(r.Context(), provider, model); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}

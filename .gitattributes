@@ -66,3 +66,8 @@
 # diff. `-text` keeps it byte-identical in the blob and on every checkout, which
 # is what stops it showing as modified on Linux while its neighbours convert.
 CHANGELOG.md -text
+# The files that ship inside the .ipk without an extension (9router-go.init,
+# 9router-go-backup, postinst, ...) are not covered by the extension rules
+# above. A CRLF in /etc/init.d/9router-go makes the shebang line "#!/bin/sh\r"
+# and the router refuses to execute it (not found), so pin them to LF.
+openwrt/** text eol=lf

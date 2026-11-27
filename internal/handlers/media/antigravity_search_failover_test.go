@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +63,7 @@ func TestHandleSearch_AntigravityFailoverOnValidationRequired(t *testing.T) {
 		t.Fatalf("expected 2 upstream calls (failover), got %d", calls)
 	}
 	// The attempt locks both the normalized key and the raw request model.
-	lockedRaw, err := repo.IsConnectionModelLocked("conn-ag-1", "gemini-2.5-flash")
+	lockedRaw, err := repo.IsConnectionModelLocked(context.Background(), "conn-ag-1", "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("lock check: %v", err)
 	}
@@ -121,7 +123,7 @@ func TestHandleSearch_XquikFailover(t *testing.T) {
 	if metrics["response_time_ms"] == nil || metrics["upstream_latency_ms"] == nil {
 		t.Errorf("expected timing metrics, got %v", metrics)
 	}
-	locked, err := repo.IsConnectionModelLocked("conn-xq-1", "xquik")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-xq-1", "xquik")
 	if err != nil {
 		t.Fatalf("lock check: %v", err)
 	}

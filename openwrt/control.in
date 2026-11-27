@@ -1,0 +1,9 @@
+## Hand-written package header.
+##
+## `make ipk` (tools/ipkbuild) reads Maintainer and License from this file and
+## computes every other field (Package, Version, Architecture, Depends,
+## Installed-Size, Description) from what it actually packs. Keeping the two
+## identity fields here means a release cannot ship with a placeholder
+## maintainer, and the package metadata cannot drift from the file layout.
+Maintainer: luqman-v1 <https://github.com/luqman-v1/9router-go/issues>
+License: MIT

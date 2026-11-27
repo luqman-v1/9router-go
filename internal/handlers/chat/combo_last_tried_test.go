@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -127,7 +129,7 @@ func seedComboLastEntryLocked(t *testing.T, comboName, fastURL, slowURL string) 
 	repo := db.NewRepo(database)
 	// The final member's only connection is locked for its model, so the loop
 	// skips the entry before forwarding anything.
-	if err := repo.LockConnectionModel("mock-locked", "grok-2", 600, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "mock-locked", "grok-2", 600, 1); err != nil {
 		t.Fatalf("lock final member: %v", err)
 	}
 

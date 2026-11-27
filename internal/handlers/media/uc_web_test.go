@@ -382,3 +382,52 @@ func TestValidateUcWebCookie(t *testing.T) {
 		t.Fatalf("a cookie without __client must fail with guidance, got %v %q", valid, message)
 	}
 }
+
+func TestUcResolveImageBytes_RefusesPrivateLoopbackAndRedirects(t *testing.T) {
+	t.Run("refuses_reachable_loopback", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n" + "\x00\x00\x00\rIHDR"))
+		}))
+		defer srv.Close()
+
+		if _, err := ucResolveImageBytes(context.Background(), srv.URL+"/img.png"); err == nil {
+			t.Fatal("expected loopback input image URL to be refused, got nil error")
+		} else if !strings.Contains(err.Error(), "SSRF") {
+			t.Fatalf("refusal must name SSRF guard, got: %v", err)
+		}
+		if got := hits.Load(); got != 0 {
+			t.Fatalf("loopback server received %d request(s), want 0", got)
+		}
+	})
+
+	t.Run("refuses_redirect_to_loopback", func(t *testing.T) {
+		var privateHits atomic.Int32
+		private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			privateHits.Add(1)
+			_, _ = w.Write([]byte("secret"))
+		}))
+		defer private.Close()
+
+		fakeClient := &http.Client{
+			Transport:     &redirectRoundTripper{location: private.URL + "/admin"},
+			CheckRedirect: checkRedirectPublic,
+		}
+		orig := visionImageDownloadClient
+		visionImageDownloadClient = func() *http.Client { return fakeClient }
+		t.Cleanup(func() { visionImageDownloadClient = orig })
+
+		_, err := ucResolveImageBytes(context.Background(), "https://public.example/input.png")
+		if err == nil {
+			t.Fatal("expected redirect to private address to be refused, got nil error")
+		}
+		if !strings.Contains(err.Error(), "redirect refused") {
+			t.Fatalf("expected refusal from checkRedirectPublic, got: %v", err)
+		}
+		if got := privateHits.Load(); got != 0 {
+			t.Fatalf("redirect target received %d request(s), want 0", got)
+		}
+	})
+}

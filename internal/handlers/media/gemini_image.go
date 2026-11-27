@@ -173,7 +173,7 @@ func (h *MediaHandler) tryGeminiImageConn(
 		log.Warn("media", "gemini image error", "status", resp.StatusCode, "body", errText)
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff, respBody)
 		resetSec, hasReset := geminiQuotaResetSeconds(respBody)
@@ -183,7 +183,7 @@ func (h *MediaHandler) tryGeminiImageConn(
 			if hasReset {
 				cooldownSec = int(resetSec)
 			}
-			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 		}
 		return shouldRotate, fmt.Errorf("gemini image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
 	}
@@ -200,7 +200,7 @@ func (h *MediaHandler) tryGeminiImageConn(
 	if h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, model)
 		}
 	}
 	return false, nil

@@ -188,12 +188,12 @@ func (h *MediaHandler) tryElevenLabsMusicConn(
 		log.Warn("media", "elevenlabs music upstream error", "status", resp.StatusCode, "body", snippet)
 		backoff := 0
 		if h.Repo != nil {
-			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
+			backoff = h.Repo.GetConnectionBackoffLevel(r.Context(), conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, snippet, backoff, respBody)
 		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
-			_ = h.Repo.LockConnectionModel(conn.ID, lockModel, cooldownSec, classification.NewBackoffLevel)
+			_ = h.Repo.LockConnectionModel(r.Context(), conn.ID, lockModel, cooldownSec, classification.NewBackoffLevel)
 		}
 		return http.StatusBadGateway, fmt.Sprintf("elevenlabs music failed with status %d: %s", resp.StatusCode, snippet), classification.ShouldFallback, false
 	}
@@ -206,7 +206,7 @@ func (h *MediaHandler) tryElevenLabsMusicConn(
 	if h.Repo != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		if !handlerutil.IsProbeContext(r.Context()) {
-			_ = h.Repo.UnlockConnectionModel(conn.ID, lockModel)
+			_ = h.Repo.UnlockConnectionModel(r.Context(), conn.ID, lockModel)
 		}
 		h.ChatH.LogUsage(r.Context(), &shared.UsageLogInfo{
 			Provider:     "elevenlabs",
