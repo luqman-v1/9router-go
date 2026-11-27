@@ -167,10 +167,18 @@ sys.exit(main(sys.argv))
 # removes PATH lookup from the equation entirely, which matters on Windows where
 # a POSIX shell's PATH handling differs from the process environment's.
 UCI_WRAPPER = '''#!/bin/sh
+# A test can force one option value without teaching the stub every
+# config shape: UCI_PORT answers the gateway port lookup, so the health
+# probe can be run against a value uci would never store.
+case "$*" in
+  *9router-go.main.port*)
+    if [ -n "$UCI_PORT" ]; then printf '%s\n' "$UCI_PORT"; exit 0; fi ;;
+esac
 exec "{python}" "{stub}" "$@"
 '''
 
 WGET_WRAPPER = '''#!/bin/sh
+printf '%s\n' "$*" > "$WGET_STATUS.args"
 exit "$(cat "$WGET_STATUS")"
 '''
 
@@ -266,6 +274,18 @@ def main():
         write(status, "1\n", 0o644)
         # The init/prerm guard now tests for the firewall config file rather
         # than `uci get firewall`, so give the harness one.
+        # The health probe asks procd whether the service is running, and
+        # restarts it when the threshold is reached. Both are stubbed: a
+        # flag file answers `status`, and `restart` appends to a log.
+        running_flag = os.path.join(tmp, "running")
+        restart_log = os.path.join(tmp, "restarts.log")
+        initd_stub = os.path.join(tmp, "initd-9router-go")
+        write(initd_stub,
+              "#!/bin/sh\n"
+              'case "$1" in\n'
+              '  status) [ -f "%s" ] && echo running || echo "not running" ;;\n'
+              '  restart) echo x >> "%s" ;;\n'
+              "esac\n" % (sh_path(running_flag), sh_path(restart_log)))
         firewall_cfg = os.path.join(tmp, "firewall")
         write(firewall_cfg, "config defaults\n\toption input 'REJECT'\n", 0o644)
 
@@ -299,6 +319,7 @@ def main():
             text = text.replace("/etc/config/firewall", sh_path(firewall_cfg))
             text = re.sub(r"/etc/init\.d/firewall\s+reload", "true", text)
             text = re.sub(r"/etc/init\.d/cron\s+restart", "true", text)
+            text = text.replace("/etc/init.d/9router-go", sh_path(initd_stub))
             return text
 
         def start(open_lan, port, mem_limit=0, nofile_limit=4096):
@@ -410,6 +431,7 @@ def main():
 
         env2 = dict(env)
         env2["UCI_DB"] = empty
+        write(running_flag, "1\n", 0o644)
         r = run([sh, hc_path], env2)
         case("healthcheck exits 0 on a config without options", r.returncode == 0,
              "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
@@ -428,6 +450,27 @@ def main():
         run([sh, hc_path], env2)
         case("a healthy probe clears the counter", not os.path.exists(counter),
              "counter file still present")
+        # 7b. a deliberately stopped service is not a failure. backup stops
+        # the gateway to copy the database; counting that as a failed probe
+        # could reach the threshold and restart it mid-copy.
+        os.remove(running_flag)
+        write(status, "1\n", 0o644)
+        if os.path.exists(counter):
+            os.remove(counter)
+        run([sh, hc_path], env2)
+        case("a stopped service is not counted as a failed probe",
+             not os.path.exists(counter), "counter: %r" % (
+                 open(counter).read() if os.path.exists(counter) else None,))
+        # 7c. a non-numeric port must not turn every probe into a failure.
+        # The URL is what the stub records, so this asserts the fallback the
+        # script applies rather than the probe outcome.
+        write(running_flag, "1\n", 0o644)
+        env3 = dict(env)
+        env3["UCI_PORT"] = "not-a-port"
+        run([sh, hc_path], env3)
+        probed = open(status + ".args").read().strip() if os.path.exists(status + ".args") else ""
+        case("a non-numeric port falls back to the default URL",
+             probed.endswith(":20130/health"), "probed: %r" % (probed,))
         # 8. 9router-go-backup and the SQLite WAL.
         #
         # The gateway sets `journal_mode = WAL` (internal/db/client.go), which is

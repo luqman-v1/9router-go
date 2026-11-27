@@ -175,6 +175,22 @@ only restarted when the table actually changes. Three consecutive `/health`
 failures restart the service; one is treated as load. The counter lives in
 `/var/run`, so it costs no flash writes and resets on reboot.
 
+The probe runs unless procd reports the service as stopped. A stopped
+gateway is procd's business — it respawns a crash, and applies its own backoff to
+a binary that cannot start — and the probe covering that case would restart it
+every `healthcheck_threshold` minutes, bypassing the backoff. It also keeps the
+probe quiet while `9router-go-backup` stops the gateway to copy the database,
+which otherwise counts a deliberate stop as a failure and can restart the service
+mid-copy.
+
+The gate reads `/etc/init.d/9router-go status` and skips only on a verdict that
+names the service stopped (`not running` or `stopped`). Anything else — including
+the help text a call returns on OpenWrt 18.06 and 19.07, where `status` is not a
+registered rc.common action — is treated as "the gate cannot decide" and the probe
+fires anyway, because a silently disabled watchdog costs a wedged gateway while a
+redundant probe costs one HTTP request. A non-numeric `port` falls back to `20130`
+in the probe rather than turning every check into a failed URL.
+
 ## Memory and file limits
 ```sh
 uci set 9router-go.main.mem_limit='64'        # MiB, 0 = no limit (default)
