@@ -237,7 +237,7 @@ func fetchEdgeTTSVoices(client *http.Client, ctx context.Context) ([]map[string]
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Edge TTS voices fetch failed: %d", resp.StatusCode)
 	}
@@ -307,7 +307,7 @@ func fetchElevenLabsVoices(client *http.Client, ctx context.Context, apiKey stri
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ElevenLabs voices fetch failed: %d", resp.StatusCode)
 	}
@@ -480,7 +480,7 @@ func (h *MediaHandler) fetchDeepgramVoices(ctx context.Context) ([]map[string]an
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		msg := strings.TrimSpace(string(body))
@@ -581,7 +581,7 @@ func (h *MediaHandler) fetchInworldVoices(ctx context.Context) ([]map[string]any
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		msg := strings.TrimSpace(string(body))
@@ -672,7 +672,7 @@ func (h *MediaHandler) fetchMinimaxVoices(ctx context.Context, provider, voiceTy
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	var data map[string]any
 	if len(body) > 0 {

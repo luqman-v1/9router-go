@@ -19,7 +19,7 @@ func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, "dall-e-3", "/v1/images/generations")
 }
 
@@ -31,7 +31,7 @@ func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Req
 		middleware.WriteBodyReadError(w, r, err)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, "sora", "/v1/videos/generations")
 }
 
@@ -43,7 +43,7 @@ func (h *MediaHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) 
 		middleware.WriteBodyReadError(w, r, err)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, "sora", "/v1/videos/edits")
 }
 
@@ -55,7 +55,7 @@ func (h *MediaHandler) HandleVideoExtensions(w http.ResponseWriter, r *http.Requ
 		middleware.WriteBodyReadError(w, r, err)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, "sora", "/v1/videos/extensions")
 }
 

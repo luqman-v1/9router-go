@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -371,7 +372,7 @@ func rewriteMultipartModelPart(body []byte, contentType, oldModel, newModel stri
 	}
 	for {
 		part, err := mr.NextPart()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

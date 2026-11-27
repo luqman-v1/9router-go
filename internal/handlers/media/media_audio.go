@@ -26,7 +26,7 @@ func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	// Xiaomi MiMo TTS uses a chat-completions contract, not the OpenAI
 	// /audio/speech shape (port of open-sse/handlers/ttsProviders/xiaomi-mimo.js).
 	// It leaves forwardTTSRequest behind, so it needs the guard here.
@@ -313,7 +313,7 @@ func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.
 		middleware.WriteBodyReadError(w, r, err)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, "whisper-1", "/v1/audio/transcriptions")
 }
 

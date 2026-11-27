@@ -186,7 +186,7 @@ func platformRequest(ctx context.Context, client *http.Client, method, url, toke
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyLen))
 	if err != nil {
 		return resp.StatusCode, nil, err
@@ -469,7 +469,7 @@ func deleteDenoApp(ctx context.Context, client *http.Client, token, appID string
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 }
 

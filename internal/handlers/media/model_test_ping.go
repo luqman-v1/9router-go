@@ -62,7 +62,7 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSON(w, http.StatusBadRequest, testModelResult{Error: "failed to read body"})
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req testModelRequest
 	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" {

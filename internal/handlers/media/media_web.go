@@ -57,7 +57,7 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, h.defaultWebSearchModel(), "/v1/search")
 }
 
@@ -69,7 +69,7 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/scrape")
 }
 
@@ -81,7 +81,7 @@ func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req struct {
 		URL      string `json:"url"`

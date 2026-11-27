@@ -28,7 +28,7 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var reqBody struct {
 		Model     string         `json:"model"`
 		State     any            `json:"state"`

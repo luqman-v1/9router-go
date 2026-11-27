@@ -295,7 +295,7 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 	if err != nil {
 		return &searchUpstreamError{Status: http.StatusBadGateway, Message: fmt.Sprintf("antigravity search upstream request: %v", err), Retryable: r.Context().Err() == nil}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

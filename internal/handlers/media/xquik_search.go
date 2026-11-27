@@ -180,7 +180,7 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return &searchUpstreamError{Status: http.StatusBadGateway, Message: fmt.Sprintf("Xquik upstream request failed: %v", err), Retryable: r.Context().Err() == nil}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

@@ -272,7 +272,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 			if resp.StatusCode >= 400 {
 				errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024))
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				errText := strings.TrimSpace(string(errBody))
 				if errText == "" {
 					errText = resp.Status
@@ -293,8 +293,16 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			defer func() { _ = resp.Body.Close() }()
 			copyUpstreamHeaders(w.Header(), resp.Header)
 			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-			h.Repo.UpdateConnectionLastUsed(conn.ID)
+			// The status line is already on the wire, so a copy failure is the
+			// client going away mid-stream: there is no response left to turn
+			// into an error, so it is logged and the request ends here.
+			if _, err := io.Copy(w, resp.Body); err != nil {
+				log.Warn("media", "client stream ended early", "endpoint", endpoint,
+					"conn", conn.ID[:min(8, len(conn.ID))], "err", err)
+			}
+			// Best-effort bookkeeping after a served request; a failure here
+			// must not turn a 200 into an error.
+			_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 			return
 		}
 		handlerutil.WriteJSONError(w, lastStatus, fmt.Sprintf("all combo models failed: %s", lastErr))
