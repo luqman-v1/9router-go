@@ -101,16 +101,22 @@ func TestForwardOpenCodeRotating(t *testing.T) {
 	})
 }
 
-// The rotation hook only exists for a router-minted stable session; keyed
-// lanes and client-supplied sessions are never rotated.
+// The rotation hook exists for router-owned sessions: hint-less requests and
+// non-native client ids (omp/Claude UUIDs), which BuildOpenCodeHeaders has to
+// translate anyway. Keyed lanes and client-supplied native `ses_` sessions are
+// never rotated.
 func TestOpencodeStableSessionKey(t *testing.T) {
 	free := &Request{ConnectionID: "conn-1"}
 	if got := opencodeStableSessionKey(free, true); got != "opencode:conn:conn-1" {
 		t.Errorf("free lane without a client session: got key %q", got)
 	}
-	withSession := &Request{ConnectionID: "conn-1", SessionID: "ses_client"}
-	if got := opencodeStableSessionKey(withSession, true); got != "" {
-		t.Errorf("a client session must never be rotated, got key %q", got)
+	withNativeSession := &Request{ConnectionID: "conn-1", SessionID: "ses_000000000fcfabcdefghijklmn"}
+	if got := opencodeStableSessionKey(withNativeSession, true); got != "" {
+		t.Errorf("a native client session must never be rotated, got key %q", got)
+	}
+	withUUID := &Request{ConnectionID: "conn-1", SessionID: "01a21c78-3cb9-771c-be11-1e5b4a46b8a1"}
+	if got := opencodeStableSessionKey(withUUID, true); got != "opencode:client:01a21c78-3cb9-771c-be11-1e5b4a46b8a1" {
+		t.Errorf("a non-native client session must be quoted, got key %q", got)
 	}
 	keyed := &Request{ConnectionID: "conn-1"}
 	if got := opencodeStableSessionKey(keyed, false); got != "" {
