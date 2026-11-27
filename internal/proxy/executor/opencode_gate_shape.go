@@ -1,6 +1,8 @@
 package executor
 
 import (
+	json "encoding/json/v2"
+
 	"9router/proxy/internal/translator"
 )
 
@@ -22,9 +24,30 @@ import (
 // flat is true for Responses bodies and false for Chat Completions. The
 // returned rename map is empty for a title request: no tool is renamed because
 // none is declared.
-func shapeOpenCodeFreeBody(body []byte, flat bool, cleanModel string) ([]byte, map[string]string) {
+func shapeOpenCodeFreeBody(body []byte, flat bool, cleanModel string, aliasesOut ...*translator.OpenCodeGateAliases) ([]byte, map[string]string) {
 	if translator.IsOpenCodeTitleRequest(body) {
 		return translator.ShapeOpenCodeV2TitleRequest(body, flat), map[string]string{}
 	}
-	return translator.ConcealOpenCodeV2FingerprintTools(body, flat, isOpenCodeAutoToolChoiceModel(cleanModel))
+	shaped, names := translator.ConcealOpenCodeV2FingerprintTools(body, flat, isOpenCodeAutoToolChoiceModel(cleanModel))
+	if len(aliasesOut) == 0 || aliasesOut[0] == nil {
+		return shaped, names
+	}
+	var request map[string]any
+	if json.Unmarshal(shaped, &request) != nil {
+		return shaped, names
+	}
+	claude := false
+	if _, ok := request["system"]; ok {
+		claude = true
+	}
+	flatShape := flat
+	if flat || claude {
+		flatShape = flat || claude
+	}
+	*aliasesOut[0] = translator.AliasOpenCodeGateTools(request, flatShape, claude)
+	out, err := json.Marshal(request, json.Deterministic(true))
+	if err != nil {
+		return shaped, names
+	}
+	return out, names
 }

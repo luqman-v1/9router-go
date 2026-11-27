@@ -159,9 +159,9 @@ func zenChatLaneBody(body []byte) ([]byte, error) {
 // it, and that gate wants the genuine CLI 2.x read/shell definitions. Shaping a
 // free request with the legacy quartet — the /zen/v1 fingerprint — sends a body
 // the inference gate refuses, which is what the messages lane used to do.
-func zenShapedBody(body []byte, cleanModel string, free bool) ([]byte, map[string]string) {
+func zenShapedBody(body []byte, cleanModel string, free bool, aliasesOut ...*translator.OpenCodeGateAliases) ([]byte, map[string]string) {
 	if free {
-		return shapeOpenCodeFreeBody(body, false, cleanModel)
+		return shapeOpenCodeFreeBody(body, false, cleanModel, aliasesOut...)
 	}
 	return translator.ConcealFingerprintTools(body)
 }
@@ -264,17 +264,19 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	// requests: v2 fingerprint, inference endpoint, public credentials.
 	free := isOpencodeFreeModel(cleanModel)
 	var zenToolNameMap map[string]string
+	var gateAliases translator.OpenCodeGateAliases
 	if free {
-		body, zenToolNameMap = shapeOpenCodeFreeBody(body, false, cleanModel)
+		body, zenToolNameMap = shapeOpenCodeFreeBody(body, false, cleanModel, &gateAliases)
 		body = translator.ApplyFingerprintSystemPrompt(body)
-		if req.IsStream {
-			w = NewOpenCodeExecuteBridgeWriter(w)
-		}
 	} else {
 		body, zenToolNameMap = translator.ConcealFingerprintTools(body)
 	}
 	req.Ctx = translator.WithToolNameMap(req.Ctx, zenToolNameMap)
 	w = NewToolNameRestoringWriter(w, zenToolNameMap)
+	w = NewOpenCodeGateAliasWriter(w, gateAliases)
+	if free && req.IsStream {
+		w = NewOpenCodeExecuteBridgeWriter(w)
+	}
 
 	// Upstream rejects stream:false on the free-tier gate even for a keyed lane.
 	body = withJSONFields(body, map[string]any{"stream": true, "model": cleanModel})
@@ -358,8 +360,9 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 	// credentials behind the inference gate, quartet cloaking otherwise.
 	free := isOpencodeFreeModel(cleanModel)
 	var toolNameMap map[string]string
+	var gateAliases translator.OpenCodeGateAliases
 	if free {
-		body, toolNameMap = shapeOpenCodeFreeBody(body, true, cleanModel)
+		body, toolNameMap = shapeOpenCodeFreeBody(body, true, cleanModel, &gateAliases)
 		body = translator.ApplyFingerprintSystemPrompt(body)
 	} else {
 		body, toolNameMap = translator.ConcealFingerprintTools(body)
@@ -384,6 +387,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 		// bridge's line protocol does not apply.
 		w = NewOpenCodeExecuteBridgeWriter(w)
 	}
+	w = NewOpenCodeGateAliasWriter(w, gateAliases)
 	resp, err := forwardOpenCodeRotating(ctx, func() (*http.Response, error) {
 		if free {
 			return forwardOpencodeRequest(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
@@ -437,9 +441,11 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 		body = EnsureClaudeMessagesFor(body, "opencode-zen", cleanModel)
 	}
 	free := isOpencodeFreeModel(cleanModel)
-	body, toolNameMap := zenShapedBody(body, cleanModel, free)
+	var gateAliases translator.OpenCodeGateAliases
+	body, toolNameMap := zenShapedBody(body, cleanModel, free, &gateAliases)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
+	w = NewOpenCodeGateAliasWriter(w, gateAliases)
 
 	headers := zenAuthHeaders(req.APIKey)
 	if free {

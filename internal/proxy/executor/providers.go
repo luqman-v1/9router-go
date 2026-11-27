@@ -818,10 +818,12 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		// The free-tier gate fingerprints the lowercase tool quartet; capitalised
 		// variants from Claude Code CLI are renamed here and restored on the
 		// response (translator.ConcealFingerprintTools).
-		transformedBody, toolNameMap := shapeOpenCodeFreeBody(transformedBody, true, cleanModel)
+		var gateAliases translator.OpenCodeGateAliases
+		transformedBody, toolNameMap := shapeOpenCodeFreeBody(transformedBody, true, cleanModel, &gateAliases)
 		transformedBody = translator.ApplyFingerprintSystemPrompt(transformedBody)
 		req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 		w = NewToolNameRestoringWriter(w, toolNameMap)
+		w = NewOpenCodeGateAliasWriter(w, gateAliases)
 
 		// The lane URL is what the relay forwards to, so it is built the same way
 		// for a relayed connection as for a direct one.
@@ -875,10 +877,12 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	// there (upstream quirks.reasoningAliasFields).
 	req.LiftReasoningAliases = true
 	// opencode Chat Completions path: same conceal + restore of tool names.
-	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel)
+	var gateAliases translator.OpenCodeGateAliases
+	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel, &gateAliases)
 	body = translator.ApplyFingerprintSystemPrompt(body)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
+	w = NewOpenCodeGateAliasWriter(w, gateAliases)
 	// Strict models wrap caller tool calls as execute/CALL_TOOL; hand the
 	// client back its own spelling. The bridge buffers whole SSE lines, so it
 	// may only wrap a streaming response — the non-streaming lane rewrites
@@ -1899,10 +1903,12 @@ func opencodeGoInferenceBase(base string) string {
 // Responses lane upstream), v2 fingerprint, public credentials.
 func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel string) error {
 	body := InjectReasoningContent(req.Body, "opencode-go")
-	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel)
+	var gateAliases translator.OpenCodeGateAliases
+	body, toolNameMap := shapeOpenCodeFreeBody(body, false, cleanModel, &gateAliases)
 	body = translator.ApplyFingerprintSystemPrompt(body)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
+	w = NewOpenCodeGateAliasWriter(w, gateAliases)
 	// Same execute/CALL_TOOL bridge as the free chat lane: streaming only —
 	// the non-streaming lane rewrites the re-aggregated JSON below.
 	if req.IsStream {
