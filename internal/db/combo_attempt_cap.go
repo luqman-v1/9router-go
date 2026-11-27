@@ -15,15 +15,15 @@ package db
 // Resolution order, matching upstream Pro's documented rules: the provider's
 // own override when it sets one (a zero there disables the cap for that
 // provider even when a global cap exists), then the global setting, then off.
-const (
-	// DefaultComboMemberAttemptCap is what the dashboard offers as a starting
-	// point when an operator enables the cap. It is not applied unless enabled
-	// because a default that changes fallback behaviour on upgrade is a
-	// regression nobody asked for.
-	DefaultComboMemberAttemptCap = 3
-	// MaxComboMemberAttemptCap is the ceiling the loops themselves impose.
-	MaxComboMemberAttemptCap = 10
-)
+// MaxComboMemberAttemptCap is the ceiling the loops themselves impose: with no
+// cap set a member walks at most this many connections, so a larger configured
+// value could never take effect and is clamped rather than ignored.
+//
+// There is deliberately no default cap constant. Pro starts an operator at 3;
+// this starts them at 0 (off) and lets the dashboard offer the value, because a
+// default that changes fallback behaviour on upgrade is a regression nobody
+// asked for.
+const MaxComboMemberAttemptCap = 10
 
 // ComboMemberAttemptCapFor resolves the cap for one provider.
 //

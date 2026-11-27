@@ -1292,8 +1292,6 @@
             A request cut by it fails with HTTP 504.
           </p>
         </div>
-          </p>
-        </div>
 
         <Toggle
           checked={forceFallback}
