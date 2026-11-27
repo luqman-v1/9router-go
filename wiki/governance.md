@@ -32,11 +32,29 @@ Per-key limits with a FIFO queue:
 | RPM | requests per minute |
 | TPM | tokens per minute |
 | Concurrency | parallel requests |
+| RPH | requests per hour |
+| RPD | requests per day |
 | Queue timeout | how long a request may wait for a slot |
 
 Prompt tokens are charged up front as an estimate, then reconciled when the real
 completion tokens arrive — so one very long response correctly reduces the
 running minute's budget after it finishes.
+
+**RPH and RPD exist because RPM cannot express an allowance.** A key answering
+ten requests a minute can spend a whole day's quota before anyone notices; RPM
+bounds the burst, not the day. All four windows and the concurrency gate are
+enforced by one admission call: admit if there is room, otherwise wait in FIFO
+order up to the queue timeout, and give up (with `Retry-After`) when that
+expires. A client that hangs up leaves the queue instead of being granted a slot
+and dispatched upstream for nobody.
+
+**A per-client-IP ceiling runs before every key window.** Per-key limits protect
+each key; they do not protect the upstream account from one host that holds — or
+mints — many keys, since every key spends its own fresh budget. The host ceiling
+is checked first and refuses immediately rather than queueing: it is a flood
+guard, not a fairness queue. All four host values zero means the axis is off, so
+a default install pays nothing for the check. Which address counts as the client
+is covered in [Security](security.html).
 
 **Per-provider limits are separate.** A key limit answers "how much may this
 caller spend"; a provider limit answers "how much can this endpoint take". Key

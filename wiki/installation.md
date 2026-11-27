@@ -116,6 +116,47 @@ docker run -d --name 9router-go --restart unless-stopped \
 Experimental builds are marked **Pre-release** and never offered to a normal
 install; Docker Hub tags them `exp` (`luqmenul/9router-go:exp`), never `latest`.
 
+## OpenWrt
+
+`9router-go` ships as an `opkg` package for **OpenWrt 18.06 and later**, with an
+optional LuCI page and a feed for `opkg upgrade`:
+
+```sh
+echo "src/gz 9router-go https://luqman-v1.github.io/9router-go/openwrt/$(. /etc/openwrt_release && echo "$DISTRIB_ARCH")" \
+	>> /etc/opkg/customfeeds.conf
+opkg update && opkg install 9router-go luci-app-9router-go
+```
+
+Built per `DISTRIB_ARCH`, the names 18.06 and later actually report: `x86_64`,
+`i386_pentium4`, `aarch64_generic`, `aarch64_cortex-a53`,
+`aarch64_cortex-a72`, `arm_cortex-a7_neon-vfpv4`, `arm_cortex-a15_neon-vfpv4`,
+`arm_cortex-a9_vfpv3`. **32-bit MIPS is not supported** (ramips
+`mipsel_24kc`, ath79 `mips_24kc`, lantiq): the blocker is the pure-Go SQLite
+driver, which has no mips port, so those routers have no install path at all —
+package or otherwise.
+
+The LuCI page is a Lua app on the 18.06 baseline; on 21.02 and later it needs
+the compatibility shim:
+
+```sh
+opkg install luci-compat
+```
+
+The package is configured in UCI (`/etc/config/9router-go`) or on the LuCI page
+under **Services → 9router-go** — port, `host`, `data_dir`, `auto_update`,
+`jwt_secret`, and two settings that only exist on this platform:
+
+| Option | Effect |
+|---|---|
+| `healthcheck`, `healthcheck_threshold`, `healthcheck_timeout` | A once-a-minute `/health` probe (installed as a cron job, on by default) that restarts the gateway after N consecutive failures — the wedged-listener case procd respawn does not catch. `0` disables it. |
+| `open_lan` | Opens an idempotent `uci-firewall` rule so the dashboard is reachable from the LAN when `host` binds every address. `0` (the default) leaves LAN access closed; operators open it deliberately. |
+
+`data_dir` must live on writable storage that survives a sysupgrade (`/opt`),
+not `/tmp`: the SQLite database, the downloaded `cloudflared` binary and the
+runtime copy of the gateway all sit there. Full details — self-update versus
+`opkg upgrade`, the database backup helper, tunnels — in
+[docs/OPENWRT.md](https://github.com/luqman-v1/9router-go/blob/main/docs/OPENWRT.md).
+
 ## Building from source
 
 Prerequisites: Go 1.27 and Bun 1.x (the dashboard is embedded into the binary, so build web first).

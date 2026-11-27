@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/config"
 )
@@ -251,5 +255,81 @@ func TestCheckDaemonFailsForAWedgedGateway(t *testing.T) {
 	}
 	if !strings.Contains(got.Detail, "wedged") {
 		t.Fatalf("detail does not name the state: %s", got.Detail)
+	}
+}
+
+func TestCheckDaemonHonorsHealthyAtProbeForLivePID(t *testing.T) {
+	originalPID, originalHealthy := runningPID, healthyAt
+	t.Cleanup(func() {
+		runningPID, healthyAt = originalPID, originalHealthy
+	})
+	runningPID = func() int { return 4242 }
+	healthyAt = func(string) bool { return true }
+
+	got := checkDaemon("http://127.0.0.1:20130")
+	if !got.OK {
+		t.Fatalf("checkDaemon ignored healthyAt probe for live pid: %s (%s)", got.Detail, got.Fix)
+	}
+	if !strings.Contains(got.Detail, "running") {
+		t.Fatalf("expected running detail, got: %s", got.Detail)
+	}
+}
+
+func TestDoctorCommandExplicitZeroPortFailsConfigCheck(t *testing.T) {
+	originalPID, originalPort, originalHealthy := runningPID, portStatus, healthyAt
+	t.Cleanup(func() {
+		runningPID, portStatus, healthyAt = originalPID, originalPort, originalHealthy
+	})
+	runningPID = func() int { return 4242 }
+	portStatus = func(string) (bool, string) { return true, "pid 4242 owns it" }
+	healthyAt = func(string) bool { return true }
+
+	dir := t.TempDir()
+	dbDir := filepath.Join(dir, "db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dbDir, "data.sqlite")
+	if err := os.WriteFile(dbPath, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dir)
+	t.Setenv("PORT", "20130")
+
+	oldStdout := os.Stdout
+	rPipe, wPipe, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = wPipe
+	defer func() {
+		os.Stdout = oldStdout
+		_ = wPipe.Close()
+		_ = rPipe.Close()
+	}()
+
+	app := &cli.App{
+		Name:     "9router-go",
+		Commands: []*cli.Command{doctorCommand()},
+	}
+	runErr := app.Run([]string{"9router-go", "doctor", "--port", "0"})
+	_ = wPipe.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, rPipe)
+	out := buf.String()
+
+	if runErr == nil {
+		t.Fatalf("expected non-nil error for explicit --port 0, output:\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL] config") || !strings.Contains(out, "port 0 is out of range") {
+		t.Fatalf("expected config check to reject explicit --port 0, output:\n%s", out)
+	}
+}
+
+func TestCheckDatabaseRejectsDirectoryPath(t *testing.T) {
+	dir := t.TempDir()
+	got := checkDatabase(&config.Config{DatabasePath: dir})
+	if got.OK {
+		t.Fatalf("directory path passed database check: %s", got.Detail)
 	}
 }

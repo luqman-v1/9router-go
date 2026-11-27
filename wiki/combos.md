@@ -15,11 +15,27 @@ subscription, the next is cheap, the last is free.
 
 | Strategy | Behaviour |
 |---|---|
+| Inherit global | Use the gateway-wide **Combo Routing Mode** (Settings → *Combo Routing Mode*: *First Model* or *Round Robin*); a combo with no value at all falls back to *Fallback* |
 | Fallback | Try candidates in order until one succeeds |
 | Round-robin | Rotate across candidates |
 | Sticky | Hold the same candidate while it succeeds |
 | Capacity | Reorder capability-aware — a model that cannot serve the request is skipped rather than tried |
+| Smart Router | Order by task suitability (System One evaluation) with session stickiness |
 | Fusion | Combine several models into one panel |
+| Tokenmaxxing | Order by remaining quota and reset time, so the bucket that frees up soonest is spent first |
+| Cascade | Cheapest unit price first |
+
+Stored order is a strategy of its own: the order you arrange in the editor is
+walked as-is, and the three dynamic strategies (`smart`, `tokenmaxxing`,
+`cascade`) are exempt from it because honouring a fixed order would defeat the
+ranking they exist to compute.
+
+The connection-level strategies — failover, round-robin, sticky round-robin and
+**least busy** — live in [Settings](settings.html) under *Default Routing
+Strategy* and decide **which connection of one provider** serves a request; they
+are not combo strategies. Least busy prefers the connection carrying the fewest
+turns still in flight, so a long streaming reply keeps its key out of the next
+pick.
 
 ## Creating a combo
 
@@ -119,6 +135,22 @@ referenced them, in one transaction — plain-string and weighted
 (`{"model": ..., "weight": ...}`) entries both. Deleting a provider node
 prunes atomically with the node itself. A combo never keeps a dead model
 around to fail on it.
+
+## Member attempt cap
+A combo member owns every connection its provider has, and the fallback loops
+used to walk all of them — up to ten — before moving on. When a lane's whole
+pool is down, that is ten dead upstream calls the client waits through before
+the chain advances.
+**Combo Member Attempt Cap** in Settings bounds it: how many failed accounts one
+member may spend before the combo moves to its next model. `0` is the default and
+means **off**, so an upgrade never changes fallback behaviour on its own; `3` is
+the value the dashboard suggests once you turn it on. Anything above `10` is
+clamped, because ten is the most the member loop will ever try.
+The setting resolves like the rest of the per-provider policy: a provider entry
+that sets its own `comboMemberAttemptCap` wins — **including an explicit `0`,
+which switches the cap off for that provider even when a global cap exists** —
+then the global value, then off. A settings read that fails resolves to *off*: a
+member never loses a working fallback because bookkeeping broke.
 
 ## Timeout and grace period
 

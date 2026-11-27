@@ -1,5 +1,650 @@
 # Changelog
 
+## [v1.9.18-exp.1] - 2026-11-27
+
+### test(openwrt): boot both 18.06.9 and 23.05.5 in the VM job
+
+The package has always claimed "18.06 and later", but only 18.06.9 was ever
+booted. Everything about 19.07+ was asserted from documentation: that the
+service still starts, that the helpers still run, and that the LuCI page's
+absence on a JS-only release is the only difference.
+
+The job now boots two images in one run, oldest first:
+
+- **18.06.9** unchanged: the strictest userspace, and the release the package
+  targets first.
+- **23.05.5** the current LTS line, where LuCI is JS-only. The Lua page needs
+  `luci-compat` there and the postinst already says so; what this boot proves is
+  that the gateway, the service start and the helper scripts are unaffected by
+  the LuCI generation.
+
+Both run inside the one job, so the package is built once and the required
+status check keeps its name. Each image is pinned by the sha256 published in its
+own release's `sha256sums` and verified before boot. The job timeout moves from
+25 to 40 minutes to cover two boots under TCG when `/dev/kvm` is unavailable.
+
+### test(openwrt): shell-logic harness for the firewall and health probe
+
+The QEMU test runs once per PR and takes a 273 MB download, so it cannot afford
+to run a helper three times and catch an idempotency bug. That gap is how the
+firewall rule shipped non-idempotent in #1512, and how the health probe kept
+dying on a 18.06-era config until the review found it.
+
+`scripts/openwrt-shell-harness.py` runs the shipped script text against a stub
+`uci` backed by a real config file, in about ten seconds, on any runner. Eight
+cases cover: one rule across three starts, port-change sync without duplication,
+`open_lan=0` removal, legacy duplicate removal, and the probe surviving a config
+that predates every option plus its counter behaviour.
+
+Proved against the pre-fix scripts: 3/8 pass. Against this branch: 8/8. The job
+runs before the VM step, so a regression fails in seconds instead of after a
+boot.
+
+Two real bugs found while writing it, both fixed here:
+
+- `firewall_allow_lan`/`firewall_disallow_lan` guarded on `uci get firewall`,
+  which exits 1 when the config holds no rule yet, so the very first start did
+  nothing. They guard on the config file now.
+- `9router-go-healthcheck` read `port`/`host` without a fallback under `set -e`,
+  so a config missing `port` killed the probe with exit 1 every minute.
+
+### OpenWrt packages: `9router-go` and `luci-app-9router-go`
+
+The gateway now ships as an opkg package for **OpenWrt 18.06 and later**, built
+by `make ipk` from `tools/ipkbuild` (a Go ar/tar writer, so the build needs no
+`ar` binary on the maintainer's machine).
+
+- **18.06 is the baseline, not an afterthought.** The procd script uses the
+  two-argument `respawn` (the third `retry` argument is 19.07+), writes no
+  `procd_set_param pidfile` (absent on 18.06, and an unknown parameter makes
+  procd.sh warn on every boot), and depends on no busybox applet a default
+  18.06 image lacks: the pid file replaces `pgrep`, the JWT secret tries
+  `sha256sum`/`md5sum`/`base64` in turn, and `chmod` is not called at all.
+- **The LuCI page is the Lua tree** (`luasrc/`, `luci-base` only), because that
+  is what 18.06 and 19.07 run natively. A JS-only tree would render nothing
+  there. On 21.02+ the postinst prints `opkg install luci-compat`, and the
+  gateway keeps working without the page either way.
+- **Architecture names are the ones 18.06 reports**, suffixed FPU forms
+  included: `x86_64`, `i386_pentium4`, `aarch64_generic`,
+  `aarch64_cortex-a53`, `aarch64_cortex-a72`, `arm_cortex-a7_neon-vfpv4`,
+  `arm_cortex-a15_neon-vfpv4`, `arm_cortex-a9_vfpv3`. opkg matches on that field
+  and nothing else, so one binary is published under every name it is valid for
+  and each directory gets its own `Packages`.
+- **32-bit MIPS is excluded, with the reason recorded.** `modernc.org/sqlite`
+  has no mips/mipsle port; supporting those routers would need cgo SQLite and a
+  per-target C cross-compiler, ending the single portable binary guarantee at
+  once. `docs/OPENWRT.md` says so rather than leaving the gap unexplained.
+- **Two compilation bugs found by adding the 32-bit targets.** An untyped
+  `100_000_000_000` constant and an `int`-typed `1e12` comparison do not compile
+  where `int` is 32 bits (armv7, mips); both are now `float64`.
+- **Self-update and `opkg upgrade` coexist.** The package binary lives on the
+  read-only squashfs at `/usr/libexec/9router-go/`, postinst copies it to
+  `/opt/9router/bin/`, and `/usr/bin/9router-go` execs that copy. The updater
+  rewrites the writable copy; the next `opkg upgrade` compares
+  `/etc/9router-go/runtime-version` with the package version and reinstalls the
+  package binary when the package is newer.
+- **Feed.** The release job builds the packages, points the index at the tag's
+  download URL and uploads `Packages.<arch>` alongside them;
+  `.github/workflows/opkg-feed.yml` discovers every architecture from the
+  release's asset names and publishes each index to
+  `https://luqman-v1.github.io/9router-go/openwrt/<arch>`.
+- **Helpers.** `9router-go-feed` registers or removes the feed,
+  `9router-go-backup` saves and restores `data.sqlite` to
+  `/etc/9router-go/backup` (which sysupgrade keeps), and
+  `9router-go-healthcheck` restarts a process that is alive but no longer
+  answering `/health`, with its counter in `/var/run` so it never wears flash.
+- **Verified.** `go test ./tools/ipkbuild/` pins the ar member layout, the
+  Packages/file size and digest agreement, the architecture aliasing (one
+  binary, several names, byte-identical), the `Architecture: all` LuCI package,
+  the Lua tree in the LuCI package and its absence from the main one, absolute
+  `Filename` entries, and no CRLF in any shipped script. `linux/amd64`,
+  `linux/386`, `linux/arm64` and `linux/armv7` all build with `CGO_ENABLED=0`.
+  The generated ipk was extracted with an independent ar splitter and GNU tar;
+  the postinst, wrapper, feed, backup and health-check scripts were exercised
+  against stand-in `uci`/`logger`/`wget` for first install, same-version
+  reinstall, package-overrides-self-update, feed idempotency and health-check
+  escalation. A CI job (`.github/workflows/openwrt-vm-test.yml`) boots the
+  official 18.06.9 x86-64 image in QEMU, installs the built package inside it
+  and asserts the service starts through procd, answers `/health`, and the
+  helper scripts run — the only test that exercises the service start for real,
+  since a chroot or docker rootfs cannot run procd as PID 1. The job builds
+  only the `x86_64` package (`make ipk IPK_ARCHES=...` now compiles just the
+  Go targets the requested names need) and caches the 273 MB image keyed on
+  its pinned sha256, so a PR run is one cross-build and a cache hit.
+
+Documentation: `docs/OPENWRT.md`.
+
+### fix(openwrt): back up uploads, clean the runtime copy on removal, refresh docs
+
+- `9router-go-backup save` now archives `data_dir/uploads` to `<file>.uploads.tar`
+  beside the database, and `restore` extracts it back. The database was never the
+  only state: a restore onto a new router left the dashboard pointing at logos
+  that were no longer there. `tar -C` keeps both paths literal, and a missing
+  busybox `tar` skips the media with a message instead of failing the backup.
+- `prerm` removes the runtime binary copy and the downloaded `cloudflared` from
+  `data_dir`, and nothing else. The database, uploads and JWT secret survive a
+  removal so a mistaken `opkg remove` is recoverable.
+- `docs/OPENWRT.md` catches up with the healthcheck and LAN-firewall options the
+  previous PR added: the cron entry is installed automatically, and `open_lan` is
+  the only path that writes a firewall rule.
+
+Two regression tests pin the contracts: `TestBackupCoversUploads` and
+`TestPrermKeepsUserData`.
+
+### Performance
+
+- **The request path reads the settings row once, not six times.** Six request
+  helpers each ran their own `SELECT data FROM settings WHERE id = 1` — the
+  total-request deadline, the provider thinking modes, the proxy-pool strategy,
+  the pinned-connection eligibility check, the connection model filter and the
+  usage-detail gate. The row cannot change inside one request, so the repeats
+  bought nothing. Both entry points now install a per-request settings holder
+  and every reader clones its answer from that one read, exactly as
+  `GetSettings` already clones. Measured on a real gateway under streaming load
+  (concurrency 50, 20000 requests, 25s CPU profile): the settings row cost
+  7.06s of 72.89s (9.69%) before and 4.31s of 71.35s (6.04%) after. A counting
+  sqlite driver proves the read count directly — 6 row reads for the six
+  readers on `origin/main`, exactly 1 here.
+- **The memo is per request, not a process cache.** The holder lives on the
+  request context and dies with it, so a settings change the dashboard writes
+  between two requests is never served stale, and the DB-03 constraint on
+  process-local caches still holds. A context that never went through an entry
+  point is unchanged and still reads per call.
+- A settings row that cannot be read resolves to nil in every reader, which is
+  what each of them already treated as "unset"; the failure shape is pinned by
+  `TestSettingsForRequestSurvivesAnUnreadableRow`.
+
+Verification: `go vet ./...` and `go test -count=1 ./...` pass except the
+host's SSRF/DNS and stub-bundle failures, reproduced identically on a pristine
+`origin/main` worktree. `TestRequestPathHelpersShareOneSettingsRead` asserts the
+one-read contract with a counting driver, and
+`TestSettingsHolderDoesNotOutliveTheRequest` asserts the next request reads the
+row again.
+
+### docs(wiki): document the features that shipped undocumented, and fix the site's cross-links
+
+The wiki had drifted a full release behind the binary: whole subsystems were
+absent from it, so an operator reading the docs could not find a setting the
+dashboard offered, and a route list that omitted a page read as proof the
+endpoint did not exist.
+
+- `wiki/governance.md`: the per-key ceilings that came with the workload gate —
+  RPM/TPM/RPH/RPD plus concurrency and the FIFO queue that holds a request until
+  a slot frees, the per-client-IP gate checked before every key window, and the
+  guardrail policy model (`global`/`provider`/`model`/`chain`/`apikey`, the five
+  actions, and the `400` a policy with an uncompilable pattern gets at save time).
+- `wiki/providers.md`: the transient-retry policy (`502`/`503`/`504` only — a
+  `429` belongs to the account-fallback path) and the seat attempt budget that
+  bounds the whole retry run, resolved from `seatAttemptBudgetMs`, a provider's
+  own `seatBudgetMs`, or `SEAT_ATTEMPT_BUDGET_MS`; and the sparse per-model
+  capability override at
+  `GET|PUT /api/providers/{id}/models/{model}/caps` — eleven pinnable fields, an
+  untouched field left to detection, the `1…10,000,000` ceiling, the five-second
+  cache and the fail-open path.
+- `wiki/settings.md`: the capacity limits that hang off a custom provider node
+  (RPM/TPM/concurrency, queue timeout, lifetime token quota, contract expiry) and
+  the `totalRequestTimeoutMs` timeout, including why a supervisor-managed gateway
+  asks the supervisor to stop it rather than replacing itself.
+- `wiki/usage-analytics.md` and `wiki/api.md`: month-to-date as a distinct window
+  from a rolling 20-day one, the hour/day bucket caps, the Claude/Codex seat tier,
+  and the analytics, guardrail-log, capability and models endpoints.
+- `wiki/combos.md`: the member attempt cap — what it bounds, that `0` is off and
+  an explicit per-provider `0` disables it even with a global cap set — and
+  least-busy as a fourth connection strategy beside failover, round-robin and
+  sticky.
+- `wiki/token-saver.md`, `wiki/cli.md`, `wiki/installation.md`: the
+  release-error-advisor path, the `doctor` command, and the container/runtime
+  facts an install page is expected to state.
+
+`tools/sitegen` also stopped rewriting the wiki's own cross-references into
+`github.com/.../blob/main/<page>.html` URLs: a relative `X.html` naming a page the
+site publishes now stays relative, and only an `.html` destination that is not a
+wiki page falls through to the repository. Every cross-reference on the site was
+a 404 on GitHub while the build stayed green, which is why nothing caught it.
+Two links pointed at `advanced-features.html#model-breakers`, an anchor goldmark
+never publishes; they now name the heading that exists.
+
+Verified: `go test ./tools/sitegen/` (new
+`TestRenderWikiPageKeepsIntraWikiHTMLLinksRelative` pins both halves of the link
+rule), a full site build with zero `blob/main/*.html` anchors and zero unpublished
+`#fragment` targets across all 23 pages, and the `pages.yml` assertions run
+locally (sidebar, table wrappers, lazy+sized images, `search-index.json` anchors).
+
+### Fixed
+
+- **Freebuff OAuth vault sealing and body caps**: `HandleFreebuffPoll` now persists connections through `Repo.ReplaceProviderConnectionPayload` and `Repo.CreateProviderConnectionFull` with request context so credentials are sealed when `ROUTER_MASTER_KEY` is set, and `freebuff.go` bounds incoming/upstream reads to 1 MiB.
+
+### Fixed
+
+- **Headroom handler nil guards, timeout, and HTML cap**: guarded nil `Repo` in `headroomURL` and `headroomFlags`, added a 30s client timeout and nil-client fallback, rejected hostless Headroom proxy URLs before dialing, and bounded `/dashboard` HTML reads to 8 MiB.
+
+### OpenWrt: keep the database across a sysupgrade
+
+The package now ships `/lib/upgrade/keep.d/9router-go`, listing
+`/etc/9router-go`, `/opt/9router/db` and `/opt/9router/uploads`.
+
+OpenWrt's `sysupgrade` preserves only what `/etc/sysupgrade.conf` and
+`/lib/upgrade/keep.d/*` name, plus changed conffiles. Its default keep set is
+`/lib/upgrade/keep.d/base-files-essential` — a handful of `/etc` files — and a
+`/etc/sysupgrade.conf` that ships commented out. Nothing this package owns was
+in either, so a flash that kept the operator's settings still discarded the
+database: every provider connection, combo and API key. The documentation and
+`option data_dir`'s comment claimed the opposite, which is how the gap survived
+review.
+
+`/opt/9router/bin` is deliberately **not** listed. It holds the ~52 MB runtime
+copy plus the downloaded cloudflared, and `sysupgrade` stages its backup in
+`/tmp`, which is RAM on a router. Preserving a file `postinst` rewrites on the
+next boot would turn a firmware upgrade into an out-of-memory event.
+
+A non-default `data_dir` cannot be covered by a static file, so `postinst` now
+appends the configured database and uploads paths to `/etc/sysupgrade.conf` —
+once, guarded by `grep -qxF` — so moving the database to a USB mount does not
+silently lose it on the next flash.
+
+Verified by `TestSysupgradeKeepsDatabase`, which parses a built `.ipk`, asserts
+the three paths are present, asserts no `/bin` path is, and asserts `postinst`
+consults `/etc/sysupgrade.conf`; it fails against a package without the drop-in.
+The same test now pins the `conffiles` stanza (`/etc/config/9router-go`), the
+mechanism that stops `opkg upgrade` from overwriting the operator's port,
+`data_dir` and password. Nothing else read that file, so dropping the stanza
+would have reset the operator's settings with no error anywhere; removing the
+entry makes the test fail.
+
+### Fixed
+
+- OpenCode free requests from clients that identify themselves with a non-native session id (omp/Claude Code UUIDs, e.g. `x-session-id: 01a21c78-...`) no longer get stuck on a spent translated upstream session. `BuildOpenCodeHeaders` already rewrites those ids into a canonical `ses_...` via `TranslateOpenCodeSessionID`, but the executor treated them as client-owned, so the 429 recovery had no rotation hook: the first turn that exhausted that session made every later turn return `429 FreeUsageLimitError`, while a session-less ping used a different, healthy session and succeeded. Such ids are now quoted under a router-owned stable session, so one client conversation keeps one upstream session and a spent one is rotated and replayed once (#5559). Native `ses_` ids and keyed lanes keep their existing behavior.
+
+### Fixed
+
+- **CLI doctor probes and flags**: `checkDaemon` now uses the `healthyAt` probe seam consistently, `doctor --port 0` fails config validation instead of falling back to `cfg.Port`, and `checkDatabase` rejects directory paths instead of opening them as SQLite files.
+
+### Fixed
+
+- **`9router-go start -d` recognises the wrapped "already running" error.** `startDetached` compared `daemon.Start`'s error with `==`, but `Start` returns `ErrAlreadyRunning` **wrapped** (`%w on %s (…) — stop it first…`) when the port is busy and no PID file names the owner, so that variant fell through and the terminal got the raw error instead of the friendly "already running (pid …)" message. The comparison now uses `errors.Is`, matching the two comparisons in `menu.go` that already do this for the same reason. Pinned by `TestStartDetached_AlreadyRunningVariants`, which injects both shapes through the same `daemonStart` seam `menu.go`'s tests use (`menuDaemonStart`), plus a propagation case proving real start failures still surface.
+
+### Added
+
+- **Total request timeout**: an optional end-to-end bound on one chat request
+  (headers plus body), set with `totalRequestTimeoutMs` in Settings and off
+  (0) by default. It exists to reclaim a hung upstream, not to cut a slow one:
+  reasoning models legitimately stream for many minutes, so the dashboard text
+  and the default both keep it out of the way until an operator asks for it. A
+  request cut by it answers HTTP 504 with `code: gateway_timeout` instead of the
+  499 a client disconnect produces, because only one of those is worth retrying
+  unchanged. The bound is applied once at both chat entry points
+  (`HandleChatCompletions` and `HandleMessages`) and shares its deadline with
+  every later stage, so a request parked in a combo fallback expires too. A
+  request that already carries a tighter deadline keeps it, and a request cut
+  by the bound does not park the connection for a cooldown: the account was
+  never exercised, so the 504 carries `Local` and the cooldown recorder skips
+  it.
+
+Provenance: operator feature from `9router-pro` `v0.5.109-pro.28`
+(`TOTAL_REQUEST_TIMEOUT_MS`, default 30 minutes, measured from request start in
+`open-sse/handlers/chatCore/{streaming,nonStreaming}Handler.js`). No counterpart
+in `decolua/9router`; Pro-only reference, not upstream parity. Two deliberate
+divergences: this defaults to off rather than 30 minutes, and the bound is
+applied in the handler layer rather than inside the stream pipe, so it also
+covers combo fallback time that Pro's per-attempt remainder does not.
+
+### Fixed
+
+- **Compression Analytics and the semantic cache no longer swallow row-iteration errors.** The row loops that #1510 did not reach ignored the `Scan` error and never read `rows.Err()`, so a row that could not be read mid-iteration ended the loop early and the caller received a partial result with a `nil` error. The compression-analytics file was the one file in the tree whose loops outnumbered their `rows.Err()` checks (11 vs 6); it is now 11 vs 11, like the rest of `internal/db`.
+
+  - `queryCompressionAnalyticsTable`: the hourly-trend and savings-by-provider/model loops.
+  - `queryUsageHistoryBackfill`: the provider, hourly-trend and top-savers loops.
+
+- **The semantic cache reports a failed hydration at boot.** `PersistentLRUStore.Hydrate` returned `nil` when a row could not be scanned, so the gateway booted with however much of the cache had loaded and no indication that the rest was never read — a cache that simply misses a lot, with nothing in the log to say why. `NewPersistentStore` also discarded that error outright (`_ =`), so nothing surfaced it at all. Hydrate now returns the scan and iteration error, and the constructor logs `hydrate from disk failed; starting cold` with the cause. The cache still starts: a warm cache is an optimisation, not a precondition for routing.
+
+  A missing table is not reported, because the store is built against a repository before its schema is ensured in some paths and a fresh install has no table yet — the same condition `Put` and `Delete` already tolerate. Existence is asked of the engine catalog (`sqlite_master` / `information_schema`) rather than inferred from the driver's message, since an error string is not a contract.
+
+- Pinned by `TestPersistentLRUStore_HydrateSurfacesScanError`: a non-numeric `hitCount` (SQLite keeps it as TEXT despite the `INTEGER` column) fails the scan mid-loop. Before the fix `Hydrate` returned `nil`; after it the failure is surfaced.
+
+### Added
+
+- **Combo member attempt cap**: bounds how many failed accounts one combo
+  member may spend before the combo moves to its next model, instead of the
+  fixed ten-connection walk that let a member with an exhausted pool hold the
+  client for the whole sweep. Set globally with `comboMemberAttemptCap` (0, the
+  default, means off; values are clamped to 1..10) or per provider in
+  `providerOverrides[provider].comboMemberAttemptCap`, where an explicit 0
+  disables the cap for that provider even when a global cap is set. The cap
+  counts failed accounts rather than loop iterations, so a connection skipped as
+  model-locked or unavailable costs nothing. The control lives under
+  *Default Routing Strategy* in Settings and names 3 as the suggested value when
+  an operator turns it on. Both fallback loops are covered by tests that assert
+  the upstream call count: `/v1/chat/completions` and `/v1/messages`.
+
+Provenance: operator feature from `9router-pro` `v0.5.109-pro.28`
+(`comboMemberAttemptCap` plus `comboMemberAttemptCapOverrides`, default 3,
+clamp 1..10, in its `src/sse/services/memberFailover.js`). No counterpart in
+`decolua/9router`; Pro-only reference, not upstream parity. Two deliberate
+divergences: this defaults to off rather than 3, and the cap is applied to both
+Go fallback loops rather than Pro's single chat loop.
+
+### Features
+- **audio translations**: New route `POST /v1/audio/translations` (and
+  `/audio/translations`) forwarding speech-to-text translation requests to
+  upstream providers. The lane resolves `whisper-1` when the client sends no
+  model, shares combo fallback and the generic URL builder with the other media
+  endpoints, and answers `<base>/v1/audio/translations`.
+  - Deliberately *not* wired into the Antigravity and ElevenLabs STT lanes: those
+    post to vendor transcription endpoints (`/v1/speech-to-text`, Gemini
+    generateContent), which transcribe rather than translate. Extending them
+    needs a per-vendor translate parameter (Deepgram's `translate=true`), which
+    this PR does not attempt.
+- **docs**: Added `POST /v1/audio/translations` to the API surface list in `README.md`.
+
+### Tests
+- `TestHandleAudioTranslations_ForwardsMultipart` drives a real multipart body and
+  asserts the upstream path, content type and forwarded model; moving the endpoint
+  string or dropping it from the URL builder fails it.
+- `TestHandleAudioTranslations_DefaultModelResolves` locks the `whisper-1` default
+  by asserting a model-less request still succeeds.
+- `TestHandleAudioTranslations_MalformedMultipartRefused` asserts the guard's own
+  400 ("malformed media request body") and that zero upstream calls happen.
+- `TestEmbeddings_ForwardGeminiEncodingFormat` and
+  `TestHandleEmbeddings_ForwardsEncodingFormatAndDimensions` are contract tests
+  covering existing behaviour: the client's `encoding_format` and `dimensions`
+  reach upstream unchanged on both the Gemini transform and the generic lane.
+  They are not a bug fix; no production line changed to make them pass.
+
+### Fixed
+- **Antigravity: one client identity per request, not two.** The image, STT and
+  dashboard-usage lanes sent `User-Agent: antigravity/cli/1.5.9 (aidev_client; …)`
+  beside `X-Client-Version: 2.33.0`, mixing the CLI fingerprint with the IDE
+  version. No real client emits that pair, and `antigravity_quota.go` already
+  sent the CLI version, so the same account presented two different
+  `X-Client-Version` values depending on which surface ran. All four call sites
+  now read `providers.AntigravityCLIVersion`.
+- **Antigravity: the bare-429 retry keeps its API-key scope.**
+  `ForwardGemini` retries once with the `systemInstruction` folded into
+  `contents[0]` when the backend answers a bare `RESOURCE_EXHAUSTED`. That retry
+  re-translated the OpenAI body without the `apiKeyID` the first translation
+  receives, so a bare-key request (no session header) looked up unscoped
+  thought-signature keys, missed the signature it stored on the previous turn,
+  and fell back to `DefaultThinkingSignature` — which is the corrupted-history
+  path the retry chain exists to avoid. The retry now threads `apiKeyID`
+  through.
+
+Verification: `go test ./internal/proxy/ ./internal/handlers/media/
+./internal/handlers/dashboard/` passes. New tests:
+`TestForwardGemini_Bare429RetryCarriesAPIKeyID` (fails with the argument
+dropped: the retry body carries no `thoughtSignature`),
+`TestHandleImage_Antigravity` and `TestHandleSTT_Antigravity` (assert the
+`User-Agent` / `X-Client-Version` pair against the `providers` constants), and
+`TestAntigravityDashboardHeaders_ClientVersionMatchesUA`.
+
+Scope: local hardening, not upstream parity — nothing in `decolua/9router`
+carries either defect (`open-sse/executors/antigravity.js` has no
+`X-Client-Version` split, and its 429 retry keeps the request's own key scope).
+The `clientProfile` setting stays as-is: it is read at exactly one place, and
+the chat/default lanes deliberately pin the CLI identity because the legacy
+`ide` flavor answers 404 on the Gemini 4 Argon tiers.
+
+### Fixed
+
+- **`POST /v1/responses/compact` answers 400 for a non-object JSON body instead of a recovered 500.** The endpoint unmarshals the client body into a map and writes the `_compact` marker before anything else validates the request. A body of `null`, `4`, `"x"` or `[]` is valid JSON that decodes into a nil map with a nil error, so the marker write panicked with "assignment to entry in nil map" and chi's Recoverer answered a bare 500 with no payload — one unauthenticated-in-substance request, no model needed. The nil map is now rejected at the boundary with the same "invalid JSON body" 400 the invalid-JSON branch already returns.
+
+- Pinned by `TestHandleResponsesCompact_NonObjectBodyIsABadRequest`, which drives the handler with `null`/`4`/`"x"`/`[]` (each panicked before the fix) plus an object-body control proving the happy path is unchanged.
+
+### Added
+
+- **`9router-go doctor`**: diagnoses a gateway that will not answer, instead of
+  only reporting that it is not running. `status` says whether a daemon is
+  alive; `doctor` says why it is not, checking the resolved port, the pid claim,
+  whether the listening socket belongs to the gateway, a wedged gateway's own
+  daemon, or a foreign process, the
+  data directory's writability, the database file, and a failed-bind marker in
+  the run log. Each failing line names the command that fixes it on that
+  platform (`netstat`/`taskkill` on Windows, `lsof`/`kill` elsewhere), and the
+  process exits non-zero so it works as a pre-flight gate. `--port` diagnoses an
+  address other than the one `PORT` resolves.
+
+### Fixed
+
+- **`daemon.Healthy` probed the dashboard root, not `/health`**: a base URL
+  reached `/`, which any static server answers 200 and the gateway answers 404.
+  The health check now appends `HealthPath` itself, so every caller probes the
+  address `waitHealthy` polls and a foreign listener is not mistaken for the
+  gateway.
+
+Provenance: operator feature from `9router-pro` `v0.5.109-pro.28`; no
+counterpart in `decolua/9router` (`git grep -i doctor origin/master` returns
+nothing). Pro-only reference, not upstream parity.
+
+### Fixed
+
+- **`TestComboBudgetWindowRecycles` no longer races the wall clock.** The test set `budgetWindowMs: 1` and then asserted the combo was capped "immediately" — under `-race` on a loaded shared runner, more than a millisecond easily elapses between the record call and the exhausted check, the window recycles, and the test fails as `combo must be capped immediately after the ceiling`. That exact failure appears on otherwise-unrelated PRs (e.g. run 45811314197) and re-reddens the Race detector job for changes that never touch it. The test now uses a one-hour window for the capped assertion and drives the recycle deterministically by backdating `WindowStart`, the same technique `TestComboBudgetPruneExpiredWindows` already uses.
+
+- Verified both directions: the old test injected with 5 ms of runner lag fails with the CI error message; the new test passes with the same lag and over five `-race` iterations.
+
+### Fixed
+
+- **A browser cookie row that cannot be scanned is now an error, not a healthy empty cookie jar.** `readChromiumRows` skipped rows whose `Scan` failed, so schema drift the expiry fallback did not know about reported every cookie as missing and the caller answered "session not found" for a login that exists — a silent failure with a misleading message. The scan error is now returned, wrapped, so the two cases stay distinguishable.
+
+- Pinned by `TestReadChromiumRowsSurfacesScanErrors`: a row whose `expires_utc` holds text (the shape schema drift leaves behind) returned `nil` before the fix and a named error after it.
+
+### Fixed
+
+- **Gemini Web model discovery no longer panics on a short registry payload.** `geminiWebParseModelRegistry` guards `len(arr) <= 15` but then indexed slots 16 and 17 directly for the tier and capacity flags, so an upstream payload with exactly 16 elements crashed the session discovery path with `index out of range [16]`. Both slots are now read through `geminiWebPayloadAt`, the bounds-checked helper the same function already used for slot 24; a payload without the flag lists degrades to no capacity metadata instead of taking the discovery path down.
+
+- Pinned by `TestGeminiWebParseModelRegistryShortPayload`: 16- and 17-element payloads panic before the fix and parse to the model list after it.
+
+### feat(openwrt): healthcheck probe, LAN firewall rule, and settings UI
+
+- Wire the once-a-minute `/health` probe into UCI (`healthcheck`,
+  `healthcheck_threshold`, `healthcheck_timeout`), procd and the cron table. The
+  probe restarts the gateway after a run of consecutive failures, covering the
+  wedged-listener case procd respawn does not.
+- Add `open_lan` plus an idempotent `uci-firewall` rule. The rule is created on
+  start, its port is kept in sync, and every matching section is deleted when
+  `open_lan` is turned off or the package is removed.
+- Expose `healthcheck`, `healthcheck_threshold` and `healthcheck_timeout` in the
+  LuCI form, and show the runtime version in the overview panel.
+
+Verified: `sh -n` on every changed shell script, `go test ./tools/ipkbuild/...`.
+
+### Fixed
+
+- **A partially-failed compression-analytics backfill no longer marks itself done.** `BackfillCompressionAnalytics` discarded the `insert` errors and `rows.Err()`, then unconditionally wrote `migration_compression_backfill_done = 'true'`. A backfill that failed partway (full disk, locked database) therefore inserted a partial set of rows and then permanently refused to run again, so the compression dashboard under-reported forever with no error surfaced. The backfill now returns the failure and leaves the marker unwritten, so the next start retries it. The `Prepare`/`Exec` calls also take the request context now.
+
+- Pinned by `TestBackfillCompressionAnalytics_FailureLeavesRetryable`: a trigger that aborts inserts makes the backfill fail; before the fix it returned `nil` and wrote the marker, after it the error is returned, the marker stays unwritten, and a retry succeeds.
+
+### Fixed
+
+- **Compression Analytics no longer renders silently truncated breakdowns.** The mode, provider, model and top-savers queries in `queryCompressionAnalyticsTable` ignored the `Scan` error and never read `rows.Err()`, so a row that could not be read mid-iteration ended the loop early and the dashboard received a partial summary with a `nil` error — wrong numbers presented as complete ones. Each loop now returns the query, scan and iteration error, wrapped with the breakdown that failed.
+
+- Pinned by `TestCompressionAnalytics_SummarySurfacesRowErrors`: a non-numeric `tokensSaved` (SQLite keeps it as TEXT despite the `INTEGER` column) makes the top-savers scan fail; before the fix the summary returned `nil` error, after it the failure is surfaced.
+
+### Fixed
+
+- `volcengine-ark` now clamps the **Kimi** family's output budget to Ark's
+  endpoint ceiling of 32768. The catalogue advertises a far higher `maxOutput`
+  (Kimi-K2.7-Code resolves to 262144), so clamping to the model ceiling left it
+  uncapped and Ark answered `400 integer above maximum value, expected <= 32768`.
+  The GLM-5 ceiling (4096) was already handled; both families now share one
+  clamp, and a model in neither family keeps its advertised budget untouched.
+- Renamed `clampVolcengineArkGLM5OutputTokens` to `clampVolcengineArkOutputTokens`
+  and split the family match into `volcengineArkOutputCeilingFor`, so adding a
+  capped family is one case in one switch rather than a second function.
+
+Parity: `open-sse/translator/concerns/paramSupport.js` (decolua/9router master)
+carries `{ provider: "volcengine-ark", match: /kimi/i, maxOutputCap: 32768,
+clampToModelMaxOutput: true }`. The other rules in that table were checked
+against this tree and are already implemented: `max_tokens` →
+`max_completion_tokens` (openai, `renameMaxTokensBody`), `reasoning_details`
+drop for groq/mistral/cerebras (`StrictReasoningRemoving` reaches
+`filterMessages`), cloudflare-ai content flatten (`FlattenContent`), and the
+openai-go deepseek `response_format` drop. No rule was duplicated.
+
+Verification: `go test ./internal/proxy/executor/` passes.
+`TestClampVolcengineArkOutputTokens` covers all three budget spellings for Kimi,
+both boundary cases (at and below the ceiling), the Doubao non-capped family,
+and the GLM-5 rules that existed before. Removing the Kimi case makes the three
+Kimi subtests fail, which is the mutation proof that the new cases bite.
+
+### Fixed
+
+- `GET /v1/models/image` now lists each provider's actual image models as
+  `{provider}/{model}` instead of the bare provider id. The bare id was not
+  addressable: `POST /v1/images/generations` resolves `{provider}/{model}` and
+  answers `400 could not resolve model: xai`, so the discovery listing could not
+  be fed back into the endpoint it advertised. Entries keep the kind listing's
+  existing shape (`id`, `object`, `kind`, `owned_by`, `endpoint`, `created`),
+  which is what upstream `buildModelsList(["image"])` publishes.
+- Added `providers.ImageModelsForProvider` and `providers.DefaultImageModel`,
+  which detect image models by catalog marker (`imagen`, `image`, `dall-e`,
+  `gpt-image`, `flux`, `stable-diffusion`, `seedance`, `seedream`, `recraft`, …)
+  so a new image family is picked up without a second edit. A provider that
+  declares an `ImageURL` but ships no recognisable image entry (a relay, a
+  user-defined node) still gets an addressable `{provider}/{model}` id.
+- Non-image kinds (`tts`, `stt`, `embedding`, `systemone`, `web`) keep their
+  provider-level shape; only image generation needed the model segment.
+
+Verification: `go test ./internal/providers/ ./internal/handlers/media/
+./internal/handlers/chat/` passes. `TestHandleModelsByKind_ImageEmitsResolvableIDs`
+drives the real handler and asserts every emitted id resolves through
+`ResolveModel`; reverting `chat.go` makes it fail with the four unusable ids
+(`sensenova`, `recraft`, `comfyui`, `huggingface`) it was written to catch. The
+same test pins the wire field set: the response is rebuilt through
+`kindEntriesFromModelInfo`, which projects each entry onto a fixed field list, so
+a field added to the producer maps alone never reaches a client. Teaching the
+projection to emit an extra key makes the test fail rather than silently
+widening the response.
+
+### Features
+- **chat**: Resolve OpenCode free models through live catalog feed (`decolua/9router@4e5485836` parity).
+
+### Exact tag matching in jailbreak htmlToText
+
+- Updated `htmlToText` in `internal/handlers/dashboard/jailbreak_import.go` via `parseHTMLTag` so prefix matches like `<header>` no longer increment the `<head>` skip depth and drop the rest of the page, self-closing `<script/>` / `<style/>` tags stay skipped only when paired, and whitespace-padded closing tags such as `</style >` properly exit skip mode.
+- Verified with `TestHTMLToText_HeaderAndSelfClosingTagsDoNotSwallowBody` in `internal/handlers/dashboard/jailbreak_import_test.go` (`go test -count=1 ./internal/handlers/dashboard/...`, `go vet ./internal/handlers/dashboard/...`).
+
+### Expired API key and nil repo checks in Playground
+
+- Added a nil `h.Repo` check (503) and RFC3339 `ExpiresAt` validation (`400 expired API key`) when resolving `keyId` in `HandlePlaygroundChat`, closing an expiry bypass relative to `middleware.RequireApiKey`.
+- Verified with `TestHandlePlaygroundChat_RejectsExpiredAPIKey` and `TestHandlePlaygroundChat_NilRepoWithKeyIDReturns503` in `internal/handlers/dashboard/playground_test.go` (`go test -count=1 ./internal/handlers/dashboard/...`, `go vet ./internal/handlers/dashboard/...`).
+
+### SSRF guard on UC Web input image downloads
+
+- Routed remote `http://` and `https://` input image fetches in `ucResolveImageBytes` through `visionImageDownloadClient()` (`proxy.NewStrictSafeTransport` plus `checkRedirectPublic`) instead of `ucHTTPClient`, blocking loopback, private network, and cloud metadata destinations including redirects.
+- Verified with `TestUcResolveImageBytes_RefusesPrivateLoopbackAndRedirects` in `internal/handlers/media/uc_web_test.go` (`go test -count=1 ./internal/handlers/media/...`, `go vet ./internal/handlers/media/...`).
+
+### MiMo Free client handling, retry rewind, and read caps
+
+- Routed `getMimoJWT` through `h.Client` (with a 15s bounded default client fallback when `h.Client` is nil) instead of `http.DefaultClient`, preventing nil-client panics and honoring configured handler transports.
+- Rewound `req.Body` via `req.GetBody()` before retrying 401/403 auth failures in `MimoFreeChat`, and bounded bootstrap and error response reads with `io.LimitReader`.
+- Verified with `TestMimoFreeChat_ClientRetryAndCaps` in `internal/handlers/chat/mimofree_test.go` (`go test -count=1 ./internal/handlers/chat/...`, `go vet ./internal/handlers/chat/...`).
+
+### OAuth refresh status handling for Nous and ZCode
+
+- `refreshNous` now uses `refreshHTTPClient` (15s timeout when `Params.Client` is nil) and wraps non-2xx responses in `*providers.OAuthRefreshError` with `truncateBody` (200-byte cap) instead of returning a plain 1024-byte error string.
+- `refreshZcodeJWT` now checks non-2xx HTTP status before JSON unmarshaling and surfaces `*providers.OAuthRefreshError` with `truncateBody` so terminal 401 and 400 `invalid_grant` failures are classified consistently with other OAuth refreshers.
+- Verified with `TestRefreshNous_SurfacesOAuthRefreshErrorAndTruncatesBody` and `TestRefreshZcode_SurfacesOAuthRefreshError` in `internal/proxy/oauth/nous_test.go` (`go test -count=1 ./internal/proxy/oauth/...`, `go vet ./internal/proxy/oauth/...`).
+
+### Fixes
+- **combos**: Fork-side scoped addition allowing no-auth Web Search provider SearXNG (`searxng`) to appear in the combo model picker (with default `searxng/search` row) alongside chat providers (scoped fix for #1494; not a full port of `decolua/9router@3a936d13a`'s general non-chat no-auth expansion).
+
+### fix(ctx): thread request context through connection health writes
+
+The remaining `*Repo` methods behind connection health — `LockConnectionModel`,
+`GetConnectionBackoffLevel`, `LockConnectionRateLimit`,
+`RecordConnectionScopedError`, `ClearConnectionRateLimit`, `UnlockConnectionModel`
+and the health probes — still took context-less SQLite connections. A
+context-less statement holds a write lock for its full duration even after the
+caller has gone away: client disconnect, timeout or graceful shutdown cannot
+cancel it, and the account rotation path keeps stalling behind it.
+
+- Every handler, executor and integration call site now passes its existing
+  `ctx`.
+- `LockConnectionModel` in the upstream-error path discards its error like the
+  sibling call beside it; that call is best-effort by design.
+
+**Why folded instead of stacked:** the handlers are the only callers of these
+methods, so the signature change and the call-site update cannot land as
+separate PRs — the lower PR never compiles and can never pass CI.
+
+**Verification** (`go build ./...`, `go vet ./...` clean):
+
+```
+$ go build ./... && go vet ./...
+$ go test -count=1 ./internal/db/... ./internal/handlers/... ./internal/proxy/executor/...
+ok  9router/proxy/internal/db
+ok  9router/proxy/internal/handlers
+...
+```
+
+**Behaviour notes:** `TestSetupServerRouter_SPARoutes` fails on a pristine
+`origin/main` worktree with the same 404s on `/sw.js`, `/manifest.json`,
+`/manifest.webmanifest` and the provider PNGs when `web/dist` is absent — the
+SPA is not embedded without a `make web-build` first. Not caused by this
+change; reproduced on base.
+
+**CI fix:** the Race detector job's `-timeout 10m` (and `make test-race`'s
+copy) is raised to 20m. The 10m per-package ceiling was already exhausted by
+`internal/handlers/chat` on slow runners — 589.8s and 590.7s under `-race` on
+commits on `main` on 2026-11-26 (1.6% headroom), so the red check on this PR
+was `panic: test timed out after 10m0s`, not a data race: the race detector
+itself is unchanged and still runs the full suite.
+
+**Breaking changes:** None. `*Repo` signatures gained a leading
+`context.Context`; every in-tree caller is updated in the same commit.
+
+### fix(oauth): seal credentials in the four OAuth write paths
+
+Four OAuth handlers wrote `providerConnections.data` through `RawDB().Exec`, so
+with `ROUTER_MASTER_KEY` set access and refresh tokens landed in `data` in the
+clear (breaking the vault's "never plaintext at rest" guarantee), and the
+paired `SELECT data` read-back returned ciphertext that `json.Unmarshal`
+silently rejected — dropping the refresh token on relogin/rotation and logging
+the user out.
+
+`HandleAuthCodeExchange`, `completePKCEExchange`, `saveDeviceConnection` and
+`storeGoogleConnection` now write through `ReplaceProviderConnectionPayload` /
+`CreateProviderConnectionFull`, which seal credentials before the write and
+hydrate them on read. A vault-less install is unchanged (data passes through
+untouched, no extra statement).
+
+**Scope, stated plainly:** this closes those four paths only. Credentials are
+still written plaintext on other paths — the Codex bulk import
+(`internal/handlers/oauth/oauth.go`), the Cline OAuth update/insert
+(`internal/handlers/oauth/cline.go`) and the Gemini token-refresh writers
+(`internal/handlers/chat/gemini_handler.go`) — all pre-existing, none
+introduced here. A vault-enabled install still leaks through them until each
+is routed through the sealed API in its own change.
+
+**Verification** — a handler-level test drives the real exchange against a
+vault-enabled Repo and asserts the tokens are sealed at rest and hydrate back
+(`internal/handlers/oauth/authcode_seal_test.go`). It fails on the pre-fix base
+with the tokens in the clear:
+
+```
+before (pre-fix base):
+  access token is plaintext in the data column at rest:
+  {"refreshToken":"rt-handler-level-secret","expiresAt":"2026-11-26T07:43:57Z",
+   "apiKey":"at-handler-level-secret","accessToken":"at-handler-level-secret"}
+
+after (this branch):
+  ok  9router/proxy/internal/handlers/oauth
+```
+
+### fix(db): propagate request context through all DB write paths
+
+`ReplaceProviderConnectionPayload`, `CreateProviderConnectionFull`,
+`UpdateConnectionData`, `SetConnectionSealed`, `sealOnWrite`,
+`NextConnectionPriority`, `ResolveDefaultPriority`, and
+`RewrapConnectionDEKs` now accept `ctx context.Context` and use
+`ExecContext`/`QueryRowContext`/`QueryContext` instead of context-less
+`Exec`/`QueryRow`/`Query`. A context-less write holds a SQLite write lock
+for the full statement duration even after the handler's context is
+cancelled — client disconnect, timeout, or graceful shutdown cannot stop it.
+
+All dashboard handlers, OAuth refresh paths, executor paths, and
+integration tests now pass `r.Context()` or their existing context through
+the full write path.
+
 ## [v1.9.17-exp.18] - 2026-11-26
 
 ### Fixed

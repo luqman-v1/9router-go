@@ -51,6 +51,23 @@ Who can open the dashboard, and for how long.
 
 The default password on a fresh install is `123456`. Change it before exposing
 the dashboard to anything but your own machine.
+### First-run setup wizard
+A fresh install opened **from the machine itself** (a loopback peer) with no
+password set yet skips the login form and shows a two-step wizard instead, so
+nobody has to type `123456` to get in and then change it:
+
+1. **Password** — choose and confirm the master password directly. Two
+   show/hide toggles mirror the login form's eye button, because a long
+   generated password is easier to confirm when it can be read back.
+2. **Mode** — *Personal* or *Advanced*. Personal writes the sidebar hide list,
+   trimming the dashboard to the pages one person uses; Advanced leaves the
+   sidebar exactly as it always was. Neither choice touches the route table, so
+   nothing becomes unreachable and the choice is reversible from **Settings →
+   Sidebar**.
+
+The wizard applies only on a fresh install reached over loopback. Opening the
+dashboard from another host, or after a password exists, gets the ordinary login
+form.
 
 ### Single Sign-On (SSO)
 
@@ -79,6 +96,7 @@ combo. See [Architecture](architecture.html) for the details.
 | **Failover** | Try the next connection when one errors or is rate-limited |
 | **Round Robin** | Spread requests across every connection in turn |
 | **Sticky Round-Robin** | Keep using the same connection until a limit is reached, then rotate |
+| **Least Busy** | Send to the connection with the fewest turns still in flight, so a long streaming reply keeps its key out of the next pick |
 
 If you pick Sticky Round-Robin, one more field appears: **Sticky Request
 Limit** — how many requests go to the same connection before rotating (1–100).
@@ -95,6 +113,102 @@ Limit** — how many requests go to the same connection before rotating (1–100
 When **every** account of a provider is cooling down, send the request through
 whichever account frees up first instead of failing outright. Upstream can still
 reject it — this buys a chance, not a guarantee.
+
+---
+## Rate limits
+Two ceilings answer two different questions.
+
+**Per key** — how much may one caller spend? Set it on the key itself (API Keys
+→ a key → policy) as `rateLimitRpm`, `rateLimitTpm`, `rateLimitRph`,
+`rateLimitRpd`, `rateLimitConcurrency` and `queueTimeoutMs`. Plans record the
+same ceilings (`rpmLimit`/`rphLimit`/`rpdLimit`) for the allowance a customer is
+sold. RPM alone cannot express a daily allowance: a key answering ten requests a
+minute can still spend a whole day's quota before anyone notices. All four
+windows are enforced by one admission call, in FIFO order — a request waits for
+a free slot up to the queue timeout, then gives up with `Retry-After`, and a
+client that hangs up leaves the queue instead of being dispatched upstream for
+nobody.
+
+**Per client IP** — how much may one host spend? A per-key limit protects each
+key; it does not protect the upstream account from a caller that holds, or
+mints, many keys, because every key spends its own fresh budget. The host
+ceiling (`perIpRpm`, `perIpRph`, `perIpRpd`, `perIpConcurrency`) is checked
+*before* any key window and refuses immediately instead of queueing: it is a
+flood guard, not a fairness queue. All four zero means the axis is off, which is
+every install that never configured it, so a default install pays nothing for it.
+
+The global fallbacks — `rateLimitEnabled`, `defaultRpm`, `defaultTpm`,
+`defaultConcurrency`, `rateWindowSeconds` and the four `perIp*` keys — are plain
+settings-row values; there is no dashboard card for them yet, so they are written
+with `PUT /api/settings` (a JSON object of the keys above, which is what the
+settings page itself uses). The per-IP values are handed to the limiter even when
+the master rate-limit switch is off, so an operator who configured only a host
+ceiling still gets it. See [Security](security.html) for which client address is
+counted behind a proxy.
+
+## Per-model request caps
+A cap for endpoints **you** run — `openai-compatible-*` and
+`anthropic-compatible-*` — where one hot model could otherwise drain a shared
+endpoint's quota for every other model on it. Stored as
+`settings.perModelRateLimit`:
+
+```json
+{
+  "perModelRateLimit": {
+    "enabled": true,
+    "limit": 120,
+    "windowMs": 60000,
+    "overrides": {
+      "openai-compatible-lab": { "limit": 30 },
+      "openai-compatible-lab/gpt-6": { "limit": 10, "windowMs": 30000 }
+    }
+  }
+}
+```
+
+- A **nil block is off**, and so is a block written without `enabled: true`: this
+  is net-new quota semantics, so a half-written config must not start refusing
+  requests. Once the block exists it applies unless a scope says
+  `enabled: false`.
+- Precedence is per-model override → per-provider override → global block →
+  built-in default (120 requests per 60 s). Values are clamped, and a limit that
+  parses to zero falls back to the default rather than to "zero requests
+  allowed", so a typo cannot wedge chat.
+- The bucket is per scope, provider and model. Scope is the client session id
+  when the client sends a stable one, else a short non-reversible hash of the
+  router API key, else one shared bucket — so one customer's hot model never
+  blocks another customer's, and never blocks a different model on the same
+  provider.
+- A refusal is `429` with `Retry-After` in whole seconds and fails over to the
+  next combo member. It is marked **local**, so failover does not cool a
+  credential that was never exercised. Probes (`POST /api/models/test`, the
+  auto-ping) are exempt: they report the model, not the limiter.
+- In memory and bounded (5,000 buckets, oldest touched evicted). No schema
+  change and no timer; windows reset on restart, which is the right behaviour
+  for a rate limiter.
+
+## Request timeout
+`totalRequestTimeoutMs` bounds one chat request **end to end — headers plus
+body**. It is off (`0`) by default, and the dashboard copy keeps it out of the
+way until asked for: it exists to reclaim a hung upstream, not to cut a slow
+one, and reasoning models legitimately stream for many minutes. A request cut by
+it is reported as a timeout rather than as a client disconnect. Per-combo
+`firstTokenTimeoutMs` is the narrower tool — see [Combos](combos.html).
+
+## Restarting the gateway
+**Settings → Restart gateway** stops and starts the process without leaving the
+dashboard. The endpoint behind the button is `POST /api/system/restart`, which
+requires a JSON body — `{"confirm":"restart"}` with
+`Content-Type: application/json` — deliberately: a cross-site form post cannot
+set that body, so a page on another origin cannot stop your gateway. It answers
+`200` first and restarts shortly after, so the call has a reply to return.
+
+Where a supervisor will bring the process back (systemd user unit, launchd,
+OpenRC, runit — and only when it is actually running), the endpoint asks for a
+graceful stop and lets the supervisor start it again. Everywhere else — cron,
+the Windows logon entry, a bare `9router-go start`, Docker — it restarts itself
+in place. In-flight streams do not survive either path; use the plain Shutdown
+button when you want the drain first.
 
 ---
 
@@ -285,6 +399,6 @@ re-enable a model it disabled. See [Usage & Analytics](usage-analytics.html) for
 how the loop decides.
 
 That loop is scheduled. For a model that is failing *right now*, see the
-[Model Breakers](advanced-features.html#model-breakers) page — it watches live
+[Model Breakers](advanced-features.html#model-breakers--one-bad-model-must-not-park-the-whole-provider) page — it watches live
 traffic and holds one provider/model pair out of rotation without touching its
 siblings.
