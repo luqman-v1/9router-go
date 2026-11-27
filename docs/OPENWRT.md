@@ -208,6 +208,16 @@ succeeds.
 location comes back after the flash. Copy the file off the device before
 overwriting the firmware anyway.
 
+The gateway runs SQLite in WAL mode, so a `data.sqlite-wal` file can sit beside
+the database holding transactions that have not been checkpointed into it yet.
+`save` copies that file to `<file>-wal` when it exists, and `restore` puts it
+back — a copy of `data.sqlite` alone would silently be missing the most recent
+writes. In the other direction, `restore` deletes a `-wal`/`-shm` pair belonging
+to the database it replaces before writing the incoming file: SQLite replays
+whatever `-wal` it finds beside a database, and one from a different database
+means corrupted or reverted rows. The `-shm` file is a shared-memory index, never
+data, and is never copied.
+
 ## Tunnels
 
 - **Cloudflare**: works with no extra package. The gateway downloads

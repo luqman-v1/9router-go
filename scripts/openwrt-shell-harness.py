@@ -67,6 +67,11 @@ def resolve(rows, ref):
         head, tail = ref.split(".", 1)
         if head == "firewall" and (tail.startswith("@") or tail in order(rows)):
             ref = tail
+        elif tail in order(rows):
+            # Any other config (`9router-go.main.data_dir`): the harness stores
+            # those as a section named after the UCI section, so the lookup only
+            # has to drop the config prefix.
+            ref = tail
     m = re.match(r"^@[^\[]+\[(-?\d+)\]$", ref)
     if m:
         secs = order(rows)
@@ -374,6 +379,75 @@ def main():
         run([sh, hc_path], env2)
         case("a healthy probe clears the counter", not os.path.exists(counter),
              "counter file still present")
+        # 8. 9router-go-backup and the SQLite WAL.
+        #
+        # The gateway sets `journal_mode = WAL` (internal/db/client.go), which is
+        # persistent in the database header. A process that was killed instead
+        # of stopped leaves a non-empty -wal holding committed frames the
+        # database file does not, so a copy of the database alone is silently
+        # missing the most recent writes; and a -wal left beside a database it
+        # does not belong to gets replayed into the restored file. Both
+        # directions are exercised here because neither is visible without a
+        # router: the failure is a clean exit code and a wrong database.
+        #
+        # The stub resolves `9router-go.main.data_dir` through a section named
+        # `main`, which is the shape it can store (see resolve() in UCI_STUB).
+        with open(db, "a") as fh:
+            fh.write("main.data_dir=%s\n" % sh_path(data_dir))
+        helper_env = dict(env)
+        pidfile = os.path.join(tmp, "run", "9router-go.pid")
+        os.makedirs(os.path.dirname(pidfile), exist_ok=True)
+        state_dir = os.path.join(tmp, "state")
+        os.makedirs(state_dir, exist_ok=True)
+
+        def retarget_helper(text):
+            text = retarget(text)
+            text = text.replace("/var/run/9router-go.pid", sh_path(pidfile))
+            text = text.replace("/etc/9router-go", sh_path(state_dir))
+            text = re.sub(r"/etc/init\.d/9router-go\s+(stop|start)", "true", text)
+            return text
+
+        bk_path = os.path.join(tmp, "9router-go-backup")
+        write(bk_path, retarget_helper(open(os.path.join(src, "9router-go-backup")).read()))
+        db_file = os.path.join(data_dir, "db", "data.sqlite")
+        out = os.path.join(state_dir, "backup", "data.sqlite")
+        # a. save carries an uncheckpointed -wal beside the database
+        write(db_file, "checkpointed\n", 0o644)
+        write(db_file + "-wal", "frames-from-a-killed-process\n", 0o644)
+        run([sh, bk_path, "save", out], helper_env, cwd=tmp)
+        case("save carries an uncheckpointed -wal",
+             os.path.exists(out + "-wal")
+             and open(out + "-wal").read() == "frames-from-a-killed-process\n",
+             "wal: %r" % (os.path.exists(out + "-wal"),))
+        # b. save does not leave a -wal from an earlier backup behind
+        os.remove(db_file + "-wal")
+        run([sh, bk_path, "save", out], helper_env, cwd=tmp)
+        case("save drops a stale backup -wal", not os.path.exists(out + "-wal"),
+             "stale -wal still present")
+        # c. restore drops the -wal and -shm of the database it replaces
+        write(db_file, "previous-database\n", 0o644)
+        write(db_file + "-wal", "frames-for-the-previous-database\n", 0o644)
+        write(db_file + "-shm", "shared-memory-index\n", 0o644)
+        incoming = os.path.join(tmp, "incoming.sqlite")
+        write(incoming, "restored-database\n", 0o644)
+        run([sh, bk_path, "restore", incoming], helper_env, cwd=tmp)
+        case("restore drops the replaced database's -wal and -shm",
+             not os.path.exists(db_file + "-wal") and not os.path.exists(db_file + "-shm"),
+             "wal=%r shm=%r" % (os.path.exists(db_file + "-wal"),
+                                os.path.exists(db_file + "-shm")))
+        case("restore writes the incoming database",
+             open(db_file).read() == "restored-database\n",
+             "db: %r" % (open(db_file).read()[:40],))
+        case("restore keeps the replaced database for rollback",
+             os.path.exists(db_file + ".before-restore"),
+             "no .before-restore file")
+        # d. restore puts a saved -wal back beside the database
+        write(incoming + "-wal", "frames-from-the-backup\n", 0o644)
+        run([sh, bk_path, "restore", incoming], helper_env, cwd=tmp)
+        case("restore brings a saved -wal back",
+             os.path.exists(db_file + "-wal")
+             and open(db_file + "-wal").read() == "frames-from-the-backup\n",
+             "wal: %r" % (os.path.exists(db_file + "-wal"),))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

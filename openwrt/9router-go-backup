@@ -64,6 +64,24 @@ do_save() {
 		echo "9router-go-backup: copy to $out failed (out of space?)" >&2
 		exit 1
 	fi
+	# The gateway runs SQLite in WAL mode (internal/db/client.go sets
+	# `journal_mode = WAL`, which is persistent in the database header). A
+	# process that was killed rather than stopped leaves a non-empty -wal file
+	# holding committed transactions the database file does not: copying the
+	# database alone silently drops them and the operator restores a database
+	# that is missing its most recent writes. The -shm file is a shared-memory
+	# index into the WAL, never data, and is not copied.
+	if [ -f "$db-wal" ]; then
+		if cp -f "$db-wal" "$out-wal"; then
+			echo "9router-go-backup: carried uncheckpointed $db-wal into $out-wal"
+		else
+			echo "9router-go-backup: could not copy $db-wal, only checkpointed writes are saved" >&2
+		fi
+	else
+		# A stale -wal from an earlier save would be restored onto a database it
+		# does not belong to.
+		rm -f "$out-wal"
+	fi
 	# The database is not the only user state: uploaded logos and other media
 	# live under data_dir/uploads, and a restore onto a new router without them
 	# leaves the dashboard pointing at files that are not there. The archive is
@@ -99,6 +117,13 @@ do_restore() {
 	was_running=0
 	service_running && was_running=1
 	stop_service
+	# SQLite replays any -wal file it finds beside the database it opens. One
+	# belonging to the database being replaced must not survive into the
+	# restored file: it holds frames for page images the restored database does
+	# not contain, which is how a restore produces "database disk image is
+	# malformed" or silently reverts rows. The -shm file is a shared-memory
+	# index and is never carried across either.
+	rm -f "$db-wal" "$db-shm"
 	# Keep the replaced file: a restore from the wrong backup must be undoable
 	# on a device with no other copy.
 	[ -f "$db" ] && cp -f "$db" "$db.before-restore"
@@ -106,6 +131,16 @@ do_restore() {
 		[ "$was_running" -eq 1 ] && start_service
 		echo "9router-go-backup: restore from $in failed" >&2
 		exit 1
+	fi
+	# `save` writes the -wal beside the database when the gateway was killed
+	# before checkpointing. Putting it back is what makes the restored database
+	# equal to the one that was backed up.
+	if [ -f "$in-wal" ]; then
+		if cp -f "$in-wal" "$db-wal"; then
+			echo "9router-go-backup: restored $db-wal alongside the database"
+		else
+			echo "9router-go-backup: could not restore $in-wal, the database keeps only checkpointed writes" >&2
+		fi
 	fi
 	# Restore the media archive written by `save`, when there is one. Extracting
 	# over the existing directory keeps files the archive does not carry, which
