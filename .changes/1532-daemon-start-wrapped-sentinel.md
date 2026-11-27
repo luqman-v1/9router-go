@@ -1,3 +1,0 @@
-### Fixed
-
-- **`9router-go start -d` recognises the wrapped "already running" error.** `startDetached` compared `daemon.Start`'s error with `==`, but `Start` returns `ErrAlreadyRunning` **wrapped** (`%w on %s (…) — stop it first…`) when the port is busy and no PID file names the owner, so that variant fell through and the terminal got the raw error instead of the friendly "already running (pid …)" message. The comparison now uses `errors.Is`, matching the two comparisons in `menu.go` that already do this for the same reason. Pinned by `TestStartDetached_AlreadyRunningVariants`, which injects both shapes through the same `daemonStart` seam `menu.go`'s tests use (`menuDaemonStart`), plus a propagation case proving real start failures still surface.
