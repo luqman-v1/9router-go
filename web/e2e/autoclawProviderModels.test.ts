@@ -10,9 +10,11 @@
  * This test renders the page in Chromium and pins the rendered set, so the
  * drift is caught where the operator actually sees it.
  *
- * Rule §6.H "prove it fails on base": on `origin/main` the autoclaw provider
- * route does not exist, so the navigation itself is the base failure — the
- * page 404s and no model row renders.
+ * Rule §6.H "prove it fails on base": on `origin/main` the SPA's catch-all
+ * route still renders the provider shell for `autoclaw`, but with an empty
+ * model grid ("Select all (0)") — the base failure is the empty rendered set,
+ * not a 404. The rendered.length assertion fails there and passes once the
+ * seven rows render.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
