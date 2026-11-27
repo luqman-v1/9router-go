@@ -193,7 +193,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	httpReq.Header.Set("X-Client-Name", "antigravity")
-	httpReq.Header.Set("X-Client-Version", providers.AntigravityIDEVersion)
+	httpReq.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
