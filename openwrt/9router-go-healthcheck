@@ -36,7 +36,7 @@ port=${port:-20130}
 # threshold and timeout above are already guarded for the same reason; this
 # one was the gap.
 case "$port" in ''|*[!0-9]*) port=20130 ;; esac
-# Probe only a service procd believes is running. This gate covers two cases
+# Probe unless procd reports the service as stopped. This gate covers two cases
 # the probe used to punish:
 #   - 9router-go-backup stops the gateway to copy the database. A probe
 #     landing in that window counts a failure against a process that is
@@ -48,10 +48,20 @@ case "$port" in ''|*[!0-9]*) port=20130 ;; esac
 #     bypasses the backoff procd applies to a binary that cannot start.
 # A stopped service is procd's business; this script only covers the case
 # procd cannot see, a process that is alive with a wedged listener.
+#
+# The gate only skips on a verdict that names the service stopped. Older
+# rc.common releases (18.06, 19.07) do not register `status` as an action:
+# calling it falls through to `help`, and skipping on that would silently
+# disable the watchdog on the oldest supported releases. Anything that is not
+# a clear "not running" from procd is treated as "the gate cannot decide" and
+# the probe fires — the cost of a redundant probe is a single HTTP request,
+# the cost of a silently disabled watchdog is a wedged gateway.
 status=$(/etc/init.d/9router-go status 2>/dev/null | head -n 1)
 case "$status" in
-running*) ;;
-*) exit 0 ;;
+running*) : ;;
+"not running"*) exit 0 ;;
+"stopped"*) exit 0 ;;
+*) : ;;
 esac
 host=$(uci -q get 9router-go.main.host 2>/dev/null || true)
 case "$host" in

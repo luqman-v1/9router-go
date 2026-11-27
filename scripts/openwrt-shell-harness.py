@@ -280,12 +280,19 @@ def main():
         running_flag = os.path.join(tmp, "running")
         restart_log = os.path.join(tmp, "restarts.log")
         initd_stub = os.path.join(tmp, "initd-9router-go")
+        # The stub's `status` output is read from INITD_STATUS_OUT so the
+        # harness can present each of the verdicts a real rc.common release
+        # produces: bare `running` on 21.02+, `not running` when the service
+        # is stopped, and the help text a 18.06/19.07 `status` call returns
+        # because that action is not registered there.
         write(initd_stub,
               "#!/bin/sh\n"
               'case "$1" in\n'
-              '  status) [ -f "%s" ] && echo running || echo "not running" ;;\n'
-              '  restart) echo x >> "%s" ;;\n'
-              "esac\n" % (sh_path(running_flag), sh_path(restart_log)))
+              '  status)\n'
+              "    if [ -n \"${INITD_STATUS_OUT+x}\" ]; then printf '%s\\n' \"$INITD_STATUS_OUT\";\n"
+              '    elif [ -f "' + sh_path(running_flag) + '" ]; then echo running; else echo "not running"; fi ;;\n'
+              '  restart) echo x >> "' + sh_path(restart_log) + '" ;;\n'
+              "esac\n")
         firewall_cfg = os.path.join(tmp, "firewall")
         write(firewall_cfg, "config defaults\n\toption input 'REJECT'\n", 0o644)
 
@@ -461,6 +468,53 @@ def main():
         case("a stopped service is not counted as a failed probe",
              not os.path.exists(counter), "counter: %r" % (
                  open(counter).read() if os.path.exists(counter) else None,))
+        # 7b'. the gate must only skip on a verdict that names the service
+        # stopped. 18.06/19.07 do not register `status` as an rc.common
+        # action, so the call falls through to `help` and its first line is
+        # not `running`. Skipping on that would silently disable the
+        # watchdog on the oldest supported releases, so anything the stub
+        # cannot classify as "not running" from procd is treated as "probe
+        # anyway". Each verdict below is pinned against the counter the
+        # probe writes.
+        env4 = dict(env2)
+        write(status, "1\n", 0o644)
+        if os.path.exists(counter):
+            os.remove(counter)
+        # (a) a bare `running` verdict, as 21.02+ emits.
+        env4["INITD_STATUS_OUT"] = "running"
+        run([sh, hc_path], env4)
+        case("a bare 'running' verdict probes", os.path.exists(counter),
+             "counter: %r" % (open(counter).read() if os.path.exists(counter) else None,))
+        # (b) the 18.06/19.07 help output when `status` is not an action.
+        # The first line of `rc.common help` on those releases does not
+        # name the service state.
+        env4["INITD_STATUS_OUT"] = "Usage: /etc/init.d/9router-go [command]"
+        if os.path.exists(counter):
+            os.remove(counter)
+        run([sh, hc_path], env4)
+        case("an unrecognised status verdict (18.06 help) still probes",
+             os.path.exists(counter),
+             "counter: %r" % (open(counter).read() if os.path.exists(counter) else None,))
+        # (c) an explicit `not running` verdict still skips, because it is
+        # the one case the gate exists to catch.
+        env4["INITD_STATUS_OUT"] = "not running"
+        if os.path.exists(counter):
+            os.remove(counter)
+        run([sh, hc_path], env4)
+        case("a 'not running' verdict skips the probe",
+             not os.path.exists(counter),
+             "counter: %r" % (open(counter).read() if os.path.exists(counter) else None,))
+        # (d) a `stopped` verdict also skips — 19.07 procd's status_service
+        # reports `stopped` for a service that has exited.
+        env4["INITD_STATUS_OUT"] = "stopped"
+        if os.path.exists(counter):
+            os.remove(counter)
+        run([sh, hc_path], env4)
+        case("a 'stopped' verdict skips the probe",
+             not os.path.exists(counter),
+             "counter: %r" % (open(counter).read() if os.path.exists(counter) else None,))
+        # Restore the flag file the remaining cases assume.
+        write(running_flag, "1\n", 0o644)
         # 7c. a non-numeric port must not turn every probe into a failure.
         # The URL is what the stub records, so this asserts the fallback the
         # script applies rather than the probe outcome.
