@@ -8,8 +8,10 @@
   `providerOverrides[provider].comboMemberAttemptCap`, where an explicit 0
   disables the cap for that provider even when a global cap is set. The cap
   counts failed accounts rather than loop iterations, so a connection skipped as
-  model-locked or unavailable costs nothing, and the control lives under
-  *Default Routing Strategy* in Settings.
+  model-locked or unavailable costs nothing. The control lives under
+  *Default Routing Strategy* in Settings and names 3 as the suggested value when
+  an operator turns it on. Both fallback loops are covered by tests that assert
+  the upstream call count: `/v1/chat/completions` and `/v1/messages`.
 
 Provenance: operator feature from `9router-pro` `v0.5.109-pro.28`
 (`comboMemberAttemptCap` plus `comboMemberAttemptCapOverrides`, default 3,
