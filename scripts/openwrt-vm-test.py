@@ -278,6 +278,82 @@ def main():
         ok, out = ser.command("logread | grep -c '9router-go installed'", "#")
         check("postinst logged the install",
               ok and out.strip().splitlines()[-1].strip() != "0", out)
+        # --- the documented update path: feed add, opkg update, reinstall ---
+        # Everything above installs from a file path, which bypasses the feed
+        # entirely: the Packages index, the URL layout `9router-go-feed add`
+        # builds, and opkg's own resolution are never exercised. The feed needs
+        # the architecture directory under the served root, and /tmp/gw.ipk came
+        # from the arch dir directly, so serve the parent on its own port.
+        feed_root = os.path.dirname(os.path.abspath(args.ipk_dir))
+        feed_port = free_port()
+        serve_dir(feed_root, feed_port)
+        ok, out = ser.command(
+            f"9router-go-feed add http://10.0.2.2:{feed_port}; echo rc=$?", "#")
+        check("9router-go-feed add", ok and "rc=0" in out, out)
+        ok, out = ser.command("opkg update 2>&1 | tail -5", "#")
+        check("opkg update reads the served feed",
+              ok and "Collected errors" not in out, out)
+        # The generated secret must survive an upgrade: postinst only generates
+        # one when the option is empty, and a reinstall that minted a new secret
+        # would invalidate every dashboard session on the device.
+        ok, out = ser.command("uci get 9router-go.main.jwt_secret", "#")
+        secret_before = out.strip().splitlines()[-1].strip() if ok else ""
+        ok, out = ser.command(
+            "grep -c 9router-go-healthcheck /etc/crontabs/root", "#")
+        cron_before = out.strip().splitlines()[-1].strip() if ok else "?"
+        ok, out = ser.command(
+            "opkg --force-reinstall install 9router-go 2>&1 | tail -5", "#")
+        check("opkg reinstalls 9router-go from the feed",
+              ok and "Collected errors" not in out
+              and ("Configuring 9router-go" in out or "Reinstalling" in out), out)
+        ok, out = ser.command(
+            "grep -c 9router-go-healthcheck /etc/crontabs/root", "#")
+        cron_after = out.strip().splitlines()[-1].strip() if ok else "?"
+        check("a reinstall keeps exactly one probe cron line",
+              cron_after == "1" and cron_before == "1",
+              f"before={cron_before!r} after={cron_after!r}")
+        ok, out = ser.command("uci get 9router-go.main.jwt_secret", "#")
+        secret_after = out.strip().splitlines()[-1].strip() if ok else ""
+        check("a reinstall keeps the generated JWT secret",
+              secret_before != "" and secret_before == secret_after,
+              f"before={len(secret_before)} chars, after={len(secret_after)} chars")
+        ok, out = ser.command_retry(
+            "/etc/init.d/9router-go status", r"is running", 8)
+        check("the service is running after a reinstall", ok, out)
+        # --- open_lan: the LAN rule is added and removed by a restart ---
+        ser.command("uci set 9router-go.main.open_lan=1; uci commit 9router-go", "#")
+        ser.command("/etc/init.d/9router-go restart; sleep 2", "#")
+        ok, out = ser.command(
+            "uci show firewall | grep -c 9router-go-allow-lan", "#")
+        check("open_lan=1 adds one LAN rule",
+              ok and out.strip().splitlines()[-1].strip() == "1", out)
+        ser.command("uci set 9router-go.main.open_lan=0; uci commit 9router-go", "#")
+        ser.command("/etc/init.d/9router-go restart; sleep 2", "#")
+        ok, out = ser.command(
+            "uci show firewall | grep -c 9router-go-allow-lan", "#")
+        check("open_lan=0 removes it again",
+              ok and out.strip().splitlines()[-1].strip() == "0", out)
+        # --- removal leaves no daemon, no cron line, no rule, and the database ---
+        # luci-app-9router-go Depends on the gateway, so it has to be removed
+        # first or opkg refuses with a dependency error.
+        ser.command("opkg remove luci-app-9router-go 2>&1 | tail -2", "#")
+        ok, out = ser.command("opkg remove 9router-go 2>&1 | tail -3", "#")
+        check("opkg remove 9router-go", ok and "Collected errors" not in out, out)
+        ok, out = ser.command(
+            f"wget -qO- http://127.0.0.1:{args.port}/health >/dev/null 2>&1; echo rc=$?", "#")
+        check("removal stops the gateway",
+              "rc=0" not in out.strip().splitlines()[-1], out)
+        ok, out = ser.command(
+            "grep -q 9router-go-healthcheck /etc/crontabs/root; echo rc=$?", "#")
+        check("removal clears the probe cron entry",
+              "rc=1" in out.strip().splitlines()[-1], out)
+        ok, out = ser.command(
+            "uci show firewall | grep -c 9router-go-allow-lan", "#")
+        check("removal clears the LAN rule",
+              ok and out.strip().splitlines()[-1].strip() == "0", out)
+        ok, out = ser.command(
+            "test -f /opt/9router/db/data.sqlite && echo DBKEPT", "#")
+        check("removal keeps the database", ok and "DBKEPT" in out, out)
 
     finally:
         proc.terminate()
