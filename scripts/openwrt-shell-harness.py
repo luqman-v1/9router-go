@@ -372,6 +372,28 @@ def main():
              "procd params: %r" % (r.procd,))
         case("malformed limits do not abort start", r.returncode == 0,
              "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
+        # An oversized value reaches neither procd nor the Go runtime untouched:
+        # Go throws `fatal error: malformed GOMEMLIMIT` on a number too large to
+        # parse (9000000000000 MiB), and Linux rejects an NR_OPEN above
+        # 1048576 with EINVAL — either way the service would not start. The
+        # guard clamps both to the largest safe value and logs the change.
+        r = start(0, "20131", mem_limit=9999999999999999, nofile_limit=9999999999999999)
+        case("oversized mem_limit clamped",
+             "env GOMEMLIMIT=1048576MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("oversized nofile_limit clamped",
+             "limits nofile=1048576 1048576" in r.procd,
+             "procd params: %r" % (r.procd,))
+        case("oversized limits do not abort start", r.returncode == 0,
+             "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
+        r = start(0, "20131", mem_limit=9000000000000, nofile_limit=0)
+        case("large mem_limit at the parser edge clamped",
+             "env GOMEMLIMIT=1048576MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
+        r = start(0, "20131", mem_limit=64, nofile_limit=1048576)
+        case("nofile_limit at the ceiling passes through unchanged",
+             "limits nofile=1048576 1048576" in r.procd and "GOMEMLIMIT=64MiB" in r.procd,
+             "procd params: %r" % (r.procd,))
 
         # 5. the probe survives a config that predates every option
         hc = retarget(open(os.path.join(src, "9router-go-healthcheck")).read())

@@ -188,13 +188,21 @@ reserves a large virtual address space up front, so an address-space limit
 aborts the process at start-up while the actual heap is still small — the limit
 that is supposed to protect the gateway would be what kills it. A malformed
 value sets nothing at all rather than passing garbage through, because Go treats
-an unparsable `GOMEMLIMIT` as a fatal start-up error.
+an unparsable `GOMEMLIMIT` as a fatal start-up error. An oversized value is
+clamped to `1048576` MiB and logged instead: Go also throws `fatal error:
+malformed GOMEMLIMIT` on a number too large to parse, so the guard must bound the
+magnitude as well as the syntax.
 
 `nofile_limit` is an `RLIMIT_NOFILE` set through procd. Each proxied stream
 holds one descriptor for the client socket and one for the upstream, so a busy
 gateway reaches the default 1024 long before it is out of CPU. Both the soft and
 the hard limit are set: procd leaves `rlim_max` at the inherited value when it is
 omitted, and raising only the soft limit above it fails with `EINVAL`.
+
+A fresh install and an upgraded install both start with `nofile_limit=4096`
+from the packaged default, so an existing install picks up the raised limit on
+its first restart after `opkg upgrade`. Setting the option to `0` restores the
+system default (1024 on most images).
 
 ## LAN firewall
 

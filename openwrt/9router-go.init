@@ -69,7 +69,18 @@ start_service() {
 	case "$mem_limit" in
 	''|*[!0-9]*) mem_limit=0 ;;
 	esac
-	if [ "$mem_limit" -gt 0 ] 2>/dev/null; then
+	# A magnitude ceiling too: Go throws `fatal error: malformed GOMEMLIMIT` on
+	# a value it cannot parse, so an operator typo like `9999999999999999` must
+	# not reach the runtime. 1 TiB is far above any box this package targets
+	# and below what Go can parse; larger values are clamped, not fatal.
+	while [ "${#mem_limit}" -gt 1 ] && [ "${mem_limit#0}" != "$mem_limit" ]; do
+		mem_limit="${mem_limit#0}"
+	done
+	if [ "${#mem_limit}" -gt 7 ] || [ "$mem_limit" -gt 1048576 ]; then
+		logger -t "$NAME" "mem_limit=$mem_limit out of range, clamped to 1048576 MiB"
+		mem_limit=1048576
+	fi
+	if [ "$mem_limit" -gt 0 ]; then
 		procd_set_param env GOMEMLIMIT="${mem_limit}MiB"
 	fi
 	# Every proxied stream holds a client socket and an upstream socket, so the
@@ -80,7 +91,17 @@ start_service() {
 	case "$nofile_limit" in
 	''|*[!0-9]*) nofile_limit=0 ;;
 	esac
-	if [ "$nofile_limit" -gt 0 ] 2>/dev/null; then
+	# Same magnitude ceiling: NR_OPEN on Linux is 1048576, so anything larger is
+	# rejected by setrlimit with EINVAL — and `procd_set_param limits` failure
+	# aborts the service start. Clamp instead of failing.
+	while [ "${#nofile_limit}" -gt 1 ] && [ "${nofile_limit#0}" != "$nofile_limit" ]; do
+		nofile_limit="${nofile_limit#0}"
+	done
+	if [ "${#nofile_limit}" -gt 7 ] || [ "$nofile_limit" -gt 1048576 ]; then
+		logger -t "$NAME" "nofile_limit=$nofile_limit out of range, clamped to 1048576"
+		nofile_limit=1048576
+	fi
+	if [ "$nofile_limit" -gt 0 ]; then
 		procd_set_param limits nofile="$nofile_limit $nofile_limit"
 	fi
 	# The pid file is the one liveness signal shared by procd, the LuCI page and
