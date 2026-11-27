@@ -170,6 +170,32 @@ only restarted when the table actually changes. Three consecutive `/health`
 failures restart the service; one is treated as load. The counter lives in
 `/var/run`, so it costs no flash writes and resets on reboot.
 
+## Memory and file limits
+```sh
+uci set 9router-go.main.mem_limit='64'        # MiB, 0 = no limit (default)
+uci set 9router-go.main.nofile_limit='4096'   # 0 = system default
+uci commit 9router-go
+/etc/init.d/9router-go restart
+```
+`mem_limit` is exported as `GOMEMLIMIT`, Go's **soft** heap ceiling: the garbage
+collector works harder as the heap approaches it, instead of the process growing
+until the router's OOM killer picks a victim. On a small router that victim is
+often `sshd` or the kernel doing the flashing, so the ceiling protects more than
+the gateway.
+
+It is deliberately not an `RLIMIT_AS` (`procd_set_param limits as=…`). Go
+reserves a large virtual address space up front, so an address-space limit
+aborts the process at start-up while the actual heap is still small — the limit
+that is supposed to protect the gateway would be what kills it. A malformed
+value sets nothing at all rather than passing garbage through, because Go treats
+an unparsable `GOMEMLIMIT` as a fatal start-up error.
+
+`nofile_limit` is an `RLIMIT_NOFILE` set through procd. Each proxied stream
+holds one descriptor for the client socket and one for the upstream, so a busy
+gateway reaches the default 1024 long before it is out of CPU. Both the soft and
+the hard limit are set: procd leaves `rlim_max` at the inherited value when it is
+omitted, and raising only the soft limit above it fails with `EINVAL`.
+
 ## LAN firewall
 
 ```sh
