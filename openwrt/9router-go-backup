@@ -10,8 +10,8 @@
 #   9router-go-backup restore [file]
 #   9router-go-backup list
 #
-# /etc/9router-go is kept by sysupgrade when "keep settings" is chosen, so the
-# default backup location survives a firmware upgrade.
+# /etc/9router-go is listed in this package's keep.d drop-in, so the default
+# backup location survives a firmware upgrade that keeps settings.
 #
 # Requires OpenWrt 18.06 or later. Only busybox applets are used: no pgrep (left
 # out of many 18.06 builds), no sqlite3, no gzip.
