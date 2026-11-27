@@ -40,6 +40,11 @@ attempt its own rate-limit bucket.
 Behind an untrusted proxy, every request is bucketed by the proxy's own socket
 address, so all its users share one login bucket: five failed attempts lock them
 all out. `TRUSTED_PROXIES` separates them again.
+The same resolved address is the key for the **per-client-IP request ceiling**
+(`perIpRpm`/`perIpRph`/`perIpRpd`/`perIpConcurrency`), so the trust list decides
+what "one client" means for spending as well as for login attempts: behind an
+untrusted proxy the whole proxy is one caller, and behind a trusted one each
+forwarded client is counted on its own.
 
 ## Credential vault
 
@@ -66,6 +71,19 @@ response stream (`internal/guardrails/`). Layers resolve global → provider →
 model → chain → API key, most-specific wins, and actions are
 `log_only` / `warn` / `mask` / `block`. Policy CRUD and the audit log live behind
 `/api/guardrails/policies` and `/api/guardrails/logs`.
+Policies are edited in the dashboard's **Security** panel — create, update and
+delete in place (`/api/guardrails/policies`, and
+`PUT /api/guardrails/policies/{id}`) — so a rule does not need `curl` to change.
+One policy per scope: a second create for the same `(scope, scope_id)` answers
+`409` and asks you to edit the existing one. A policy whose custom pattern does
+not compile is refused with `400` at save time, which is the only place the
+mistake is still cheap.
+A single `guardrailsEnabled` switch gates both taps (inbound and outbound) and is
+read per request — twice, from the settings blob, so turning inspection off never
+means deleting your policies: turn it back on and the same rules apply again. It
+defaults to **on**: a policy row is an explicit decision by the operator, and
+silently ignoring it because a setting was never written would be the more
+dangerous reading.
 
 > **Guardrails and Persona pull in opposite directions.** Persona can instruct a
 > model to ignore its own rules; guardrails inspect what leaves your gateway for

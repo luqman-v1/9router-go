@@ -51,6 +51,24 @@ The Usage page switches between several views of the same data
 The period selector is not limited to fixed presets — `14d`, `12h`, `7d` all
 work, because the range parser accepts a number plus a unit
 (`internal/analyticsrange/range.go`).
+### Month to date
+`period=month` is the **calendar month**: the window opens at local midnight on
+the 1st, so it stays distinguishable from `30d`. The cards read raw
+`usageHistory` for it rather than the `usageDaily` rollup, because the window
+includes today and the rollup cannot express part of a day.
+
+On the chart, month is its own period kind rather than a day count — a count of
+zero already means "from the earliest row" (the `all` preset), so reusing it here
+would silently widen the chart to the whole ledger. It draws one bucket per
+elapsed day including today, totals from the `usageDaily` rollup and the
+per-family split from a `usageHistory` scan over the same window, since the
+rollup carries only totals.
+
+Every other preset: `today` and `24h` bucket by hour, `7d`/`30d`/`60d` and
+custom `<n>d` bucket by day (capped at the ledger's 3650-day span), custom
+`<n>h` buckets by hour (capped at 168 hours). An unrecognized value falls back
+to 7 days rather than erroring, so a newer dashboard keeps working against an
+older gateway.
 
 ## Compression analytics
 
@@ -85,6 +103,14 @@ Cloudflare Workers AI:
   has no Cloudflare AI Analytics access rather than reporting a generic error.
 - **Codex reset credits** — `GET /api/usage/{connectionId}/reset-credits`, and
   `POST …/reset-credits/consume` to spend one.
+- **Claude and Codex seat tiers** — both report `subscription: {plan,
+  expiresAt}`. Claude reads the tier from `api.oauth.profile`
+  (`organization_type`, narrowed to its multiplier by `rate_limit_tier`) and
+  reports no end date, because the profile has none. Codex reads the tier and
+  its lapse date from `chatgpt.com/backend-api/accounts/check`. The seat read is
+  issued concurrently with the usage call, so the card waits for the slower of
+  the two; a failed seat read drops the badge and never the usage numbers. A
+  lapsed seat reports `free` rather than the plan it used to hold.
 - **GLM reset cards** (Z.ai international) —
   `GET|POST /api/usage/{connectionId}/glm-reset-cards`.
 - **Auto-ping schedule** — set a background interval that keeps quota current

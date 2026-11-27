@@ -39,6 +39,14 @@ GET  /api/models/catalog-sync   Catalog sync status
 POST /api/models/catalog-sync   Trigger a catalog sync
 ```
 
+`/v1/models/image` lists each provider's actual image models as
+`{provider}/{model}` — that is the string `POST /v1/images/generations` resolves.
+A bare provider id is not addressable (`400 could not resolve model: xai`), so a
+listing of bare ids could not be fed back into the endpoint it advertised. A
+provider that declares an image endpoint but ships no recognisable image entry
+still gets one addressable model id rather than nothing. The other kinds
+(`tts`, `stt`, `embedding`, `systemone`, `web`) keep their provider-level shape.
+
 ## Media
 
 ```text
@@ -49,6 +57,7 @@ POST /audio/speech               Text to speech
 POST /audio/music                Music generation
 POST /audio/sound-generation     Sound effect generation
 POST /audio/transcriptions       Speech to text
+POST /audio/translations        Speech translation (also `/v1/audio/translations`)
 GET  /audio/voices               Available voices
 GET  /api/media-providers/tts/voices            TTS voices
 GET  /api/media-providers/tts/{provider}/voices  Voices for one TTS provider
@@ -61,6 +70,18 @@ POST /scrape                     Page scraping
 POST /web/fetch                  Fetch a URL
 POST /systemone                  System One
 ```
+Audio translation resolves `whisper-1` when the client sends no model, and
+shares combo fallback and the generic URL builder with the other media
+endpoints. It is deliberately **not** wired into the Antigravity and ElevenLabs
+STT lanes: those post to vendor transcription endpoints (`/v1/speech-to-text`,
+Gemini `generateContent`) that transcribe rather than translate, and extending
+them needs a per-vendor translate parameter (Deepgram's `translate=true`).
+
+`POST /embeddings` forwards the client's `encoding_format` and `dimensions`
+untouched. That matters for clients that ask for `base64`: dropping the field
+would return float arrays to a caller parsing base64. NVIDIA's asymmetric
+embedding models additionally get the `input_type` hint they require —
+symmetric models (`nvclip`) and non-NVIDIA providers are left alone.
 
 ## Batching
 

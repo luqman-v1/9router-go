@@ -71,10 +71,18 @@ func generateWiki(wikiDir, outDir, repo, version string) error {
 		return fmt.Errorf("no wiki pages in %s", wikiDir)
 	}
 	sort.Strings(entries)
+	// The set of pages the site publishes. Every wiki page points at its
+	// neighbours as `settings.html`, and without this the link rewrite turned
+	// those into `github.com/.../blob/main/settings.html` — a path that names no
+	// file in the repository and 404s from every article on the site.
+	known := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		known[strings.TrimSuffix(filepath.Base(entry), ".md")] = struct{}{}
+	}
 
 	pages := make([]*page, 0, len(entries))
 	for _, entry := range entries {
-		p, err := renderWikiPage(entry, outDir)
+		p, err := renderWikiPage(entry, outDir, known)
 		if err != nil {
 			return err
 		}
@@ -132,9 +140,11 @@ func generateWiki(wikiDir, outDir, repo, version string) error {
 }
 
 // renderWikiPage parses one markdown file into a rendered page. Links to other
-// wiki pages stay relative; links to repository files become github.com blob
-// URLs, and the images they reference are copied next to the page.
-func renderWikiPage(path, outDir string) (*page, error) {
+// wiki pages — written as `settings.html` or as `settings.md` — stay relative;
+// links to repository files become github.com blob URLs, and the images they
+// reference are copied next to the page. `known` holds the slugs the site
+// publishes, which is what separates the first case from the second.
+func renderWikiPage(path, outDir string, known map[string]struct{}) (*page, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -182,6 +192,15 @@ func renderWikiPage(path, outDir string) (*page, error) {
 					out += "#" + fragment
 				}
 				n.Destination = []byte(out)
+			case strings.HasSuffix(file, ".html") && !hasScheme(dest) && !strings.HasPrefix(dest, "/") && isWikiPage(file, known):
+				// A wiki page linked the way the published site names it —
+				// `settings.html`, which is how every page links its
+				// neighbours. It is already the right destination, so it stays
+				// put; without this case the default branch below turned it
+				// into `github.com/.../blob/main/settings.html`, a path that
+				// exists neither in the repository nor on GitHub, so every
+				// cross-reference on the site 404'd.
+				wikiLinks[strings.TrimSuffix(file, ".html")] = struct{}{}
 			case isAsset(n.Destination):
 				if !hasScheme(dest) && !strings.HasPrefix(dest, "/") {
 					images[dest] = struct{}{}
@@ -247,6 +266,15 @@ func renderWikiPage(path, outDir string) (*page, error) {
 		Text:    body,
 		Since:   fm.Since,
 	}, nil
+}
+
+// isWikiPage reports whether a relative `.html` destination names a page the
+// site publishes, rather than some other repository file that happens to end in
+// `.html`. The distinction is what keeps an intra-wiki cross-reference relative
+// without claiming arbitrary `.html` links for the site.
+func isWikiPage(file string, known map[string]struct{}) bool {
+	_, ok := known[strings.TrimSuffix(file, ".html")]
+	return ok
 }
 
 // imageSize reads a raster image's pixel dimensions from its header, so the

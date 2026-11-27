@@ -62,6 +62,35 @@ The ADHD saver asks for neatly structured, bulleted, easy-to-scan answers. It is
 the third style option, also exclusive with the other two, and it has its own
 levels.
 
+## REA allow — the reverse-engineering clause
+
+`REA` here is the reverse-engineering *workflow* the clause points at
+(https://github.com/morluto/rea), not a compressor. When `reaAllowEnabled` is on,
+the gateway rewrites the request's system prompt on its way through: it removes
+paragraphs matching a fixed signature set — the stock safety clauses some CLI
+clients ship ("Refuse requests for destructive techniques", "Dual-use security
+tools") — and appends one paragraph scoping the turn to authorized reverse
+engineering and security research on software the user owns or is authorized to
+examine, preferring structured REA workflows and citing evidence.
+
+What it is not:
+
+- **Not a provider setting.** It edits the prompt the gateway sends. The
+  provider's own policy and its own refusals are untouched; a model may still
+  decline. It is the mirror image of [guardrails](security.html), which inspect
+  what leaves the gateway — this one expands what leaves it, so keep the guardrail
+  audit trail on if the traffic matters.
+- **Scoped to the system prompt.** Every system-prompt shape the translator
+  knows is handled (Claude's `system`, Gemini/Vertex's `systemInstruction`,
+  OpenAI's `system`/`developer` role, Kiro's own envelope), and an already-applied
+  clause is detected so a second pass does not stack it. Conversation messages
+  and tool schemas are never rewritten.
+- **Exact-match stripping.** Only those signature paragraphs are removed, and
+  only in whole paragraphs. A client that rewords them leaves its text in place —
+  the clause is appended, nothing is mangled.
+- **Off by default** (`reaAllowEnabled: false`); turning it on rewrites only
+  requests that have a system prompt to rewrite.
+
 ## Testing a saver before enabling it
 
 Two benches post a sample payload through the real compressor and show the
