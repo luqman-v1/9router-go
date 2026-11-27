@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -44,7 +46,7 @@ func runProbe(t *testing.T, env *Env, model, kind string) probeVerdict {
 
 func parkAccount(t *testing.T, env *Env, until time.Time) {
 	t.Helper()
-	if err := env.Repo.LockConnectionRateLimit("conn-ocz", until, 2, 429, "quota exhausted"); err != nil {
+	if err := env.Repo.LockConnectionRateLimit(context.Background(), "conn-ocz", until, 2, 429, "quota exhausted"); err != nil {
 		t.Fatalf("park account: %v", err)
 	}
 }
@@ -115,7 +117,7 @@ func TestModelTestComboModelLockIsBlocked(t *testing.T) {
 	env := newEnv(t)
 	up := env.NewUpstream(t, chatCompletionResponder())
 	addZenConnection(t, env, up)
-	if err := env.Repo.LockConnectionModel("conn-ocz", "deepseek-v4-pro", 600, 1); err != nil {
+	if err := env.Repo.LockConnectionModel(context.Background(), "conn-ocz", "deepseek-v4-pro", 600, 1); err != nil {
 		t.Fatalf("lock model: %v", err)
 	}
 	env.AddCombo(t, "combo-1", "resilient", []string{"ocz/deepseek-v4-pro"})

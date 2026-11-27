@@ -374,9 +374,16 @@ jobs:
   # report names itself in the checks list, and so a flaky assertion and a
   # real race do not hide behind each other in one log.
   #
-  # -count=1 defeats the cache so every PR re-runs it. -timeout 10m matches
-  # the integration job: -race is roughly an order of magnitude slower than an
-  # un-raced build, and internal/handlers/chat alone takes ~50s without it.
+  # -count=1 defeats the cache so every PR re-runs it. -timeout 20m: the
+  # per-package ceiling has to clear the slowest package on the slowest
+  # runner, not the average one. internal/handlers/chat measured 407s,
+  # 589.8s and 590.7s under -race on 2026-11-26 (three runners, commits on
+  # main), so 10m left 1.6% headroom and timed out on slower-than-average
+  # machines (PR #1481's red Race detector run is that timeout, not a
+  # race). 20m restores a 2x margin over the worst observed time and still
+  # bounds a genuine hang. -race is roughly an order of magnitude slower
+  # than an un-raced build, and internal/handlers/chat alone takes ~100s
+  # without it.
   race:
     name: Race detector
     runs-on: ubuntu-latest
@@ -403,7 +410,7 @@ jobs:
           cache: true
 
       - name: Test with race detector
-        run: go test -race -count=1 -timeout 10m ./...
+        run: go test -race -count=1 -timeout 20m ./...
   # ROADMAP §4 asks for a coverage profile CI publishes *and* a non-regression
   # rule; until now the suite produced neither. The profile is the artifact; the
   # rule is scripts/coverage-gate.sh comparing the total against

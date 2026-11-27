@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+
 	"database/sql"
 	"testing"
 	"time"
@@ -171,7 +173,7 @@ func TestGetBestConnection_ForceFallbackIgnoresModelLocks(t *testing.T) {
 	seedForceFallback(t, database)
 
 	repo := db.NewRepo(database)
-	if err := repo.LockConnectionModel("conn-locked", "deepseek-chat", 300, 1); err != nil {
+	if err := repo.LockConnectionModel(context.Background(), "conn-locked", "deepseek-chat", 300, 1); err != nil {
 		t.Fatalf("lock connection model: %v", err)
 	}
 

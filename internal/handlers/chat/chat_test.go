@@ -678,7 +678,7 @@ func TestHandleChatCompletions_AccountFallback_401(t *testing.T) {
 	}
 
 	// Verify model lock created for failed connection, cleared for successful one
-	failLocked, err := repo.IsConnectionModelLocked("conn-fail", "deepseek-chat")
+	failLocked, err := repo.IsConnectionModelLocked(context.Background(), "conn-fail", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked(conn-fail) failed: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestHandleChatCompletions_AccountFallback_401(t *testing.T) {
 		t.Error("expected model lock on failed connection (conn-fail)")
 	}
 
-	okLocked, err := repo.IsConnectionModelLocked("conn-ok", "deepseek-chat")
+	okLocked, err := repo.IsConnectionModelLocked(context.Background(), "conn-ok", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked(conn-ok) failed: %v", err)
 	}
@@ -739,7 +739,7 @@ func TestHandleChatCompletions_AccountFallback_429(t *testing.T) {
 	}
 
 	// Verify per-connection model lock was created for 429
-	locked, err := repo.IsConnectionModelLocked("conn-rl", "deepseek-chat")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-rl", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
@@ -1465,7 +1465,7 @@ func TestAccountFallback_NonRetryableError(t *testing.T) {
 
 	// Blockers #3: a gateway fault (500-504) now records a transient cooldown
 	// badge and locks the model so the account is not re-dialled immediately.
-	locked, err := repo.IsConnectionModelLocked("conn-500", "deepseek-chat")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-500", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
@@ -1530,14 +1530,14 @@ func TestAccountFallback_AllExhaustedRetryable(t *testing.T) {
 	}
 
 	// Both connections should have per-connection locks
-	locked1, err := repo.IsConnectionModelLocked("conn-rl-1", "deepseek-chat")
+	locked1, err := repo.IsConnectionModelLocked(context.Background(), "conn-rl-1", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
 	if !locked1 {
 		t.Error("expected conn-rl-1 per-connection lock after 429")
 	}
-	locked2, err := repo.IsConnectionModelLocked("conn-rl-2", "deepseek-chat")
+	locked2, err := repo.IsConnectionModelLocked(context.Background(), "conn-rl-2", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}

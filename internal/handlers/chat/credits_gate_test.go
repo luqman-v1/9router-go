@@ -56,7 +56,7 @@ func TestComboLock400CreditsNeedStructuredCode(t *testing.T) {
 				Body:       []byte(tt.body),
 			})
 
-			locked, err := repo.IsConnectionModelLocked("conn-cg", tt.wantModel)
+			locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-cg", tt.wantModel)
 			if err != nil {
 				t.Fatalf("IsConnectionModelLocked: %v", err)
 			}

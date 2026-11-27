@@ -55,11 +55,11 @@ func (h *ChatHandler) recordModelDeprecation(ctx context.Context, provider, mode
 
 	if connID != "" {
 		lockKey := canonicalLockModel(provider, model)
-		if err := h.Repo.LockConnectionModel(connID, lockKey, modelDeprecationCooldownSec, 0); err != nil {
+		if err := h.Repo.LockConnectionModel(ctx, connID, lockKey, modelDeprecationCooldownSec, 0); err != nil {
 			log.Warn("deprecation", "model lock failed", "conn", connID, "provider", provider, "model", model, "error", err)
 		}
 		if lockKey != model {
-			_ = h.Repo.LockConnectionModel(connID, model, modelDeprecationCooldownSec, 0)
+			_ = h.Repo.LockConnectionModel(ctx, connID, model, modelDeprecationCooldownSec, 0)
 		}
 	}
 
@@ -113,11 +113,11 @@ func (h *ChatHandler) recordModelCooldown(ctx context.Context, provider, model, 
 	if connID != "" {
 		lockKey := canonicalLockModel(provider, model)
 		cooldownSec := providers.ModelCooldownSec
-		if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, 0); err != nil {
+		if err := h.Repo.LockConnectionModel(ctx, connID, lockKey, cooldownSec, 0); err != nil {
 			log.Warn("cooldown", "model lock failed", "conn", connID, "provider", provider, "model", model, "error", err)
 		}
 		if lockKey != model {
-			_ = h.Repo.LockConnectionModel(connID, model, cooldownSec, 0)
+			_ = h.Repo.LockConnectionModel(ctx, connID, model, cooldownSec, 0)
 		}
 	}
 

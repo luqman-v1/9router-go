@@ -44,7 +44,7 @@ func TestModelScoped429_DoesNotBlockUnrelatedModelsOnSameAccount(t *testing.T) {
 	_ = h.handleAccountFallback(context.Background(), rec, "antigravity", "claude-sonnet-4-6", "", body, false, false, "/v1/chat/completions")
 
 	// claude-sonnet-4-6 must be locked on conn-multi
-	locked, err := repo.IsConnectionModelLocked("conn-multi", "claude-sonnet-4-6")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-multi", "claude-sonnet-4-6")
 	if err != nil || !locked {
 		t.Errorf("expected claude-sonnet-4-6 to be locked, err=%v, locked=%v", err, locked)
 	}
@@ -119,7 +119,7 @@ func TestComboFallback_ModelScoped429_PinsLockAndPreservesUnrelatedModel(t *test
 	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-combo", "antigravity", "claude-sonnet-4-6", reqErr)
 
 	// 1. claude-sonnet-4-6 must be locked
-	locked, err := repo.IsConnectionModelLocked("conn-combo", "claude-sonnet-4-6")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-combo", "claude-sonnet-4-6")
 	if err != nil || !locked {
 		t.Errorf("expected claude-sonnet-4-6 to be locked, err=%v, locked=%v", err, locked)
 	}
@@ -222,7 +222,7 @@ func TestModelScoped402_FundsRequiredDoesNotBlockFreeModels(t *testing.T) {
 	_ = h.handleAccountFallback(context.Background(), rec, "opencode-zen", "claude-3-7-sonnet", "", body, false, false, "/v1/chat/completions")
 
 	// Paid model should be locked
-	locked, err := repo.IsConnectionModelLocked("conn-zen", "claude-3-7-sonnet")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-zen", "claude-3-7-sonnet")
 	if err != nil || !locked {
 		t.Errorf("expected claude-3-7-sonnet to be locked, err=%v, locked=%v", err, locked)
 	}
@@ -272,7 +272,7 @@ func TestModelScoped401_UnsupportedModelDoesNotBlockAccount(t *testing.T) {
 	_ = h.handleAccountFallback(context.Background(), rec, "opencode-zen", "mimo-v2.5-free", "", body, false, false, "/v1/chat/completions")
 
 	// mimo-v2.5-free must be locked
-	locked, err := repo.IsConnectionModelLocked("conn-zen", "mimo-v2.5-free")
+	locked, err := repo.IsConnectionModelLocked(context.Background(), "conn-zen", "mimo-v2.5-free")
 	if err != nil || !locked {
 		t.Errorf("expected mimo-v2.5-free to be locked, err=%v, locked=%v", err, locked)
 	}
@@ -415,7 +415,7 @@ func TestComboFallback_ModelScoped402And401_PinsComboLock(t *testing.T) {
 	}
 	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-combo-zen", "opencode-zen", "claude-3-7-sonnet", ue402)
 
-	locked, _ := repo.IsConnectionModelLocked("conn-combo-zen", "claude-3-7-sonnet")
+	locked, _ := repo.IsConnectionModelLocked(context.Background(), "conn-combo-zen", "claude-3-7-sonnet")
 	if !locked {
 		t.Error("expected claude-3-7-sonnet to be locked in combo on 402")
 	}
@@ -432,7 +432,7 @@ func TestComboFallback_ModelScoped402And401_PinsComboLock(t *testing.T) {
 	}
 	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-combo-zen", "opencode-zen", "mimo-v2.5-free", ue401)
 
-	locked401, _ := repo.IsConnectionModelLocked("conn-combo-zen", "mimo-v2.5-free")
+	locked401, _ := repo.IsConnectionModelLocked(context.Background(), "conn-combo-zen", "mimo-v2.5-free")
 	if !locked401 {
 		t.Error("expected mimo-v2.5-free to be locked in combo on 401 unsupported")
 	}
