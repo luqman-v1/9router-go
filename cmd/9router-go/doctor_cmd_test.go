@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -175,5 +176,80 @@ func TestCheckPortReportsGatewayAsHealthy(t *testing.T) {
 	}
 	if !strings.Contains(got.Detail, "served by the gateway") {
 		t.Fatalf("detail lost the gateway wording: %s", got.Detail)
+	}
+}
+
+// wedgedProbes installs probes describing a daemon that holds the port but never
+// answers /health, which is the state the review of #1517 required doctor to
+// tell apart from a foreign listener.
+func wedgedProbes(t *testing.T, pid int) {
+	t.Helper()
+	originalPID, originalPort, originalHealthy := runningPID, portStatus, healthyAt
+	t.Cleanup(func() {
+		runningPID, portStatus, healthyAt = originalPID, originalPort, originalHealthy
+	})
+	runningPID = func() int { return pid }
+	portStatus = func(string) (bool, string) { return true, fmt.Sprintf("pid %d owns it", pid) }
+	healthyAt = func(string) bool { return false }
+}
+
+func TestCheckPortNamesAWedgedGatewayAsOurs(t *testing.T) {
+	wedgedProbes(t, 4242)
+
+	got := checkPort("http://127.0.0.1:20130")
+	if got.OK {
+		t.Fatalf("a wedged gateway reported OK: %s", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "wedged") {
+		t.Fatalf("detail does not name the state: %s", got.Detail)
+	}
+	if !strings.Contains(got.Fix, "9router-go restart") {
+		t.Fatalf("fix does not offer a restart: %s", got.Fix)
+	}
+	// The whole point: never advise killing our own daemon.
+	if strings.Contains(got.Fix, "taskkill") || strings.Contains(got.Fix, "lsof") {
+		t.Fatalf("fix tells the operator to kill their own gateway: %s", got.Fix)
+	}
+}
+
+func TestCheckPortStillNamesAForeignListenerWhenNoClaimExists(t *testing.T) {
+	wedgedProbes(t, 0)
+
+	got := checkPort("http://127.0.0.1:20130")
+	if got.OK {
+		t.Fatalf("a foreign listener reported OK: %s", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "another process") {
+		t.Fatalf("detail does not name the foreign process: %s", got.Detail)
+	}
+	if !strings.Contains(got.Fix, "taskkill") && !strings.Contains(got.Fix, "lsof") {
+		t.Fatalf("fix lost the port-release command: %s", got.Fix)
+	}
+}
+
+func TestCheckPortPassesAGatewayThatAnswers(t *testing.T) {
+	originalPID, originalPort, originalHealthy := runningPID, portStatus, healthyAt
+	t.Cleanup(func() {
+		runningPID, portStatus, healthyAt = originalPID, originalPort, originalHealthy
+	})
+	runningPID = func() int { return 4242 }
+	portStatus = func(string) (bool, string) { return true, "pid 4242 owns it" }
+	healthyAt = func(string) bool { return true }
+
+	got := checkPort("http://127.0.0.1:20130")
+	if !got.OK || !strings.Contains(got.Detail, "served by the gateway") {
+		t.Fatalf("a healthy gateway failed the port check: %s (%s)", got.Detail, got.Fix)
+	}
+}
+
+func TestCheckDaemonFailsForAWedgedGateway(t *testing.T) {
+	wedgedProbes(t, 4242)
+
+	got := checkDaemon("http://127.0.0.1:20130")
+	if got.OK {
+		t.Fatalf("a wedged gateway reported as running: %s", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "wedged") {
+		t.Fatalf("detail does not name the state: %s", got.Detail)
 	}
 }

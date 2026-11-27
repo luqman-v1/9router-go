@@ -3,7 +3,8 @@
 - **`9router-go doctor`**: diagnoses a gateway that will not answer, instead of
   only reporting that it is not running. `status` says whether a daemon is
   alive; `doctor` says why it is not, checking the resolved port, the pid claim,
-  whether the listening socket belongs to the gateway or a foreign process, the
+  whether the listening socket belongs to the gateway, a wedged gateway's own
+  daemon, or a foreign process, the
   data directory's writability, the database file, and a failed-bind marker in
   the run log. Each failing line names the command that fixes it on that
   platform (`netstat`/`taskkill` on Windows, `lsof`/`kill` elsewhere), and the

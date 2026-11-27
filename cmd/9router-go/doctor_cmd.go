@@ -127,15 +127,23 @@ func checkConfig(cfg *config.Config, port int, url string) DoctorCheck {
 }
 
 // checkDaemon reports the pid claim and whether that process is still alive.
+//
+// A live claim is not the same as a working gateway: the process can hold the
+// port and never answer, which is the wedged case checkPort names. The claim
+// alone therefore does not pass this check; a claim plus an unanswered /health
+// fails it, so `doctor` never prints "running" for a gateway that is not.
 func checkDaemon(url string) DoctorCheck {
 	c := DoctorCheck{Name: "daemon"}
-	pid := daemon.RunningPID()
+	pid := runningPID()
 	switch {
+	case pid > 0 && !daemon.Healthy(url):
+		// A live claim is not a working gateway.
+		c.Detail = fmt.Sprintf("pid %d is alive but /health does not answer: wedged", pid)
+		c.Fix = "9router-go restart"
 	case pid > 0:
 		c.OK = true
 		c.Detail = fmt.Sprintf("running (pid %d, log %s)", pid, daemon.LogPath())
-	case daemon.Healthy(url):
-		c.OK = false
+	case healthyAt(url):
 		c.Detail = "the port answers but no daemon owns it"
 		c.Fix = "started outside this binary; stop that process before running start"
 	default:
@@ -145,31 +153,54 @@ func checkDaemon(url string) DoctorCheck {
 	return c
 }
 
-// checkPort reports whether the port is served and whether the answer is the
-// gateway itself. A foreign listener is a different failure from a stopped
-// gateway and the two have different fixes.
+// checkPort reports which of four states the port is in, because three of them
+// look identical from outside (a connection accepted, no answer) and each has a
+// different fix:
+//
+//  1. free — nothing listening
+//  2. served by the gateway — /health answers 200
+//  3. held by this binary's own daemon, but /health is silent: the gateway is
+//     wedged. Telling the operator to kill that pid would kill the very thing
+//     `doctor` exists to recover, so the fix is restart plus the log.
+//  4. held by a process this binary does not own: a foreign listener, and the
+//     platform command that finds and stops it is the right advice.
+//
+// The pid claim is what separates 3 from 4. It is not inferred from the port:
+// a wedged gateway and a foreign process both accept a TCP connection and both
+// answer nothing, so only the claim can tell them apart.
+// The three probes are variables so the doctor tests can reach the wedged
+// branch, which needs a live pid claim with a silent listener and cannot be
+// produced by running the real daemon in a unit test.
+var (
+	runningPID = daemon.RunningPID
+	portStatus = daemon.PortStatus
+	healthyAt  = daemon.Healthy
+)
+
 func checkPort(url string) DoctorCheck {
 	c := DoctorCheck{Name: "port"}
-	busy, owner := daemon.PortStatus(url)
+	busy, owner := portStatus(url)
+	pid := runningPID()
+	healthy := busy && healthyAt(url)
+
 	switch {
 	case !busy:
 		c.OK = true
 		c.Detail = "free"
-	case daemon.Healthy(url):
+	case healthy:
 		c.OK = true
 		c.Detail = "served by the gateway (" + owner + ")"
+		return c
+	case pid > 0:
+		// Our own daemon owns the port but never answered: the listener is
+		// alive and the request path is not, which a restart clears and a
+		// forced kill of that pid would only turn into a harder outage.
+		c.OK = false
+		c.Detail = fmt.Sprintf("held by this gateway's daemon (pid %d), but /health does not answer: the gateway is wedged", pid)
+		c.Fix = "9router-go restart, then 9router-go logs -n 40 if it wedges again"
 	default:
 		c.OK = false
 		c.Detail = "held by another process (" + owner + "), /health does not answer"
-		c.Fix = portReleaseHint(url)
-	}
-	// The daemon check uses the same two probes; keep the two from telling
-	// different stories about the same listener. The gateway is the one thing
-	// on this port that answers /health, so a non-200 answer is a foreign
-	// process even when the port is otherwise busy.
-	if busy && !daemon.Healthy(url) && c.OK {
-		c.OK = false
-		c.Detail = "held by another process, /health does not answer"
 		c.Fix = portReleaseHint(url)
 	}
 	return c
