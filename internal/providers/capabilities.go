@@ -796,6 +796,17 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"qwen3.7-plus":         {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
 		"deepseek-v4-pro-0813": {Reasoning: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 393216},
 	},
+	"autoclaw": {
+		// Verified against the installed AutoClaw 2.6.1 model catalog
+		// snapshot: every model has contextWindow 1,048,576; maxTokens
+		// comes from the same feed (131,072 / 393,216 / 307,200).
+		"zai_auto":                 {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"zai_auto-fast":            {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 393216},
+		"zai_glm-x-preview":        {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 307200},
+		"zaicoding_glm-5.3":        {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 307200},
+		"zai_glm-5.3-flash":        {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 131072},
+		"zai_glm-5.3-flashx-legal": {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000, MaxOutput: 307200},
+	},
 }
 
 func init() {

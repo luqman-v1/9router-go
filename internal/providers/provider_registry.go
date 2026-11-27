@@ -863,6 +863,17 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://www.qwencloud.com",
 		Notice:       &Notice{APIKeyURL: "https://home.qwencloud.com/api-keys"},
 	},
+	"autoclaw": {
+		ID:           "autoclaw",
+		Name:         "Autoclaw",
+		Alias:        "au",
+		Category:     CategoryAPIKey,
+		Color:        "#8B3DFE",
+		Icon:         "cloud",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://autoclaw.z.ai",
+		Notice:       &Notice{Text: "OpenAI-compatible gateway for Zhipu AutoClaw (GLM models) via its native desktop protocol. Paste the credential as refresh_token|device_id|app_key from the AutoClaw app; the app key is the client's signing secret and is not shipped with the gateway. The access token is rotated on demand (lazily, on the request path).", APIKeyURL: "https://autoclaw.z.ai"},
+	},
 	"anthropic": {
 		ID:            "anthropic",
 		Name:          "Anthropic",
