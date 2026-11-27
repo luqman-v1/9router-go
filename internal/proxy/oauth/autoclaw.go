@@ -120,8 +120,9 @@ func refreshAutoclaw(ctx context.Context, p *Params) (*TokenResult, error) {
 		newRT = p.RefreshToken // upstream echoes the same refresh token; keep ours
 	}
 
-	// ~20h upstream access-token lifetime; the background ticker re-checks
-	// expiry and re-selects this connection before it goes stale.
+	// ~20h upstream access-token lifetime. Nothing watches it proactively:
+	// the background refresher does not select Autoclaw connections, so the
+	// executor re-rotates on the next request instead (dedup-cached 10s).
 	return &TokenResult{
 		AccessToken:  envelope.Data.AccessToken,
 		RefreshToken: newRT,
