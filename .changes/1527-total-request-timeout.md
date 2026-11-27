@@ -10,7 +10,10 @@
   unchanged. The bound is applied once at both chat entry points
   (`HandleChatCompletions` and `HandleMessages`) and shares its deadline with
   every later stage, so a request parked in a combo fallback expires too. A
-  request that already carries a tighter deadline keeps it.
+  request that already carries a tighter deadline keeps it, and a request cut
+  by the bound does not park the connection for a cooldown: the account was
+  never exercised, so the 504 carries `Local` and the cooldown recorder skips
+  it.
 
 Provenance: operator feature from `9router-pro` `v0.5.109-pro.28`
 (`TOTAL_REQUEST_TIMEOUT_MS`, default 30 minutes, measured from request start in
