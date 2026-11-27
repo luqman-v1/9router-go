@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -50,12 +51,22 @@ func joinHostPort(host, port string) string {
 	return host + ":" + port
 }
 
+// daemonStart is the seam the daemon-command tests swap to simulate the two
+// "already running" shapes Start can return — the same pattern menu.go uses
+// with menuDaemonStart.
+var daemonStart = daemon.Start
+
 // startDetached runs the server as a background daemon and returns, leaving
 // the terminal free.
 func startDetached(cCtx *cli.Context) error {
 	url := daemonURL()
-	res, err := daemon.Start(url, forwardArgs(cCtx))
-	if err == daemon.ErrAlreadyRunning {
+	res, err := daemonStart(url, forwardArgs(cCtx))
+	// errors.Is rather than ==: Start returns the sentinel wrapped when the
+	// port is busy but no PID file names the owner (`%w on %s (…) — stop it
+	// first…`), and == missed that variant, so the friendly "already running"
+	// message degraded to the raw error. menu.go's two comparisons already
+	// use errors.Is for the same reason.
+	if errors.Is(err, daemon.ErrAlreadyRunning) {
 		fmt.Printf("9router-go already running (pid %d) → %s\n", res.PID, res.URL)
 		return nil
 	}
