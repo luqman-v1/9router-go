@@ -2,6 +2,7 @@ package translator
 
 import (
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/thinking"
 	"crypto/sha256"
 	"encoding/hex"
@@ -110,6 +111,15 @@ func convertClaudeSystemPrompt(systemRaw jsontext.Value, preserveCacheControl bo
 	for _, block := range sysBlocks {
 		text := stripAnthropicBillingHeader(block.Text)
 		if text == "" && len(block.CacheControl) == 0 {
+			continue
+		}
+		// Billing-header-only system block retaining a cache_control marker:
+		// do not emit an empty text block; move the marker onto the last
+		// retained block (upstream #2069).
+		if text == "" && len(block.CacheControl) > 0 {
+			if len(blocks) > 0 {
+				blocks[len(blocks)-1].CacheControl = block.CacheControl
+			}
 			continue
 		}
 		tb := OpenAIContentBlock{
@@ -515,7 +525,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte, targetProvider, targetModel stri
 		oreq.MaxTokens = creq.MaxTokens
 	}
 	oreq.Stream = creq.Stream
-	preserveCacheControl := PreservesOpenRouterAnthropicCacheControl(targetProvider, targetModel)
+	preserveCacheControl := PreservesClaudeCacheControl(targetProvider, targetModel)
 
 	sysContent := convertClaudeSystemPrompt(creq.System, preserveCacheControl)
 	if !isEmptySystemContent(sysContent) {
@@ -613,6 +623,19 @@ func TranslateClaudeToOpenAI(claudeBody []byte, targetProvider, targetModel stri
 		return nil, fmt.Errorf("marshal OpenAI request: %w", err)
 	}
 	return out, nil
+}
+
+// PreservesClaudeCacheControl reports whether a Claude→OpenAI conversion must
+// carry the Claude cache_control breakpoints through to the request body. This
+// covers OpenRouter models served by Anthropic (provider "openrouter" with a
+// wire model under the "anthropic/" prefix) and the DashScope providers that
+// declare PreserveCacheControl (alicode, alicode-intl, alitp-intl, qwencloud,
+// alims-intl). Stripping the markers on those lanes costs the prompt cache.
+func PreservesClaudeCacheControl(provider, wireModel string) bool {
+	if providers.PreservesCacheControl(provider) {
+		return true
+	}
+	return provider == "openrouter" && strings.HasPrefix(strings.ToLower(wireModel), "anthropic/")
 }
 
 // PreservesOpenRouterAnthropicCacheControl reports whether a Claude→OpenAI

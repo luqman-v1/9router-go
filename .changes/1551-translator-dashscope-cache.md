@@ -1,0 +1,3 @@
+### Fixed
+
+- Translator: retain Claude `cache_control` markers for DashScope cache-preserving targets (`alicode`, `alicode-intl`, `alitp-intl`, `qwencloud`, `alims-intl`) in addition to OpenRouter Anthropic models. `TranslateClaudeToOpenAI` now uses `PreservesClaudeCacheControl`, which covers both lanes, and `convertClaudeSystemPrompt` transfers a `cache_control` marker from a billing-header-only system block onto the preceding retained block instead of emitting an empty text block. Non-cache providers (`groq`, etc.) still flatten system content and omit markers. Upstream decolua/9router#2069.
