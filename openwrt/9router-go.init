@@ -153,7 +153,10 @@ firewall_allow_lan() {
 	# closures), so it is reset here on every call and read once before commit.
 	FW_CHANGED=0
 	command -v uci >/dev/null 2>&1 || return 0
-	uci -q get firewall >/dev/null 2>&1 || return 0
+	# A config with no rules yet makes `uci get firewall` return 1; the package
+	# is still installed, so the guard tests for the config file instead of the
+	# exit status of a lookup.
+	[ -f /etc/config/firewall ] || return 0
 
 	ids=$(firewall_rule_ids)
 	if [ -z "$ids" ]; then
@@ -189,7 +192,7 @@ firewall_allow_lan() {
 firewall_disallow_lan() {
 	local ids id
 	command -v uci >/dev/null 2>&1 || return 0
-	uci -q get firewall >/dev/null 2>&1 || return 0
+	[ -f /etc/config/firewall ] || return 0
 	ids=$(firewall_rule_ids)
 	[ -n "$ids" ] || return 0
 	for id in $ids; do

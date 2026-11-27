@@ -29,9 +29,9 @@ healthcheck=$(uci -q get 9router-go.main.healthcheck 2>/dev/null || echo 1)
 enabled=$(uci -q get 9router-go.main.enabled 2>/dev/null || echo 1)
 [ "$enabled" = "1" ] || exit 0
 
-port=$(uci -q get 9router-go.main.port 2>/dev/null)
+port=$(uci -q get 9router-go.main.port 2>/dev/null || echo 20130)
 port=${port:-20130}
-host=$(uci -q get 9router-go.main.host 2>/dev/null)
+host=$(uci -q get 9router-go.main.host 2>/dev/null || true)
 case "$host" in
 	''|0.0.0.0|'::') host=127.0.0.1 ;;
 esac

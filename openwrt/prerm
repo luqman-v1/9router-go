@@ -26,7 +26,7 @@ fi
 # Remove every LAN firewall rule the init script installed. All matches are
 # deleted, not just the first: a config carrying duplicates from an older
 # package must not be left reachable from the LAN after removal.
-if command -v uci >/dev/null 2>&1 && uci -q get firewall >/dev/null 2>&1; then
+if command -v uci >/dev/null 2>&1 && [ -f /etc/config/firewall ]; then
 	rule="9router-go-allow-lan"
 	ids=$(uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$rule'$/\1/p")
 	if [ -n "$ids" ]; then
