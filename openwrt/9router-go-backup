@@ -64,6 +64,30 @@ do_save() {
 		echo "9router-go-backup: copy to $out failed (out of space?)" >&2
 		exit 1
 	fi
+	# The database is not the only user state: uploaded logos and other media
+	# live under data_dir/uploads, and a restore onto a new router without them
+	# leaves the dashboard pointing at files that are not there. The archive is
+	# written beside the database so the existing `save <file>` argument keeps
+	# its meaning. tar is a busybox applet present in every image this package
+	# targets; when it is missing, the media is skipped and said so rather than
+	# failing the whole backup.
+	uploads="$data_dir/uploads"
+	arch="$out.uploads.tar"
+	if [ -d "$uploads" ] && [ -n "$(ls -A "$uploads" 2>/dev/null)" ]; then
+		if command -v tar >/dev/null 2>&1; then
+			# -C keeps both paths literal: no cd means a relative `out` keeps
+			# its meaning, and no path juggling is needed for drive-letter or
+			# symlinked data_dir values.
+			if tar -C "$data_dir" -cf "$arch" uploads 2>/dev/null; then
+				echo "9router-go-backup: saved uploads ($(file_size "$arch")) to $arch"
+			else
+				rm -f "$arch"
+				echo "9router-go-backup: could not archive $uploads, database saved without media" >&2
+			fi
+		else
+			echo "9router-go-backup: tar not found, media in $uploads not backed up" >&2
+		fi
+	fi
 	[ "$was_running" -eq 1 ] && start_service
 	echo "9router-go-backup: saved $(file_size "$out") to $out"
 }
@@ -83,9 +107,22 @@ do_restore() {
 		echo "9router-go-backup: restore from $in failed" >&2
 		exit 1
 	fi
+	# Restore the media archive written by `save`, when there is one. Extracting
+	# over the existing directory keeps files the archive does not carry, which
+	# is what an operator restoring an older database expects.
+	arch="$in.uploads.tar"
+	if [ -f "$arch" ] && command -v tar >/dev/null 2>&1; then
+		mkdir -p "$data_dir"
+		if tar -C "$data_dir" -xf "$arch" 2>/dev/null; then
+			echo "9router-go-backup: restored uploads from $arch"
+		else
+			echo "9router-go-backup: could not restore $arch, database restored without media" >&2
+		fi
+	fi
 	[ "$was_running" -eq 1 ] && start_service
 	echo "9router-go-backup: restored $in (previous database kept as $db.before-restore)"
 }
+
 
 do_list() {
 	if [ -d "$BACKUP_DIR" ]; then

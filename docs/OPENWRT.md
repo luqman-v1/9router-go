@@ -156,17 +156,33 @@ wget -qO- http://127.0.0.1:20130/health
 
 procd respawns a crashed process up to 5 times per hour and then stops trying, so
 a binary that cannot start does not fill the log. A process that stays alive but
-stops answering is caught by the health check:
+stops answering is caught by the health check, which is installed automatically:
 
 ```sh
-# every minute
-echo '* * * * * /usr/bin/9router-go-healthcheck' >> /etc/crontabs/root
-/etc/init.d/cron restart
+uci get 9router-go.main.healthcheck          # 1 (default) or 0
+uci get 9router-go.main.healthcheck_threshold # failures before restart, 3
+uci get 9router-go.main.healthcheck_timeout   # seconds per probe, 5
 ```
 
-Three consecutive `/health` failures restart the service; one is treated as load.
-The counter lives in `/var/run`, so it costs no flash writes and resets on
-reboot.
+`start_service` adds the once-a-minute probe to `/etc/crontabs/root` and removes
+it again when `healthcheck` is `0`; the CRON entry is only rewritten and cron is
+only restarted when the table actually changes. Three consecutive `/health`
+failures restart the service; one is treated as load. The counter lives in
+`/var/run`, so it costs no flash writes and resets on reboot.
+
+## LAN firewall
+
+```sh
+uci set 9router-go.main.open_lan=1   # default 0: LAN access stays closed
+uci commit 9router-go
+/etc/init.d/9router-go restart
+```
+
+When `open_lan` is `1` the init script creates one `uci-firewall` rule
+(`9router-go-allow-lan`, `src=lan`, `proto=tcp udp`, `dest_port=<port>`,
+`target=ACCEPT`). Turning the option back to `0` deletes every rule carrying that
+name, as does removing the package. Nothing is opened automatically and nothing
+is forwarded from WAN; the rule is LAN input only.
 
 ## Backup before a flash
 
@@ -176,6 +192,12 @@ reboot.
 9router-go-backup restore [file]        # keeps the replaced file as *.before-restore
 9router-go-backup list
 ```
+
+The database is not the only state: uploaded media under `data_dir/uploads` is
+archived to `<file>.uploads.tar` beside it and restored from the same path by
+`restore`, so a dashboard logo does not go missing on a new router. When busybox
+`tar` is absent the media is skipped with a message and the database backup still
+succeeds.
 
 `/etc/9router-go` survives sysupgrade with "keep settings", so the default backup
 location comes back after the flash. Copy the file off the device before
@@ -231,9 +253,10 @@ python3 scripts/openwrt-vm-test.py \
 - The dashboard bundle is 4.6 MB of the binary, and the package is ~18 MB
   compressed. On a 16 MB flash device, install to extroot or a USB mount;
   `data_dir` must be writable and must have room for the database.
-- No firewall rule is opened automatically. If the dashboard should be reachable
-  from the LAN only, leave `host` empty (the default) and the LAN zone already
-  permits it; do not forward 20130 from WAN.
+- No firewall rule is opened automatically. `open_lan` (default `0`) is the only
+  way this package writes one, and that rule is LAN input only: it never opens
+  the WAN, and it is removed again when the option is turned off or the package
+  is uninstalled. Do not forward 20130 from WAN.
 - The 32-bit MIPS router families are not built (see Architectures).
 - `arm_cortex-a7_neon-vfpv4` and the other suffixed names are the ones 18.06
   reports. A package whose Architecture reads `arm_cortex-a7` is refused on

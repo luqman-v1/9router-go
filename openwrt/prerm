@@ -23,7 +23,7 @@ if [ -d /etc/crontabs ] && [ -f /etc/crontabs/root ]; then
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 fi
 
-# Remove every LAN firewall rule the init script installed. All matches are
+# Remove the LAN firewall rule the init script installed. All matches are
 # deleted, not just the first: a config carrying duplicates from an older
 # package must not be left reachable from the LAN after removal.
 if command -v uci >/dev/null 2>&1 && uci -q get firewall >/dev/null 2>&1; then
@@ -38,5 +38,16 @@ if command -v uci >/dev/null 2>&1 && uci -q get firewall >/dev/null 2>&1; then
 		logger -t 9router-go "removed the LAN firewall rule"
 	fi
 fi
+
+# Remove the program artifacts this package put in data_dir (the runtime binary
+# copy and the downloaded cloudflared), but never the user's own state: the
+# database, its uploads and the JWT secret stay put so a reinstall picks up
+# where the old install left off, and an operator who uninstalled by mistake
+# does not lose every provider connection and API key.
+data_dir=$(uci -q get 9router-go.main.data_dir 2>/dev/null)
+data_dir=${data_dir:-/opt/9router}
+rm -f "$data_dir/bin/9router-go" 2>/dev/null
+rm -f "$data_dir/bin/cloudflared" 2>/dev/null
+rmdir "$data_dir/bin" 2>/dev/null || true
 
 exit 0

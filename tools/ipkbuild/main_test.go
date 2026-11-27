@@ -403,6 +403,72 @@ func TestNoCarriageReturnsInScripts(t *testing.T) {
 	}
 }
 
+// TestBackupCoversUploads pins the part of the backup contract an operator only
+// notices after a restore onto a new router: the database is not the only state.
+// The test extracts the shipped script and greps it, because the behaviour
+// itself needs a target file system; the assertion here is that the script
+// still archives data_dir/uploads and restores it beside the database.
+func TestBackupCoversUploads(t *testing.T) {
+	dist := buildOnce(t)
+	blob, err := os.ReadFile(filepath.Join(dist, "x86_64", "9router-go_1.9.14_x86_64.ipk"))
+	if err != nil {
+		t.Fatalf("read ipk: %v", err)
+	}
+	members, err := parseAr(blob)
+	if err != nil {
+		t.Fatalf("parse ar: %v", err)
+	}
+	script, ok := untarGz(t, members[2]["data.tar.gz"])["usr/bin/9router-go-backup"]
+	if !ok {
+		t.Fatal("backup helper missing from the package")
+	}
+	for _, want := range []string{
+		`uploads="$data_dir/uploads"`,
+		`arch="$out.uploads.tar"`,
+		`tar -C "$data_dir" -cf "$arch" uploads`,
+		`arch="$in.uploads.tar"`,
+		`tar -C "$data_dir" -xf "$arch"`,
+	} {
+		if !bytes.Contains(script, []byte(want)) {
+			t.Errorf("backup helper no longer carries %q", want)
+		}
+	}
+}
+
+// TestPrermKeepsUserData pins the safe half of the uninstall: the program's own
+// artifacts are removed, the operator's database and uploads are not. Deleting
+// the database on removal would destroy every provider connection and API key,
+// and a mistaken `opkg remove` would be unrecoverable on a device with no other
+// copy.
+func TestPrermKeepsUserData(t *testing.T) {
+	dist := buildOnce(t)
+	blob, err := os.ReadFile(filepath.Join(dist, "x86_64", "9router-go_1.9.14_x86_64.ipk"))
+	if err != nil {
+		t.Fatalf("read ipk: %v", err)
+	}
+	members, err := parseAr(blob)
+	if err != nil {
+		t.Fatalf("parse ar: %v", err)
+	}
+	script, ok := untarGz(t, members[1]["control.tar.gz"])["prerm"]
+	if !ok {
+		t.Fatal("prerm missing from the control archive")
+	}
+	if !bytes.Contains(script, []byte(`rm -f "$data_dir/bin/9router-go"`)) {
+		t.Error("prerm no longer removes the runtime binary copy")
+	}
+	for _, forbidden := range []string{
+		`rm -rf "$data_dir"`,
+		`rm -f "$data_dir/db/data.sqlite"`,
+		`rm -rf "$data_dir/db"`,
+		`rm -rf "$data_dir/uploads"`,
+	} {
+		if bytes.Contains(script, []byte(forbidden)) {
+			t.Errorf("prerm must not destroy user state, found %q", forbidden)
+		}
+	}
+}
+
 // ---------------------------------------------------------------- helpers
 
 // parseAr decodes the archive writeAr produces. Reading it back with an
