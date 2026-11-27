@@ -32,7 +32,30 @@ surfaced as an `*UpstreamError` so failover classifies it, never relayed as a
 - `internal/providers/catalog_sweep_test.go` — autoclaw models pinned to their
   published windows (1M / 200k), no floor hits.
 
-**Capability source.** The seven model windows (1M/200k context, 131k/393k max output) are pinned from the community-proxy catalogs that front AutoClaw (glmproxy and autoclawpi publish the same ids and windows). Autoclaw's model feed requires a signed session, so there is no unauthenticated `/v1/models` endpoint in-tree to verify against, and no models.dev entry exists for this private app protocol. The pins are effective-value checks (`GetCapabilitiesDetailForModel` returns the pinned values, not the 128k floor) but are not sourced from a live Autoclaw feed — verify against a real `refresh_token|device_id` login before trusting them in production.
+**Capability source.** The seven pinned windows are cross-checked against
+public vendor pages for the underlying models: GLM-5.3 is documented at 1M
+context / 128K max output
+([docs.z.ai/guides/llm/glm-5.3](https://docs.z.ai/guides/llm/glm-5.3)); the
+GLM-5 family page documents 200K context / 128K max output
+([docs.z.ai/guides/llm/glm-5](https://docs.z.ai/guides/llm/glm-5)), which is
+the spec the `zai_glm-5-turbo` pin (200k/131k) follows; GLM-5.3-Flash is
+listed at 1,048,576 context / 131,072 completion tokens
+([openrouter.ai/z-ai/glm-5.3-flash](https://openrouter.ai/z-ai/glm-5.3-flash));
+DeepSeek-V4-Pro and DeepSeek-V4-Flash are documented at 1M context with a
+393,216 output ceiling
+([api-docs.deepseek.com/news/news260424](https://api-docs.deepseek.com/news/news260424),
+[fast.io/resources/deepseek-token-limit](https://fast.io/resources/deepseek-token-limit)).
+The `zai_auto` / `zai_auto-fast` routing ids ride the same GLM-5.3 family, so
+their windows follow the GLM-5.3 pin. What no vendor page covers is the
+AutoClaw id mapping itself: the `tdpsk_*` / `zaicoding_*` ids and their
+windows come from the community-proxy catalogs that front AutoClaw (glmproxy
+and autoclawpi publish the same ids and windows). Autoclaw's own model feed
+requires a signed session, so there is no unauthenticated `/v1/models`
+endpoint in-tree to verify against, and no models.dev entry exists for this
+private app protocol. The pins are effective-value checks
+(`GetCapabilitiesDetailForModel` returns the pinned values, not the 128k
+floor) but are not sourced from a live Autoclaw feed — verify against a real
+`refresh_token|device_id` login before trusting them in production.
 
 **Maintenance note.** `APP_ID`/`APP_KEY`/`X-Version` are captured from desktop
 client build 1.18.5. If Autoclaw bumps the build, every signed request 403s
