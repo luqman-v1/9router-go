@@ -345,7 +345,14 @@ x86-64 image in QEMU on every push and PR to `main`, installs the built
 package inside it, and asserts the service starts through procd, answers
 `/health`, and the helper scripts run. It is the only test that exercises the
 service start for real: a chroot or docker rootfs can run `opkg install` but
-cannot run procd as PID 1. To run it locally, install `qemu-system-x86` and
+cannot run procd as PID 1. It also boots 23.05.5, and after the first
+install it walks the documented lifecycle instead of stopping at "it started":
+register the served feed with `9router-go-feed add`, `opkg update`, reinstall
+the package through the feed, and assert the probe cron entry stays single,
+the generated JWT secret survives and the service comes back; flip `open_lan`
+on and off and assert the firewall rule follows; then `opkg remove` and assert
+no listener, no cron entry, no rule, and a database left in place.
+To run it locally, install `qemu-system-x86` and
 `python3`, then:
 
 ```sh

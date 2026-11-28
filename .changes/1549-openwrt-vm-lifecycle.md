@@ -1,0 +1,14 @@
+### OpenWrt: the VM suite walks the package's lifecycle, not just its install
+
+`scripts/openwrt-vm-test.py` installed the package from a local `.ipk` and stopped there. Four paths shipped without ever running on a real image:
+
+- **The documented update path.** `opkg install /tmp/gw.ipk` bypasses the feed entirely: the `Packages` index, the `<base>/<arch>` URL that `9router-go-feed add` builds, and opkg's resolution were never exercised. The suite now serves the feed root, registers it with `9router-go-feed add`, runs `opkg update`, and reinstalls the package **through the feed**.
+- **Upgrade in place.** A reinstall is where the cron entry can double, the runtime copy can be left stale and the generated JWT secret can be re-minted (which invalidates every dashboard session on the device). All three are asserted after the feed reinstall.
+- **`open_lan`.** The LAN firewall rule was covered by the shell harness and never on a live firewall. The suite flips the option on and off across restarts and asserts the rule appears once and is gone again.
+- **Removal.** `opkg remove` now asserts no listener, no probe cron entry, no LAN rule, and that `/opt/9router/db/data.sqlite` is still there. `luci-app-9router-go` is removed first: it `Depends` on the gateway, so removing the gateway directly is refused with a dependency error.
+
+The boot failure had a real cause, not a runner problem: these images run the serial console with busybox `askfirst`, which prints `Please press Enter to activate this console.` and then drops **straight to a root shell** — they never print a `login:` prompt. The suite waited for `login:` and sent `root` to a prompt that does not exist, so it could not boot an image on any runner, `main` included. The suite now presses Enter to activate the console, accepts either a login prompt or the shell, and moves the guest LAN onto the slirp subnet so the packages are actually reachable (the stock `192.168.1.1/24` left `10.0.2.2` unrouted, and fw4 rejected the foreign source with `Operation not permitted`). Three checks that matched the echoed command line instead of the result — and so passed on a failed download — now assert the transferred byte count and the command's exit status.
+
+Verified locally under QEMU/TCG with a real `.ipk`: `boot to root shell`, `guest moves its LAN onto the slirp network` and `fetch gateway ipk over slirp` pass. The install path still fails, and it is not yet understood: `opkg install` reports `Malformed package file` (RC=255) on a package whose bytes match the host byte-for-byte and whose `ar` archive parses cleanly into `debian-binary`, `control.tar.gz` and `data.tar.gz`. That is the next thing to chase; the assertions after the install are therefore still unexecuted.
+
+Stacked on #1548, so the VM now boots a package that carries the backup, health-probe, cron-owner and feed-preflight fixes.
