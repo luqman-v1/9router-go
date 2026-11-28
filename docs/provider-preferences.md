@@ -35,7 +35,11 @@ messages and responses lanes:
   unfiltered list.
 - The object is a 9router-go routing hint and is stripped from the body
   before it is forwarded upstream, so a strict provider never sees the
-  field. It never reaches translation, caches or usage accounting either.
+  field. It never reaches translation or usage accounting either.
+- The steer is part of both cache keys (semantic and exact-prompt), in
+  canonical form. A request steered away from a provider can therefore never
+  be answered by that provider's stored response, while an identical repeat
+  of the same steer still hits.
 - An absent object costs nothing: the field is only parsed when the body
   actually carries one.
 
@@ -44,7 +48,9 @@ messages and responses lanes:
 Provider ids as the gateway spells them: `deepseek`, `groq`, `openai`,
 `anthropic`, and the alias spellings (`oa` → `openai`) — a match is against
 the canonical id either way. A combo member on a custom provider node
-(`myprefix/model`) matches by that node's id and by its prefix.
+(`myprefix/model`) matches by that node's id and by its prefix; a
+single-model request on a node matches the same way, even though it
+resolves to the node's id before the check runs.
 
 ## Not in v1
 

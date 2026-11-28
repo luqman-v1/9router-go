@@ -43,3 +43,30 @@ integration suite pass; the only failures on this host are reproduced
 identically on a pristine `origin/main` worktree (documented host-DNS and
 live-daemon-port cases). All six `CROSS_TARGETS` build with `CGO_ENABLED=0`
 and `govulncheck` reports nothing.
+
+## Review round (changes requested, now fixed)
+
+- **The steer now reaches both cache keys.** `BuildCacheKey` and
+  `HashRequest` take the canonical steer bytes (a nil steer adds nothing, so
+  every pre-steer key is byte-identical), and the handler puts it on the
+  context so the shared forward path stores under the same key it looked up
+  with. Resolution still runs after the cache read, so a cached answer for a
+  retired model still serves — the steer separates the namespaces instead.
+- **The strip is a token-level splice, not a map round-trip.** A
+  `map[string]any` decode turned integers past 2^53 into float64
+  (`9007199254740993` → `...992`) and re-marshalled non-deterministically,
+  breaking the exact-prompt key on precisely the bodies this feature
+  touches. The new implementation streams jsontext tokens and copies every
+  non-`provider` member verbatim.
+- **Single-model requests on a custom provider node match the prefix.**
+  `resolvePrefixProvider` resolves to the node's id, so a client steering by
+  the prefix it typed (`ignore:["bn"]`) failed open. The single-model check
+  now consults the same prefix→node map the combo path uses, matching either
+  spelling.
+- New tests: steer-separation cases in `internal/semanticcache` and
+  `internal/promptcache`; number-preservation and byte-stability cases on the
+  strip; prefix-spelling cases on both matchers; and two integration cases —
+  the reviewer's live probe (two requests differing only in steer, caches
+  armed, excluded upstream must receive nothing, and an identical repeat
+  still hits) and the node-prefix single-model exclusion. Each fix was also
+  proven failing-on-prefix by reverting it in place and re-running the case.

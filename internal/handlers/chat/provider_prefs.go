@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 
 	"github.com/samber/lo"
@@ -80,23 +81,77 @@ func parseProviderPreferences(body []byte) providerPreferences {
 // provider, where a strict OpenAI-compatible endpoint would reject an
 // unknown top-level field. Returns the original slice untouched when there
 // is nothing to remove.
+//
+// The removal is a token-level splice through jsontext, not a map
+// round-trip: a body decoded into map[string]any turns every number into
+// float64 (9007199254740993 comes back as 9007199254740992), and a
+// re-marshal is free to reorder keys, so byte-stable prefix caching fails
+// on exactly the bodies this feature touches. Streaming copy keeps every
+// other token verbatim, and dropping one member never touches its
+// neighbours.
 func stripProviderPreferencesField(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"`+providerPreferencesKey+`"`)) {
 		return body
 	}
-	var envelope map[string]any
-	if json.Unmarshal(body, &envelope) != nil {
+	dec := jsontext.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.ReadToken()
+	if err != nil || tok.Kind() != '{' {
 		return body
 	}
-	if _, ok := envelope[providerPreferencesKey]; !ok {
+	var out bytes.Buffer
+	enc := jsontext.NewEncoder(&out)
+	if err := enc.WriteToken(tok); err != nil {
 		return body
 	}
-	delete(envelope, providerPreferencesKey)
-	stripped, err := json.Marshal(envelope)
+	for dec.PeekKind() != 0 {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return body
+		}
+		if tok.Kind() == '}' {
+			if err := enc.WriteToken(tok); err != nil {
+				return body
+			}
+			break
+		}
+		// At the top level of an object, a string token is a member name.
+		// The provider member is dropped whole — name and value — and every
+		// other member is copied with its value read as one raw value, so
+		// nested content is never token-walked.
+		if tok.Kind() == '"' && tok.String() == providerPreferencesKey {
+			if _, err := dec.ReadValue(); err != nil {
+				return body
+			}
+			continue
+		}
+		if err := enc.WriteToken(tok); err != nil {
+			return body
+		}
+		value, err := dec.ReadValue()
+		if err != nil {
+			return body
+		}
+		if err := enc.WriteValue(value); err != nil {
+			return body
+		}
+	}
+	return out.Bytes()
+}
+
+// canonical renders the preferences as deterministic bytes for the cache
+// keys: a struct marshal, so the field order is fixed and two clients that
+// spelled the same steer differently (key order, whitespace) share one key.
+// An inert preference set renders to nil, and nil adds nothing to a key —
+// a steer-less request keeps exactly its historical cache key.
+func (p providerPreferences) canonical() []byte {
+	if !p.active() {
+		return nil
+	}
+	encoded, err := json.Marshal(p)
 	if err != nil {
-		return body
+		return nil
 	}
-	return stripped
+	return encoded
 }
 
 // active reports whether any preference was set, so a caller that did not
@@ -117,18 +172,18 @@ func (p providerPreferences) filterCandidates(candidates []string, prefixToNode 
 	}
 	only := providerIDSet(p.Only)
 	ignore := providerIDSet(p.Ignore)
+	orderSet := providerIDSet(p.Order)
 	order := providerIDList(p.Order)
 	hardOrder := p.AllowFallbacks != nil && !*p.AllowFallbacks && len(order) > 0
 
 	kept := lo.Filter(candidates, func(entry string, _ int) bool {
-		id := entryProviderID(entry, prefixToNode)
-		if len(only) > 0 && !only[id] {
+		if len(only) > 0 && !entryMatchesAny(only, entry, prefixToNode) {
 			return false
 		}
-		if ignore[id] {
+		if entryMatchesAny(ignore, entry, prefixToNode) {
 			return false
 		}
-		return !hardOrder || lo.Contains(order, id)
+		return !hardOrder || entryMatchesAny(orderSet, entry, prefixToNode)
 	})
 
 	kept = orderCandidates(kept, order, prefixToNode)
@@ -141,18 +196,18 @@ func (p providerPreferences) filterCandidates(candidates []string, prefixToNode 
 // allowsSingle reports the error a single-model request carries when its
 // one resolved provider is excluded, and nil when it is permitted. Order
 // alone never excludes a single-model request: there is nothing to reorder.
-func (p providerPreferences) allowsSingle(providerID string) error {
+func (p providerPreferences) allowsSingle(providerID string, prefixToNode map[string]string) error {
 	if !p.active() {
 		return nil
 	}
 	id := normalizeProviderToken(providerID)
-	if len(p.Only) > 0 && !providerIDSet(p.Only)[id] {
+	if len(p.Only) > 0 && !spellingMatches(p.Only, id, prefixToNode) {
 		return fmt.Errorf("provider %q is not in the request's provider preferences (only %s)", id, p.summary())
 	}
-	if providerIDSet(p.Ignore)[id] {
+	if spellingMatches(p.Ignore, id, prefixToNode) {
 		return fmt.Errorf("provider %q is excluded by the request's provider preferences (%s)", id, p.summary())
 	}
-	if p.AllowFallbacks != nil && !*p.AllowFallbacks && len(p.Order) > 0 && !lo.Contains(providerIDList(p.Order), id) {
+	if p.AllowFallbacks != nil && !*p.AllowFallbacks && len(p.Order) > 0 && !spellingMatches(p.Order, id, prefixToNode) {
 		return fmt.Errorf("provider %q is outside the request's provider order with fallbacks disabled (%s)", id, p.summary())
 	}
 	return nil
@@ -208,15 +263,44 @@ func providerIDList(tokens []string) []string {
 // to; without a hit the prefix itself is the id (a canonical provider id
 // or an alias of one).
 func entryProviderID(entry string, prefixToNode map[string]string) string {
-	prefix := entry
-	if i := strings.Index(entry, "/"); i >= 0 {
-		prefix = entry[:i]
-	}
+	prefix, _ := splitProviderModel(entry)
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if node, ok := prefixToNode[prefix]; ok && node != "" {
 		return node
 	}
 	return normalizeProviderToken(prefix)
+}
+
+// entryMatchesAny reports whether a candidate entry is named by the token
+// set, under either of its spellings: the provider id it dispatches to, or
+// the literal prefix the client wrote. The prefix spelling matters for a
+// custom provider node, whose client-facing prefix ("bn/model") is not its
+// node id — an exclude that only knew the id would fail open.
+func entryMatchesAny(set map[string]bool, entry string, prefixToNode map[string]string) bool {
+	if len(set) == 0 {
+		return false
+	}
+	if set[entryProviderID(entry, prefixToNode)] {
+		return true
+	}
+	prefix, _ := splitProviderModel(entry)
+	return set[normalizeProviderToken(prefix)]
+}
+
+// spellingMatches is entryMatchesAny for the single-model path, where the
+// entry's spelling is the resolved provider id and any registered prefix of
+// that node.
+func spellingMatches(tokens []string, id string, prefixToNode map[string]string) bool {
+	set := providerIDSet(tokens)
+	if set[id] {
+		return true
+	}
+	for prefix, node := range prefixToNode {
+		if node == id && set[normalizeProviderToken(prefix)] {
+			return true
+		}
+	}
+	return false
 }
 
 // orderCandidates stably moves entries whose provider appears in order to
@@ -229,6 +313,10 @@ func orderCandidates(entries, order []string, prefixToNode map[string]string) []
 	}
 	rank := func(entry string) int {
 		if i := lo.IndexOf(order, entryProviderID(entry, prefixToNode)); i >= 0 {
+			return i
+		}
+		prefix, _ := splitProviderModel(entry)
+		if i := lo.IndexOf(order, normalizeProviderToken(prefix)); i >= 0 {
 			return i
 		}
 		return len(order)

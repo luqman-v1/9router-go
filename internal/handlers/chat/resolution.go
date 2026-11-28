@@ -127,7 +127,7 @@ func (h *ChatHandler) resolveModelWithPrefs(modelStr string, prefs providerPrefe
 		info.ComboModels = kept
 		return info, nil
 	}
-	if serr := prefs.allowsSingle(info.Provider); serr != nil {
+	if serr := prefs.allowsSingle(info.Provider, h.nodePrefixToIDMap()); serr != nil {
 		return nil, serr
 	}
 	return info, nil

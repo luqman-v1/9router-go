@@ -10,7 +10,7 @@ import (
 
 func TestHashRequestDeterministic(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
-	first, ok := HashRequest("m", body)
+	first, ok := HashRequest("m", body, nil)
 	if !ok {
 		t.Fatal("HashRequest() = false, want ok")
 	}
@@ -22,7 +22,7 @@ func TestHashRequestDeterministic(t *testing.T) {
 	// randomises map iteration, so the same request produced two different
 	// digests about 15% of the time and the cache silently never hit.
 	for range 50 {
-		again, ok := HashRequest("m", body)
+		again, ok := HashRequest("m", body, nil)
 		if !ok || again != first {
 			t.Fatalf("HashRequest() is not deterministic: %q vs %q", again, first)
 		}
@@ -32,8 +32,8 @@ func TestHashRequestDeterministic(t *testing.T) {
 func TestHashRequestIgnoresIrrelevantFields(t *testing.T) {
 	a := []byte(`{"messages":[{"role":"user","content":"hi"}],"stream":true,"user":"x"}`)
 	b := []byte(`{"messages":[{"role":"user","content":"hi"}],"stream":false,"user":"y"}`)
-	ka, _ := HashRequest("m", a)
-	kb, _ := HashRequest("m", b)
+	ka, _ := HashRequest("m", a, nil)
+	kb, _ := HashRequest("m", b, nil)
 	if ka != kb {
 		t.Error("requests differing only in ignored fields produced different keys")
 	}
@@ -48,9 +48,9 @@ func TestHashRequestDistinguishesRelevantFields(t *testing.T) {
 		"system":      `{"system":"be terse","messages":[{"role":"user","content":"hi"}]}`,
 		"tools":       `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`,
 	}
-	baseKey, _ := HashRequest("m", []byte(base))
+	baseKey, _ := HashRequest("m", []byte(base), nil)
 	for name, body := range variants {
-		key, ok := HashRequest("m", []byte(body))
+		key, ok := HashRequest("m", []byte(body), nil)
 		if !ok {
 			t.Errorf("%s variant was not hashable", name)
 			continue
@@ -61,7 +61,7 @@ func TestHashRequestDistinguishesRelevantFields(t *testing.T) {
 	}
 	// The model name is part of the key: the same prompt on two models is not
 	// the same answer.
-	otherModel, _ := HashRequest("other", []byte(base))
+	otherModel, _ := HashRequest("other", []byte(base), nil)
 	if otherModel == baseKey {
 		t.Error("the model name does not affect the key")
 	}
@@ -75,7 +75,7 @@ func TestHashRequestRejectsUncacheable(t *testing.T) {
 		"empty body":     nil,
 	}
 	for name, body := range cases {
-		if _, ok := HashRequest("m", body); ok {
+		if _, ok := HashRequest("m", body, nil); ok {
 			t.Errorf("HashRequest(%s) = true, want false", name)
 		}
 	}
@@ -83,7 +83,7 @@ func TestHashRequestRejectsUncacheable(t *testing.T) {
 
 func TestGetSetRoundTrip(t *testing.T) {
 	c := New(10, time.Minute)
-	key, ok := HashRequest("m", []byte(`{"messages":[{"role":"user","content":"hi"}]}`))
+	key, ok := HashRequest("m", []byte(`{"messages":[{"role":"user","content":"hi"}]}`), nil)
 	if !ok {
 		t.Fatal("HashRequest failed")
 	}
@@ -270,5 +270,25 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	if entries > 50 {
 		t.Errorf("entries = %d, want <= capacity 50", entries)
+	}
+}
+
+// Two requests that differ only in the provider-routing steer must not
+// share a key: the steer decides which providers may answer, so one key
+// would replay a provider's response to the client that excluded it.
+func TestHashRequestSeparatesSteer(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	plain, ok := HashRequest("m", body, nil)
+	if !ok {
+		t.Fatal("HashRequest() = false, want ok")
+	}
+	ignoreDeepseek, _ := HashRequest("m", body, []byte(`{"ignore":["deepseek"]}`))
+	ignoreGroq, _ := HashRequest("m", body, []byte(`{"ignore":["groq"]}`))
+
+	if plain == ignoreDeepseek || plain == ignoreGroq {
+		t.Error("a steered request shares its exact key with the unsteered one")
+	}
+	if ignoreDeepseek == ignoreGroq {
+		t.Error("two different steers produced the same exact key")
 	}
 }

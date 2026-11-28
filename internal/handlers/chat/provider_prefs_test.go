@@ -96,6 +96,33 @@ func TestStripProviderPreferencesField(t *testing.T) {
 			t.Errorf("body without the object was rewritten: %s", got)
 		}
 	})
+	// A map round-trip silently rewrites integers past 2^53 and loses the
+	// byte stability the exact-prompt cache keys on, so the splice must
+	// copy the remaining tokens verbatim and deterministically.
+	t.Run("numbers survive verbatim and the output is byte-stable", func(t *testing.T) {
+		body := []byte(`{"model":"m","max_tokens":9007199254740993,"seed":18446744073709551615,` +
+			`"messages":[{"role":"user","content":"hi"}],"provider":{"only":["deepseek"]}}`)
+		got := string(stripProviderPreferencesField(body))
+		if !strings.Contains(got, "9007199254740993") {
+			t.Errorf("max_tokens was mutated by the strip: %s", got)
+		}
+		if !strings.Contains(got, "18446744073709551615") {
+			t.Errorf("seed was mutated by the strip: %s", got)
+		}
+		seen := make(map[string]bool, 20)
+		for i := 0; i < 20; i++ {
+			seen[string(stripProviderPreferencesField(body))] = true
+		}
+		if len(seen) != 1 {
+			t.Errorf("stripped output is not byte-stable: %d distinct results over 20 calls", len(seen))
+		}
+	})
+	t.Run("a nested provider key is not the object", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"tell me about the provider"}]}`)
+		if got := stripProviderPreferencesField(body); string(got) != string(body) {
+			t.Errorf("body without a top-level provider member was rewritten: %s", got)
+		}
+	})
 }
 
 func TestProviderPreferencesFilterCandidates(t *testing.T) {
@@ -162,6 +189,12 @@ func TestProviderPreferencesFilterCandidates(t *testing.T) {
 			want:       []string{"deepseek/deepseek-chat"},
 		},
 		{
+			name:       "a node prefix entry matches the client-facing prefix",
+			prefs:      providerPreferences{Ignore: []string{"myprefix"}},
+			candidates: []string{"myprefix/some-model", "deepseek/deepseek-chat"},
+			want:       []string{"deepseek/deepseek-chat"},
+		},
+		{
 			name:       "an empty candidate list is passed through, not an error",
 			prefs:      providerPreferences{Only: []string{"anthropic"}},
 			candidates: nil,
@@ -182,6 +215,7 @@ func TestProviderPreferencesFilterCandidates(t *testing.T) {
 }
 
 func TestProviderPreferencesAllowsSingle(t *testing.T) {
+	nodes := map[string]string{"bn": "openai-compatible-chat-bn"}
 	tests := []struct {
 		name     string
 		prefs    providerPreferences
@@ -220,10 +254,32 @@ func TestProviderPreferencesAllowsSingle(t *testing.T) {
 			prefs:    providerPreferences{Only: []string{"oa"}},
 			provider: "openai",
 		},
+		{
+			// A single-model request on a custom provider node resolves to
+			// the node's id, so a steer naming that id must exclude it.
+			name:     "a node request is excluded by its node id",
+			prefs:    providerPreferences{Ignore: []string{"openai-compatible-chat-bn"}},
+			provider: "openai-compatible-chat-bn",
+			wantErr:  true,
+		},
+		{
+			// The prefix the client typed is gone from the resolved id, so
+			// matching it too is the difference between excluding and
+			// silently failing open.
+			name:     "a node request is excluded by the client-facing prefix",
+			prefs:    providerPreferences{Ignore: []string{"bn"}},
+			provider: "openai-compatible-chat-bn",
+			wantErr:  true,
+		},
+		{
+			name:     "an unrelated prefix does not exclude the node",
+			prefs:    providerPreferences{Ignore: []string{"other"}},
+			provider: "openai-compatible-chat-bn",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.prefs.allowsSingle(tt.provider)
+			err := tt.prefs.allowsSingle(tt.provider, nodes)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("allowsSingle(%q) error = %v, wantErr %v", tt.provider, err, tt.wantErr)
 			}

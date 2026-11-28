@@ -13,7 +13,11 @@ import (
 
 // BuildCacheKey generates a deterministic, collision-resistant cache key
 // incorporating tenant/session isolation, model, prompt text, tools, and temperature.
-func BuildCacheKey(sessionID string, req *translator.OpenAIRequest) string {
+// steer is the request-level provider-routing steer: two requests that differ
+// only in it may be served by different providers, so one key would answer a
+// client from the provider it excluded. An empty steer adds nothing, keeping
+// every pre-steer key byte-identical.
+func BuildCacheKey(sessionID string, req *translator.OpenAIRequest, steer []byte) string {
 	if req == nil {
 		return ""
 	}
@@ -93,6 +97,14 @@ func BuildCacheKey(sessionID string, req *translator.OpenAIRequest) string {
 	if req.ReasoningEffort != "" {
 		h.Write([]byte("reasoning_effort:"))
 		h.Write([]byte(req.ReasoningEffort))
+		h.Write([]byte("\n"))
+	}
+
+	// Provider-routing steer (see the doc comment): folded in last, only
+	// when present, so a steer-less request keeps its historical key.
+	if len(steer) > 0 {
+		h.Write([]byte("steer:"))
+		h.Write(steer)
 		h.Write([]byte("\n"))
 	}
 
