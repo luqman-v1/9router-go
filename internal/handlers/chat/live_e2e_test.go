@@ -674,3 +674,80 @@ func TestLiveE2E_Zcode_BareAckDocumentsUpstream(t *testing.T) {
 		t.Errorf("expected an explicit bare-ACK reason, got: %s", rec.Body.String())
 	}
 }
+
+// TestLiveE2E_Zcode_RealPingAndToolCall asserts the start-plan lane actually
+// dispatches when the gateway sends an unrecognised x-zcode-app-version. The
+// companion bare-ACK test only checks error classification and skips on a
+// completion, so without this one a regression back to a pinned version would
+// leave the suite green while zcode/glm-5.3-flash is unusable again.
+func TestLiveE2E_Zcode_RealPingAndToolCall(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("zcode", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active zcode connection")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	t.Run("ping", func(t *testing.T) {
+		body := `{"model":"zcode/glm-5.3-flash","messages":[{"role":"user","content":"say OK only"}],"max_tokens":64,"stream":false}`
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.HandleChatCompletions(rec, req)
+		requireLiveOK(t, rec.Code, rec.Body.String())
+
+		var resp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(rec.Body.String()), &resp); err != nil {
+			t.Fatalf("decode ping response: %v", err)
+		}
+		if len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Message.Content, "OK") {
+			t.Fatalf("expected a completion containing OK, got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("tool call", func(t *testing.T) {
+		body := `{"model":"zcode/glm-5.3-flash","messages":[{"role":"user","content":"What is the weather in Jakarta? Use the tool."}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get current weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":256,"stream":false}`
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.HandleChatCompletions(rec, req)
+		requireLiveOK(t, rec.Code, rec.Body.String())
+
+		var resp struct {
+			Choices []struct {
+				Message struct {
+					ToolCalls []struct {
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(rec.Body.String()), &resp); err != nil {
+			t.Fatalf("decode tool response: %v", err)
+		}
+		if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
+			t.Fatalf("expected a tool call, got: %s", rec.Body.String())
+		}
+		call := resp.Choices[0].Message.ToolCalls[0].Function
+		if call.Name != "get_weather" || !strings.Contains(call.Arguments, "Jakarta") {
+			t.Fatalf("unexpected tool call: %s", rec.Body.String())
+		}
+		if resp.Choices[0].FinishReason != "tool_calls" {
+			t.Fatalf("finish_reason = %q, want tool_calls", resp.Choices[0].FinishReason)
+		}
+	})
+}
