@@ -122,6 +122,8 @@ func SetupRoutes(r interface {
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
+	r.Post("/multimodal-embeddings", mediaH.HandleEmbeddings)
+	r.Post("/v1/multimodal-embeddings", mediaH.HandleEmbeddings)
 	r.Post("/rerank", mediaH.HandleRerank)
 	// /v1/responses needs model resolution, combos, account fallback and usage
 	// logging, none of which the media passthrough has, so it lives with the
