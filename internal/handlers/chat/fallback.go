@@ -1012,7 +1012,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
 		if target == "openai" && !providerCfg.IsGeminiNative() {
 			filtered, filterErr := translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
-				PreserveCacheControl:    providers.PreservesCacheControl(provider) || translator.PreservesOpenRouterAnthropicCacheControl(provider, wireModel),
+				PreserveCacheControl:    translator.PreservesClaudeCacheControl(provider, wireModel),
 				StrictReasoningRemoving: providers.StrictReasoningRemoving(provider),
 				FlattenContent:          provider == "cloudflare-ai",
 			})
