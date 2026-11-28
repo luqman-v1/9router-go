@@ -1,8 +1,8 @@
 {
-  "_source": "dennisonbertram/free-pi-cli src/update-check.ts (ClientVersionResponseSchema); observed shape",
-  "_note": "GET https://api.freepi.ai/client-version is UNAUTHENTICATED and account-independent. `min` is a forced-update floor applied to the x-client-version header; `latest` is what we should send. models[].id is the value a request must put in `model`.",
-  "min": "0.6.2",
-  "latest": "0.7",
+  "_source": "dennisonbertram/free-pi-cli src/update-check.ts (ClientVersionResponseSchema); values observed live on api.freepi.ai 2026-11-28",
+  "_note": "GET https://api.freepi.ai/client-version is UNAUTHENTICATED and account-independent. `min` is a forced-update floor; `latest` is the newest PUBLISHED free-pi-cli release and is the ceiling for x-client-version — a number above it (such as 0.7) earns 426 upgrade_required. models[].id is the value a request must put in `model`.",
+  "min": "0.6.28",
+  "latest": "0.6.28",
   "model": "deepseek/deepseek-v4-flash",
   "models": [
     { "id": "deepseek/deepseek-v4-flash", "name": "DeepSeek V4 Flash" },

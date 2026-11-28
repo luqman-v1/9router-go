@@ -39,11 +39,13 @@ const (
 	// rejects a poll that arrives without recorded consent (403 consent_required).
 	FreePiConsentVersion = "4"
 
-	// FreePiClientVersion is the fallback for the x-client-version header. The
-	// server enforces a minimum (GET /client-version → `min`, currently 0.6.2)
-	// and refuses older clients outright, so this must stay at or above that
-	// floor; at login we replace it with the server-reported `latest`.
-	FreePiClientVersion = "0.7"
+	// FreePiClientVersion is the fallback for the x-client-version header when
+	// GET /client-version is unreachable. It must name a version npm actually
+	// published: the server refuses an unknown number with 426 upgrade_required
+	// ("not an official release"). Verified 2026-11-28: latest registry release
+	// is 0.6.28, which is also the server's live min/latest. When the feed is
+	// reachable its published `latest` is authoritative and caps this fallback.
+	FreePiClientVersion = "0.6.28"
 
 	// FreePiDefaultModel is the id free-pi-cli's own provider config defaults to
 	// (MODEL_ID in src/provider.ts). Seeded into the static catalog only so a
@@ -77,6 +79,12 @@ const (
 	// FreePiCodeConsentRequired arrives as HTTP 403 from POST /auth/token when
 	// the server has no recorded consent for the login session.
 	FreePiCodeConsentRequired = "consent_required"
+
+	// FreePiCodeUpgradeRequired is a 426 meaning the version we sent is not a
+	// published free-pi-cli release (as opposed to a published but outdated one,
+	// which the older `client_outdated` code names). Remedy: force the header to
+	// the server's published `latest` and retry once.
+	FreePiCodeUpgradeRequired = "upgrade_required"
 )
 
 // FreePiDailyQuotaCodes are the 429 codes that mean "the day's free allowance is

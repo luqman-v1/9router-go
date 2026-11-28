@@ -12,19 +12,19 @@ import (
 	"time"
 )
 
-// free-pi's forced-update gate: `GET /client-version` publishes a `min` floor
-// and refuses an x-client-version below it with HTTP 426.
+// free-pi's client-version gate has two halves:
+//   - `min` is the forced-update floor: an older x-client-version is refused
+//     with 426 `client_outdated`.
+//   - `latest` is the current official free-pi-cli release: a version ABOVE it
+//     is not a published release at all and is refused with 426
+//     `upgrade_required` ("not an official release"). The compiled-in 0.7
+//     fallback used to be such a number — npm has only ever published up to
+//     0.6.28 — so on the wire `latest` is a ceiling, not just another candidate.
 //
-// The version we send is normally the `latest` stored on the connection at
-// login. That snapshot is the bug this file exists to fix: it is never
-// refreshed, so when the server raises `min` past it, every request keeps
-// answering 426 until the operator signs in again — from a container that is
-// already up to date. Raising the compiled-in fallback (FreePiClientVersion)
-// cannot help either, because the stored value outranks it.
-//
-// So the value on the wire is resolved per request from three sources, and the
-// highest wins: the stored snapshot, the server's current `latest`, and the
-// compiled-in floor. A stale pin can then never beat a current server value.
+// The value sent is resolved per request from the connection's stored snapshot,
+// the server's published `latest`, and the compiled-in fallback. A stale pin
+// cannot beat a current server value; a stale or invented high value cannot
+// beat the published release either.
 const (
 	// FreePiClientVersionTTL bounds how long the published min/latest pair is
 	// reused. The endpoint is unauthenticated and account-independent, so one
@@ -103,13 +103,17 @@ func FetchFreePiClientVersion(ctx context.Context, client *http.Client) (FreePiC
 	return out, nil
 }
 
-// ResolveFreePiClientVersion returns the x-client-version to send: the highest
-// of the connection's stored snapshot, the server's published `latest`, and the
-// compiled-in floor, but never below the server's `min`.
+// ResolveFreePiClientVersion returns the x-client-version to send.
+//
+// It is the highest of the connection's stored snapshot, the server's published
+// `latest`, and the compiled-in fallback, but never below the server's `min`
+// and never above a published `latest`. The ceiling matters: sending a number
+// no CLI release ever published earns 426 `upgrade_required`, which no amount
+// of forced-update refreshing can heal.
 //
 // A stale refresh is attempted inline but never fails the request: on a network
-// error the last snapshot (or the compiled-in floor) still answers, and the 426
-// self-heal in the executor retries once after a forced refresh.
+// error the last snapshot (or the compiled-in fallback) still answers, and the
+// 426 self-heal in the executor retries once after a forced refresh.
 func ResolveFreePiClientVersion(ctx context.Context, client *http.Client, stored string) string {
 	snapshot := freePiVersionSnapshotOrRefresh(ctx, client)
 
@@ -123,9 +127,15 @@ func ResolveFreePiClientVersion(ctx context.Context, client *http.Client, stored
 	// above every candidate has to win: this is the forced-update case.
 	if snapshot.Min != "" && compareFreePiVersions(chosen, snapshot.Min) < 0 {
 		chosen = snapshot.Min
-		if compareFreePiVersions(snapshot.Latest, chosen) > 0 {
-			chosen = snapshot.Latest
-		}
+	}
+	// A published latest is the newest real release. Anything above it is an
+	// invented version: the server answers 426 upgrade_required, so clamp down
+	// to the release the CLI would actually have sent. min still wins when the
+	// server has raised it ahead of the npm publish.
+	if snapshot.Latest != "" &&
+		compareFreePiVersions(chosen, snapshot.Latest) > 0 &&
+		(snapshot.Min == "" || compareFreePiVersions(snapshot.Latest, snapshot.Min) >= 0) {
+		chosen = snapshot.Latest
 	}
 	return chosen
 }
