@@ -35,7 +35,7 @@ export interface LiveCatalogEntry {
 }
 
 /** Reads a live entry's id under the three spellings the feeds use. */
-function liveEntryId(entry: unknown): string {
+export function liveEntryId(entry: unknown): string {
   if (typeof entry === 'string') return entry
   if (!entry || typeof entry !== 'object') return ''
   const obj = entry as LiveCatalogEntry
@@ -47,6 +47,59 @@ function liveEntries(providerId: string, liveModels: PickerExtras['liveModels'])
   const entries = liveModels?.[providerId]
   if (!Array.isArray(entries) || entries.length === 0) return null
   return entries.filter((m) => isChatModel(m))
+}
+
+/** Minimal connection shape the live fetch needs: an id and its provider. */
+interface LiveCatalogConnection {
+  id: string
+  provider?: string
+  isActive?: number | boolean | null
+}
+
+/** One live-catalogue fetch: resolves to a connection's models, or [] on error. */
+type ConnectionModelsFetcher = (connectionId: string) => Promise<{ models?: unknown[] } | null>
+
+/**
+ * Reads every active connection's live catalogue for the given providers,
+ * flattens the per-connection lists, and dedupes by model id (keeping the
+ * first occurrence). Mirrors upstream useLiveProviderModels
+ * (ModelSelectModal.js): two connections of one provider collapse to one row
+ * per model id because the picker value (alias/id) is identical. A provider
+ * with no active connection is absent from the result, so the caller keeps the
+ * static bundle as the fallback instead of emptying the group.
+ */
+export async function fetchLiveProviderModels(
+  connections: LiveCatalogConnection[],
+  providers: readonly string[],
+  fetchModels: ConnectionModelsFetcher,
+): Promise<Record<string, unknown[]>> {
+  const activeByProvider = new Map<string, string[]>()
+  for (const c of connections) {
+    if (!c.provider || !providers.includes(c.provider)) continue
+    if (c.isActive === 0 || c.isActive === false) continue
+    const ids = activeByProvider.get(c.provider) ?? []
+    ids.push(c.id)
+    activeByProvider.set(c.provider, ids)
+  }
+
+  const result: Record<string, unknown[]> = {}
+  await Promise.all(
+    [...activeByProvider].map(async ([provider, ids]) => {
+      const lists = await Promise.all(ids.map((id) => fetchModels(id).catch(() => null)))
+      const seen = new Set<string>()
+      const merged: unknown[] = []
+      for (const list of lists) {
+        for (const m of list?.models ?? []) {
+          const id = liveEntryId(m)
+          if (!id || seen.has(id)) continue
+          seen.add(id)
+          merged.push(m)
+        }
+      }
+      if (merged.length > 0) result[provider] = merged
+    })
+  )
+  return result
 }
 
 /**

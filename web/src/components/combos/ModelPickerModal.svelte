@@ -10,6 +10,7 @@
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import {
     LIVE_CATALOG_PROVIDERS,
+    fetchLiveProviderModels,
     resolveFilteredCombos,
     resolveFilteredGroups,
     resolveModelPickerGroups,
@@ -61,25 +62,15 @@
    */
   let liveModels = $state<Record<string, unknown[]>>({})
 
-  // One request per connected live-catalog provider, in one batch. A failed
-  // fetch leaves that provider on the static bundle instead of emptying it.
+  // One request per active connection of each live-catalog provider, in one
+  // batch, flattened and deduped by model id (upstream useLiveProviderModels).
+  // A failed fetch leaves that provider on the static bundle instead of
+  // emptying it.
   $effect(() => {
     if (!isOpen) return
-    const ids = new Set(connections.map((c) => c.provider).filter(Boolean))
-    const wanted = LIVE_CATALOG_PROVIDERS.filter((id) => ids.has(id))
-    if (wanted.length === 0) return
-    void Promise.all(
-      wanted.map(async (id) => {
-        const conn = connections.find((c) => c.provider === id)
-        if (!conn) return null
-        const res = await api.getConnectionModels(conn.id).catch(() => null)
-        return [id, res?.models ?? []] as const
-      })
-    ).then((rows) => {
-      const next: Record<string, unknown[]> = {}
-      for (const row of rows) {
-        if (row && row[1].length > 0) next[row[0]] = row[1]
-      }
+    void fetchLiveProviderModels(connections, LIVE_CATALOG_PROVIDERS, (id) =>
+      api.getConnectionModels(id)
+    ).then((next) => {
       liveModels = next
     })
   })

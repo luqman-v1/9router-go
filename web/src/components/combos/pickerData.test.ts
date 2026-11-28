@@ -6,6 +6,8 @@ import type { Combo, ProviderConnection, ProviderNode } from '../../api/client'
 import { __setProviderCatalogForTest } from '../../lib/providers'
 import { parseProviderRegistry } from '../../lib/providers.registry-test'
 import {
+  fetchLiveProviderModels,
+  liveEntryId,
   liveModelCaps,
   resolveFilteredCombos,
   resolveFilteredGroups,
@@ -15,6 +17,21 @@ import {
 const registryItems = parseProviderRegistry(
   readFileSync(resolve(import.meta.dirname, '../../../../internal/providers/provider_registry.go'), 'utf8'),
 )
+
+function conn(id: string, provider: string, isActive: number): ProviderConnection {
+  return {
+    id,
+    provider,
+    authType: 'apikey',
+    name: id,
+    email: null,
+    priority: 1,
+    isActive,
+    data: '{}',
+    createdAt: '',
+    updatedAt: '',
+  }
+}
 
 describe('pickerData', () => {
   beforeEach(() => {
@@ -529,5 +546,34 @@ describe('pickerData', () => {
     assert.strictEqual(caps.vision, false)
     assert.strictEqual(caps.reasoning, true)
     assert.strictEqual(caps.maxOutput, 4096)
+  })
+
+  // Review blocker (PR #1580): the picker must read EVERY active connection of
+  // a live-catalog provider, not just the first, and collapse duplicate model
+  // ids across accounts (upstream useLiveProviderModels). An inactive
+  // connection must be skipped.
+  it('fetches every active connection of a live provider and dedupes by model id', async () => {
+    const connections: ProviderConnection[] = [
+      conn('cc-active-1', 'commandcode', 1),
+      conn('cc-active-2', 'commandcode', 1),
+      conn('cc-inactive', 'commandcode', 0),
+    ]
+    const requested: string[] = []
+    const catalogues: Record<string, unknown[]> = {
+      'cc-active-1': [{ id: 'alpha/model-a' }, { id: 'shared/model-x' }],
+      'cc-active-2': [{ id: 'beta/model-b' }, { id: 'shared/model-x' }],
+      'cc-inactive': [{ id: 'gamma/should-not-appear' }],
+    }
+    const live = await fetchLiveProviderModels(connections, ['commandcode'], async (id) => {
+      requested.push(id)
+      return { models: catalogues[id] ?? [] }
+    })
+
+    // Both active connections were queried; the inactive one was not.
+    assert.deepStrictEqual(requested.sort(), ['cc-active-1', 'cc-active-2'])
+    const ids = (live.commandcode ?? []).map(liveEntryId)
+    // Both disjoint models appear, the shared model appears once, and the
+    // inactive connection's model is absent.
+    assert.deepStrictEqual(ids, ['alpha/model-a', 'shared/model-x', 'beta/model-b'])
   })
 })
