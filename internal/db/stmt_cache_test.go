@@ -177,6 +177,7 @@ func TestStmtCacheResultsCorrect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list select: %v", err)
 		}
+		defer rows.Close()
 		var ids []int
 		for rows.Next() {
 			var id int
@@ -186,8 +187,8 @@ func TestStmtCacheResultsCorrect(t *testing.T) {
 			}
 			ids = append(ids, id)
 		}
-		if err := rows.Close(); err != nil {
-			t.Fatalf("rows close: %v", err)
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows err: %v", err)
 		}
 		if len(ids) != 5 {
 			t.Errorf("list select returned %d rows, want 5", len(ids))
@@ -215,6 +216,7 @@ func TestStmtCachePreparedStmtPath(t *testing.T) {
 			t.Fatalf("stmt exec %d: %v", i, err)
 		}
 	}
+	//nolint:sqlclosecheck // intentional mid-test Close: proves the cached handle survives Stmt.Close
 	if err := stmt.Close(); err != nil {
 		t.Fatalf("stmt close: %v", err)
 	}

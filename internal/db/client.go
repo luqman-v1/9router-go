@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -122,7 +123,7 @@ func openSQLite(path string) (*sql.DB, error) {
 
 	// Persistent database-level PRAGMA: journal_mode is written to the
 	// database file header.
-	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode = WAL;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pragma exec journal_mode: %w", err)
 	}

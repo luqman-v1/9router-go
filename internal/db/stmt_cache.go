@@ -109,7 +109,7 @@ func (c *stmtCacheConn) QueryContext(ctx context.Context, query string, args []d
 	if qc, ok := s.(driver.StmtQueryContext); ok {
 		return qc.QueryContext(ctx, args)
 	}
-	return s.Query(namedToValues(args))
+	return queryFallback(s, args)
 }
 
 func (c *stmtCacheConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -120,7 +120,7 @@ func (c *stmtCacheConn) ExecContext(ctx context.Context, query string, args []dr
 	if ec, ok := s.(driver.StmtExecContext); ok {
 		return ec.ExecContext(ctx, args)
 	}
-	return s.Exec(namedToValues(args))
+	return execFallback(s, args)
 }
 
 // namedToValues converts NamedValue args for drivers whose statements do not
@@ -137,6 +137,20 @@ func namedToValues(args []driver.NamedValue) []driver.Value {
 		}
 	}
 	return vals
+}
+
+// queryFallback and execFallback are the deprecated Stmt.Query/Stmt.Exec
+// calls for statements that do not implement the Context interfaces;
+// database/sql does not treat ErrSkip as a fallback at the statement level.
+//
+//nolint:staticcheck
+func queryFallback(s driver.Stmt, args []driver.NamedValue) (driver.Rows, error) {
+	return s.Query(namedToValues(args))
+}
+
+//nolint:staticcheck
+func execFallback(s driver.Stmt, args []driver.NamedValue) (driver.Result, error) {
+	return s.Exec(namedToValues(args))
 }
 
 // ResetSession keeps the cache: modernc's ResetSession only checks that the
@@ -223,14 +237,12 @@ func (s cachedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (
 	if ec, ok := s.inner.(driver.StmtExecContext); ok {
 		return ec.ExecContext(ctx, args)
 	}
-	// database/sql does not treat ErrSkip as a fallback at the statement
-	// level, so convert and call the deprecated method directly.
-	return s.inner.Exec(namedToValues(args))
+	return execFallback(s.inner, args)
 }
 
 func (s cachedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	if qc, ok := s.inner.(driver.StmtQueryContext); ok {
 		return qc.QueryContext(ctx, args)
 	}
-	return s.inner.Query(namedToValues(args))
+	return queryFallback(s.inner, args)
 }
