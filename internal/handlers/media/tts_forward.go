@@ -225,7 +225,7 @@ func (h *MediaHandler) tryNvidiaTTSConn(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		return http.StatusBadGateway, "nvidia tts request failed: " + err.Error(), true
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		errBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
