@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -46,5 +47,25 @@ func TestQoderPromptCompatApplied(t *testing.T) {
 	}
 	if !strings.Contains(out, "You are an AI agent, powered by DeepSeek Harness.") {
 		t.Fatalf("missing comma: %s", out)
+	}
+}
+
+func TestQoderPromptCompatInBuiltPayload(t *testing.T) {
+	creds := qoderFixture(t)
+	body := []byte(`{"model":"qd/qfmodel","messages":[{"role":"system","content":"You are Claude Code, Anthropic's official CLI for Claude. You are an AI agent powered by DeepSeek Harness."},{"role":"user","content":"hi"}],"stream":false}`)
+	config := qoderCachedModelConfig(creds, QoderRegionIntl, "qfmodel")
+	if config == nil {
+		t.Fatal("no model_config")
+	}
+	built, err := buildQoderChatRequestWithAttachments(context.Background(), body, config, creds, 1700000000000, QoderRegionIntl, nil, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	sys, _ := built.Payload["system"].(string)
+	if !strings.Contains(sys, "You are a Claude agent, built on Anthropic's Claude Agent SDK.") {
+		t.Fatalf("missing agent sdk line: %s", sys)
+	}
+	if !strings.Contains(sys, "You are an AI agent, powered by DeepSeek Harness.") {
+		t.Fatalf("missing comma: %s", sys)
 	}
 }
