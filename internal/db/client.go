@@ -11,8 +11,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 // The global connection and its open error, guarded by dbMu. OpenDatabase has
@@ -116,15 +115,14 @@ func openSQLite(path string) (*sql.DB, error) {
 
 	// Per-connection PRAGMAs go in the DSN, not through db.Exec: db.Exec only
 	// borrows one connection from the pool, while the driver applies every
-	// `_pragma` to each connection it opens (issue #139).
-	db, err := sql.Open("sqlite", sqliteDSN(path))
-	if err != nil {
-		return nil, fmt.Errorf("sql.Open(%s): %w", path, err)
-	}
+	// `_pragma` to each connection it opens (issue #139). The connector wraps
+	// the modernc driver with the per-connection prepared-statement cache
+	// (stmt_cache.go) so repeat statements are not re-parsed per call.
+	db := sql.OpenDB(&stmtCacheConnector{inner: &sqlite.Driver{}, dsn: sqliteDSN(path)})
 
 	// Persistent database-level PRAGMA: journal_mode is written to the
 	// database file header.
-	if _, err = db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pragma exec journal_mode: %w", err)
 	}
