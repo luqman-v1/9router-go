@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/translator"
 )
 
 // Client identifiers captured from the installed AutoClaw desktop client
@@ -85,6 +87,13 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 		return fmt.Errorf("autoclaw: rotate access token: %w", err)
 	}
 	accessToken := result.AccessToken
+	// The identity gateway rotates refresh_token on every refresh. Persist the
+	// new pair so the next request (after the dedup cache expires) does not
+	if req.PersistCredentials != nil && result.RefreshToken != "" && result.RefreshToken != refreshToken && req.ConnectionID != "" {
+		if err := req.PersistCredentials(req.Ctx, req.ConnectionID, result.AccessToken, result.RefreshToken); err != nil {
+			return fmt.Errorf("autoclaw: persist rotated credentials: %w", err)
+		}
+	}
 
 	body, err := autoclawBody(req.Body, req.IsStream)
 	if err != nil {
@@ -104,6 +113,7 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	// converts every non-200 into an error, which made the 401 branch
 	// unreachable dead code on the first PR head.
 	resp, err := proxy.SendOnce(req.Ctx, req.Client, http.MethodPost, autoclawBase(req)+autoclawChatPath, headers, body)
+
 	if err != nil {
 		return fmt.Errorf("autoclaw: upstream: %w", err)
 	}
@@ -152,11 +162,17 @@ func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 		// SSECopy relays each upstream chunk with a flush, so the first
 		// token reaches the client the moment upstream sends it; io.Copy
 		// left every byte in the server's write buffer until the stream
-		// closed (TTFB == total stream duration). It is the same relay
+		// closed (TTFT == total stream duration). It is the same relay
 		// every other OpenAI-lane executor uses, so a bare [DONE] or an
 		// in-band provider error is repaired the house way.
 		flusher := proxy.WriteSSEHeaders(w)
-		return proxy.SSECopy(w, resp.Body, flusher, func([]byte) { markTTFT(req, req.StartTime) })
+		var streamUsage *translator.OpenAIUsage
+		return proxy.SSECopy(w, resp.Body, flusher, func(chunk []byte) {
+			markTTFT(req, req.StartTime)
+			if req.Ctx != nil {
+				streamUsage = captureUsageFromSSEChunk(req.Ctx, streamUsage, chunk)
+			}
+		})
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
@@ -220,18 +236,53 @@ func splitAutoclawCredential(cred string) (refreshToken, deviceID, appKey string
 	return
 }
 
-// autoclawBody forces stream:true so the upstream keeps the SSE channel open,
-// but only when the client asked for a stream. A non-stream request keeps the
-// client's stream flag so the SSE body is never mislabelled as JSON.
-// The body's `model` field is left as the client sent it; upstream reads the
-// model from X-Request-Model instead.
+// autoclawBody normalises the request to the shape a captured AutoClaw 2.6.1
+// chat sends. The managed gateway rejects a bare OpenAI body (max_tokens,
+// stream:false) with an empty 406; it requires stream:true,
+// stream_options.include_usage, store:false, max_completion_tokens and a
+// reasoning_effort. Caller-supplied values win; only missing keys are filled.
+// tools/messages/model pass through untouched. Stream folding for a
+// non-stream client happens in ForwardAutoclaw after the SSE is received.
 func autoclawBody(raw []byte, isStream bool) ([]byte, error) {
 	var envelope map[string]any
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	if isStream {
-		envelope["stream"] = true
+	envelope["stream"] = true
+	if _, ok := envelope["stream_options"]; !ok {
+		envelope["stream_options"] = map[string]any{"include_usage": true}
+	}
+	if _, ok := envelope["store"]; !ok {
+		envelope["store"] = false
+	}
+	if max, ok := envelope["max_completion_tokens"]; !ok || max == nil {
+		if legacy, exists := envelope["max_tokens"]; exists {
+			envelope["max_completion_tokens"] = legacy
+		} else {
+			envelope["max_completion_tokens"] = 37500
+		}
+	}
+	delete(envelope, "max_tokens")
+	if _, ok := envelope["reasoning_effort"]; !ok {
+		envelope["reasoning_effort"] = "max"
+	}
+	// The managed gateway requires AutoClaw's exact system prompt as the
+	// FIRST message. A client-supplied system message (e.g. OpenCode's
+	// title-generation prompt) does not satisfy it — that answers 406 with
+	// `data: \n\ndata: [DONE]`. Prepend the desktop prompt and keep the
+	// client's system message as the next one so its instructions survive.
+	desktopSystem := map[string]any{"role": "system", "content": autoclawDesktopSystemPrompt}
+	if msgs, ok := envelope["messages"].([]any); ok {
+		firstIsDesktop := len(msgs) > 0
+		if firstIsDesktop {
+			m, _ := msgs[0].(map[string]any)
+			firstIsDesktop = m != nil && m["role"] == "system" && m["content"] == autoclawDesktopSystemPrompt
+		}
+		if !firstIsDesktop {
+			envelope["messages"] = append([]any{desktopSystem}, msgs...)
+		}
+	} else {
+		envelope["messages"] = []any{desktopSystem}
 	}
 	return json.Marshal(envelope)
 }
@@ -244,9 +295,20 @@ func autoclawHeaders(accessToken string, isStream bool, model, appKey string) ma
 	ts := fmt.Sprintf("%d", now())
 	sign := md5Sum(autoclawAppID + "&" + ts + "&" + appKey)
 
+	// Header set mirrors a captured successful AutoClaw desktop chat request.
+	// Notably the token goes in X-Authorization (not Authorization), the
+	// desktop client identifies itself with X-Agent-Id, and it sends
+	// x-return-billing / x_trace_id / user-agent: node. Deviating from this
+	// set makes the identity gateway answer 406 with an empty body.
+	requestID := mustUUID()
 	headers := map[string]string{
 		"Content-Type":     "application/json",
-		"Accept":           "*/*",
+		"Accept":           "application/json",
+		"Accept-Encoding":  "br, gzip, deflate",
+		"Accept-Language":  "*",
+		"User-Agent":       "node",
+		"X-Agent-Id":       "main",
+		"X-Authorization":  autoclawBearer(accessToken),
 		"x-auth-appid":     autoclawAppID,
 		"x-auth-timestamp": ts,
 		"x-auth-sign":      sign,
@@ -255,19 +317,30 @@ func autoclawHeaders(accessToken string, isStream bool, model, appKey string) ma
 		"x-tm":             "win",
 		"x-client-type":    "pc",
 		"x-channel":        "official",
-		"x-lang":           "zh-CN",
-		"x-trace-id":       mustUUID(),
-		"User-Agent":       constants.DefaultClientUserAgent,
-		"Authorization":    "Bearer " + accessToken,
+		"x-lang":           "en",
+		"x-request-id":     requestID,
+		"x-trace-id":       requestID,
+		"x-query-id":       mustUUID(),
+		"x-session-id":     mustUUID(),
+		"x-return-billing": "true",
+		"x_trace_id":       "autoclaw-desktop",
 	}
 	if model != "" {
 		headers["X-Request-Model"] = model
 	}
-	if isStream {
-		headers["Accept"] = "text/event-stream"
-		headers["Accept-Encoding"] = "identity"
-	}
+	// The desktop client keeps `Accept: application/json` even on streaming
+	// calls — the gateway routes on that value and answers 406 with an empty
+	// body when it sees text/event-stream here.
 	return headers
+}
+
+// AutoClaw tokens from the identity gateway already carry the Bearer prefix.
+// Sending "Bearer Bearer <jwt>" makes upstream answer "Invalid token".
+func autoclawBearer(token string) string {
+	if strings.HasPrefix(strings.TrimSpace(token), "Bearer ") {
+		return token
+	}
+	return "Bearer " + token
 }
 
 func md5Sum(s string) string {

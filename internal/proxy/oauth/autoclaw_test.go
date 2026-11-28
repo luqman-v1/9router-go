@@ -124,3 +124,32 @@ func TestRefreshAutoclawRequiresRotatedRefreshToken(t *testing.T) {
 		t.Fatal("expected error when the upstream omits the rotated refresh token")
 	}
 }
+
+func TestRefreshAutoclawSendsSigningHeaders(t *testing.T) {
+	oldBase := autoclawBaseURL
+	defer func() { autoclawBaseURL = oldBase }()
+
+	var gotSign, gotAppID, gotVersion, gotTS string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSign = r.Header.Get("X-Auth-Sign")
+		gotAppID = r.Header.Get("X-Auth-Appid")
+		gotVersion = r.Header.Get("X-Version")
+		gotTS = r.Header.Get("X-Auth-TimeStamp")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"at-2","refresh_token":"rt-2"}}`))
+	}))
+	defer srv.Close()
+	autoclawBaseURL = srv.URL
+
+	if _, err := refreshAutoclaw(t.Context(), &Params{RefreshToken: "rt-1"}); err != nil {
+		t.Fatalf("refreshAutoclaw: %v", err)
+	}
+	if gotAppID != autoclawAppID {
+		t.Errorf("X-Auth-Appid = %q, want %q", gotAppID, autoclawAppID)
+	}
+	if gotVersion != autoclawClientVer {
+		t.Errorf("X-Version = %q, want %q", gotVersion, autoclawClientVer)
+	}
+	if gotSign != autoclawSign(gotTS) {
+		t.Errorf("X-Auth-Sign = %q, want signature over ts %q", gotSign, gotTS)
+	}
+}

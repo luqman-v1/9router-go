@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,9 +30,18 @@ func autoclawSign(ts string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// AutoClaw answers zai-oauth-url without a captcha proof with code 631002
-// and a misleading "version unsupported" message. A bad proof yields 630014.
+// The proof the desktop client obtains from the Aliyun captcha SDK is sent
+// upstream as ali_captcha_verify_param; the dashboard obtains it the same way.
+const autoclawCaptchaChallengeCode = 630014
+
+// AutoClaw answers oauth-url without a captcha proof with code 631002 and a
 const autoclawCaptchaGateCode = 631002
+
+// The config endpoint tells the dashboard whether a challenge is required and
+// which Aliyun scene to instantiate. The desktop client calls it before every
+// authorize attempt; proof can be silent (risk-based V3), so the UI must not
+// assume a visible slider.
+const autoclawCaptchaConfigPath = "/userapi/overseasv1/oauth-captcha-config"
 
 var autoclawOAuthOrigin = "https://autoglm-api.autoglm.ai"
 
@@ -84,41 +94,115 @@ func autoclawOAuthPost(ctx context.Context, path string, body map[string]any) (m
 	}
 	if code, _ := out["code"].(float64); code != 0 {
 		if code == autoclawCaptchaGateCode {
-			return nil, fmt.Errorf("autoclaw oauth: upstream requires an Aliyun captcha proof (code 631002 is a decoy 'version unsupported' message); sign in from the AutoClaw desktop app instead")
+			return nil, fmt.Errorf("autoclaw oauth: upstream requires an Aliyun captcha proof (code 631002 is a decoy 'version unsupported' message); complete the verification in the browser")
 		}
-		if code == 630014 {
-			return nil, fmt.Errorf("autoclaw oauth: captcha challenge required — the Aliyun slider widget must run in a browser")
+		if code == autoclawCaptchaChallengeCode {
+			return nil, fmt.Errorf("autoclaw oauth: captcha challenge required — complete the verification in the browser")
 		}
 		return nil, fmt.Errorf("autoclaw oauth: business code %v", out["code"])
 	}
 	return out, nil
 }
 
-// HandleAutoclawAuthorize begins the Z.ai OAuth flow.
+// autoclawUserEmail fetches the account email after OAuth login. The login
+// response carries only user_id; the desktop client reads the email from
+// /userapi/v1/user-profile. A failure is not fatal: the connection still
+// works, just labelled with the user id.
+func autoclawUserEmail(ctx context.Context, deviceID, accessToken string) string {
+	raw, err := json.Marshal(map[string]any{"source_id": "autoclaw", "device_id": deviceID})
+	if err != nil {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, autoclawOAuthOrigin+"/userapi/v1/user-profile", strings.NewReader(string(raw)))
+	if err != nil {
+		return ""
+	}
+	ts := fmt.Sprint(time.Now().Unix())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "node")
+	req.Header.Set("X-Auth-Appid", "100003")
+	req.Header.Set("X-Auth-TimeStamp", ts)
+	req.Header.Set("X-Auth-Sign", autoclawSign(ts))
+	req.Header.Set("X-Product", "autoclaw")
+	req.Header.Set("X-Version", "2.6.1")
+	req.Header.Set("X-Tm", "win")
+	req.Header.Set("X-Lang", "en")
+	req.Header.Set("Authorization", accessToken)
+	resp, err := proxy.NewDirectSafeTransport().RoundTrip(req)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil || out["code"] != float64(0) {
+		return ""
+	}
+	payload, _ := out["data"].(map[string]any)
+	email, _ := payload["email"].(string)
+	return strings.TrimSpace(email)
+}
+
+// HandleAutoclawCaptchaConfig exposes the upstream Aliyun captcha settings so
+// the dashboard can initialise the same SDK the desktop app uses. GET
+// /api/oauth/autoclaw/captcha-config
+func (h *OAuthHandler) HandleAutoclawCaptchaConfig(w http.ResponseWriter, r *http.Request) {
+	data, err := autoclawOAuthPost(r.Context(), autoclawCaptchaConfigPath, map[string]any{})
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	payload, _ := data["data"].(map[string]any)
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"enabled": payload["enabled"] == true,
+		"region":  payload["region"],
+		"prefix":  payload["prefix"],
+		"sceneId": payload["scene_id"],
+	})
+}
+
+// HandleAutoclawAuthorize begins the Z.ai OAuth flow. The dashboard runs the
+// same Aliyun captcha SDK as the desktop client and sends the resulting proof
+// as ?captcha_proof=; the gateway forwards it as ali_captcha_verify_param.
 // GET /api/oauth/autoclaw/authorize?redirect_uri=...&state=...
 func (h *OAuthHandler) HandleAutoclawAuthorize(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
 		state = randomString(32)
 	}
-	redirectURI := callbackRedirectURI(r)
+	// chat.z.ai accepts only the redirect URI registered for the AutoClaw
+	// OAuth client. Bind it for the duration of the login and relay the code
+	// into the dashboard's callback poller.
+	if err := autoclawLoopback.start(); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusConflict, "autoclaw oauth: local callback listener: "+err.Error())
+		return
+	}
+	redirectURI := "http://" + autoclawLoopbackHost + ":" + strconv.Itoa(autoclawLoopbackPort) + autoclawLoopbackPath
 	deviceID := zcodeUUID()
-	data, err := autoclawOAuthPost(r.Context(), "/userapi/overseasv1/zai-oauth-url", map[string]any{
+	payload := map[string]any{
 		"navigate_uri": redirectURI,
 		"source_id":    "autoclaw",
 		"device_id":    deviceID,
-	})
+	}
+	if proof := strings.TrimSpace(r.URL.Query().Get("captcha_proof")); proof != "" {
+		payload["ali_captcha_verify_param"] = proof
+	}
+	data, err := autoclawOAuthPost(r.Context(), "/userapi/overseasv1/zai-oauth-url", payload)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	payload, _ := data["data"].(map[string]any)
-	authURL, _ := payload["oauth_url"].(string)
+	respPayload, _ := data["data"].(map[string]any)
+	authURL, _ := respPayload["oauth_url"].(string)
 	if authURL == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "autoclaw oauth: missing oauth_url")
 		return
 	}
-	if returned, _ := payload["state"].(string); returned != "" {
+	if returned, _ := respPayload["state"].(string); returned != "" {
 		state = returned
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
@@ -183,12 +267,21 @@ func (h *OAuthHandler) HandleAutoclawExchange(w http.ResponseWriter, r *http.Req
 		},
 		"expiresAt": time.Now().Add(20 * time.Hour).UTC().Format(time.RFC3339),
 	}
+	// The login response carries only user_id. Read the email from the
+	// profile endpoint so the connection is labelled with the account the
+	// operator actually signed in with.
+	if email := autoclawUserEmail(r.Context(), body.DeviceID, accessToken); email != "" {
+		dataMap["email"] = email
+	}
 	raw, err := json.Marshal(dataMap)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "encode connection data")
 		return
 	}
 	name := connectionDisplayName("autoclaw", body.Name, userID, "")
+	if email, _ := dataMap["email"].(string); email != "" {
+		name = email
+	}
 	if err := h.Repo.CreateProviderConnectionFull(r.Context(), id, "autoclaw", "oauth", name, nil, string(raw)); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "save connection: "+err.Error())
 		return

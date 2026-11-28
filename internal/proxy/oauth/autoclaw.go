@@ -3,6 +3,8 @@ package oauth
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,9 +17,29 @@ func init() {
 	Register("autoclaw", refreshAutoclaw)
 }
 
-// Autoclaw refresh endpoint constants. The refresh grant is not signed with
-// the desktop client's app key (the refresh call carries the bearer token
-// only), so no app secret is needed here — and none is kept in this file.
+// Every identity_gateway call, including refresh, requires the desktop
+// client's MD5 envelope. A signed request with an unknown token answers
+// 400000 "not logged in"; an unsigned one answers 400002 "sign error".
+const (
+	autoclawAppID     = "100003"
+	autoclawAppKey    = "38d2391985e2369a5fb8227d8e6cd5e5"
+	autoclawClientVer = "2.6.1"
+)
+
+func autoclawSign(ts string) string {
+	sum := md5.Sum([]byte(autoclawAppID + "&" + ts + "&" + autoclawAppKey))
+	return hex.EncodeToString(sum[:])
+}
+
+// AutoClaw tokens already carry the Bearer prefix. Avoid emitting
+// "Bearer Bearer <jwt>", which upstream rejects as an invalid token.
+func bearerValue(token string) string {
+	if strings.HasPrefix(strings.TrimSpace(token), "Bearer ") {
+		return token
+	}
+	return "Bearer " + token
+}
+
 const (
 	autoclawRefreshPath      = "/userapi/v1/refresh"
 	autoclawAgentRefreshPath = "/userapi/v1/agent-refresh"
@@ -102,8 +124,17 @@ func requestAutoclawRefresh(ctx context.Context, client *http.Client, baseURL, p
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	ts := fmt.Sprint(time.Now().Unix())
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	req.Header.Set("X-Auth-Appid", autoclawAppID)
+	req.Header.Set("X-Auth-TimeStamp", ts)
+	req.Header.Set("X-Auth-Sign", autoclawSign(ts))
+	req.Header.Set("X-Product", "autoclaw")
+	req.Header.Set("X-Version", autoclawClientVer)
+	req.Header.Set("X-Tm", "win")
+	req.Header.Set("X-Lang", "zh-CN")
 	if accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Authorization", bearerValue(accessToken))
 	}
 
 	resp, err := client.Do(req)

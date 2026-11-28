@@ -25,31 +25,79 @@ Autoclaw row keeps its durable credential in `apiKey`), so an idle connection
 is re-rotated on its next request. The desktop client requires a fresh
 `refresh_token` on every rotation, which this refresher enforces; a business
 code `400002` falls back to `/userapi/v1/agent-refresh` as the client does.
-The rotated token is returned in `TokenResult`; the request-path executor has
-no DB handle, so it cannot persist the new value back to the connection. A
-background persistence lane is out of scope.
+The rotated pair is persisted back to the connection by the chat handler via
+the executor's `PersistCredentials` callback, so the next request after the
+dedup cache expires does not replay an already-consumed token.
 
-**Wire contract.** Each request is signed with the app's MD5 envelope
-(`x-auth-sign = md5("100003&<ts>&<app_key>")`), the model rides in
-`X-Request-Model` (not the body), and `stream: true` is forced only when the
-client asked for a stream. A 401 triggers one forced refresh + retry through
-`proxy.SendOnce`; any non-200 surviving the retry surfaces as an
-`*UpstreamError` so failover sees the real status. The relay is per-chunk
-flushed (`proxy.SSECopy`). The upstream is SSE-only, so a `stream:false` ask is
-folded into one `chat.completion` with the shared `sseToOpenAIJSON` helper
-before being labelled `application/json`; an SSE body with no completion chunk
-answers 502 (`NoCompletionInStream`).
+**Connection identity.** The OAuth login response carries only `user_id`.
+After the exchange the handler calls `/userapi/v1/user-profile` (same signed
+identity-gateway envelope, token in `Authorization`) and labels the connection
+with the account email; the email is also stored in the connection data.
+
+**OAuth loopback.** chat.z.ai accepts only the redirect URI registered for the
+AutoClaw OAuth client, `http://localhost:18432/auth/callback-zai`. The gateway
+binds that loopback during login and relays the callback into the dashboard's
+`/api/oauth/callback-result` poller. The Aliyun captcha SDK runs in the browser
+(silent risk-based or visible slider) and the resulting proof is forwarded as
+`ali_captcha_verify_param`; without it `zai-oauth-url` answers the misleading
+`631002` "version unsupported".
+
+
+**Wire contract.** The header set mirrors a request captured from AutoClaw
+2.6.1 with a local MITM proxy: `X-Authorization` (not `Authorization`),
+`X-Agent-Id: main`, `user-agent: node`, `x-return-billing: true`,
+`x_trace_id: autoclaw-desktop`, `accept: application/json`, the MD5 envelope
+(`x-auth-sign = md5("100003&<ts>&<app_key>")`), and the rest of the captured
+desktop headers. The token already carries the `Bearer ` prefix upstream, so
+the executor does not add a second one.
+
+**Body shape (MITM-verified).** The managed gateway rejects a bare OpenAI body
+with an empty 406. A capture of a real AutoClaw 2.6.1 chat showed the required
+shape: `stream: true`, `stream_options.include_usage: true`, `store: false`,
+`max_completion_tokens`, `reasoning_effort: "max"`, and — critically — a leading
+`system` message carrying AutoClaw's exact 7.5 KB system prompt. A minimal
+generic system prompt is rejected too; upstream validates the prompt itself.
+`autoclawBody` normalises every request to that shape and the captured prompt
+lives in `autoclaw_system_const.go`. Caller-supplied values win: `max_tokens`
+is remapped to `max_completion_tokens`, and the desktop prompt is always
+prepended as the FIRST system message even when the caller supplies its own
+(OpenCode's title-generation prompt otherwise answers 406 with
+`data: \n\ndata: [DONE]`); the client's system prompt is kept as the next
+message. The upstream is SSE-only, so a non-stream client's request is still
+streamed upstream and folded into one `chat.completion` with `sseToOpenAIJSON`
+before being labelled JSON; an SSE body with no completion chunk answers 502
+(`NoCompletionInStream`).
+
+The model rides in `X-Request-Model` (not the body). A 401 triggers one forced
+refresh + retry through `proxy.SendOnce`; any non-200 surviving the retry
+surfaces as an `*UpstreamError` so failover sees the real status. The relay is
+per-chunk flushed (`proxy.SSECopy`).
+
+
+**Usage metrics.** The stream path relays upstream SSE with `proxy.SSECopy`;
+that helper does not record token usage by itself, so the dashboard's Speed,
+Completion and Cached columns stayed at 0 even though AutoClaw's final chunk
+carried a full `usage` object. `ForwardAutoclaw` now feeds each SSE chunk to
+`captureUsageFromSSEChunk` in the TTFT callback and stores the result in the
+request context, the same path the generic OpenAI executor uses. A live stream
+request then logged `prompt_tokens:1957, completion_tokens:2, cached_tokens:1792`
+instead of all zeroes.
 
 **Verification (offline, no credentials).**
 - `internal/handlers/oauth/autoclaw_test.go` — authorize round-trip against an
   httptest fake; pins the `zai-oauth-url` request and the returned auth URL.
+- `TestAutoclawCaptchaConfigProofAndRedirectURI` pins the captcha config
+  endpoint, proof forwarding, and the registered loopback redirect URI.
+- `TestAutoclawUserEmail` pins the post-login profile call that labels the
+  connection with the account email.
 - `internal/proxy/oauth/autoclaw_test.go` — refresh round-trip, agent-refresh
   fallback on `400002`, and rejection of a response without a rotated
   `refresh_token`.
 - `internal/proxy/executor/autoclaw_test.go` — signer determinism, body stream
   flag, `X-Request-Model` from the body, 401 retry on the overridable base URL,
   non-stream SSE fold, per-chunk flush, and connection `data.baseUrl` honoured
-  for both refresh and chat.
+  for both refresh and chat, and persistence of the rotated refresh token
+  through `PersistCredentials`.
 - `internal/integration/autoclaw_live_test.go` — live end-to-end through the
   real router and database with a fake upstream that rotates the refresh token
   and serves SSE; pins signed headers, the model header, the refresh body, and
@@ -58,6 +106,18 @@ answers 502 (`NoCompletionInStream`).
   context window verified from the app's catalog snapshot.
 - `web/e2e/autoclawProviderModels.test.ts` — the dashboard renders all six
   models and the catalog exposes `autoclaw` as OAuth-only (`authModes: [oauth]`).
+
+**Live verification.** With a real OAuth connection and the running gateway,
+`POST /api/models/test {"model":"autoclaw/zai_auto","kind":"llm"}` went from
+`{"status":406}` to `{"ok":true,"status":200}` after the body-shape fix. The
+system prompt and required fields were recovered from a local MITM capture of
+the desktop client; the capture and credentials were deleted afterwards.
+
+
+**Provider logo.** `web/public/providers/autoclaw.png` is the official AutoClaw
+app icon extracted from AutoClaw 2.6.1 (white glyph on dark rounded square),
+replacing the initial "AC" placeholder. The Svelte bundle was rebuilt so the
+embedded `web/dist` carries the corrected icon.
 
 **Capability source (REA-verified).** The six ids, names, and limits come from
 the installed AutoClaw 2.6.1 client's model-catalog snapshot, read statically

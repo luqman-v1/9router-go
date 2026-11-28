@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte'
+  import { onMount, tick, untrack } from 'svelte'
   import {
     api,
     normalizeLastError,
@@ -28,6 +28,7 @@
     oauthLoopbackCallbackURL,
     writeCallback,
   } from '../../lib/oauth-handoff'
+  import { runAutoclawCaptcha, type AutoclawCaptchaConfig } from '../../lib/autoclawCaptcha'
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
   import { copyToClipboard } from '../../lib/clipboard'
   import { parseModelIds } from '../../lib/bulk-models'
@@ -812,6 +813,8 @@
   let pkceState = $state('')
   let pkceRedirectUri = $state('')
   let autoclawDeviceId = $state('')
+  let autoclawCaptchaHost = $state<HTMLElement | null>(null)
+  let autoclawCaptchaBusy = $state(false)
   let gitlabBaseUrl = $state('')
   let gitlabClientId = $state('')
   let gitlabClientSecret = $state('')
@@ -2103,8 +2106,22 @@
     oauthError = null
     callbackInput = ''
     try {
+      let captchaProof: string | undefined
+      if (providerId === 'autoclaw') {
+        autoclawCaptchaBusy = true
+        showOAuthModal = true
+        await tick()
+        try {
+          const config = await api.autoclawCaptchaConfig()
+          if (config.enabled && config.region && config.prefix && config.sceneId && autoclawCaptchaHost) {
+            captchaProof = await runAutoclawCaptcha(config as AutoclawCaptchaConfig, autoclawCaptchaHost)
+          }
+        } finally {
+          autoclawCaptchaBusy = false
+        }
+      }
       const res = providerId === 'autoclaw'
-        ? await api.autoclawAuthorize(dashboardCallback())
+        ? await api.autoclawAuthorize(dashboardCallback(), captchaProof)
         : await api.authcodeAuthorize(providerId, dashboardCallback())
       oauthAuthUrl = res.url || res.authUrl
       pkceState = res.state || ''
@@ -5753,6 +5770,16 @@
       </div>
 
       <div class="space-y-4">
+        {#if providerId === 'autoclaw'}
+          <div
+            bind:this={autoclawCaptchaHost}
+            class="min-h-[40px]"
+            aria-label="AutoClaw security verification"
+          ></div>
+          {#if autoclawCaptchaBusy}
+            <p class="text-xs text-text-muted">Completing security verification…</p>
+          {/if}
+        {/if}
         {#if providerId === 'cursor'}
           <div class="space-y-2 p-3 border border-border rounded-md bg-sidebar/50">
             <p class="text-[11px] text-text-muted">Get it from Cursor IDE's <span class="font-mono">state.vscdb</span> (<span class="font-mono">cursorAuth/accessToken</span> + <span class="font-mono">storage.serviceMachineId</span>):</p>

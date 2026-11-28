@@ -635,6 +635,7 @@ func mountOAuthRoutes(r interface {
 	r.Get("/api/oauth/zed/authorize", oauthH.HandleZedAuthorize)
 	r.Post("/api/oauth/zed/exchange", oauthH.HandleZedExchange)
 	r.Get("/api/oauth/autoclaw/authorize", oauthH.HandleAutoclawAuthorize)
+	r.Get("/api/oauth/autoclaw/captcha-config", oauthH.HandleAutoclawCaptchaConfig)
 	r.Post("/api/oauth/autoclaw/exchange", oauthH.HandleAutoclawExchange)
 	r.Post("/api/oauth/device/start", oauthH.HandleDeviceStart)
 	r.Post("/api/oauth/device/poll", oauthH.HandleDevicePoll)

@@ -3,6 +3,7 @@ package executor
 import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/oauth"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,29 +54,43 @@ func TestAutoclawSignerHeaders(t *testing.T) {
 	if headers["x-channel"] != "official" {
 		t.Errorf("x-channel = %q", headers["x-channel"])
 	}
-	if headers["x-lang"] != "zh-CN" {
-		t.Errorf("x-lang = %q", headers["x-lang"])
+	if headers["x-lang"] != "en" {
+		t.Errorf("x-lang = %q, want en", headers["x-lang"])
 	}
-	if headers["Authorization"] != "Bearer at-1" {
-		t.Errorf("authorization = %q, want Bearer at-1", headers["Authorization"])
+	if headers["X-Authorization"] != "Bearer at-1" {
+		t.Errorf("X-Authorization = %q, want Bearer at-1", headers["X-Authorization"])
+	}
+	if headers["X-Agent-Id"] != "main" {
+		t.Errorf("X-Agent-Id = %q, want main", headers["X-Agent-Id"])
+	}
+	if headers["x-return-billing"] != "true" {
+		t.Errorf("x-return-billing = %q, want true", headers["x-return-billing"])
+	}
+	if headers["x_trace_id"] != "autoclaw-desktop" {
+		t.Errorf("x_trace_id = %q, want autoclaw-desktop", headers["x_trace_id"])
+	}
+	if headers["User-Agent"] != "node" {
+		t.Errorf("User-Agent = %q, want node", headers["User-Agent"])
 	}
 	if headers["X-Request-Model"] != "zai_glm-5.3-flash" {
 		t.Errorf("X-Request-Model = %q, want zai_glm-5.3-flash", headers["X-Request-Model"])
 	}
-	if headers["Accept"] != "text/event-stream" {
-		t.Errorf("stream Accept = %q, want text/event-stream", headers["Accept"])
+	// The desktop client keeps application/json even on streaming calls;
+	// text/event-stream here makes the identity gateway answer 406.
+	if headers["Accept"] != "application/json" {
+		t.Errorf("stream Accept = %q, want application/json", headers["Accept"])
 	}
-	if headers["Accept-Encoding"] != "identity" {
-		t.Errorf("stream Accept-Encoding = %q, want identity", headers["Accept-Encoding"])
+	if headers["Accept-Encoding"] != "br, gzip, deflate" {
+		t.Errorf("stream Accept-Encoding = %q, want br, gzip, deflate", headers["Accept-Encoding"])
 	}
 
-	// No stream: Accept stays */*, no Accept-Encoding forced.
+	// Non-stream uses the same captured header set.
 	headers = autoclawHeaders("", false, "", "app-key-1")
-	if headers["Accept"] != "*/*" {
-		t.Errorf("non-stream Accept = %q, want */*", headers["Accept"])
+	if headers["Accept"] != "application/json" {
+		t.Errorf("non-stream Accept = %q, want application/json", headers["Accept"])
 	}
-	if _, ok := headers["Accept-Encoding"]; ok {
-		t.Errorf("non-stream should not force Accept-Encoding, got %q", headers["Accept-Encoding"])
+	if headers["Accept-Encoding"] != "br, gzip, deflate" {
+		t.Errorf("non-stream Accept-Encoding = %q, want br, gzip, deflate", headers["Accept-Encoding"])
 	}
 }
 
@@ -129,7 +144,7 @@ func TestAutoclawExecutorWireShape(t *testing.T) {
 		}
 		// Chat endpoint
 		gotModelHeader = r.Header.Get("X-Request-Model")
-		gotAuth = r.Header.Get("Authorization")
+		gotAuth = r.Header.Get("X-Authorization")
 		var b map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 			t.Errorf("decode body: %v", err)
@@ -458,5 +473,49 @@ func TestAutoclawExecutorHonoursConnectionBaseURL(t *testing.T) {
 	}
 	if chatHits != 1 || refreshHits != 1 {
 		t.Errorf("hits chat=%d refresh=%d, want 1/1 on the connection base URL", chatHits, refreshHits)
+	}
+}
+
+func TestAutoclawPersistsRotatedRefreshToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/userapi/v1/refresh" {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"Bearer at-rotated","refresh_token":"Bearer rt-rotated"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"ok"}}]}` + "\n\n"))
+	}))
+	defer srv.Close()
+
+	oldBase := autoclawExecutorBaseURL
+	autoclawExecutorBaseURL = srv.URL
+	defer func() { autoclawExecutorBaseURL = oldBase }()
+	oldRefreshBase := oauth.SetAutoclawBaseURLForTest(srv.URL)
+	defer func() { oauth.SetAutoclawBaseURLForTest(oldRefreshBase) }()
+
+	var persistedAccess, persistedRefresh, persistedID string
+	req := &Request{
+		Ctx:          t.Context(),
+		Client:       http.DefaultClient,
+		Provider:     "autoclaw",
+		APIKey:       "rt-rotation-unique|device-9|app-key-1",
+		Body:         []byte(`{"model":"zai_auto","stream":false}`),
+		ConnectionID: "autoclaw-conn-1",
+		PersistCredentials: func(_ context.Context, id, access, refresh string) error {
+			persistedID, persistedAccess, persistedRefresh = id, access, refresh
+			return nil
+		},
+	}
+	if err := ForwardAutoclaw(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("ForwardAutoclaw: %v", err)
+	}
+	if persistedID != "autoclaw-conn-1" {
+		t.Errorf("persisted connection id = %q", persistedID)
+	}
+	if persistedRefresh != "Bearer rt-rotated" {
+		t.Errorf("persisted refresh token = %q, want rotated token", persistedRefresh)
+	}
+	if persistedAccess != "Bearer at-rotated" {
+		t.Errorf("persisted access token = %q, want rotated token", persistedAccess)
 	}
 }
