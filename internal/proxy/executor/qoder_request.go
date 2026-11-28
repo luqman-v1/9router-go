@@ -333,16 +333,18 @@ func qoderModelKey(model string) string {
 
 // qoderAsAgentSDK rewrites Claude Code's identity line to the Claude Agent SDK
 // form Qoder accepts. Port of upstream's asAgentSDK.
+var qoderAsAgentSDKRe = regexp.MustCompile(`You\s+are\s+Claude\s+Code,\s+Anthropic's\s+official\s+CLI\s+for\s+Claude(?:,\s+running\s+within\s+the\s+Claude\s+Agent\s+SDK)?\.`)
+
 func qoderAsAgentSDK(text string) string {
-	re := regexp.MustCompile(`You\s+are\s+Claude\s+Code,\s+Anthropic's\s+official\s+CLI\s+for\s+Claude(?:,\s+running\s+within\s+the\s+Claude\s+Agent\s+SDK)?\.`)
-	return re.ReplaceAllString(text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.")
+	return qoderAsAgentSDKRe.ReplaceAllString(text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.")
 }
 
 // qoderHarnessComma inserts a comma before a harness verb so Qoder's queue
 // does not stall. Port of upstream's harnessComma.
+var qoderHarnessCommaRe = regexp.MustCompile(`(?i)(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b`)
+
 func qoderHarnessComma(text string) string {
-	re := regexp.MustCompile(`(?i)(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b`)
-	return re.ReplaceAllString(text, "$1, $2")
+	return qoderHarnessCommaRe.ReplaceAllString(text, "$1, $2")
 }
 
 // qoderNormalizedMessages hoists role:system out of the array (Qoder rejects
