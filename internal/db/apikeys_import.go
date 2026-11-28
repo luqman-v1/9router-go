@@ -121,13 +121,19 @@ func (r *Repo) importApiKeyTx(ctx context.Context, tx *sql.Tx, id string, p Impo
 	}
 
 	// The secret decides next. A body replayed without its id mints a fresh one
-	// above, so the secret is what makes the retry idempotent: the row that
-	// already holds it is returned untouched, whatever id this call minted.
+	// above, so the secret is what makes that retry idempotent: the row that
+	// already holds it is returned untouched. A caller that supplied an explicit
+	// id is asking for that id, so the same secret under a different id is a
+	// duplicate it must resolve, not a silent redirect (OmniRoute answers 409
+	// for a duplicate secret).
 	secretID, err := importLookupSecret(ctx, tx, p.Key)
 	if err != nil {
 		return ImportApiKeyResult{}, nil, err
 	}
 	if secretID != "" {
+		if p.ID != "" && secretID != p.ID {
+			return ImportApiKeyResult{}, nil, fmt.Errorf("import api key: %w: key already belongs to %s", ErrApiKeyImportConflict, secretID)
+		}
 		return r.importExisting(ctx, tx, secretID)
 	}
 
@@ -201,10 +207,14 @@ func (r *Repo) importInsertRow(ctx context.Context, tx *sql.Tx, id string, p Imp
 	if p.MachineID != "" {
 		machineVal = p.MachineID
 	}
+	// isActive is a `?` bound to true rather than a literal 1: apiKeys.isActive
+	// is INTEGER on SQLite and BOOLEAN on PostgreSQL, and the literal 1 is an
+	// integer expression PostgreSQL refuses to coerce to boolean. The binding
+	// stores 1 on SQLite and TRUE on PostgreSQL.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt, keyHash, lookupHash, keyDisplay)
-		 VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-		id, hashedKeySentinel(lookup), nameVal, machineVal, now, verifier, lookup, keikey.Mask(p.Key),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, hashedKeySentinel(lookup), nameVal, machineVal, true, now, verifier, lookup, keikey.Mask(p.Key),
 	); err != nil {
 		return nil, fmt.Errorf("import api key %s: insert: %w", id, err)
 	}

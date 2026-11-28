@@ -211,7 +211,6 @@ func TestImportApiKeySameSecretNewIDIsIdempotent(t *testing.T) {
 	}
 
 	second, err := r.ImportApiKey(context.Background(), ImportApiKeyParams{
-		ID:   uuid.NewString(),
 		Key:  importTestKey,
 		Name: "Renamed by the replay",
 	})
@@ -219,7 +218,7 @@ func TestImportApiKeySameSecretNewIDIsIdempotent(t *testing.T) {
 		t.Fatalf("second ImportApiKey: %v", err)
 	}
 	if second.Created {
-		t.Fatal("replay with a fresh id reported Created = true")
+		t.Fatal("replay without an id reported Created = true")
 	}
 	if second.Key.ID != first.Key.ID {
 		t.Fatalf("replay returned id %s, want the original %s", second.Key.ID, first.Key.ID)
@@ -234,6 +233,33 @@ func TestImportApiKeySameSecretNewIDIsIdempotent(t *testing.T) {
 	}
 	if len(keys) != 1 {
 		t.Fatalf("replay left %d rows, want 1", len(keys))
+	}
+}
+
+// TestImportApiKeyExplicitIDDuplicateSecretIsConflict is the OmniRoute parity
+// case: a caller that supplied an explicit id is asking for that id, so the
+// same secret already stored under a different id is a duplicate it must
+// resolve, not a silent redirect to the other row.
+func TestImportApiKeyExplicitIDDuplicateSecretIsConflict(t *testing.T) {
+	r := openEphemeralSchemaDB(t)
+	first := mustImport(t, r, importTestKey)
+
+	_, err := r.ImportApiKey(context.Background(), ImportApiKeyParams{
+		ID:  uuid.NewString(),
+		Key: importTestKey,
+	})
+	if !errors.Is(err, ErrApiKeyImportConflict) {
+		t.Fatalf("ImportApiKey error = %v, want ErrApiKeyImportConflict", err)
+	}
+	if got := mustGetKey(t, r, first.Key.ID); got == nil {
+		t.Fatal("conflict removed the original row")
+	}
+	keys, err := r.GetApiKeys()
+	if err != nil {
+		t.Fatalf("GetApiKeys: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("conflict left %d rows, want 1", len(keys))
 	}
 }
 
