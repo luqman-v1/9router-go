@@ -86,7 +86,8 @@ func kindFromEndpoint(endpoint string) string {
 		return "tts"
 	case strings.HasPrefix(endpoint, "/v1/audio/") || strings.HasPrefix(endpoint, "/audio/"):
 		return "stt"
-	case endpoint == "/v1/embeddings" || endpoint == "/embeddings":
+	case endpoint == "/v1/embeddings" || endpoint == "/embeddings" ||
+		endpoint == "/v1/multimodal-embeddings" || endpoint == "/multimodal-embeddings":
 		return "embedding"
 	case endpoint == "/v1/search" || endpoint == "/search":
 		return "webSearch"
