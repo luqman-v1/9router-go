@@ -132,8 +132,12 @@ func TestBuildCacheKey_SeparatesResponseShapingParameters(t *testing.T) {
 
 	// A request that changes nothing must keep producing the same key, or the
 	// cache would never hit.
-	if BuildCacheKey("", base(), nil) != BuildCacheKey("", base(), nil) {
-		t.Error("cache key is not stable for identical requests")
+	stable := BuildCacheKey("", base(), nil)
+	for range 10 {
+		if BuildCacheKey("", base(), nil) != stable {
+			t.Error("cache key is not stable for identical requests")
+			break
+		}
 	}
 }
 
