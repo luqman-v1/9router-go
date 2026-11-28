@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { Plus, Trash2 } from 'lucide-svelte'
+  import { getAuthHeaders } from '../../api/client'
   import {
     PI_CONTEXT_WINDOWS,
     PI_MAX_TOKENS,
@@ -35,16 +36,26 @@
     }
 
     try {
-      const res = await fetch('/api/models')
+      const res = await fetch('/api/models', { headers: getAuthHeaders() })
       if (res.ok) {
         const data = await res.json()
-        const list = Array.isArray(data?.models) ? data.models : []
+        // The listing publishes the same array under both keys; items carry
+        // `capabilities` + `context_length`/`max_completion_tokens`, not the
+        // `caps` shape the Pi entry format uses.
+        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : []
         const info: Record<string, any> = {}
         const vals: string[] = []
         for (const m of list) {
           const key = m?.routedModel || m?.fullModel || m?.id
           if (!key) continue
-          info[key] = { ...(m?.caps || {}), thinking_levels: m?.thinking_levels }
+          const rawCaps = m?.capabilities || m?.caps || {}
+          info[key] = {
+            vision: rawCaps.vision === true,
+            reasoning: rawCaps.reasoning === true,
+            contextWindow: rawCaps.contextWindow ?? rawCaps.context_window ?? m?.context_length,
+            maxOutput: rawCaps.maxOutput ?? rawCaps.max_output ?? m?.max_completion_tokens,
+            thinking_levels: m?.thinking_levels,
+          }
           vals.push(key)
         }
         modelInfo = info
@@ -105,7 +116,7 @@
 
 <div class="space-y-3">
   <div class="flex items-center gap-2">
-    <select bind:value={toAdd} class="flex-1 px-2 py-1.5 rounded-lg bg-surface-2 border border-border text-xs">
+    <select bind:value={toAdd} data-testid="pi-model-select" class="flex-1 px-2 py-1.5 rounded-lg bg-surface-2 border border-border text-xs">
       <option value="">Add model…</option>
       {#each availableModels as m}
         {#if !selectedModels.includes(m)}
