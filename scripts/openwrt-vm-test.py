@@ -197,7 +197,19 @@ def main():
 
     failures = []
 
-    def check(name, ok, out):
+    class BootFailure(Exception):
+        """Raised by a fatal check to abort the boot/lifecycle sequence.
+
+        A boot or login that never reached its prompt means none of the
+        post-login assertions can run, so there is no point walking the rest of
+        the sequence — but the failure still has to reach the summary. Raising
+        here (instead of `return`-ing out of main) unwinds through the `finally`
+        teardown and lands in the summary, which reports the failure and exits
+        non-zero. Without this the job reported success while nothing was
+        actually tested.
+        """
+
+    def check(name, ok, out, fatal=False):
         status = "PASS" if ok else "FAIL"
         print(f"[{status}] {name}", flush=True)
         if not ok:
@@ -205,21 +217,21 @@ def main():
             print("---- output ----")
             print(out[-3000:])
             print("----------------", flush=True)
+            if fatal:
+                raise BootFailure(name)
 
     try:
         # --- boot to login ---
         ok = ser.wait("login:", SERIAL_TIMEOUT)
-        check("boot to login prompt", ok, ser.dump())
-        if not ok:
-            return
+        # Fail-closed: without a login prompt nothing downstream can be tested,
+        # so this aborts the sequence and reports the failure (see BootFailure).
+        check("boot to login prompt", ok, ser.dump(), fatal=True)
 
         ser.send("root")
         # Wait for the root prompt (root@host:~# ), not a bare '#', so a stray
         # '#' in the boot banner cannot be mistaken for a successful login.
         ok = ser.wait("root@", CMD_TIMEOUT)
-        check("root login (no password)", ok, ser.dump())
-        if not ok:
-            return
+        check("root login (no password)", ok, ser.dump(), fatal=True)
         # The login prompt (root@OpenWrt:~# ) is still partly in the buffer.
         # Flush it so the first command's wait('#') does not match the stale
         # prompt and return before the command has run.
@@ -354,6 +366,12 @@ def main():
         ok, out = ser.command(
             "test -f /opt/9router/db/data.sqlite && echo DBKEPT", "#")
         check("removal keeps the database", ok and "DBKEPT" in out, out)
+
+    except BootFailure:
+        # The summary below reports the failure and exits non-zero; this handler
+        # exists so the `finally` teardown runs and control reaches the summary
+        # instead of unwinding out of main with no report.
+        pass
 
     finally:
         proc.terminate()
