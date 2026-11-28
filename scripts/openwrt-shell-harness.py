@@ -489,23 +489,30 @@ def main():
         crontab = os.path.join(crontab_dir, "root")
         write(crontab, "*/5 * * * * /usr/bin/operator-job\n", 0o644)
 
-        def init_command(*args):
+        def init_command(action, *args):
+            # Dispatch the way rc.common does, not by calling the function
+            # directly: rc.common sets `initscript=$1; action=$2; shift 2`,
+            # then calls `$action "$@"`, so the command name is shifted away
+            # and the requested state lands in $1. The dummy initscript name
+            # and the shift reproduce that here; without them a `sync_cron`
+            # that reads `$2` would see the state and pass for the wrong
+            # reason, which is exactly the bug this case exists to catch.
             path = os.path.join(tmp, "cmd.sh")
             write(path, prelude + _injected("20130", 1) + retarget(body)
-                  + "\n%s\n" % " ".join(args))
-            return run([sh, path], env, cwd=tmp)
+                  + '\ninitscript="$1"\naction="$2"\nshift 2\n"$action" "$@"\n')
+            return run([sh, path, "9router-go", action] + list(args), env, cwd=tmp)
 
-        init_command("sync_cron", "sync_cron", "1")
+        init_command("sync_cron", "1")
         lines = [l for l in open(crontab) if "9router-go-healthcheck" in l]
         case("sync_cron 1 installs exactly one probe line", len(lines) == 1,
              "lines: %r" % (lines,))
-        init_command("sync_cron", "sync_cron", "1")
+        init_command("sync_cron", "1")
         lines = [l for l in open(crontab) if "9router-go-healthcheck" in l]
         case("sync_cron 1 is idempotent", len(lines) == 1, "lines: %r" % (lines,))
         case("sync_cron keeps the operator's own cron jobs",
              "operator-job" in open(crontab).read(), "operator job lost")
         installed = sum(1 for l in open(crontab) if "9router-go-healthcheck" in l)
-        init_command("sync_cron", "sync_cron", "0")
+        init_command("sync_cron", "0")
         case("sync_cron 0 removes the probe line",
              installed == 1 and "9router-go-healthcheck" not in open(crontab).read(),
              "installed=%d, remaining=%r" % (

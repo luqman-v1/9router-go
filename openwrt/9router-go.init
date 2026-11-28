@@ -170,10 +170,11 @@ stop_service() {
 	return 0
 }
 
-# sync_cron is the rc.common entry point: `$action "$@"` means the requested
-# state arrives as $2, with the command name in $1.
+# sync_cron is the rc.common entry point. rc.common does
+# `initscript=$1; action=$2; shift 2; …; $action "$@"`, so the command name is
+# shifted away before the call and the requested state lands in $1.
 sync_cron() {
-	cron_sync "$2"
+	cron_sync "$1"
 }
 # cron_sync installs (want=1) or removes (want=0) the healthcheck cron line.
 # It compares the result with the current table first: writing /etc/crontabs/root
