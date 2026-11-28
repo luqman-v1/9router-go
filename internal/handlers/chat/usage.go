@@ -163,6 +163,16 @@ func (h *ChatHandler) LogFailure(
 			failurePayload["attempts"] = attempts
 		}
 	}
+	// The settings read decides whether a row is written at all, so the mask
+	// runs only then: observability "off" pays no scan for a payload that is
+	// never stored. A failed request is the one an operator re-reads most, and
+	// its row goes to disk like any other — mask the pasted credentials out of
+	// it before the marshal.
+	logDetail := h.shouldLogRequestDetail(ctx, true)
+	if logDetail {
+		failurePayload = redactStoredSecrets(failurePayload)
+	}
+
 	reqData, marshalErr := json.Marshal(failurePayload)
 	if marshalErr != nil {
 		return
@@ -175,8 +185,6 @@ func (h *ChatHandler) LogFailure(
 	failureModel, failureConn := info.Model, info.ConnectionID
 	failureData := string(reqData)
 	failureAPIKey, failureEndpoint := info.APIKey, info.Endpoint
-
-	logDetail := h.shouldLogRequestDetail(ctx, true)
 
 	enqueueUsageWrite(func() {
 		if logDetail {
@@ -491,13 +499,21 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 			detailPayload["attempts"] = attempts
 		}
 	}
+	// The settings read decides the row's fate: the mask runs only when a row
+	// will actually be written, so "off"/"errors_only" on a success pays no
+	// scan for a payload that is never stored. The row goes to disk, so a
+	// credential the client pasted is masked out of it before the marshal.
+	logDetail := h.shouldLogRequestDetail(ctx, false)
+	if logDetail {
+		detailPayload = redactStoredSecrets(detailPayload)
+	}
 	reqData, err := json.Marshal(detailPayload)
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
 		return
 	}
-	// The settings read decides the row's fate now; only the write leaves.
-	if h.shouldLogRequestDetail(ctx, false) {
+	// Only the write leaves.
+	if logDetail {
 		detailRepo := h.Repo
 		detailID, detailProvider := reqID, info.Provider
 		detailModel, detailConn := info.Model, info.ConnectionID
