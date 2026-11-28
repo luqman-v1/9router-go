@@ -64,7 +64,10 @@ func zcodeIdentityError() error {
 }
 
 const (
-	zcodeAppVersion       = "3.16.3"
+	// The plan gateway silently acknowledges model requests that carry a
+	// pinned x-zcode-app-version; an unrecognised value dispatches normally.
+	// Verified live 2026-11-28.
+	zcodeAppVersion       = "unknown"
 	zcodeReleaseChannel   = "production"
 	zcodeSessionPrefix    = "session_"
 	zcodeDefaultMaxTokens = 8192
@@ -100,7 +103,7 @@ func zcodeSDKUserAgent() string {
 	if ua := zcodeIdentityValues().SDKUserAgent; ua != "" {
 		return ua
 	}
-	return "ZCode/" + zcodeAppVer() + " runtime/go"
+	return "ZCode/" + zcodeAppVer()
 }
 
 func zcodeRandomHex(n int) string {

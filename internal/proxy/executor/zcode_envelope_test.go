@@ -121,3 +121,25 @@ func TestZcodeIsBareAck_excludesRealResponses(t *testing.T) {
 		t.Error("string-shaped code 0 must also be recognised as a bare ACK")
 	}
 }
+
+// The plan gateway silently acknowledges model requests carrying a pinned
+// x-zcode-app-version. A default pinned to "3.16.3" therefore turns every
+// completion into an empty envelope, so the default must stay unrecognised.
+func TestZcodePlanRequestHeadersAreNotPinned(t *testing.T) {
+	if zcodeAppVersion != "unknown" {
+		t.Fatalf("zcodeAppVersion = %q, want unknown", zcodeAppVersion)
+	}
+	if got := zcodeAppVer(); got != "unknown" {
+		t.Fatalf("zcodeAppVer() = %q, want unknown", got)
+	}
+	if got := zcodeSDKUserAgent(); got != "ZCode/unknown" {
+		t.Fatalf("zcodeSDKUserAgent() = %q, want ZCode/unknown", got)
+	}
+	h := zcodeLLMHeaders("s", "r", "tr", "q")
+	if got := h["x-zcode-app-version"]; got != "unknown" {
+		t.Fatalf("x-zcode-app-version = %q, want unknown", got)
+	}
+	if got := h["user-agent"]; got != "ZCode/unknown" {
+		t.Fatalf("user-agent = %q, want ZCode/unknown", got)
+	}
+}
