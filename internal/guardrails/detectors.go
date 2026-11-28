@@ -16,6 +16,10 @@ type detector struct {
 	// passes Luhn catches real card numbers while leaving every 16-digit id
 	// alone.
 	validate func(match string) bool
+	// redact replaces the matched span when the action is mask. It defaults
+	// to the flat mask; a detector whose match carries a label it wants to
+	// keep supplies one instead.
+	redact func(match string) string
 }
 
 // redactMask is the replacement written over a masked finding. It preserves the
@@ -76,6 +80,28 @@ var injectionDetectors = []detector{
 	{name: "safety_bypass", re: safetyBypassRe, entity: "SAFETY_BYPASS", severity: SeverityHigh},
 }
 
+// secretDetectors are the credential detectors.
+//
+// Every pattern is anchored on something only a live credential carries: a
+// provider's own key prefix, or a label that names the field. That is the same
+// discipline the PII set follows, and for the same reason — a bare 20-character
+// token fires on every base64 blob in a diff, and a detector the operator has
+// to switch off after one false positive is a detector nobody runs. The
+// labelled forms keep their label when masked (redactKeepLabel) so a rewritten
+// prompt still says which setting lost its value.
+var secretDetectors = []detector{
+	{name: "openai_key", re: openAIKeyRe, entity: "OPENAI_API_KEY", severity: SeverityHigh},
+	{name: "anthropic_key", re: anthropicKeyRe, entity: "ANTHROPIC_API_KEY", severity: SeverityHigh},
+	{name: "openrouter_key", re: openRouterKeyRe, entity: "OPENROUTER_API_KEY", severity: SeverityHigh},
+	{name: "google_api_key", re: googleAPIKeyRe, entity: "GOOGLE_API_KEY", severity: SeverityHigh},
+	{name: "huggingface_token", re: hfTokenRe, entity: "HUGGINGFACE_TOKEN", severity: SeverityHigh},
+	{name: "github_token", re: githubTokenRe, entity: "GITHUB_TOKEN", severity: SeverityHigh},
+	{name: "slack_token", re: slackTokenRe, entity: "SLACK_TOKEN", severity: SeverityHigh},
+	{name: "aws_access_key_id", re: awsAccessKeyRe, entity: "AWS_ACCESS_KEY_ID", severity: SeverityHigh},
+	{name: "bearer_token", re: bearerTokenRe, entity: "BEARER_TOKEN", severity: SeverityHigh, redact: redactKeepLabel},
+	{name: "labelled_secret", re: labelledSecretRe, entity: "SECRET_VALUE", severity: SeverityMedium, redact: redactKeepLabel},
+}
+
 var (
 	// The local part is anchored so a source-code symbol or an import path
 	// (user@example.com appears in READMEs and fixtures constantly) does not
@@ -115,7 +141,55 @@ var (
 	// ("bypass := safety.filter(v)"), and treating those as jailbreak attempts
 	// would block ordinary development.
 	safetyBypassRe = regexp.MustCompile(`(?i)(?:\A|[.!?;]\s*|\b(?:please|now|then)\s+)\b(?:bypass|disable|turn\s+off|circumvent|remove)\b[^.\n]{0,30}\b(?:safety|filter|filters|guardrail|guardrails|restriction|restrictions|content\s+polic\w*|moderation)\b`)
+
+	// OpenAI, Anthropic and OpenRouter keys all share the sk- prefix; the
+	// segment after it is base62 with dashes and underscores, and no key is
+	// shorter than 20 characters of it.
+	openAIKeyRe     = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`)
+	anthropicKeyRe  = regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}\b`)
+	openRouterKeyRe = regexp.MustCompile(`\bsk-or-v1-[a-f0-9]{32,}\b`)
+	// Google API keys: AIza followed by exactly 35 base62url characters.
+	googleAPIKeyRe = regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)
+	// Hugging Face user access tokens.
+	hfTokenRe = regexp.MustCompile(`\bhf_[A-Za-z0-9]{34,}\b`)
+	// GitHub personal access, OAuth, user-to-server and refresh tokens.
+	githubTokenRe = regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b`)
+	// Slack bot/user/app tokens.
+	slackTokenRe = regexp.MustCompile(`\bxox[bapr]-[A-Za-z0-9-]{10,}\b`)
+	// AWS access key ids: AKIA (long-term) and ASIA (temporary STS).
+	awsAccessKeyRe = regexp.MustCompile(`\bA[KS]IA[0-9A-Z]{16}\b`)
+
+	// bearerTokenRe keeps the scheme so a masked header still reads as a
+	// header. Only a 16+ character credential behind the scheme is a match;
+	// "Bearer abc" in prose is not.
+	bearerTokenRe = regexp.MustCompile(`(?i)(\bbearer\s+)[A-Za-z0-9._~+/-]{16,}`)
+	// labelledSecretRe matches a key/value assignment whose key names a
+	// credential field. Group 1 is the label through the separator; group 2 is
+	// the value, which is what redactKeepLabel masks. The value class omits
+	// quotes, braces and $ so an env placeholder (${OPENAI_API_KEY}) or a
+	// code expression (os.Getenv) never reaches the {12,} length gate.
+	labelledSecretRe = regexp.MustCompile(`(?i)\b((?:api[_-]?key|apikey|secret[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?token|password|passwd)\s*["']?\s*[:=]\s*["']?)([A-Za-z0-9+/._-]{12,})`)
 )
+
+// redactKeepLabel masks only a detector match's value, keeping the label that
+// introduces it. The redacted text still reads as a header or an assignment
+// ("Authorization: Bearer [REDACTED]"), which is what a reader debugging a
+// masked prompt needs. It returns the flat mask when the match carries no
+// group, so a pattern edited later degrades instead of leaking.
+func redactKeepLabel(match string) string {
+	// len() on a nil slice is zero, so the nil case is already covered; the
+	// short-circuit keeps loc[3] unreachable when the group did not match.
+	loc := labelledSecretRe.FindStringSubmatchIndex(match)
+	if len(loc) < 6 {
+		loc = bearerTokenRe.FindStringSubmatchIndex(match)
+	}
+	if len(loc) < 4 || loc[3] < 0 {
+		return redactMask
+	}
+	// Group 1 is the label through its separator, and it starts the match, so
+	// its end is the first byte the mask replaces.
+	return match[:loc[3]] + redactMask
+}
 
 // run applies one detector set to text and returns its findings.
 func run(detectors []detector, text string) []Finding {
@@ -125,13 +199,17 @@ func run(detectors []detector, text string) []Finding {
 			if d.validate != nil && !d.validate(text[loc[0]:loc[1]]) {
 				continue
 			}
+			redacted := redactMask
+			if d.redact != nil {
+				redacted = d.redact(text[loc[0]:loc[1]])
+			}
 			out = append(out, Finding{
 				Detector: d.name,
 				Entity:   d.entity,
 				Start:    loc[0],
 				End:      loc[1],
 				Severity: d.severity,
-				Redacted: redactMask,
+				Redacted: redacted,
 			})
 		}
 	}
