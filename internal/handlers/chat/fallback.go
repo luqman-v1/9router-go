@@ -37,6 +37,58 @@ const StatusClientClosedRequest = 499
 // Single-sourced so the combo and account-fallback paths cannot drift apart.
 const clientClosedBody = `{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`
 
+// persistAutoclawCredentials writes the tokens rotated during a chat request
+// back to the connection row. AutoClaw rotates refresh_token on every call;
+// leaving the consumed token on the row breaks the next request once the
+// refresher's dedup cache expires.
+func (h *ChatHandler) persistAutoclawCredentials(ctx context.Context, connectionID, accessToken, refreshToken string) error {
+	if h.Repo == nil || connectionID == "" {
+		return nil
+	}
+	conn, err := h.Repo.GetProviderConnectionByID(connectionID)
+	if err != nil || conn == nil {
+		return fmt.Errorf("load connection %s: %w", connectionID, err)
+	}
+	raw := map[string]any{}
+	if conn.Data != "" {
+		if err := json.Unmarshal([]byte(conn.Data), &raw); err != nil {
+			return fmt.Errorf("decode connection data: %w", err)
+		}
+	}
+	deviceID := ""
+	appKey := ""
+	if old, _ := raw["apiKey"].(string); old != "" {
+		if parts := strings.SplitN(old, "|", 3); len(parts) > 1 {
+			deviceID = strings.TrimSpace(parts[1])
+		}
+		if parts := strings.SplitN(old, "|", 3); len(parts) > 2 {
+			appKey = strings.TrimSpace(parts[2])
+		}
+	}
+	// Older rows stored an access token in apiKey, so the pipe format is
+	// absent. Recover the device id from providerSpecificData and fall back
+	// to the client's constant app key rather than writing "bare||".
+	if deviceID == "" {
+		if specific, ok := raw["providerSpecificData"].(map[string]any); ok {
+			deviceID, _ = specific["deviceId"].(string)
+		}
+	}
+	if appKey == "" {
+		appKey = "38d2391985e2369a5fb8227d8e6cd5e5"
+	}
+	// The refreshed token arrives as "Bearer <jwt>"; the credential format
+	// stores the bare token in apiKey's first field.
+	bare := strings.TrimPrefix(refreshToken, "Bearer ")
+	raw["apiKey"] = bare + "|" + deviceID + "|" + appKey
+	raw["refreshToken"] = bare
+	raw["accessToken"] = accessToken
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("encode connection data: %w", err)
+	}
+	return h.Repo.UpdateConnectionData(ctx, connectionID, string(encoded))
+}
+
 // borrowZenKeyForGo returns the identity and key of an active opencode-zen
 // connection for the paid go lane, which shares the same backend account.
 // Only used when no go connection exists at all; resolution goes through the
@@ -1293,6 +1345,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		// when no repo (tests), so executors fall back to memory only.
 		if h.Repo != nil {
 			execReq.Leases = h.Repo
+		}
+		if provider == "autoclaw" && h.Repo != nil {
+			execReq.PersistCredentials = h.persistAutoclawCredentials
 		}
 		fwdErr = exec(w, execReq)
 		execReq.Release()

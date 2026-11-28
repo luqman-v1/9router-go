@@ -115,6 +115,23 @@ const oauthEndpoints = {
       `/api/oauth/authcode/authorize?${q.toString()}`
     )
   },
+  autoclawCaptchaConfig: () =>
+    request<{ enabled: boolean; region?: string; prefix?: string; sceneId?: string }>(
+      '/api/oauth/autoclaw/captcha-config'
+    ),
+  autoclawAuthorize: (redirectUri?: string, captchaProof?: string) => {
+    const q = new URLSearchParams()
+    if (redirectUri) q.set('redirect_uri', redirectUri)
+    if (captchaProof) q.set('captcha_proof', captchaProof)
+    return request<{ url: string; authUrl: string; state: string; redirectUri: string; deviceId: string }>(
+      `/api/oauth/autoclaw/authorize?${q.toString()}`
+    )
+  },
+  autoclawExchange: (payload: { code: string; state?: string; redirectUri?: string; deviceId?: string; name?: string }) =>
+    request<{ status: string; connectionId: string; error?: string }>('/api/oauth/autoclaw/exchange', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   authcodeExchange: (payload: { provider: string; code: string; redirectUri?: string; state?: string; name?: string }) =>
     request<{ status: string; connectionId: string; error?: string }>('/api/oauth/authcode/exchange', {
       method: 'POST',

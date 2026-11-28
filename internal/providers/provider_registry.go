@@ -863,6 +863,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://www.qwencloud.com",
 		Notice:       &Notice{APIKeyURL: "https://home.qwencloud.com/api-keys"},
 	},
+	"autoclaw": {
+		ID:           "autoclaw",
+		Name:         "Autoclaw",
+		Alias:        "au",
+		Category:     CategoryOAuth,
+		Color:        "#8B3DFE",
+		Icon:         "cloud",
+		AuthModes:    []string{"oauth"},
+		ServiceKinds: []string{"llm"},
+		Website:      "https://autoclaw.z.ai",
+		Notice:       &Notice{Text: "Sign in with your Z.ai account to use AutoClaw (GLM models) via its native desktop protocol. The access token is rotated on demand (lazily, on the request path).", SignupURL: "https://autoclaw.z.ai"},
+	},
 	"anthropic": {
 		ID:            "anthropic",
 		Name:          "Anthropic",

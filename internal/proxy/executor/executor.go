@@ -53,6 +53,11 @@ type Request struct {
 	// providers (agy-acp). Set by the chat handler so the executor can
 	// refresh/reference an antigravity connection without owning the DB.
 	ACPCredentials func(ctx context.Context, connData map[string]any, connectionID string) (accessToken, refreshToken string, expiresAt time.Time, err error)
+	// PersistCredentials writes credentials rotated during a request back to
+	// the connection row. Provider-scoped: AutoClaw rotates refresh_token on
+	// every refresh, and reusing the old one breaks the next request once the
+	// dedup cache expires.
+	PersistCredentials func(ctx context.Context, connectionID string, accessToken, refreshToken string) error
 	// OnUpstreamError is an optional provider-scoped retry hook. It receives
 	// the upstream status and a bounded copy of the error body and returns a
 	// rewritten request body when the refusal is caused by a fixable param
