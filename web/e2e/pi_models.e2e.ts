@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, test } from 'bun:test'
 import { startDashboard, type Dashboard } from './harness'
 
 let app: Dashboard
