@@ -19,6 +19,12 @@ import (
 // into typed fields rather than a map: a wrong type (a string where a number
 // belongs) has to fail the decode instead of being stringified.
 type liveCatalogModel struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	ContextLength  *int     `json:"contextLength"`
+	IsVL           *bool    `json:"isVL"`
+	IsReasoning    *bool    `json:"isReasoning"`
+	ThinkingLevels []string `json:"thinking_levels"`
 }
 
 // fetchLiveCatalog calls GET /api/providers/{id}/models and decodes the models
