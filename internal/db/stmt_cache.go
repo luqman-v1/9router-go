@@ -15,15 +15,22 @@ import (
 var maxCachedStmts = 256
 
 // stmtCacheConnector wraps the modernc.org/sqlite driver so each connection
-// prepares a given statement once and reuses the handle. database/sql does
-// not cache statements itself: with a driver that implements QueryerContext
-// (modernc does), every db.Query/db.Exec reaches conn.QueryContext, which
-// runs sqlite3_prepare_v2 on the query text and finalizes it again after the
-// call — a full parse per statement per request. pprof on the request path
-// put _sqlite3Parser/_sqlite3VdbeExec at ~15% of samples for exactly this
-// reason. The cache removes the parse from every repeat call; SQLite
-// re-prepares cached statements itself on schema change (prepare_v2), so
-// ALTER TABLE and friends keep working.
+// prepares a given statement once on the one-shot paths and reuses the
+// handle. database/sql does not cache statements itself: with a driver that
+// implements QueryerContext (modernc does), every db.Query/db.Exec reaches
+// conn.QueryContext, which runs sqlite3_prepare_v2 on the query text and
+// finalizes it again after the call — a full parse per statement per
+// request. pprof on the request path put _sqlite3Parser/_sqlite3VdbeExec at
+// ~15% of samples for exactly this reason. The cache removes the parse from
+// every repeat call.
+//
+// Only the one-shot QueryContext/ExecContext paths are cached. The explicit
+// Prepare/PrepareContext path is deliberately NOT cached: a *sql.Stmt handed
+// out by db.Prepare keeps its driver handle live until the caller closes it,
+// so an eviction pass that finalized cached handles could pull the handle out
+// from under a live *sql.Stmt (nil-pointer panic in modernc). database/sql
+// already reuses one driver stmt per connection for a *sql.Stmt, so leaving
+// Prepare uncached costs nothing relative to upstream.
 type stmtCacheConnector struct {
 	inner driver.Driver
 	dsn   string
@@ -41,19 +48,19 @@ func (c *stmtCacheConnector) Driver() driver.Driver { return c.inner }
 
 // stmtCacheConn is a driver.Conn with a per-connection statement cache.
 // database/sql hands one driver.Conn to one goroutine at a time, so the map
-// would be safe without the mutex; the lock stays because a *sql.Stmt
-// prepared through db.Prepare can be executed from several goroutines and
-// each prepare path funnels through here.
+// would be safe without the mutex; the lock stays because a *sql.Stmt can be
+// executed from several goroutines and every path funnels through here.
 type stmtCacheConn struct {
 	inner driver.Conn
 	mu    sync.Mutex
 	stmts map[string]driver.Stmt
 }
 
-// cached returns the real prepared statement for query, preparing and
-// caching it on first use. At the cap the whole cache is dropped: one
-// eviction pass per overflow keeps the bound while leaving hot statements
-// cached in the common case.
+// cached returns the prepared statement for query, preparing and caching it
+// on first use. Entries are only reachable through the one-shot paths, which
+// never retain the handle past the call, so at the cap the whole cache can be
+// finalized safely: one eviction pass per overflow keeps the bound while
+// leaving hot statements cached in the common case.
 func (c *stmtCacheConn) cached(ctx context.Context, query string) (driver.Stmt, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -82,20 +89,17 @@ func (c *stmtCacheConn) cached(ctx context.Context, query string) (driver.Stmt, 
 	return s, nil
 }
 
+// Prepare and PrepareContext delegate straight to the inner connection (see
+// the stmtCacheConnector doc: the explicit-prepare path is not cached).
 func (c *stmtCacheConn) Prepare(query string) (driver.Stmt, error) {
-	s, err := c.cached(context.Background(), query)
-	if err != nil {
-		return nil, err
-	}
-	return cachedStmt{inner: s}, nil
+	return c.inner.Prepare(query)
 }
 
 func (c *stmtCacheConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	s, err := c.cached(ctx, query)
-	if err != nil {
-		return nil, err
+	if pc, ok := c.inner.(driver.ConnPrepareContext); ok {
+		return pc.PrepareContext(ctx, query)
 	}
-	return cachedStmt{inner: s}, nil
+	return c.inner.Prepare(query)
 }
 
 // QueryContext and ExecContext intercept the one-shot paths: without these,
@@ -204,45 +208,4 @@ func (c *stmtCacheConn) BeginTx(ctx context.Context, opts driver.TxOptions) (dri
 		return bt.BeginTx(ctx, opts)
 	}
 	return c.Begin()
-}
-
-// cachedStmt is handed to database/sql for the db.Prepare/tx.Prepare paths.
-// Its Close is a no-op: database/sql closes the driver statement after every
-// one-shot use, and closing the shared handle there would defeat the cache.
-// The real statement is finalized by stmtCacheConn.Close.
-type cachedStmt struct{ inner driver.Stmt }
-
-func (s cachedStmt) Close() error  { return nil }
-func (s cachedStmt) NumInput() int { return s.inner.NumInput() }
-
-// Exec delegates to the wrapped statement's Exec. staticcheck flags it as
-// deprecated, but the database/sql contract requires it when the inner
-// statement does not implement StmtExecContext; the type assertion in
-// ExecContext handles that case.
-//
-//nolint:staticcheck
-func (s cachedStmt) Exec(args []driver.Value) (driver.Result, error) {
-	return s.inner.Exec(args)
-}
-
-// Query delegates to the wrapped statement's Query, for the same reason as
-// Exec above.
-//
-//nolint:staticcheck
-func (s cachedStmt) Query(args []driver.Value) (driver.Rows, error) {
-	return s.inner.Query(args)
-}
-
-func (s cachedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	if ec, ok := s.inner.(driver.StmtExecContext); ok {
-		return ec.ExecContext(ctx, args)
-	}
-	return execFallback(s.inner, args)
-}
-
-func (s cachedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	if qc, ok := s.inner.(driver.StmtQueryContext); ok {
-		return qc.QueryContext(ctx, args)
-	}
-	return queryFallback(s.inner, args)
 }

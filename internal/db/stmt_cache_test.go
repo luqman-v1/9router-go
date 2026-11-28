@@ -196,9 +196,10 @@ func TestStmtCacheResultsCorrect(t *testing.T) {
 	}
 }
 
-// TestStmtCachePreparedStmtPath covers db.Prepare: the *sql.Stmt works, its
-// Close does not finalize the cached handle, and later one-shot calls with
-// the same text still reuse the single prepare.
+// TestStmtCachePreparedStmtPath covers db.Prepare: the explicit-prepare path
+// is deliberately uncached (a live *sql.Stmt must never have its handle
+// finalized by an eviction), while one-shot calls with the same text still
+// share one cached prepare.
 func TestStmtCachePreparedStmtPath(t *testing.T) {
 	database, cd, cleanup := openCountingCachedDB(t)
 	defer cleanup()
@@ -211,28 +212,29 @@ func TestStmtCachePreparedStmtPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
+	defer stmt.Close()
 	for i := 1; i <= 10; i++ {
 		if _, err := stmt.Exec(i, fmt.Sprintf("v%d", i)); err != nil {
 			t.Fatalf("stmt exec %d: %v", i, err)
 		}
 	}
-	//nolint:sqlclosecheck // intentional mid-test Close: proves the cached handle survives Stmt.Close
-	if err := stmt.Close(); err != nil {
-		t.Fatalf("stmt close: %v", err)
-	}
-	// One-shot exec with the same text must reuse the cached prepare.
+	// One-shot execs with the same text share one cached prepare (the
+	// explicit Prepare above prepared its own, uncached handle).
 	if _, err := database.Exec(insert, 11, "v11"); err != nil {
 		t.Fatalf("one-shot exec: %v", err)
 	}
+	if _, err := database.Exec(insert, 12, "v12"); err != nil {
+		t.Fatalf("one-shot exec 2: %v", err)
+	}
 	const sel = `SELECT v FROM t WHERE id = ?`
-	for i := 1; i <= 11; i++ {
+	for i := 1; i <= 12; i++ {
 		var v string
 		if err := database.QueryRow(sel, i).Scan(&v); err != nil {
 			t.Fatalf("select %d: %v", i, err)
 		}
 	}
-	if got := cd.prepareCount(insert); got != 1 {
-		t.Errorf("insert prepared %d times, want 1", got)
+	if got := cd.prepareCount(insert); got != 2 {
+		t.Errorf("insert prepared %d times, want 2 (1 explicit Prepare + 1 cached one-shot)", got)
 	}
 	if got := cd.prepareCount(sel); got != 1 {
 		t.Errorf("select prepared %d times, want 1", got)
@@ -241,8 +243,61 @@ func TestStmtCachePreparedStmtPath(t *testing.T) {
 	if err := database.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 11 {
-		t.Errorf("count = %d, want 11", count)
+	if count != 12 {
+		t.Errorf("count = %d, want 12", count)
+	}
+}
+
+// TestStmtCacheEvictionKeepsLivePreparedStmt is the regression test for the
+// review finding: forcing cap eviction must not finalize the handle of a
+// *sql.Stmt that is still live. The explicit-prepare path is uncached, so the
+// prepared statement keeps working after the one-shot cache is evicted.
+func TestStmtCacheEvictionKeepsLivePreparedStmt(t *testing.T) {
+	database, _, cleanup := openCountingCachedDB(t)
+	defer cleanup()
+	database.SetMaxOpenConns(1)
+
+	old := maxCachedStmts
+	maxCachedStmts = 4
+	defer func() { maxCachedStmts = old }()
+
+	if _, err := database.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO t (id, v) VALUES (1, 'one')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	stmt, err := database.Prepare(`SELECT v FROM t WHERE id = ?`)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer stmt.Close()
+
+	// More distinct one-shot queries than the cap, forcing eviction passes.
+	for i := 0; i < 10; i++ {
+		var n int
+		if err := database.QueryRow(fmt.Sprintf(`SELECT %d AS n`, i)).Scan(&n); err != nil {
+			t.Fatalf("distinct query %d: %v", i, err)
+		}
+		if n != i {
+			t.Fatalf("distinct query %d = %d", i, n)
+		}
+	}
+
+	// The live prepared statement must still execute after the evictions.
+	var v string
+	if err := stmt.QueryRow(1).Scan(&v); err != nil {
+		t.Fatalf("live *sql.Stmt after forced eviction: %v", err)
+	}
+	if v != "one" {
+		t.Errorf("live stmt = %q, want one", v)
+	}
+	// And one-shot queries still work after eviction.
+	if err := database.QueryRow(`SELECT v FROM t WHERE id = ?`, 1).Scan(&v); err != nil {
+		t.Fatalf("one-shot after eviction: %v", err)
+	}
+	if v != "one" {
+		t.Errorf("one-shot after eviction = %q, want one", v)
 	}
 }
 
@@ -252,6 +307,7 @@ func TestStmtCachePreparedStmtPath(t *testing.T) {
 func TestStmtCacheTransaction(t *testing.T) {
 	database, cd, cleanup := openCountingCachedDB(t)
 	defer cleanup()
+	database.SetMaxOpenConns(1) // keep tx and post-commit calls on one conn
 
 	if _, err := database.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
