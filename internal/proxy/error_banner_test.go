@@ -21,6 +21,10 @@ func TestIsErrorBannerText(t *testing.T) {
 		"Service unavailable",
 		"Internal server error",
 		"The model is currently overloaded",
+		"Claude Sonnet 4.6 is no longer available. Please switch to Claude Sonnet 5.5.",
+		"Claude Opus 4.6 is no longer available. Please switch to Claude Opus 5.5.",
+		"The model is no longer available",
+		"This model has been deprecated",
 		"An error occurred while generating the response",
 	}
 	for _, text := range banners {
@@ -37,6 +41,12 @@ func TestIsErrorBannerTextRejectsRealAnswers(t *testing.T) {
 		"The timeout you configured is 30 seconds; increase it to 60.",
 		"Here is the code that produces the error banner you asked about.",
 		"Sure — the quota exceeded path is handled on line 42 of fallback.go.",
+		"The old /v1/scratch endpoint is no longer available. Please switch to /v2/scratch.",
+		"Legacy auth is no longer available",
+		"This API is no longer available.",
+		"The feature is no longer available in v1, but you can use v2 by following this guide: https://example.com",
+		"Claude",
+		"Gemini",
 	}
 	for _, text := range answers {
 		if IsErrorBannerText(text) {
