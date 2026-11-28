@@ -42,7 +42,7 @@ func (h *DashboardHandler) HandleImportApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req importApiKeyRequest
 	if len(body) > 0 {
