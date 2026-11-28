@@ -33,7 +33,7 @@ var (
 
 // openaiMaxEffortModel matches GPT-5.6 / GPT-6 ids on OpenAI-compatible
 // nodes, which accept the "max" effort (unlike the built-in openai lane).
-var openaiMaxEffortModel = regexp.MustCompile("(?i)(?:^|/)gpt-(?:5\\.6|6)(?:[.-]|$)")
+var openaiMaxEffortModel = regexp.MustCompile(`(?i)(?:^|/)gpt-(?:5\.6|6)(?:[.-]|$)`)
 
 // isOpenAICompatibleNode reports whether provider is an OpenAI-compatible
 // custom node (prefix "openai-compatible-").
