@@ -707,7 +707,7 @@ func TestLiveE2E_Zcode_RealPingAndToolCall(t *testing.T) {
 				} `json:"message"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal([]byte(rec.Body.String()), &resp); err != nil {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode ping response: %v", err)
 		}
 		if len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Message.Content, "OK") {
@@ -736,7 +736,7 @@ func TestLiveE2E_Zcode_RealPingAndToolCall(t *testing.T) {
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal([]byte(rec.Body.String()), &resp); err != nil {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode tool response: %v", err)
 		}
 		if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
