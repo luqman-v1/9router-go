@@ -27,6 +27,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -96,11 +97,50 @@ class Serial:
                     # starts clean and cannot match a stale prompt.
                     self.buf = self.buf[idx + len(pat):]
                     return True
+            if not self.alive:
+                # stdout reached EOF, so QEMU has exited: the pattern can never
+                # arrive. Return at once instead of burning the whole timeout,
+                # which is what made a dead QEMU look like a slow boot.
+                return False
             time.sleep(0.05)
         return False
 
+    def wait_any(self, patterns, timeout):
+        """Wait for the first of several patterns; return the one that matched.
+
+        Used for the boot handshake, where the guest either prints the
+        `askfirst` banner (and then needs a keypress before a login prompt) or
+        goes straight to the prompt. Consumes through the match, like
+        `_wait_for`, so the buffer cannot hand the same text to a later wait.
+        """
+        pats = [p if isinstance(p, bytes) else p.encode() for p in patterns]
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self.lock:
+                best = None
+                for pat in pats:
+                    idx = self.buf.find(pat)
+                    if idx != -1 and (best is None or idx < best[0]):
+                        best = (idx, pat)
+                if best is not None:
+                    idx, pat = best
+                    self.buf = self.buf[idx + len(pat):]
+                    return pat
+            if not self.alive:
+                return None
+            time.sleep(0.05)
+        return None
     def send(self, line):
-        self.proc.stdin.write(line.encode() + b"\n")
+        self.proc.stdin.write(line.encode() + b"\r")
+        self.proc.stdin.flush()
+    def send_key(self, ch="\r"):
+        """Send a bare keypress.
+
+        QEMU's `-nographic` serial is a raw terminal, so Enter arrives as CR.
+        busybox `askfirst` blocks on exactly this keypress before it opens the
+        console.
+        """
+        self.proc.stdin.write(ch.encode())
         self.proc.stdin.flush()
 
     def wait(self, pattern, timeout=CMD_TIMEOUT):
@@ -213,31 +253,42 @@ def main():
     def boot_and_wait(accel):
         p, err_path, err_fh = launch(accel)
         s = Serial(p)
-        got = s.wait("login:", SERIAL_TIMEOUT)
-        return p, s, err_path, err_fh, got
+        # The serial console is a busybox `askfirst` console: it prints
+        # "Please press Enter to activate this console." and blocks until a key
+        # arrives. Then these images drop straight to a root shell
+        # (`root@OpenWrt:/#`) instead of prompting `login:`, so waiting for a
+        # login prompt was why no image ever "booted" in this suite. Accept
+        # either outcome: a login prompt (some images do ask) or the shell.
+        at_login, at_shell = b"login:", b"root@"
+        first = s.wait_any([b"Please press Enter", at_login, at_shell],
+                           SERIAL_TIMEOUT)
+        if first is not None and first.startswith(b"Please press Enter"):
+            s.send_key()
+            first = s.wait_any([at_login, at_shell], CMD_TIMEOUT)
+        if first == at_login:
+            s.send("root")
+            first = s.wait_any([at_shell], CMD_TIMEOUT)
+        return p, s, err_path, err_fh, first == at_shell
 
-    proc, ser, qemu_err_path, qemu_err_fh, boot_ok = boot_and_wait("kvm")
+    proc, ser, qemu_err_path, qemu_err_fh, boot_ok = boot_and_wait(
+        "kvm" if have_kvm() else "tcg")
     accel_note = ""
-    if not boot_ok:
-        # KVM is unavailable or the guest produced no serial output under it.
-        # This is an environment property, not a package failure; fall back to
-        # TCG so the suite can actually run. Under the broken-KVM case the whole
-        # SERIAL_TIMEOUT is consumed by the first attempt, which is why the
-        # timeout has to be generous enough for two boots.
+    if not boot_ok and have_kvm():
+        # KVM is present but the guest produced no serial output. That is an
+        # environment property, not a package failure, so retry under TCG and
+        # let the suite run. The QEMU stderr captured by launch() is the only
+        # record of why, so surface it.
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
         qemu_err_fh.close()
-        if have_kvm():
-            sys.stderr.write(
-                "[warn] no login prompt under accel=kvm, retrying with tcg\n"
-                f"[warn] qemu stderr: {open(qemu_err_path).read()[-2000:]}\n")
-            accel_note = " (kvm boot produced no login prompt; retried with tcg)"
-            proc, ser, qemu_err_path, qemu_err_fh, boot_ok = boot_and_wait("tcg")
-        else:
-            accel_note = " (no /dev/kvm; used tcg)"
+        sys.stderr.write(
+            "[warn] no login prompt under accel=kvm, retrying with tcg\n"
+            f"[warn] qemu stderr: {open(qemu_err_path).read()[-2000:]}\n")
+        accel_note = " (kvm boot produced no login prompt; retried with tcg)"
+        proc, ser, qemu_err_path, qemu_err_fh, boot_ok = boot_and_wait("tcg")
     boot_out = ser.dump()
 
     failures = []
@@ -266,32 +317,57 @@ def main():
                 raise BootFailure(name)
 
     try:
-        # --- boot to login ---
-        ok = ser.wait("login:", SERIAL_TIMEOUT)
-        # Fail-closed: without a login prompt nothing downstream can be tested,
-        # so this aborts the sequence and reports the failure (see BootFailure).
-        check("boot to login prompt", ok, ser.dump(), fatal=True)
-
-        ser.send("root")
-        # Wait for the root prompt (root@host:~# ), not a bare '#', so a stray
-        # '#' in the boot banner cannot be mistaken for a successful login.
-        ok = ser.wait("root@", CMD_TIMEOUT)
-        check("root login (no password)", ok, ser.dump(), fatal=True)
-        # The login prompt (root@OpenWrt:~# ) is still partly in the buffer.
-        # Flush it so the first command's wait('#') does not match the stale
-        # prompt and return before the command has run.
+        # --- boot to a root shell ---
+        # boot_and_wait already drove the console to a root shell (or a login
+        # prompt it answered) and consumed that match, so there is nothing left
+        # to wait for here — re-waiting was the double-wait bug that made this
+        # always fail. Report the result the handshake captured.
+        check("boot to root shell" + accel_note, boot_ok, boot_out, fatal=True)
+        # Flush anything left from the boot banner so the first command's
+        # wait('#') cannot match a stale prompt and return before it has run.
         with ser.lock:
             ser.buf = b""
 
-        # --- install the gateway package ---
+        # The stock image holds br-lan at 192.168.1.1/24, so the slirp network
+        # the packages are served over (10.0.2.0/24, host gateway 10.0.2.2) is
+        # unreachable. Adding the address ad-hoc is not enough: fw4 still binds
+        # the lan zone to 192.168.1.0/24 and rejects the foreign source with
+        # "Operation not permitted" (wget RC=4). Move the LAN interface onto the
+        # slirp subnet through uci so the zone, the address and the default
+        # route all agree.
         ok, out = ser.command(
-            f"wget -q -O /tmp/gw.ipk http://10.0.2.2:{http_port}/"
-            f"9router-go_{args.version}_x86_64.ipk", "#")
-        check("fetch gateway ipk over slirp", ok, out)
+            "uci set network.lan.ipaddr='10.0.2.15'; "
+            "uci set network.lan.netmask='255.255.255.0'; "
+            "uci set network.lan.gateway='10.0.2.2'; "
+            "uci set network.lan.dns='10.0.2.3'; "
+            "uci commit network; "
+            "/etc/init.d/network restart >/dev/null 2>&1; "
+            "sleep 5; echo NETDONE; ip -4 addr show br-lan", "#")
+        # Split on the marker so the echoed command line cannot satisfy this.
+        check("guest moves its LAN onto the slirp network",
+              "10.0.2.15" in out.split("NETDONE")[-1], out, fatal=True)
 
-        ok, out = ser.command("opkg install /tmp/gw.ipk", "#")
+        # --- install the gateway package ---
+        # Assert the transfer by byte size: a check that only looks for the
+        # file name matches the echoed command line and passes on a truncated
+        # or 404 body, which then fails later as a malformed package.
+        gw_size = os.path.getsize(ipk)
+        ok, out = ser.command(
+            f"wget -O /tmp/gw.ipk http://10.0.2.2:{http_port}/"
+            f"9router-go_{args.version}_x86_64.ipk >/dev/null 2>&1; "
+            "echo SZ=$(wc -c </tmp/gw.ipk)", "#")
+        got = re.search(r"SZ=(\d+)", out)
+        check("fetch gateway ipk over slirp",
+              got is not None and int(got.group(1)) == gw_size, out)
+
+        # Extracting a 21 MB package on an emulated CPU is slow, and the marker
+        # makes the result observable: a bare `opkg install` can return on a
+        # stale prompt with no output, which then looks like a silent success.
+        ok, out = ser.command("opkg install /tmp/gw.ipk 2>&1; "
+                              "echo INSTALL_RC=$?", "#", timeout=300)
+        got = re.search(r"INSTALL_RC=(\d+)", out)
         check("opkg install 9router-go",
-              ok and "Collected errors" not in out and "Configuring 9router-go" in out, out)
+              got is not None and got.group(1) == "0", out)
 
         # --- the service must actually run ---
         # "is running" is procd's status line; a bare \d+ would match the
@@ -318,10 +394,14 @@ def main():
         check("9router-go-feed status", ok and "rc=0" in out, out)
 
         # --- LuCI package installs and the Lua tree lands ---
+        luci_size = os.path.getsize(luci)
         ok, out = ser.command(
-            f"wget -q -O /tmp/luci.ipk http://10.0.2.2:{http_port}/"
-            f"luci-app-9router-go_{args.version}_all.ipk", "#")
-        check("fetch luci ipk", ok, out)
+            f"wget -O /tmp/luci.ipk http://10.0.2.2:{http_port}/"
+            f"luci-app-9router-go_{args.version}_all.ipk >/dev/null 2>&1; "
+            "echo SZ=$(wc -c </tmp/luci.ipk)", "#")
+        got = re.search(r"SZ=(\d+)", out)
+        check("fetch luci ipk",
+              got is not None and int(got.group(1)) == luci_size, out)
 
         ok, out = ser.command("opkg install /tmp/luci.ipk", "#")
         check("opkg install luci-app-9router-go",
