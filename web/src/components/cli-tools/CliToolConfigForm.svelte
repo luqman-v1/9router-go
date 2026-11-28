@@ -14,6 +14,7 @@
     Wrench,
   } from 'lucide-svelte'
   import { copyToClipboard } from '../../lib/clipboard'
+  import PiModelsEditor from './PiModelsEditor.svelte'
   import {
     api,
     type APIKey,
@@ -56,7 +57,8 @@
   let customApiKey = $state('')
   let hasStoredApiKey = $state(false)
   let model = $state('')
-
+  let piModels = $state<any[]>([])
+  let piInitialEntries = $state<any[]>([])
   // Claude Code specific
   let tierSonnet = $state('')
   let tierOpus = $state('')
@@ -148,6 +150,10 @@
         }
 
         model = cfg.model || ''
+        if (toolId === 'pi') {
+          const prov = (cfg as any)?.providers?.['9router'] || {}
+          piInitialEntries = Array.isArray(prov?.models) ? prov.models : []
+        }
         if (cfg.tiers) {
           tierSonnet = cfg.tiers.sonnet || ''
           tierOpus = cfg.tiers.opus || ''
@@ -191,7 +197,9 @@
     try {
       const payload: CliToolSettingsApplyPayload = {
         baseUrl: url,
-        model: model.trim(),
+      }
+      if (toolId === 'pi' && piModels.length > 0) {
+        payload.models = piModels
       }
       if (effectiveApiKey) {
         payload.apiKey = effectiveApiKey
@@ -587,6 +595,13 @@
             Select a combo or model ID configured in 9Router. Writes to the client's official config file.
           </p>
         </div>
+
+        {#if toolId === 'pi'}
+          <div class="p-3.5 rounded-xl bg-surface-2/70 border border-border/80 space-y-2">
+            <span class="text-xs font-bold text-text-main">Pi Models</span>
+            <PiModelsEditor initialEntries={piInitialEntries} onChange={(m) => (piModels = m)} />
+          </div>
+        {/if}
       {/if}
 
       <!-- Action Buttons -->
