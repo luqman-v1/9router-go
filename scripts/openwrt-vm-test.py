@@ -180,20 +180,65 @@ def main():
 
     accel = "kvm" if have_kvm() else "tcg"
     print(f"booting OpenWrt (accel={accel})...", flush=True)
-    qargs = [
-        QEMU,
-        "-m", args.memory,
-        "-drive", f"file={args.image},format=raw,if=virtio",
-        "-netdev", "user,id=net0",
-        "-device", "e1000,netdev=net0",
-        "-nographic",
-        "-no-reboot",
-        "-machine", f"accel={accel}",
-        "-smp", "2",
-    ]
-    proc = subprocess.Popen(
-        qargs, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    ser = Serial(proc)
+    def launch(accel):
+        qargs = [
+            QEMU,
+            "-m", args.memory,
+            "-drive", f"file={args.image},format=raw,if=virtio",
+            "-netdev", "user,id=net0",
+            "-device", "e1000,netdev=net0",
+            "-nographic",
+            "-no-reboot",
+            "-machine", f"accel={accel}",
+            "-smp", "2",
+        ]
+        # stderr is teed to a file rather than a dropped PIPE: if QEMU dies or
+        # produces no serial output the reason only exists there, and a PIPE
+        # nobody reads can also deadlock QEMU once its stderr buffer fills.
+        err_path = os.path.join(tmp, f"qemu-{accel}.stderr")
+        err_fh = open(err_path, "wb")
+        p = subprocess.Popen(qargs, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=err_fh)
+        return p, err_path, err_fh
+
+    # Prefer KVM (fast on GitHub runners) but fall back to TCG. Under some
+    # KVM configurations the guest produces no serial output at all and never
+    # reaches a login prompt within SERIAL_TIMEOUT, while the same image boots
+    # fine under TCG (verified locally: SeaBIOS -> GRUB -> login in ~17 s). If a
+    # KVM boot yields no serial output after a short probe, relaunch under TCG
+    # so the suite can actually run instead of failing on an unusable machine.
+    tmp = os.path.join(tempfile.gettempdir(), "vm-9router-go")
+    os.makedirs(tmp, exist_ok=True)
+
+    def boot_and_wait(accel):
+        p, err_path, err_fh = launch(accel)
+        s = Serial(p)
+        got = s.wait("login:", SERIAL_TIMEOUT)
+        return p, s, err_path, err_fh, got
+
+    proc, ser, qemu_err_path, qemu_err_fh, boot_ok = boot_and_wait("kvm")
+    accel_note = ""
+    if not boot_ok:
+        # KVM is unavailable or the guest produced no serial output under it.
+        # This is an environment property, not a package failure; fall back to
+        # TCG so the suite can actually run. Under the broken-KVM case the whole
+        # SERIAL_TIMEOUT is consumed by the first attempt, which is why the
+        # timeout has to be generous enough for two boots.
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        qemu_err_fh.close()
+        if have_kvm():
+            sys.stderr.write(
+                "[warn] no login prompt under accel=kvm, retrying with tcg\n"
+                f"[warn] qemu stderr: {open(qemu_err_path).read()[-2000:]}\n")
+            accel_note = " (kvm boot produced no login prompt; retried with tcg)"
+            proc, ser, qemu_err_path, qemu_err_fh, boot_ok = boot_and_wait("tcg")
+        else:
+            accel_note = " (no /dev/kvm; used tcg)"
+    boot_out = ser.dump()
 
     failures = []
 
