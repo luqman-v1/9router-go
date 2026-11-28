@@ -59,11 +59,16 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 	}
 
 	state := newFreePiSessionState(token, req.ConnData)
-	// The stored snapshot is what the connection recorded at login and is never
-	// refreshed, so resolve it against the server's current floor here. Without
-	// this a server-side `min` raise breaks every request from a container that
-	// is already current (see providers/freepi_version.go).
-	state.ClientVersion = providers.ResolveFreePiClientVersion(ctx, client, state.ClientVersion)
+	// An operator-set x-client-version is authoritative: it is the one thing
+	// that must survive every automatic resolution, including a 426 self-heal.
+	// When it is absent (the ordinary case) resolve against the live feed as
+	// before. Matching the name case-insensitively is required because the
+	// dashboard's override endpoint accepts any RFC 7230 spelling.
+	if manual := freePiManualClientVersion(req.Config.StaticHeaders); manual != "" {
+		state.ClientVersion = manual
+	} else {
+		state.ClientVersion = providers.ResolveFreePiClientVersion(ctx, client, state.ClientVersion)
+	}
 
 	// Claim the account for this process. Failing to acquire is not an error:
 	// it only means a sibling holds reset rights, so this request must not
@@ -177,6 +182,20 @@ func freePiDoChat(ctx context.Context, client *http.Client, req *Request, state 
 	return proxy.DoRequest(ctx, client, http.MethodPost, req.Config.BaseURL, headers, req.Body)
 }
 
+// freePiManualClientVersion returns the operator's x-client-version override,
+// if any. The dashboard's provider override ends up in StaticHeaders; the
+// lookup must ignore case so `X-Client-Version` and `x-client-version` are the
+// same knob. Empty means "no override" and the automatic resolver stays in
+// charge.
+func freePiManualClientVersion(static map[string]string) string {
+	for name, value := range static {
+		if strings.EqualFold(name, "x-client-version") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 // freePiResetAndRetry handles a 409: it decides whether an automatic reset is
 // permitted, performs it at most once, and retries once.
 //
@@ -212,12 +231,19 @@ func freePiResetAndRetry(ctx context.Context, client *http.Client, req *Request,
 // resolved header is unchanged and the server already told us this exact
 // version is unacceptable — and the caller then reports the original 426.
 func freePiVersionRetry(ctx context.Context, client *http.Client, req *Request, state freePiSessionState, code string) *http.Response {
+	// A manual override is the operator's explicit answer to a 426: refreshing
+	// a floor no longer changes what we send, so do not spend a retry that can
+	// only repeat the same header.
+	if freePiManualClientVersion(req.Config.StaticHeaders) != "" {
+		log.Warn("free-pi", "426 with a manual x-client-version; not overriding it",
+			"account", state.AccountKey, "sent", state.ClientVersion, "code", code)
+		return nil
+	}
 	if err := providers.RefreshFreePiClientVersion(ctx, client); err != nil {
 		log.Warn("free-pi", "client-version refresh failed after 426",
 			"account", state.AccountKey, "sent", state.ClientVersion, "code", code, "error", err)
 		return nil
 	}
-
 	next := providers.ResolveFreePiClientVersion(ctx, client, state.ClientVersion)
 	if next == state.ClientVersion && code != providers.FreePiCodeUpgradeRequired {
 		log.Warn("free-pi", "426 but the published version floor did not advance past what we sent",

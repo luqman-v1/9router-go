@@ -260,3 +260,103 @@ func TestFreePiForward_DoesNotRetryWhenTheFloorDoesNotAdvance(t *testing.T) {
 		t.Errorf("upstream attempts = %d, want 1: an unchanged header must not be replayed", attempts)
 	}
 }
+
+// A manually configured x-client-version is the operator's explicit answer
+// and must win over the live feed — including when the feed publishes a newer
+// version. The name is matched case-insensitively because the dashboard's
+// override endpoint preserves the operator's spelling.
+func TestFreePiForward_ManualClientVersionOverrideWins(t *testing.T) {
+	for _, name := range []string{"x-client-version", "X-Client-Version"} {
+		t.Run(name, func(t *testing.T) {
+			versionStub(t, `{"min":"0.6.28","latest":"0.6.29"}`)
+
+			var mu sync.Mutex
+			var seen []string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				seen = append(seen, r.Header.Get("x-client-version"))
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(freePiJSONCompletion))
+			}))
+			t.Cleanup(upstream.Close)
+
+			token := freePiTestToken("user_manual_" + strings.ReplaceAll(name, "-", "_"))
+			req := freePiTestRequest(t, upstream, token, map[string]any{"freePiClientVersion": "0.6.10"}, false)
+			req.Config.StaticHeaders = map[string]string{name: "0.5.99"}
+
+			if err := ForwardFreePi(httptest.NewRecorder(), req); err != nil {
+				t.Fatalf("ForwardFreePi: %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(seen) != 1 || seen[0] != "0.5.99" {
+				t.Fatalf("upstream saw %v, want exactly [0.5.99]: the manual override must win", seen)
+			}
+		})
+	}
+}
+
+// With no override configured the automatic resolver stays in charge, so the
+// existing self-heal behaviour is unchanged.
+func TestFreePiForward_NoManualOverrideKeepsAutomaticResolution(t *testing.T) {
+	versionStub(t, `{"min":"0.6.28","latest":"0.6.29"}`)
+
+	var mu sync.Mutex
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("x-client-version"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(freePiJSONCompletion))
+	}))
+	t.Cleanup(upstream.Close)
+
+	token := freePiTestToken("user_no_override")
+	req := freePiTestRequest(t, upstream, token, map[string]any{"freePiClientVersion": "0.6.10"}, false)
+
+	if err := ForwardFreePi(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("ForwardFreePi: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0] != "0.6.29" {
+		t.Fatalf("upstream saw %v, want exactly [0.6.29]: the live feed must resolve when no override is set", seen)
+	}
+}
+
+// A 426 with a manual override must not be papered over by a retry that would
+// replay the same header: the operator has to see the upstream verdict.
+func TestFreePiForward_ManualOverride426IsNotRetried(t *testing.T) {
+	versionStub(t, `{"min":"0.6.28","latest":"0.6.29"}`)
+
+	var mu sync.Mutex
+	var attempts int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUpgradeRequired)
+		_, _ = w.Write([]byte(`{"code":"upgrade_required","message":"not an official release"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	token := freePiTestToken("user_manual_426")
+	req := freePiTestRequest(t, upstream, token, nil, false)
+	req.Config.StaticHeaders = map[string]string{"x-client-version": "0.5.99"}
+
+	err := ForwardFreePi(httptest.NewRecorder(), req)
+	if err == nil || !strings.Contains(err.Error(), "426") {
+		t.Fatalf("error = %v, want the upstream 426 surfaced", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Errorf("upstream attempts = %d, want 1: a manual override must not be overridden by a retry", attempts)
+	}
+}
