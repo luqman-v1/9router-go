@@ -15,6 +15,12 @@
   fires only on shapes only a live credential carries (a provider key prefix,
   or a label that names the field), so code, diffs and logs in the same payload
   survive unchanged; a request with no credential is byte-identical to before.
+- The mask is wired to the write gate, not to the request: `shouldLogRequestDetail`
+  is evaluated first on both the success and the failure path, and the scan is
+  skipped entirely when no row will be written (observability `off`, or
+  `errors_only` on a success). A stored row is byte-identical to before; the
+  no-write case simply no longer pays for it (~27µs/request measured on a
+  1-vCPU target).
 - Provenance: DATA-01 in `TECHNICAL_DEBT.md`, plus the ROADMAP's
   "Secret/PII redaction: explicit detection rules with safe defaults" feature.
   Depends on the `secrets` detector set; if that set is not in this build the
