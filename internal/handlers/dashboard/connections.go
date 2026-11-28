@@ -1156,6 +1156,88 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 	})
 }
 
+// withModelCapabilities enriches a provider's live catalogue with the
+// capability block the pickers render. The live feeds answer with their own
+// field names — `isVL` vs `vision`, `contextLength` vs `context_length` — and a
+// client that reads only one spelling shows a model with no icons and no
+// limits. One normalisation here keeps every live branch (claude, anthropic,
+// zed, cline/clinepass, commandcode, the ModelsListURL aggregators, github,
+// codebuddy and qoder) agreeing with GET /api/models/caps, which resolves the
+// same tables server-side.
+//
+// Existing non-nil values are never overwritten: a feed that states its own
+// window or its own reasoning flag is the provider's number, not a guess.
+func withModelCapabilities(provider string, models any) []map[string]any {
+	items := modelItemsAsMaps(models)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		id := modelItemID(item)
+		if id == "" {
+			continue
+		}
+		caps := providers.GetCapabilitiesForModel(provider, id)
+		levels := providers.GetThinkingLevels(provider, id)
+		setMissing(item, "contextLength", caps.ContextWindow)
+		setMissing(item, "isVL", caps.Vision)
+		setMissing(item, "isReasoning", caps.Reasoning)
+		if len(levels) > 0 {
+			setMissing(item, "thinking_levels", levels)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// modelItemsAsMaps converts whatever shape a branch holds its catalogue in into
+// the map form the enrichment writes into. Typed structs (ZedModel, CopilotModel,
+// clineModelItem) go through their JSON tags; `[]any` and `[]map[...]any` are
+// already there.
+func modelItemsAsMaps(models any) []map[string]any {
+	switch typed := models.(type) {
+	case nil:
+		return nil
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, entry := range typed {
+			if m, ok := entry.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	raw, err := json.Marshal(models)
+	if err != nil {
+		return nil
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// modelItemID reads a catalogue entry's id under the three spellings the live
+// feeds use.
+func modelItemID(item map[string]any) string {
+	for _, key := range [...]string{"id", "slug", "model"} {
+		if s, ok := item[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// setMissing writes value under key only when the key is absent or nil, so an
+// upstream-stated field survives the enrichment.
+func setMissing(item map[string]any, key string, value any) {
+	if current, ok := item[key]; ok && current != nil {
+		return
+	}
+	item[key] = value
+}
+
 // writeConnectionModels is HandleGetConnectionModels with the connection id
 // already resolved. The split exists because model sync (POST
 // /api/models/sync) needs the same discovery for a connection it selected
@@ -1405,7 +1487,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       models,
+			"models":       withModelCapabilities(conn.Provider, models),
 		})
 		return
 	}
@@ -1429,7 +1511,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       copilotModels,
+			"models":       withModelCapabilities(conn.Provider, copilotModels),
 		})
 		return
 	}
@@ -1452,7 +1534,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       items,
+			"models":       withModelCapabilities(conn.Provider, items),
 			"warning":      "CodeBuddy exposes no /models endpoint — using the built-in catalogue.",
 		})
 		return
@@ -1469,7 +1551,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		payload := map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       items,
+			"models":       withModelCapabilities(conn.Provider, items),
 		}
 		if warning != "" {
 			payload["warning"] = warning
@@ -1492,7 +1574,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       qoderModels,
+			"models":       withModelCapabilities(conn.Provider, qoderModels),
 		})
 		return
 	}
@@ -1509,7 +1591,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       zedModels,
+			"models":       withModelCapabilities(conn.Provider, zedModels),
 		})
 		return
 	}
@@ -1559,7 +1641,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       items,
+			"models":       withModelCapabilities(conn.Provider, items),
 		})
 		return
 	}
@@ -1613,13 +1695,13 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			} `json:"data"`
 		}
 		_ = json.Unmarshal(body, &listResp)
-		models := make([]map[string]string, 0, len(listResp.Data))
+		items := make([]map[string]any, 0, len(listResp.Data))
 		for _, m := range listResp.Data {
 			name := m.DisplayName
 			if name == "" {
 				name = m.ID
 			}
-			models = append(models, map[string]string{
+			items = append(items, map[string]any{
 				"id":   m.ID,
 				"name": name,
 			})
@@ -1627,7 +1709,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       models,
+			"models":       withModelCapabilities(conn.Provider, items),
 		})
 		return
 	}
@@ -1663,13 +1745,13 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			} `json:"data"`
 		}
 		_ = json.Unmarshal(body, &listResp)
-		models := make([]map[string]string, 0, len(listResp.Data))
+		items := make([]map[string]any, 0, len(listResp.Data))
 		for _, m := range listResp.Data {
 			name := m.DisplayName
 			if name == "" {
 				name = m.ID
 			}
-			models = append(models, map[string]string{
+			items = append(items, map[string]any{
 				"id":   m.ID,
 				"name": name,
 			})
@@ -1677,7 +1759,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       models,
+			"models":       withModelCapabilities(conn.Provider, items),
 		})
 		return
 	}

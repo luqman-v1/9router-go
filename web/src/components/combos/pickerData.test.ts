@@ -6,6 +6,9 @@ import type { Combo, ProviderConnection, ProviderNode } from '../../api/client'
 import { __setProviderCatalogForTest } from '../../lib/providers'
 import { parseProviderRegistry } from '../../lib/providers.registry-test'
 import {
+  fetchLiveProviderModels,
+  liveEntryId,
+  liveModelCaps,
   resolveFilteredCombos,
   resolveFilteredGroups,
   resolveModelPickerGroups,
@@ -14,6 +17,21 @@ import {
 const registryItems = parseProviderRegistry(
   readFileSync(resolve(import.meta.dirname, '../../../../internal/providers/provider_registry.go'), 'utf8'),
 )
+
+function conn(id: string, provider: string, isActive: number): ProviderConnection {
+  return {
+    id,
+    provider,
+    authType: 'apikey',
+    name: id,
+    email: null,
+    priority: 1,
+    isActive,
+    data: '{}',
+    createdAt: '',
+    updatedAt: '',
+  }
+}
 
 describe('pickerData', () => {
   beforeEach(() => {
@@ -439,5 +457,123 @@ describe('pickerData', () => {
     assert.ok(sxGroup.models.length > 0)
     assert.strictEqual(sxGroup.models[0].id, 'search')
     assert.ok(sxGroup.models[0].value.startsWith('searxng/'))
+  })
+
+  // Issue #1556: the CLI-tool providers change upstream faster than the static
+  // bundle, so the picker reads their live catalogue (already enriched with the
+  // capability block by the gateway) instead of the snapshot.
+  it('lists a live-catalog provider from its live entries, with the caps it states', () => {
+    const connections: ProviderConnection[] = [
+      {
+        id: 'conn-cc',
+        provider: 'commandcode',
+        authType: 'apikey',
+        name: 'CC',
+        email: null,
+        priority: 1,
+        isActive: 1,
+        data: '{}',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]
+    const groups = resolveModelPickerGroups(connections, [], {
+      liveModels: {
+        commandcode: [
+          {
+            id: 'moonshotai/Kimi-K2.7-Code',
+            name: 'Kimi K2.7 Code',
+            contextLength: 262144,
+            isVL: true,
+            isReasoning: true,
+            thinking_levels: ['low', 'high'],
+          },
+        ],
+      },
+    })
+    const cc = groups.find((g) => g.id === 'commandcode')
+    assert.ok(cc, 'commandcode group must exist')
+    assert.deepStrictEqual(
+      cc.models.map((m) => m.value),
+      ['cmc/moonshotai/Kimi-K2.7-Code']
+    )
+    const caps = cc.models[0].caps
+    assert.strictEqual(caps.vision, true)
+    assert.strictEqual(caps.reasoning, true)
+    assert.strictEqual(caps.contextWindow, 262144)
+    assert.deepStrictEqual(caps.thinking_levels, ['low', 'high'])
+  })
+
+  it('falls back to the static bundle when a live catalogue is absent or empty', () => {
+    const connections: ProviderConnection[] = [
+      {
+        id: 'conn-cc',
+        provider: 'commandcode',
+        authType: 'apikey',
+        name: 'CC',
+        email: null,
+        priority: 1,
+        isActive: 1,
+        data: '{}',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]
+    const withEmpty = resolveModelPickerGroups(connections, [], { liveModels: { commandcode: [] } })
+    const cc = withEmpty.find((g) => g.id === 'commandcode')
+    assert.ok(cc)
+    assert.ok(
+      cc.models.some((m) => m.id === 'deepseek/deepseek-v4-pro'),
+      'an empty live list must not empty the group'
+    )
+  })
+
+  it('accepts slug and model as the live entry id', () => {
+    const groups = resolveModelPickerGroups([], [], {
+      liveModels: {
+        zed: [{ slug: 'claude-sonnet-5-5', name: 'Sonnet' }],
+        claude: [{ model: 'claude-opus-5-5' }],
+      },
+    })
+    // Neither provider is connected, so the live list alone must not create a
+    // group: the catalog gate still requires a connection or noAuth.
+    assert.strictEqual(groups.find((g) => g.id === 'zed'), undefined)
+    assert.strictEqual(groups.find((g) => g.id === 'claude'), undefined)
+  })
+
+  it('liveModelCaps prefers the stated flags over the id heuristic', () => {
+    const caps = liveModelCaps({ id: 'gpt-4o', isVL: false, isReasoning: true, maxOutput: 4096 })
+    assert.strictEqual(caps.vision, false)
+    assert.strictEqual(caps.reasoning, true)
+    assert.strictEqual(caps.maxOutput, 4096)
+  })
+
+  // Review blocker (PR #1580): the picker must read EVERY active connection of
+  // a live-catalog provider, not just the first, and collapse duplicate model
+  // ids across accounts (upstream useLiveProviderModels). An inactive
+  // connection must be skipped.
+  it('fetches every active connection of a live provider and dedupes by model id', async () => {
+    const connections: ProviderConnection[] = [
+      conn('cc-active-1', 'commandcode', 1),
+      conn('cc-active-2', 'commandcode', 1),
+      conn('cc-inactive', 'commandcode', 0),
+    ]
+    const requested: string[] = []
+    const catalogues: Record<string, unknown[]> = {
+      'cc-active-1': [{ id: 'alpha/model-a' }, { id: 'shared/model-x' }],
+      'cc-active-2': [{ id: 'beta/model-b' }, { id: 'shared/model-x' }],
+      'cc-inactive': [{ id: 'gamma/should-not-appear' }],
+    }
+    const live = await fetchLiveProviderModels(connections, ['commandcode'], async (id) => {
+      requested.push(id)
+      return { models: catalogues[id] ?? [] }
+    })
+
+    // Both active connections were queried; the inactive one was not.
+    assert.deepStrictEqual(requested.sort(), ['cc-active-1', 'cc-active-2'])
+    const ids = (live.commandcode ?? []).map(liveEntryId)
+    // Both disjoint models appear, the shared model appears once, and the
+    // inactive connection's model is absent.
+    assert.deepStrictEqual(ids, ['alpha/model-a', 'shared/model-x', 'beta/model-b'])
   })
 })
