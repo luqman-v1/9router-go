@@ -25,6 +25,10 @@ func TestForwardQoder_ReplaysQueuedModel(t *testing.T) {
 			w.Write([]byte(`{"isQueued":false,"queueCount":0,"retryAfterSeconds":2}`))
 			return
 		}
+		if strings.Contains(r.URL.Path, "ask/finish") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if inferenceCalls.Add(1) == 1 {
 			inner := `{"code":"10605","message":"{\"isQueued\":true,\"queueType\":\"p3\",\"retryAfterSeconds\":30,\"subCode\":\"RESOURCE_LIMIT\"}","subCode":"RESOURCE_LIMIT"}`
@@ -136,6 +140,10 @@ func TestForwardQoder_QueueWindowBeyondBudgetFailsFast(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if strings.Contains(r.URL.Path, "ask/finish") {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		inferenceCalls.Add(1)

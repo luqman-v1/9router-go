@@ -303,6 +303,13 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 	queueWaitStart := time.Now()
 	statusPollsEnabled := true
 	readyReplayUsed := false
+	queuedSeen := false
+	defer func() {
+		if queuedSeen {
+			qoderQueueFinish(context.Background(), req.Client, targetURL, creds,
+				qoderPayloadString(built.Payload, "request_set_id"), built.QoderKey, queueWaitStart)
+		}
+	}()
 	for {
 		resp, err := sendAttempt()
 		if err != nil {
@@ -327,6 +334,7 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 			}
 		}
 
+		queuedSeen = queuedSeen || queueInfo != nil
 		if queueInfo == nil {
 			// Not a queue signal: a mid-stream error is marked by the
 			// coalescer and a clean stream just continues. The peek consumed
@@ -376,7 +384,7 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 			if !ok {
 				// No usable status endpoint — keep the timed-replay behaviour.
 				statusPollsEnabled = false
-			} else if polled.IsQueued != nil && !*polled.IsQueued {
+			} else if qoderQueueReady(polled) {
 				// The status endpoint has been observed saying ready while the
 				// inference call is still refused. Replay once on its word; if
 				// that is refused too, stop trusting it.

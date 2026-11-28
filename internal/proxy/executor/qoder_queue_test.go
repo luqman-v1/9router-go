@@ -2,9 +2,12 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -194,3 +197,123 @@ func TestQoderSleepContextCancelled(t *testing.T) {
 }
 
 func ptrFloat(v float64) *float64 { return &v }
+
+func TestQoderQueueReady(t *testing.T) {
+	tr := true
+	fa := false
+	ni := (*bool)(nil)
+	if !qoderQueueReady(&qoderQueueStatus{IsQueued: &fa}) {
+		t.Error("ready (nil service) should be ready")
+	}
+	if !qoderQueueReady(&qoderQueueStatus{IsQueued: &fa, ServiceAvailable: &tr}) {
+		t.Error("ready (service true) should be ready")
+	}
+	if qoderQueueReady(&qoderQueueStatus{IsQueued: &fa, ServiceAvailable: &fa}) {
+		t.Error("serviceAvailable false should NOT be ready")
+	}
+	if qoderQueueReady(&qoderQueueStatus{IsQueued: &tr, ServiceAvailable: &tr}) {
+		t.Error("isQueued true should NOT be ready")
+	}
+	if qoderQueueReady(nil) {
+		t.Error("nil should NOT be ready")
+	}
+	_ = ni
+}
+
+func TestQoderQueueFinish(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		gotHeaders = r.Header.Clone()
+		b, _ := io.ReadAll(r.Body)
+		gotBody = b
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	creds := QoderCosyCreds{UserID: "u1", AuthToken: "tok", Name: "n", Email: "e"}
+	began := time.Now().Add(-1500 * time.Millisecond)
+	qoderQueueFinish(context.Background(), srv.Client(), srv.URL, creds, "rs-1", "mkey", began)
+	if !strings.Contains(gotPath, "/algo/api/v2/service/ask/finish") {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if !strings.Contains(gotPath, "Encode=1") {
+		t.Fatalf("encode missing: %s", gotPath)
+	}
+	// Decode the on-wire body back to plaintext and compare the structured
+	// fields. time_consumed is measured inside qoderQueueFinish, so an exact
+	// byte match is inherently racy; compare the stable fields and require a
+	// non-negative elapsed value instead.
+	plain := qoderDecodeBodyForTest(gotBody)
+	var outer map[string]any
+	if err := json.Unmarshal(plain, &outer); err != nil {
+		t.Fatalf("decode outer: %v (body=%s)", err, string(gotBody))
+	}
+	if outer["encodeVersion"] != "1" {
+		t.Fatalf("encodeVersion = %v", outer["encodeVersion"])
+	}
+	payloadStr, _ := outer["payload"].(string)
+	var inner map[string]any
+	if err := json.Unmarshal([]byte(payloadStr), &inner); err != nil {
+		t.Fatalf("decode inner: %v", err)
+	}
+	if inner["model_key"] != "mkey" || inner["request_set_id"] != "rs-1" || inner["user_id"] != "u1" {
+		t.Fatalf("inner fields = %+v", inner)
+	}
+	if tc, ok := inner["time_consumed"].(float64); !ok || tc < 0 {
+		t.Fatalf("time_consumed = %v", inner["time_consumed"])
+	}
+	if gotHeaders.Get("Cosy-Clienttype") == "" {
+		t.Fatal("missing cosy headers")
+	}
+}
+
+func TestQoderQueueSays(t *testing.T) {
+	st := &qoderQueueStatus{IsQueued: boolPtr(false), ServiceAvailable: boolPtr(false), QueueType: "p3", QueueCount: ptrFloat(0), RetryAfterSec: ptrFloat(30), WaitTime: ptrFloat(30), ModelKey: "auto"}
+	s := qoderQueueSays(st)
+	for _, k := range []string{"isQueued", "serviceAvailable", "queueType", "queueCount", "retryAfterSeconds", "waitTime", "modelKey"} {
+		if !strings.Contains(s, k) {
+			t.Errorf("missing %s in %s", k, s)
+		}
+	}
+	if qoderQueueSays(nil) != "nothing of the queue" {
+		t.Error("nil rendering")
+	}
+}
+
+func qoderDecodeBodyForTest(b []byte) []byte {
+	// Reverse the custom-alphabet substitution.
+	rev := make(map[byte]byte)
+	for i := range qoderStdAlphabet {
+		rev[qoderCustomAlphabet[i]] = qoderStdAlphabet[i]
+	}
+	rev['$'] = '='
+	out := make([]byte, len(b))
+	copy(out, b)
+	for i, c := range out {
+		if r, ok := rev[c]; ok {
+			out[i] = r
+		}
+	}
+	n := len(out)
+	if n == 0 {
+		return out
+	}
+	third := n / 3
+	// Reorder [head][mid][tail] from [tail][mid][head].
+	midLen := n - 2*third
+	tailLen := third
+	std := make([]byte, 0, n)
+	std = append(std, out[tailLen+midLen:]...)        // head
+	std = append(std, out[tailLen:tailLen+midLen]...) // mid
+	std = append(std, out[:tailLen]...)               // tail
+	decoded, err := base64.StdEncoding.DecodeString(string(std))
+	if err != nil {
+		return out
+	}
+	return decoded
+}
+
+func boolPtr(b bool) *bool { return &b }
