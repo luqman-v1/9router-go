@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -79,5 +80,54 @@ func TestResolveLiveCatalogModelsFeed(t *testing.T) {
 	}
 	if got[0].ID != "qwen/qwen4-max" || got[0].ContextLength != 1000000 || got[0].MaxOutput != 131072 || !got[0].LimitsAuthoritative {
 		t.Errorf("entry = %+v, want the provider's own 1000000/131072 declaration", got[0])
+	}
+}
+
+// TestFetchModelsFeedLiveCatalog_LargeEnvelope pins the >4 MiB feed case. A
+// gateway-shaped /v1/models response (the kind this endpoint itself emits)
+// carries the same array twice, so a ~2.3 MB list becomes a ~4.6 MB body.
+// The old 4 MiB read cap cut the JSON mid-array and silently dropped the
+// catalog after the full upstream latency had been paid.
+func TestFetchModelsFeedLiveCatalog_LargeEnvelope(t *testing.T) {
+	resetLiveCatalog(t)
+
+	entry := `{"id":"model-","context_length":128000}`
+	var list bytes.Buffer
+	list.WriteByte('[')
+	for range 60000 {
+		if list.Len() > 1 {
+			list.WriteByte(',')
+		}
+		list.WriteString(entry)
+	}
+	list.WriteByte(']')
+	var body bytes.Buffer
+	body.WriteString(`{"object":"list","data":`)
+	body.Write(list.Bytes())
+	body.WriteString(`,"models":`)
+	body.Write(list.Bytes())
+	body.WriteString(`}`)
+	if body.Len() <= 4<<20 {
+		t.Fatalf("fixture must exceed 4 MiB, got %d bytes", body.Len())
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body.Bytes())
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+	h.Client = srv.Client()
+	conn := &models.ProviderConnection{ID: "conn-large-feed", Provider: "nous", IsActive: 1}
+	connData := &shared.ConnectionData{APIKey: "sk-nous", BaseURL: srv.URL + "/v1/chat/completions"}
+	got := h.fetchModelsFeedLiveCatalog(context.Background(), conn, connData, "nous", "sk-nous")
+	if len(got) == 0 {
+		t.Fatalf("large feed was truncated: got 0 models from a %d-byte body", body.Len())
+	}
+	if got[0].ID != "model-" || got[0].ContextLength != 128000 {
+		t.Errorf("first model = %+v, want the feed's declared 128000 window", got[0])
 	}
 }

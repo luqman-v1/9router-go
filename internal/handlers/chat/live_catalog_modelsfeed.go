@@ -97,7 +97,10 @@ func (h *ChatHandler) fetchModelsFeedLiveCatalog(ctx context.Context, conn *mode
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	// A gateway-shaped feed carries both data and models arrays; the measured
+	// response is ~4.6 MB decoded, so the old 4 MiB cap truncated it and made
+	// parsing fail after the entire upstream latency had been paid.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil
 	}
