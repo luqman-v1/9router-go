@@ -104,9 +104,10 @@ type liveCatalogEntry struct {
 }
 
 var liveCatalogStore = struct {
-	mu      sync.RWMutex
-	entries map[string]liveCatalogEntry
-}{entries: make(map[string]liveCatalogEntry)}
+	mu         sync.RWMutex
+	entries    map[string]liveCatalogEntry
+	refreshing map[string]bool
+}{entries: make(map[string]liveCatalogEntry), refreshing: make(map[string]bool)}
 
 // liveCatalogFlight collapses concurrent discoveries for the same credential
 // into one upstream call. Without it, N clients hitting /v1/models while the
@@ -129,6 +130,35 @@ func pinnedEnabledModels(cd *shared.ConnectionData) bool {
 		return len(v) > 0
 	}
 	return false
+}
+
+// PrewarmLiveCatalogs warms the live catalog cache for every active connection
+// before the first client asks /v1/models. It is exported so the app startup
+// hook can run it in the background: a cold cache on a slow upstream would
+// otherwise put the full feed latency on that first request.
+//
+// The work is bounded by resolveLiveCatalog's own per-fetch timeout and the
+// caller's context; errors are swallowed because a cold cache simply falls
+// back to the static registry, and logging one per connection at boot would
+// be noise on installs with many dead credentials.
+func (h *ChatHandler) PrewarmLiveCatalogs(ctx context.Context) {
+	if h == nil || h.Repo == nil || ctx == nil {
+		return
+	}
+	conns, err := h.Repo.GetProviderConnections("", false)
+	if err != nil {
+		return
+	}
+	for _, conn := range conns {
+		if conn == nil || conn.IsActive == 0 {
+			continue
+		}
+		var connData shared.ConnectionData
+		if conn.Data != "" {
+			_ = json.Unmarshal([]byte(conn.Data), &connData)
+		}
+		h.resolveLiveCatalog(ctx, conn, &connData, conn.Provider)
+	}
 }
 
 // resolveLiveCatalog returns the live catalog for a provider connection, or nil
@@ -206,6 +236,14 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 	cacheKey := liveCatalogKey(providerID, conn, connData)
 	if cached, ok := liveCatalogCached(cacheKey); ok {
 		return cached
+	}
+	// A feed whose upstream takes several seconds must not put that latency on
+	// every /v1/models request when its 5-minute cache expires. Serve the last
+	// good catalog immediately and refresh once in the background; only a
+	// cold cache blocks the caller.
+	if stale, ok := liveCatalogStale(cacheKey); ok && liveCatalogStartRefresh(cacheKey) {
+		go h.refreshLiveCatalog(context.WithoutCancel(ctx), cacheKey, fetch, accessToken, conn)
+		return stale
 	}
 
 	// One upstream call per credential even when many requests race a cold
@@ -300,6 +338,48 @@ func liveCatalogStoreNegative(key string) {
 	liveCatalogStore.entries[key] = liveCatalogEntry{expiresAt: time.Now().Add(liveCatalogNegTTL)}
 }
 
+// liveCatalogStale returns the last good catalog whose TTL has passed. Unlike
+// liveCatalogCached it ignores the negative cache, so a failed refresh never
+// replaces a catalog we already served.
+func liveCatalogStale(key string) ([]LiveModel, bool) {
+	liveCatalogStore.mu.RLock()
+	defer liveCatalogStore.mu.RUnlock()
+	entry, ok := liveCatalogStore.entries[key]
+	if !ok || len(entry.models) == 0 || time.Now().Before(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.models, true
+}
+
+// liveCatalogStartRefresh claims a single background refresh per cache key.
+// It returns false when another refresh is already in flight.
+func liveCatalogStartRefresh(key string) bool {
+	liveCatalogStore.mu.Lock()
+	defer liveCatalogStore.mu.Unlock()
+	if liveCatalogStore.refreshing[key] {
+		return false
+	}
+	liveCatalogStore.refreshing[key] = true
+	return true
+}
+
+func (h *ChatHandler) refreshLiveCatalog(ctx context.Context, key string, fetch func(context.Context, string) []LiveModel, token string, conn *models.ProviderConnection) {
+	defer func() {
+		liveCatalogStore.mu.Lock()
+		delete(liveCatalogStore.refreshing, key)
+		liveCatalogStore.mu.Unlock()
+	}()
+	discovered := fetch(ctx, token)
+	if len(discovered) == 0 && liveCatalogRefreshToken(conn) != "" {
+		if refreshed, _, err := h.forceRefreshOAuthToken(conn.ID); err == nil && refreshed != "" {
+			discovered = fetch(ctx, refreshed)
+		}
+	}
+	if len(discovered) > 0 {
+		liveCatalogStoreModels(key, discovered)
+	}
+}
+
 // InvalidateLiveCatalog purges cached live catalog entries for a provider.
 // If providerID is empty, it purges all cached entries.
 func InvalidateLiveCatalog(providerID string) {
@@ -307,12 +387,14 @@ func InvalidateLiveCatalog(providerID string) {
 	defer liveCatalogStore.mu.Unlock()
 	if providerID == "" {
 		liveCatalogStore.entries = make(map[string]liveCatalogEntry)
+		liveCatalogStore.refreshing = make(map[string]bool)
 		return
 	}
 	prefix := providerID + "|"
 	for k := range liveCatalogStore.entries {
 		if k == providerID || strings.HasPrefix(k, prefix) {
 			delete(liveCatalogStore.entries, k)
+			delete(liveCatalogStore.refreshing, k)
 		}
 	}
 }

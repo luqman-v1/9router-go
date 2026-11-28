@@ -141,6 +141,10 @@ func ProvideServer(p ServerParams) *http.Server {
 			executor.StartGeminiWebRotation(shutdown.Context(), p.Repo)
 			startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
 			startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+			// Keep /v1/models warm before the first client and every 4 minutes
+			// after; a cold live feed on a slow upstream used to put 3-24s on
+			// that first request.
+			startLiveCatalogPrewarm(shutdown.Context(), p.Repo, p.ChatHandler)
 			startUptimeHeartbeat(shutdown.Context(), p.Repo)
 			startHeadroomOnBoot(p.Repo, config.ResolveDataDir())
 			// free-pi's ad creatives are fetched in the background so the
