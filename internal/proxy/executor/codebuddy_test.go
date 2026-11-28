@@ -104,6 +104,24 @@ func TestTransformCodebuddyBody_NoReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestTransformCodebuddyBody_EmptyReasoningEffort(t *testing.T) {
+	// Upstream decolua/9router #2071: reasoning is opt-in. An explicitly
+	// empty reasoning_effort is falsy in the JS executor (`else if (eff)`),
+	// so reasoning_summary must not be injected and trip the content filter.
+	input := `{"model":"glm-5.2","messages":[{"role":"user","content":"hello"}],"reasoning_effort":""}`
+	out, err := transformCodebuddyBody([]byte(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if _, exists := m["reasoning_summary"]; exists {
+		t.Errorf("reasoning_summary must NOT be set when reasoning_effort is empty, got %v", m["reasoning_summary"])
+	}
+}
+
 func TestTransformCodebuddyBody_UpstreamMessageShape(t *testing.T) {
 	// Upstream PR 5032 parity: leading system prompt prepended, client system
 	// instructions preserved, user content as typed blocks.

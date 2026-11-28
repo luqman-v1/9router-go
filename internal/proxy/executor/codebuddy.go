@@ -41,8 +41,9 @@ var codebuddyRateLimitRegex = regexp.MustCompile(`(?i)超出频率限制|frequen
 //
 // It also handles reasoning_effort:
 //   - "none"/"off" → stripped (CodeBuddy gateway has no "none")
-//   - any other value → injects reasoning_summary="auto" so CodeBuddy
-//     surfaces the model's reasoning output.
+//   - non-empty value → injects reasoning_summary="auto" so CodeBuddy
+//     surfaces the model's reasoning output (upstream decolua/9router #2071)
+//   - absent or "" → no reasoning params (reasoning is opt-in)
 func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 	body, err := transformCodebuddyBody(req.Body)
 	if err != nil {
@@ -198,8 +199,11 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 	// Force stream — CodeBuddy rejects non-stream (HTTP 400, code 11101)
 	reqMap["stream"] = true
 
-	// Handle reasoning_effort / reasoning_summary
-	if eff, ok := reqMap["reasoning_effort"].(string); ok {
+	// Handle reasoning_effort / reasoning_summary. Reasoning is opt-in:
+	// upstream decolua/9router #2071 only mirrors reasoning_summary when the
+	// client actually asked for reasoning. An empty string is falsy upstream
+	// (JS `else if (eff)`), so it must not trip the content filter either.
+	if eff, ok := reqMap["reasoning_effort"].(string); ok && eff != "" {
 		switch eff {
 		case "none", "off":
 			delete(reqMap, "reasoning_effort")
