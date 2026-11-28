@@ -111,6 +111,7 @@ uci set 9router-go.main.host=''           # empty = all interfaces, 127.0.0.1 = 
 uci set 9router-go.main.data_dir='/opt/9router'
 uci set 9router-go.main.auto_update='0'
 uci set 9router-go.main.log_level='info'
+uci set 9router-go.main.initial_password='…'  # first dashboard login, empty = none
 uci commit 9router-go
 /etc/init.d/9router-go restart
 ```
@@ -133,6 +134,35 @@ opkg install luci-compat     # only needed on 21.02+
 
 Installing on such an image prints that hint. The gateway itself does not
 depend on LuCI; the page is optional.
+
+## Dashboard password
+The gateway ships no password of its own. With `initial_password` empty, a
+fresh install accepts the well-known default **only** from the router itself:
+a login over the LAN is refused with "Default password must be changed" until
+the password is changed from the machine running the gateway (`INITIAL_PASSWORD`
+set, or the dashboard reached on the router's own loopback).
+
+That guard is correct — a router sold with a known dashboard password is a
+router anyone on the LAN can reconfigure — but it leaves an operator who only
+has the web UI stuck until they have a shell. Setting the password at install
+time skips it:
+```sh
+uci set 9router-go.main.initial_password='a-password-you-choose'
+uci commit 9router-go
+/etc/init.d/9router-go restart
+```
+The value is exported as `INITIAL_PASSWORD` and is **plain text in
+`/etc/config/9router-go`** (mode `0644`, like every UCI file). Change it from
+the dashboard after the first login, which stores a bcrypt hash in the settings
+database, and then clear the option so the plain-text copy goes away:
+```sh
+uci set 9router-go.main.initial_password=''
+uci commit 9router-go
+```
+Note that this file already holds `jwt_secret`, which is enough to forge a
+session, so a local reader has an equivalent secret either way; the option does
+not widen the exposure, it just makes the file worth protecting. It is
+world-readable by default, so do not reuse a password from anywhere else.
 
 ## Updates: two paths, one version
 
@@ -315,9 +345,11 @@ python3 scripts/openwrt-vm-test.py \
 
 ## Notes and limits
 
-- The dashboard bundle is 4.6 MB of the binary, and the package is ~18 MB
-  compressed. On a 16 MB flash device, install to extroot or a USB mount;
-  `data_dir` must be writable and must have room for the database.
+- The gateway binary is ~50 MB installed (`Installed-Size` in the package is
+  51046 KiB); the `.ipk` itself is ~21 MB compressed, and the dashboard bundle
+  embedded in it is 4.6 MB of that. On a 16 MB flash device, install to extroot
+  or a USB mount; `data_dir` must be writable and must have room for the
+  database.
 - No firewall rule is opened automatically. `open_lan` (default `0`) is the only
   way this package writes one, and that rule is LAN input only: it never opens
   the WAN, and it is removed again when the option is turned off or the package

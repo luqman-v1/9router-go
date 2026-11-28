@@ -45,6 +45,19 @@ start_service() {
 
 	procd_open_instance
 	procd_set_param command "$PROG"
+	# Read here rather than with the options above: this is its only consumer,
+	# and keeping the two together leaves the block that sets the process
+	# limits independent of this one.
+	local initial_password
+	config_get initial_password main initial_password ''
+	# Without this the gateway keeps its built-in default and refuses to issue a
+	# session to a remote caller until the password is changed from the router
+	# itself — correct for a bare install, but it means an operator who reaches
+	# the dashboard over the LAN on first boot cannot log in until they have a
+	# shell. Setting it here is the OpenWrt-native way to skip that step.
+	if [ -n "$initial_password" ]; then
+		procd_set_param env INITIAL_PASSWORD="$initial_password"
+	fi
 	procd_set_param env DATA_DIR="$data_dir"
 	procd_set_param env PORT="$port"
 	procd_set_param env LOG_LEVEL="$log_level"
