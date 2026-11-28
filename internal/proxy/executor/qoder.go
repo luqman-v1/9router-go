@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 )
 
@@ -303,6 +304,13 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 	queueWaitStart := time.Now()
 	statusPollsEnabled := true
 	readyReplayUsed := false
+	queuedSeen := false
+	defer func() {
+		if queuedSeen {
+			qoderQueueFinish(context.Background(), req.Client, targetURL, creds,
+				qoderPayloadString(built.Payload, "request_set_id"), built.QoderKey, queueWaitStart)
+		}
+	}()
 	for {
 		resp, err := sendAttempt()
 		if err != nil {
@@ -327,6 +335,10 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 			}
 		}
 
+		queuedSeen = queuedSeen || queueInfo != nil
+		if queueInfo != nil {
+			log.Warn("qoder", "queue wait", "status", qoderQueueSays(queueInfo))
+		}
 		if queueInfo == nil {
 			// Not a queue signal: a mid-stream error is marked by the
 			// coalescer and a clean stream just continues. The peek consumed
@@ -373,10 +385,13 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 				RequestID:    qoderPayloadString(built.Payload, "request_id"),
 				SessionID:    qoderPayloadString(built.Payload, "session_id"),
 			})
+			if ok {
+				log.Warn("qoder", "queue status", "status", qoderQueueSays(polled))
+			}
 			if !ok {
 				// No usable status endpoint — keep the timed-replay behaviour.
 				statusPollsEnabled = false
-			} else if polled.IsQueued != nil && !*polled.IsQueued {
+			} else if qoderQueueReady(polled) {
 				// The status endpoint has been observed saying ready while the
 				// inference call is still refused. Replay once on its word; if
 				// that is refused too, stop trusting it.
@@ -712,6 +727,7 @@ func qoderQueuedTimeout(modelKey string, info *qoderQueueInfo, waited time.Durat
 	queueType := "?"
 	if info != nil {
 		queueType = orDefault(info.QueueType, "?")
+		log.Warn("qoder", "queue timeout", "status", qoderQueueSays(info))
 	}
 	return &proxy.UpstreamError{
 		StatusCode: http.StatusServiceUnavailable,

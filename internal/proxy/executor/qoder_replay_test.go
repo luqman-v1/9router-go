@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,8 +17,16 @@ import (
 // A queued model announces itself with a 10605 envelope; the executor must
 // wait it out and replay the same request instead of failing it as billing.
 func TestForwardQoder_ReplaysQueuedModel(t *testing.T) {
-	var inferenceCalls, statusCalls atomic.Int32
+	var inferenceCalls, statusCalls, finishCalls atomic.Int32
+	var finishBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "ask/finish") {
+			finishCalls.Add(1)
+			b, _ := io.ReadAll(r.Body)
+			finishBody = b
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method == http.MethodGet {
 			// The queue-status endpoint reports ready, so the replay is
 			// immediate and the test does not sleep.
@@ -44,6 +53,15 @@ func TestForwardQoder_ReplaysQueuedModel(t *testing.T) {
 	}
 	if statusCalls.Load() != 1 {
 		t.Errorf("status polls = %d, want 1", statusCalls.Load())
+	}
+	if finishCalls.Load() < 1 {
+		t.Errorf("ask/finish POSTs = %d, want >=1", finishCalls.Load())
+	}
+	if len(finishBody) > 0 {
+		plain := qoderDecodeBodyForTest(finishBody)
+		if !strings.Contains(string(plain), "request_set_id") {
+			t.Errorf("finish payload missing request_set_id: %s", string(plain))
+		}
 	}
 	if !strings.Contains(rec.Body.String(), "ok") {
 		t.Errorf("replayed completion lost: %s", rec.Body.String())
@@ -136,6 +154,10 @@ func TestForwardQoder_QueueWindowBeyondBudgetFailsFast(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if strings.Contains(r.URL.Path, "ask/finish") {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		inferenceCalls.Add(1)
@@ -271,5 +293,42 @@ func TestForwardQoder_FirstFrameErrorStatusMapping(t *testing.T) {
 				t.Errorf("status = %d, want %d", ue.StatusCode, tc.wantStatus)
 			}
 		})
+	}
+}
+
+// A status endpoint reporting isQueued:false but serviceAvailable:false is NOT
+// ready: the executor must keep waiting, not replay prematurely.
+func TestForwardQoder_StatusNotReadyWaits(t *testing.T) {
+	var inferenceCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "ask/finish") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method == http.MethodGet {
+			w.Write([]byte(`{"isQueued":false,"serviceAvailable":false,"retryAfterSeconds":1}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		inferenceCalls.Add(1)
+		inner := `{"code":"10605","message":"{\"isQueued\":true,\"queueType\":\"p3\",\"retryAfterSeconds\":30,\"subCode\":\"RESOURCE_LIMIT\"}","subCode":"RESOURCE_LIMIT"}`
+		w.Write([]byte(qoderEnvelopeError(http.StatusInternalServerError, inner)))
+	}))
+	defer srv.Close()
+	req := qoderRequest(t, srv)
+	ctx, cancel := context.WithTimeout(req.Ctx, 50*time.Millisecond)
+	defer cancel()
+	req.Ctx = ctx
+	rec := httptest.NewRecorder()
+	err := ForwardQoder(rec, req)
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UpstreamError, got %v", err)
+	}
+	if !strings.Contains(string(ue.Body), "still queued") {
+		t.Errorf("body = %s, want still queued (no premature replay)", ue.Body)
+	}
+	if n := inferenceCalls.Load(); n != 1 {
+		t.Errorf("inference calls = %d, want exactly 1 (no premature replay)", n)
 	}
 }

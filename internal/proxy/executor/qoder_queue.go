@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -469,4 +470,142 @@ func qoderFetchQueueStatus(ctx context.Context, client *http.Client, chatTargetU
 		return nil, false
 	}
 	return info, true
+}
+
+// qoderQueueFinish releases a held queue lease, best-effort. Port of upstream's
+// queueFinish: POST /algo/api/v2/service/ask/finish?Encode=1, signed, body
+// {payload, encodeVersion:"1"}, payload a JSON string carrying model_key,
+// request_set_id, user_id, time_consumed (ms since began).
+func qoderQueueFinish(ctx context.Context, client *http.Client, chatTargetURL string, creds QoderCosyCreds, requestSetID, modelKey string, began time.Time) {
+	if creds.UserID == "" {
+		return
+	}
+	base, err := url.Parse(chatTargetURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return
+	}
+	finishURL := base.Scheme + "://" + base.Host + "/algo/api/v2/service/ask/finish?Encode=1"
+
+	inner, err := json.Marshal(map[string]any{
+		"model_key":      modelKey,
+		"request_set_id": requestSetID,
+		"user_id":        creds.UserID,
+		"time_consumed":  time.Since(began).Milliseconds(),
+	})
+	if err != nil {
+		return
+	}
+	outer, err := json.Marshal(map[string]any{
+		"payload":       string(inner),
+		"encodeVersion": "1",
+	})
+	if err != nil {
+		return
+	}
+	encoded := QoderEncodeBody(outer)
+
+	headers, err := buildQoderCosyHeaders(encoded, finishURL, creds)
+	if err != nil {
+		return
+	}
+	headers["Accept"] = "application/json"
+	headers["Accept-Encoding"] = "identity"
+	headers["Content-Type"] = "application/json"
+
+	finishCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	resp, err := proxy.DoRequest(finishCtx, client, http.MethodPost, finishURL, headers, encoded)
+	if err != nil {
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+}
+
+// qoderQueueReady reports whether a polled queue status means the model is
+// actually ready to serve. isQueued:false with serviceAvailable:false must NOT
+// be treated as ready — Qoder would just re-queue the request.
+func qoderQueueReady(st *qoderQueueStatus) bool {
+	if st == nil || st.IsQueued == nil || *st.IsQueued {
+		return false
+	}
+	if st.ServiceAvailable != nil && !*st.ServiceAvailable {
+		return false
+	}
+	return true
+}
+
+// qoderQueueSays renders a queue status/info as a diagnostic string, matching
+// upstream's queueSays (QUEUE_FIELDS). Used in logs and error messages.
+func qoderQueueSays(st any) string {
+	var obj map[string]any
+	switch v := st.(type) {
+	case *qoderQueueStatus:
+		if v == nil {
+			return "nothing of the queue"
+		}
+		obj = map[string]any{
+			"isQueued":          qoderQueueBool(v.IsQueued),
+			"serviceAvailable":  qoderQueueBool(v.ServiceAvailable),
+			"queueType":         v.QueueType,
+			"queueCount":        qoderQueueNumber(v.QueueCount),
+			"retryAfterSeconds": qoderQueueNumber(v.RetryAfterSec),
+			"waitTime":          qoderQueueNumber(v.WaitTime),
+			"modelKey":          v.ModelKey,
+		}
+	case *qoderQueueInfo:
+		if v == nil {
+			return "nothing of the queue"
+		}
+		obj = map[string]any{
+			"isQueued":          qoderQueueBool(v.IsQueued),
+			"serviceAvailable":  qoderQueueBool(v.ServiceAvailable),
+			"queueType":         v.QueueType,
+			"queueCount":        qoderQueueNumber(v.QueueCount),
+			"retryAfterSeconds": qoderQueueNumber(v.RetryAfterSec),
+			"waitTime":          qoderQueueNumber(v.WaitTime),
+			"subCode":           v.SubCode,
+			"modelKey":          v.ModelKey,
+		}
+	case map[string]any:
+		obj = v
+	default:
+		return "nothing of the queue"
+	}
+	fields := []string{"isQueued", "serviceAvailable", "queueType", "queueCount", "retryAfterSeconds", "waitTime", "subCode", "modelKey"}
+	var parts []string
+	for _, k := range fields {
+		val, ok := obj[k]
+		if !ok || val == nil {
+			continue
+		}
+		s := fmt.Sprintf("%v", val)
+		if s == "" {
+			continue
+		}
+		parts = append(parts, k+" "+s)
+	}
+	if len(parts) == 0 {
+		return "nothing of the queue"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// qoderQueueBool renders a *bool as a printable string (or "" when nil),
+// so qoderQueueSays never formats a pointer address.
+func qoderQueueBool(p *bool) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatBool(*p)
+}
+
+// qoderQueueNumber renders a *float64 as a printable string (or "" when nil),
+// so qoderQueueSays never formats a pointer address.
+func qoderQueueNumber(p *float64) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*p, 'f', -1, 64)
 }
