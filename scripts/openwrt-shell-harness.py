@@ -310,11 +310,26 @@ def main():
         # scripts at a temp directory is what lets a case assert the file.
         crontab_dir = os.path.join(tmp, "crontabs")
         os.makedirs(crontab_dir, exist_ok=True)
+        # 9router-go-feed asks opkg what is installed and whether a CA bundle
+        # exists before it registers an https feed.
+        opkg_installed = os.path.join(tmp, "opkg-installed.txt")
+        write(opkg_installed, "", 0o644)
+        ca_file = os.path.join(tmp, "ca-certificates.crt")
+        feeds_conf = os.path.join(tmp, "customfeeds.conf")
+        opkg_stub = os.path.join(tmp, "opkg")
+        write(opkg_stub,
+              "#!/bin/sh\n"
+              'case "$1" in\n'
+              '  list-installed) [ -f "$OPKG_INSTALLED" ] && cat "$OPKG_INSTALLED"; exit 0 ;;\n'
+              '  print-architecture) printf \'arch x86_64 1\\narch all 100\\n\'; exit 0 ;;\n'
+              "esac\n"
+              "exit 0\n")
         firewall_cfg = os.path.join(tmp, "firewall")
         write(firewall_cfg, "config defaults\n\toption input 'REJECT'\n", 0o644)
 
         env = dict(os.environ)
         env["UCI_DB"] = db
+        env["OPKG_INSTALLED"] = opkg_installed
         env["WGET_STATUS"] = status
 
         init_text = open(os.path.join(src, "9router-go.init")).read()
@@ -343,6 +358,11 @@ def main():
             text = text.replace("/etc/config/firewall", sh_path(firewall_cfg))
             text = re.sub(r"/etc/init\.d/firewall\s+reload", "true", text)
             text = re.sub(r"/etc/init\.d/cron\s+restart", "true", text)
+            text = text.replace("command -v opkg", "test -x %s" % sh_path(opkg_stub))
+            text = text.replace("opkg list-installed", '"%s" list-installed' % sh_path(opkg_stub))
+            text = text.replace("opkg print-architecture", '"%s" print-architecture' % sh_path(opkg_stub))
+            text = text.replace("/etc/opkg/customfeeds.conf", sh_path(feeds_conf))
+            text = text.replace("/etc/ssl/certs/ca-certificates.crt", sh_path(ca_file))
             text = text.replace("/etc/crontabs", sh_path(crontab_dir))
             text = text.replace("/etc/init.d/9router-go", sh_path(initd_stub))
             return text
@@ -706,6 +726,28 @@ def main():
              "procd params: %r" % (r.procd,))
         case("empty initial_password does not abort start", r.returncode == 0,
              "exit %d, stderr %r" % (r.returncode, r.stderr[-200:]))
+        # 9. 9router-go-feed: the https preflight.
+        # The feed is https, and opkg needs a libustream provider plus a CA
+        # bundle to fetch it. Without them `opkg update` fails with `SSL support
+        # not available`, one command after the feed was registered, and nothing
+        # points at the missing package.
+        feed_path = os.path.join(tmp, "9router-go-feed")
+        write(feed_path, retarget(open(os.path.join(src, "9router-go-feed")).read()))
+        r = run([sh, feed_path, "add"], env, cwd=tmp)
+        case("feed add warns when the image has no https provider",
+             "libustream" in r.stderr and os.path.exists(feeds_conf),
+             "stderr: %r, conf: %r" % (r.stderr[-200:], os.path.exists(feeds_conf)))
+        case("feed add registers this architecture\'s URL",
+             "x86_64" in open(feeds_conf).read(),
+             "conf: %r" % (open(feeds_conf).read()[:120],))
+        # with the provider and a CA bundle present the same command is silent
+        write(opkg_installed, "libustream-mbedtls\t2023-01-01\n", 0o644)
+        write(ca_file, "ca\n", 0o644)
+        run([sh, feed_path, "remove"], env, cwd=tmp)
+        r = run([sh, feed_path, "add"], env, cwd=tmp)
+        case("feed add is silent when https is available",
+             "warning" not in r.stderr and "src/gz 9router-go https://" in open(feeds_conf).read(),
+             "stderr: %r" % (r.stderr[-200:],))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
