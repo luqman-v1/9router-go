@@ -453,6 +453,8 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	r.Get("/api/keys", dashH.HandleGetApiKeys)
 	r.Post("/api/keys", dashH.HandleCreateApiKey)
+	// Static segment before /api/keys/{id}, which would read "import" as an id.
+	r.Post("/api/keys/import", dashH.HandleImportApiKey)
 	r.Delete("/api/keys/{id}", dashH.HandleDeleteApiKey)
 	r.Put("/api/keys/{id}/toggle", dashH.HandleToggleApiKey)
 	r.Post("/api/keys/{id}/rotate", dashH.HandleRotateApiKey)
