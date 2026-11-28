@@ -31,6 +31,16 @@ var (
 	levelClaudeNoXHigh = []string{"none", "low", "medium", "high", "max"}
 )
 
+// openaiMaxEffortModel matches GPT-5.6 / GPT-6 ids on OpenAI-compatible
+// nodes, which accept the "max" effort (unlike the built-in openai lane).
+var openaiMaxEffortModel = regexp.MustCompile(`(?i)(?:^|/)gpt-(?:5\.6|6)(?:[.-]|$)`)
+
+// isOpenAICompatibleNode reports whether provider is an OpenAI-compatible
+// custom node (prefix "openai-compatible-").
+func isOpenAICompatibleNode(provider string) bool {
+	return strings.HasPrefix(provider, "openai-compatible-")
+}
+
 // codexGPT56Levels is the shared set for the GPT-5.6 Codex family.
 func codexGPT56Levels() []string {
 	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
@@ -218,6 +228,7 @@ func GetThinkingLevels(provider, model string) []string {
 	// A registry-declared per-model set wins over everything, then the pattern
 	// table, then the wire format's default — the order upstream resolves in.
 	levels := codexModelLevels(provider, model)
+	patternMatched := false
 	if levels == nil {
 		levels = formatLevels[caps.ThinkingFormat]
 		if levels == nil {
@@ -229,7 +240,16 @@ func GetThinkingLevels(provider, model string) []string {
 			}
 			if matchThinkingGlob(entry.Pattern, model) {
 				levels = entry.Levels
+				patternMatched = true
 				break
+			}
+		}
+		// OpenAI-compatible nodes expose GPT-5.6 / GPT-6 with the "max" effort,
+		// unlike the built-in openai lane which clamps "max" to "xhigh".
+		if !patternMatched && isOpenAICompatibleNode(provider) {
+			baseID, _ := splitThinkingSuffix(model)
+			if openaiMaxEffortModel.MatchString(baseID) {
+				levels = codexGPT56Levels()
 			}
 		}
 	}
