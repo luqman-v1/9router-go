@@ -197,6 +197,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		// API Keys
 		r.Get("/keys", h.HandleGetApiKeys)
 		r.Post("/keys", h.HandleCreateApiKey)
+		// Idempotent import (#1557). The static segment has to be registered
+		// before the parameterised /keys/{id} routes below, which would
+		// otherwise read "import" as an id.
+		r.Post("/keys/import", h.HandleImportApiKey)
 		r.Delete("/keys/{id}", h.HandleDeleteApiKey)
 		r.Put("/keys/{id}/toggle", h.HandleToggleApiKey)
 		r.Post("/keys/{id}/rotate", h.HandleRotateApiKey)
