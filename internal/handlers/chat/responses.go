@@ -89,6 +89,10 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// Request-level provider preferences, same contract as the chat and
+	// messages lanes.
+	prefs := parseProviderPreferences(body)
+	body = stripProviderPreferencesField(body)
 	// A "(level)" suffix is a request override, not part of the model id: it
 	// comes off the name before the name is resolved against the aliases and
 	// the combos, and the intent it carries travels on the context.
@@ -104,7 +108,7 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
-	modelInfo, err := h.resolveModel(modelName)
+	modelInfo, err := h.resolveModelWithPrefs(modelName, prefs)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())

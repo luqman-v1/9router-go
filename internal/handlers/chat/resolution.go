@@ -101,6 +101,38 @@ func (h *ChatHandler) ResolveModel(modelStr string) (*ModelInfo, error) {
 	return h.resolveModel(modelStr)
 }
 
+// resolveModelWithPrefs is resolveModel plus the request-level provider
+// preferences (the OpenRouter-style "provider" object): a combo's member
+// list is filtered and reordered by the caller's steer, and a single-model
+// request is rejected when its one provider is excluded. The zero-value
+// preferences are a no-op wrapper, so the dispatch paths that carry none
+// behave exactly as resolveModel does.
+func (h *ChatHandler) resolveModelWithPrefs(modelStr string, prefs providerPreferences) (*ModelInfo, error) {
+	info, err := h.resolveModel(modelStr)
+	if err != nil || info == nil || !prefs.active() {
+		return info, err
+	}
+	if len(info.ComboModels) > 0 {
+		kept, ferr := prefs.filterCandidates(info.ComboModels, h.nodePrefixToIDMap())
+		if ferr != nil {
+			return nil, ferr
+		}
+		// The combo's primary fields describe what a client sees first —
+		// the context-window lookup and the usage row read Provider/Model —
+		// so they must follow the first surviving member, not the one the
+		// preferences removed. The connection is picked per attempt from
+		// the member list, so the stale id is cleared rather than reused.
+		info.Provider, info.Model = splitProviderModel(kept[0])
+		info.ConnectionID = ""
+		info.ComboModels = kept
+		return info, nil
+	}
+	if serr := prefs.allowsSingle(info.Provider); serr != nil {
+		return nil, serr
+	}
+	return info, nil
+}
+
 // resolveProviderAlias resolves a provider alias to its canonical ID.
 func resolveProviderAlias(alias string) string {
 	if canonical, ok := providers.ProviderAliasMap[alias]; ok {

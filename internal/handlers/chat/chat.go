@@ -65,6 +65,13 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Request-level provider preferences (the OpenRouter-style "provider"
+	// object). Parsed and stripped here, once, so every later stage — cache
+	// keys, resolution, translation, upstream dispatch — sees one body that
+	// no longer carries the client-only field.
+	prefs := parseProviderPreferences(body)
+	body = stripProviderPreferencesField(body)
+
 	// A "(level)" suffix is a request override, not part of the model id: it
 	// comes off the name before the name is resolved against the aliases and
 	// the combos, and the intent it carries travels on the context.
@@ -202,7 +209,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	modelInfo, err := h.resolveModel(modelName)
+	modelInfo, err := h.resolveModelWithPrefs(modelName, prefs)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -364,6 +371,12 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request-level provider preferences, same contract as the chat lane:
+	// parsed and stripped before translation so the client-only field never
+	// rides the translated body upstream.
+	prefs := parseProviderPreferences(body)
+	body = stripProviderPreferencesField(body)
+
 	// A "(level)" suffix is a request override, not part of the model id: it
 	// comes off the name before the name is resolved against the aliases and
 	// the combos, and the intent it carries travels on the context.
@@ -394,7 +407,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	modelInfo, err := h.resolveModel(modelName)
+	modelInfo, err := h.resolveModelWithPrefs(modelName, prefs)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
