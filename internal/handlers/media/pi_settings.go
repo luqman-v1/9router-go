@@ -196,7 +196,7 @@ func (h *PiHandler) HandlePost(w http.ResponseWriter, r *http.Request) {
 	if api, _ := updated["api"].(string); strings.TrimSpace(api) == "" {
 		updated["api"] = "openai-completions"
 	}
-	updated["models"] = piModelList(req)
+	updated["models"] = piModelList(req, previous)
 
 	providers[piProviderName] = updated
 	existing["providers"] = providers
@@ -257,32 +257,54 @@ func (h *PiHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 // piModelList normalizes the requested models: a bare id becomes a full entry,
 // an object keeps the caller's values where set, and the single `model` field
-// fills in when no list arrived (upstream POST defaults).
-func piModelList(req piSettingsRequest) []map[string]any {
+// fills in when no list arrived (upstream POST defaults). Each incoming entry is
+// merged over the previously saved entry with the same id.
+func piModelList(req piSettingsRequest, previous map[string]any) []map[string]any {
 	const (
 		defaultModelID    = "provider/model-id"
-		defaultContextWin = 128000
-		defaultMaxTokens  = 16384
+		defaultContextWin = 200000
+		defaultMaxTokens  = 64000
 	)
+	prevModels := make(map[string]map[string]any)
+	if raw, ok := previous["models"].([]any); ok {
+		for _, m := range raw {
+			entry, ok := m.(map[string]any)
+			if !ok {
+				if id, ok := m.(string); ok {
+					id = strings.TrimSpace(id)
+					if id != "" {
+						prevModels[id] = map[string]any{"id": id}
+					}
+				}
+				continue
+			}
+			id, _ := entry["id"].(string)
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			prevModels[id] = entry
+		}
+	}
+
 	out := make([]map[string]any, 0, len(req.Models))
 	for _, m := range req.Models {
 		switch entry := m.(type) {
 		case string:
 			if id := strings.TrimSpace(entry); id != "" {
-				out = append(out, piModelEntry(id, id, defaultContextWin, defaultMaxTokens))
+				out = append(out, piMergeModel(map[string]any{"id": id}, prevModels[id]))
 			}
 		case map[string]any:
 			id, _ := entry["id"].(string)
 			if strings.TrimSpace(id) == "" {
 				id = defaultModelID
 			}
-			name, _ := entry["name"].(string)
-			if strings.TrimSpace(name) == "" {
-				name = id
+			merged := map[string]any{}
+			for k, v := range entry {
+				merged[k] = v
 			}
-			contextWindow := piIntOr(entry["contextWindow"], defaultContextWin)
-			maxTokens := piIntOr(entry["maxTokens"], defaultMaxTokens)
-			out = append(out, piModelEntry(id, name, contextWindow, maxTokens))
+			merged["id"] = id
+			out = append(out, piMergeModel(merged, prevModels[id]))
 		}
 	}
 	if len(out) > 0 {
@@ -292,7 +314,151 @@ func piModelList(req piSettingsRequest) []map[string]any {
 	if id == "" {
 		id = defaultModelID
 	}
-	return []map[string]any{piModelEntry(id, id, defaultContextWin, defaultMaxTokens)}
+	return []map[string]any{piMergeModel(map[string]any{"id": id}, prevModels[id])}
+}
+
+// piMergeModel merges an incoming model entry over its previously saved
+// counterpart, applying Pi's schema rules.
+func piMergeModel(incoming map[string]any, prev map[string]any) map[string]any {
+	if prev == nil {
+		prev = map[string]any{}
+	}
+	merged := map[string]any{}
+	for k, v := range prev {
+		merged[k] = v
+	}
+	for k, v := range incoming {
+		merged[k] = v
+	}
+
+	id, _ := merged["id"].(string)
+	if strings.TrimSpace(id) == "" {
+		id = "provider/model-id"
+	}
+
+	name := id
+	if n, _ := incoming["name"].(string); strings.TrimSpace(n) != "" && strings.TrimSpace(n) != id {
+		name = strings.TrimSpace(n)
+	} else if n, _ := prev["name"].(string); strings.TrimSpace(n) != "" {
+		name = strings.TrimSpace(n)
+	}
+
+	contextWindow := piCap(incoming["contextWindow"], prev["contextWindow"], 200000, 2000000)
+	maxTokens := piCap(incoming["maxTokens"], prev["maxTokens"], 64000, 200000)
+
+	next := map[string]any{
+		"id":            id,
+		"name":          name,
+		"contextWindow": contextWindow,
+		"maxTokens":     maxTokens,
+	}
+	delete(next, "input")
+	delete(next, "reasoning")
+	delete(next, "thinkingLevelMap")
+
+	clean := piSanitizeModelCaps(merged)
+	if v, ok := clean["input"]; ok {
+		next["input"] = v
+	}
+	if v, ok := clean["reasoning"]; ok {
+		next["reasoning"] = v
+	}
+	if v, ok := clean["thinkingLevelMap"]; ok {
+		next["thinkingLevelMap"] = v
+	}
+	return next
+}
+
+// piCap clamps a numeric value to [1,max], falling back when absent/invalid.
+func piCap(primary, secondary any, fallback, max int) int {
+	for _, v := range []any{primary, secondary} {
+		n := piToFloat(v)
+		if n > 0 && n <= float64(max) {
+			return int(n)
+		}
+	}
+	return fallback
+}
+
+func piToFloat(v any) float64 {
+	switch n := v.(type) {
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	}
+	return 0
+}
+
+// piSanitizeModelCaps mirrors sanitizePiModelCaps in web/src/lib/piModels.ts.
+func piSanitizeModelCaps(raw map[string]any) map[string]any {
+	clean := map[string]any{}
+	if input := piSanitizeInput(raw["input"]); input != nil {
+		clean["input"] = input
+	}
+	if r, ok := raw["reasoning"].(bool); ok {
+		clean["reasoning"] = r
+	}
+	if tlm := piSanitizeThinkingLevelMap(raw["thinkingLevelMap"]); tlm != nil {
+		clean["thinkingLevelMap"] = tlm
+	}
+	return clean
+}
+
+func piSanitizeInput(v any) any {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := []any{}
+	for _, item := range arr {
+		s, ok := item.(string)
+		if !ok {
+			continue
+		}
+		if s != "text" && s != "image" {
+			continue
+		}
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func piSanitizeThinkingLevelMap(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	levels := []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+	clean := map[string]any{}
+	for _, level := range levels {
+		val, present := m[level]
+		if !present {
+			continue
+		}
+		switch vv := val.(type) {
+		case string:
+			clean[level] = vv
+		case nil:
+			clean[level] = nil
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	return clean
 }
 
 func piModelEntry(id, name string, contextWindow, maxTokens int) map[string]any {

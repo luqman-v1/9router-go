@@ -133,7 +133,7 @@ func TestPiSettingsPost(t *testing.T) {
 		}
 		models := block["models"].([]any)
 		first := models[0].(map[string]any)
-		if first["id"] != "provider/model-id" || first["contextWindow"].(float64) != 128000 || first["maxTokens"].(float64) != 16384 {
+		if first["id"] != "provider/model-id" || first["contextWindow"].(float64) != 200000 || first["maxTokens"].(float64) != 64000 {
 			t.Errorf("unexpected default model entry: %v", first)
 		}
 	})
@@ -195,7 +195,7 @@ func TestPiSettingsPost(t *testing.T) {
 			t.Fatalf("expected every entry kept with upstream defaults, got %v", models)
 		}
 		first := models[0].(map[string]any)
-		if first["id"] != "m1" || first["name"] != "m1" || first["contextWindow"].(float64) != 128000 {
+		if first["id"] != "m1" || first["name"] != "m1" || first["contextWindow"].(float64) != 200000 {
 			t.Errorf("string entry not normalized: %v", first)
 		}
 		second := models[1].(map[string]any)
