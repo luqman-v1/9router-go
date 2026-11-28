@@ -1,5 +1,570 @@
 # Changelog
 
+## [v1.9.18-exp.2] - 2026-11-28
+
+### Fixed
+
+- `/v1/models` no longer takes >10s when a provider's `/v1/models` feed is slow. Two causes were measured against the live `xai.terablade.my.id` feed: (1) the gateway-shaped response is ~4.6 MB decoded, which exceeded the 4 MiB read cap and made JSON parsing fail only after the full upstream round trip had already been paid; (2) when the 5-minute live-catalog cache expired, every request blocked on a fresh multi-second fetch. The read cap is now 32 MiB (still bounded), and an expired-but-good catalog is served immediately while one background refresh repopulates it. Regression tests cover both cases.
+
+- The live catalog is now warmed on boot and every 4 minutes in the background, so the first `/v1/models` request after startup also sees a warm cache instead of paying the full upstream latency. Inactive connections are skipped.
+
+### fix(free-pi): let a manual `x-client-version` override win
+
+An operator who sets `x-client-version` in the dashboard's provider header
+overrides expects that value to be the final word. Today the free-pi executor
+still resolves the version from the live `/client-version` feed on every
+request; the override only won because the executor happens to copy
+`StaticHeaders` over its own map last. That left two inconsistencies: the log
+reported the resolved value rather than the one actually sent, and a 426 could
+trigger a "self-heal" retry that replayed the operator's header unchanged.
+
+- A configured `x-client-version` (any RFC 7230 spelling, matched
+  case-insensitively) is now detected up front and used directly as
+  `state.ClientVersion`; the automatic resolver is skipped entirely.
+- A 426 with a manual override is reported immediately instead of spending a
+  retry that cannot change the header — the operator owns that decision.
+- No override configured: behaviour is unchanged, the live-feed resolver still
+  lifts stale pins and self-heals 426 as before.
+
+Covered by three table/flow tests: manual override wins over a newer published
+`latest` for both lower- and mixed-case names, no-override keeps automatic
+resolution, and a 426 with an override is surfaced in one attempt. `go test`
+for `internal/proxy/executor` passes, `gofmt` clean.
+
+### fix(free-pi): send the published official CLI version instead of an unpublished 0.7
+
+Requests to `fp/deepseek/deepseek-v4-flash` failed with HTTP 426
+`{"code":"upgrade_required","message":"This free-pi-cli version is not an official release..."}`:
+the gateway sent `x-client-version: 0.7`, but the server's live
+`GET /client-version` publishes `min=latest=0.6.28` and npm has never released
+a `0.7`. The 426 handler treated this as the older `client_outdated` gate: it
+refreshed the snapshot, saw no floor advance past `0.7`, skipped the retry, and
+relayed 426 to the client. The `0.7` compiled-in floor was introduced by #1075
+when live `latest` was still below it; it became the bug once the server began
+enforcing that only published versions are accepted.
+
+- **Publish `latest` is the ceiling.** `ResolveFreePiClientVersion` now clamps
+  the resolved header to the server's published `latest` when one is available;
+  a stored or compiled-in version above it can no longer reach the wire.
+  `min` remains the floor, so a server-side raise before npm publishes still
+  wins. The compiled-in fallback drops to `0.6.28` (the verified current
+  release) and is only used when `/client-version` is unreachable.
+- **Code-aware 426 handling.** `freePiVersionRetry` reads the upstream error
+  code: `upgrade_required` ("not an official release") forces the header to the
+  published `latest` and retries once even when no version floor advanced;
+  `client_outdated` keeps the existing refresh-and-retry path. The retry stays
+  at exactly one attempt, with no re-login and no loop.
+- **Contracts updated with sources.** Two older assertions that a stored/compiled
+  version could exceed the server's published `latest` were replaced: live feed
+  2026-11-28, npm registry `free-pi-cli@0.6.28`, and the official CLI's
+  `src/version.ts` (`CLI_VERSION` from `package.json`) disprove them. The fixture
+  now records `min=latest=0.6.28`.
+
+## Live e2e (no mocks)
+
+Built the patched binary and ran it against a copy of the real `DATA_DIR` on an
+isolated port, using the operator's real free-pi connection
+(`fp-b7be88ef107b`, stored login pin `0.6.16`) and real API key. No stub, fake
+upstream, or synthetic response was involved. Three consecutive
+`POST /v1/chat/completions` requests for `fp/deepseek/deepseek-v4-flash` went
+through the gateway to `api.freepi.ai` and returned **HTTP 200** with real
+completions (`PONG`, `OK`, `OK`); the gateway logged
+`[usage] logged provider=free-pi model=deepseek/deepseek-v4-flash ... conn=fp-b7be88ef107b egress=direct`.
+No 426 or `upgrade_required` appeared in the log. The live feed still reports
+`min=latest=0.6.28`, confirming the pinned `0.6.16` was lifted per request
+without re-login. The original database was never used by the test process.
+
+Verified: a reproduction stub (426 `upgrade_required`, `latest=0.6.28`) failed
+on the base with one attempt and the 426 relayed; after the fix both attempts
+carry `0.6.28` and the retry succeeds. `go test` for `internal/providers` and
+`internal/proxy/executor`, `go vet`, `gofmt`, and `make test-integration` pass.
+
+### Added
+
+- `POST /api/keys/import` imports a client API key idempotently (#1557, ported
+  from `diegosouzapw/OmniRoute` `v3.8.54`). The body carries the secret and
+  optional `id`, `name`, `machineId` and `allowedModels`; the secret is stored
+  as an argon2id verifier plus its SHA-256 lookup hash, never in plaintext.
+  Replaying the same body answers `200` with the stored row instead of `409`, so
+  a scripted import is safe to retry; a body that would overwrite a different
+  secret, or a malformed secret or id, is refused (`409` / `400`) and leaves the
+  stored row untouched. The response carries the masked display value and never
+  `keyHash` or `lookupHash`.
+- `Repo.ImportApiKey` (`internal/db/apikeys_import.go`) with
+  `ErrApiKeyImportConflict` / `ErrApiKeyImportInvalid`, writing the key row and
+  its allowlist in one transaction on both SQLite and PostgreSQL.
+
+Verified with `go test ./internal/db/... ./internal/handlers/dashboard/...`,
+`go vet` on both packages, and `gofmt -l internal/`.
+
+### Added
+
+- POST `/v1/multimodal-embeddings` and `/multimodal-embeddings` aliases for `/v1/embeddings`, sharing the embeddings handler; `kindFromEndpoint` classifies both spellings as `embedding`.
+
+### fix(codebuddy): keep reasoning opt-in when reasoning_effort is empty
+
+- `transformCodebuddyBody` no longer injects `reasoning_summary: "auto"` when
+  `reasoning_effort` is an empty string. Upstream `decolua/9router` treats
+  reasoning as opt-in (`else if (eff)`), so an empty value is falsy and must
+  not trip Tencent's content filter — the same class of failure as upstream
+  #2071, where forced reasoning params made CodeBuddy return a content error.
+- Added a table-driven regression test covering the empty-string case, next
+  to the existing no-effort / `none` / `off` / active-effort cases.
+- Verified with `go test ./internal/proxy/executor/ -count=1`.
+
+### qoder: lease release + prompt/status parity (10605)
+
+- Release a held queue lease after a queued run via `qoderQueueFinish`
+  (`POST <origin>/algo/api/v2/service/ask/finish?Encode=1`, COSY-signed),
+  best-effort with a 3s timeout; never blocks or fails the inference result.
+- Tighten the readiness gate: `isQueued == false && serviceAvailable != false`,
+  keeping the "still queued" wording in timeout errors.
+- Port prompt transforms `qoderAsAgentSDK` and `qoderHarnessComma` into the
+  system text before sending.
+- Applies to both `qoder` and `qoder-cn` without cross-aliasing hosts or
+  credentials (§3).
+
+Source: magpie-community/plugins main commits de308730f (0.2.72),
+1e4844b34 (0.2.73), 4c9f36bd1 (0.2.74), cbd075ff2 (0.2.75).
+
+### Fixed
+
+- Preserve `"max"` reasoning effort for GPT-5.6 / GPT-6 on OpenAI-compatible
+  custom nodes (`openai-compatible-*`), matching the GPT-5.6 Codex family's
+  level set instead of clamping to `"xhigh"`. The compat fallback is scoped
+  to the case where no registry model entry and no `patternThinking` rule
+  matched, so an explicit model/pattern rule still wins, and the built-in
+  `openai` lane is untouched (strict provider isolation).
+- `thinking.Apply` / `thinking.ApplyJSON` normalize `output_config.effort: "max"` to `reasoning_effort: "max"` on OpenAI targets for these nodes while clamping `"gpt-5"` and the built-in `openai` lane to `"xhigh"`.
+- Added `internal/providers/thinking_levels_compat_test.go` and
+  `internal/thinking/openai_compat_max_effort_test.go`.
+
+### Fixed
+
+- **Atomic logo upload staging, stream cap, and SVG CSP sandbox**: `HandleUploadLogo` now bounds multipart wire reads with `http.MaxBytesReader`, stages uploads in a temp file before saving settings and swapping into place so errors preserve existing assets, and `HandleServeUploads` attaches a strict `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` header to served SVGs.
+
+### Fixed
+
+- **Chat OAuth refresh vault hydration and sealing**: `oauthRefreshNeeded`, `refreshOAuthTokenIfExpired`, `refreshOAuthLocked`, and `forceRefreshLocked` now read via `Repo.GetProviderConnectionByID` and write via `Repo.UpdateConnectionData` so vault-sealed OAuth connections refresh properly and never leak rotated tokens plaintext at rest.
+
+### Fixed
+
+- **Cline OAuth vault sealing and relogin retention**: `HandleClineExchange` now reads and writes connections via `Repo.GetProviderConnectionByID`, `Repo.ReplaceProviderConnectionPayload`, and `Repo.CreateProviderConnectionFull` with request context so credentials are sealed when `ROUTER_MASTER_KEY` is configured and relogin retains prior sealed refresh tokens.
+
+### fix(zcode): report the plan gateway's bare ACK as an explicit upstream failure
+
+- **Root cause** (`internal/proxy/executor/zcode.go`): the ZCode start-plan gateway answers `POST /api/v1/zcode-plan/anthropic/v1/messages` with HTTP 200 and only `{"code":0,"msg":"","logid":"..."}` when it acknowledges a request without dispatching a completion. `zcodeEnvelopeError` treated `code:0` as success, so the body reached the Claude→OpenAI translator and became an empty `chat.completion`. The shared probe then reported the misleading `502 upstream answered 200 without a completion: the first choice carries no content, tool call or reasoning`, which hid the real upstream verdict.
+- **Fix** (`zcode.go`): `zcodeIsBareAck` recognises the narrow no-op envelope (zero code, empty msg, log id, no `type`/`content`) and `zcodeEnvelopeError` maps it to a 502 with a client-readable error body that names the cause and preserves the upstream `logid` for support. The 502 stays in `providers.RetryableStatusCodes`, so combo rotation and per-model cooldown still engage; both known zcode accounts are now tried instead of stalling on one.
+- **Tests**: `zcode_envelope_test.go` covers the bare ACK (numeric and string code), the rendered client body, and negative cases (real Claude completion, non-zero drain code, content-bearing success, no log id, non-JSON). `live_e2e_test.go` adds `TestLiveE2E_Zcode_BareAckDocumentsUpstream`, gated by `9ROUTER_LIVE_TESTS`, which drives the real handler against the live gateway and asserts the explicit reason replaces the "first choice carries no content" message.
+- **Verified live** on 2026-11-28: `9ROUTER_LIVE_TESTS=1 go test ./internal/handlers/chat -run TestLiveE2E_Zcode_BareAckDocumentsUpstream` passes. The gateway responds `502` with `ZCode start-plan gateway acknowledged the request without returning a completion` plus the upstream log id, and the fallback log shows rotation across both zcode connections.
+
+### fix(zcode): don't pin x-zcode-app-version to a retired client version
+
+- **Root cause** (`internal/proxy/executor/zcode.go`, `zcode_identity_system.json`): the embedded identity used `x-zcode-app-version: 3.16.3`. Live 2026-11-28 testing proved that any pinned version is silently acknowledged by the start-plan gateway; sending `unknown` dispatches the request to the model. The user agent is irrelevant (`ZCode/3.16.3`, `ZCode/3.17.2`, `ZCode/unknown` all dispatch when `x-zcode-app-version` is `unknown`), so the version header alone is the gate.
+- **Fix**: default `zcodeAppVersion` to `unknown` and align `sdkUserAgent` to `ZCode/unknown`. `ZCODE_IDENTITY_APP_VERSION` still overrides for operators who need a pinned value. `TestZcodePlanRequestHeadersAreNotPinned` pins both headers so a future identity refresh cannot reintroduce the ACK.
+- **Verified live** on 2026-11-28 against the rebuilt binary: `zcode/glm-5.3-flash` non-streaming ping returns `content: "OK"` with `reasoning_content`, and a tool-call request returns `tool_calls[0].function = get_weather({"city":"Jakarta"})` with `finish_reason: "tool_calls"`.
+
+### Fixed
+
+- Translator: retain Claude `cache_control` markers for DashScope cache-preserving targets (`alicode`, `alicode-intl`, `alitp-intl`, `qwencloud`, `alims-intl`) in addition to OpenRouter Anthropic models. `TranslateClaudeToOpenAI` now uses `PreservesClaudeCacheControl`, which covers both lanes, and `convertClaudeSystemPrompt` transfers a `cache_control` marker from a billing-header-only system block onto the preceding retained block instead of emitting an empty text block. Non-cache providers (`groq`, etc.) still flatten system content and omit markers. Upstream decolua/9router#2069.
+
+### OpenWrt: warn when the image cannot fetch the https opkg feed
+
+`9router-go-feed add` registered an `https` feed without checking that the image can fetch one. `opkg` resolves `https` through a `libustream-*` provider plus a CA bundle; a minimal image can lack either, and the failure arrives one command later as `opkg update` printing `SSL support not available` — a message that names neither the missing package nor the fix, and gives no hint that the registered feed line is correct.
+
+- `check_https_support` runs before the feed line is written and prints the exact `opkg install libustream-mbedtls ca-bundle` that unblocks it. It only fires for `https` URLs, so a plain-`http` mirror passed to `add` produces no noise.
+- The feed line is still registered. Refusing would be circular: the provider has to be installable before the feed can be used, and official feeds already carry it.
+
+Verified with three new `scripts/openwrt-shell-harness.py` cases driving the real script against an `opkg` stub and a temp `customfeeds.conf`: a bare image warns and still registers the architecture's URL, and an image with the provider and CA bundle present is silent while the line says `https://`. Reverting `openwrt/9router-go-feed` gives **23/24**; the branch gives **24/24**.
+
+The `opkg update` / `opkg upgrade` path against a served feed is covered end to end by the VM suite (#1549).
+
+Stacked on #1547 (shared harness file).
+
+### OpenWrt: one owner for the health-check cron entry
+
+The probe's `/etc/crontabs/root` line was written by three separate implementations: `cron_sync()` in the init script, an inline block in `postinst`, and another inline block in `prerm`. They disagreed on the part that matters on a router — `cron_sync` compared the result with the current table and skipped the write when nothing changed, while `postinst`/`prerm` rewrote the file and restarted cron unconditionally, on every install, upgrade and removal.
+
+- `sync_cron <0|1>` is now a declared `EXTRA_COMMANDS` entry point on the init script, and `postinst`/`prerm` call it instead of carrying their own copy. The idempotency, the "keep the operator's other cron jobs" rewrite and the flash-write avoidance now exist once.
+- `sync_cron` takes its argument from `$1`: rc.common sets `initscript=$1; action=$2` then does `shift 2` before calling `$action "$@"`, so the command name is shifted away and the requested state lands in `$1`.
+
+Verified with four new `scripts/openwrt-shell-harness.py` cases driving the real init script against a temp `/etc/crontabs`: install writes exactly one line, a second install changes nothing, an operator's unrelated cron job survives, removal leaves no probe line, and `sync_cron` is present in `EXTRA_COMMANDS` (without that declaration rc.common drops the action to `help` and the install would silently stop maintaining the entry). Reverting `openwrt/9router-go.init` gives **9/13**; the branch gives **13/13**.
+
+Stacked on #1546 (shared harness file).
+
+### OpenWrt: stop the health probe punishing a deliberate stop and a bad port
+
+The once-a-minute probe restarted the gateway whenever `/health` did not answer, without asking whether the service was supposed to be running.
+
+- **A stopped service is no longer a failed probe.** `9router-go-backup` stops the gateway to copy the database; a probe landing in that window counted a failure, and a long copy (large database, `tar` of the uploads) could reach the threshold and restart the service **mid-copy**, which is the torn snapshot the stop existed to avoid. A service that crashed and exhausted procd's respawn budget was restarted every `healthcheck_threshold` minutes from cron, bypassing the backoff procd applies to a binary that cannot start. The gate reads `/etc/init.d/9router-go status` and skips only on a verdict that names the service stopped (`not running` or `stopped`); anything else probes, because procd owns the stopped case and this script only covers the process procd cannot see (alive, listener wedged).
+- **The gate cannot silently disable the watchdog.** OpenWrt 18.06 and 19.07 do not register `status` as an rc.common action, so the call falls through to `help` and its first line is not `running`. The original gate skipped on anything that was not `running`, which would have turned the watchdog off on the oldest supported releases the package declares. Anything the stub cannot classify as "not running" from procd is treated as "the gate cannot decide" and the probe fires — a redundant probe costs one HTTP request, a disabled watchdog costs a wedged gateway.
+- **A non-numeric `port` falls back to `20130`.** `healthcheck_threshold` and `healthcheck_timeout` were already guarded against a non-numeric UCI value; `port` was not, so a bad value built an unfetchable URL, every probe "failed", and the gateway was restarted every threshold minutes forever.
+
+Verified with `scripts/openwrt-shell-harness.py` cases that drive the real packaged script. The harness gained an `/etc/init.d/9router-go` stub whose `status` output comes from `INITD_STATUS_OUT` (so each verdict a real rc.common release produces can be presented), a `wget` stub that records the URL it was asked for, and a `UCI_PORT` override. Four cases pin the verdicts: bare `running` probes, the 18.06 help output probes, `not running` skips, `stopped` skips.
+
+Reverting `openwrt/9router-go-healthcheck` to the pre-PR tree makes the harness fail on the stopped-service, `not running`, `stopped` and non-numeric-port cases (**26/30**). Reverting only the gate to the version this PR originally shipped — `running*) ;; *) exit 0 ;;` — gives **29/30**, failing exactly `an unrecognised status verdict (18.06 help) still probes`, which is the reviewer's blocker reproduced as a test. The head is **30/30**.
+
+Rebased onto `luqman/main` (`59d8d0a1`); `merge-tree --write-tree` exits 0 with no conflicts. Stacked on #1545 (the harness case list lives in one file).
+
+Reviewer follow-up (PR #1546):
+
+- **Blocking — the `status` gate on 18.06/19.07.** Reproduced the reviewer's analysis: the harness initd stub's `status` output now comes from `INITD_STATUS_OUT`, so the help text a 18.06/19.07 call returns can be presented. The gate only skips on `not running` or `stopped`; anything else probes. Reverting only the gate to the version this PR originally shipped reproduces the blocker as a failing case (`29/30`, failing exactly `an unrecognised status verdict (18.06 help) still probes`).
+- **Conflicts resolved.** The branch is rebased onto `luqman/main` (`59d8d0a1`); `docs/OPENWRT.md` and `scripts/openwrt-shell-harness.py` were the two files that collided with #1538 and #1545, both resolved by hand and re-verified (`merge-tree --write-tree` exits 0, `30/30` harness cases pass on the merged tree).
+
+### OpenWrt: keep the SQLite WAL together with the database in `9router-go-backup`
+
+`restore` overwrote `data.sqlite` and left the replaced database's `-wal` file beside it. SQLite replays whatever WAL it finds next to a database, so a restore could replay frames belonging to a different database — the two failure shapes are `database disk image is malformed` and rows silently reverting to an older state. In the other direction, `save` copied `data.sqlite` alone, so a gateway killed before checkpointing (OOM, watchdog, hard power cut) produced a backup missing its most recent committed transactions.
+
+- `save` now copies an uncheckpointed `data.sqlite-wal` to `<file>-wal`, and removes a stale `<file>-wal` from an earlier save.
+- `restore` deletes `data.sqlite-wal` and `data.sqlite-shm` belonging to the database it replaces, then writes the incoming file and puts a saved `-wal` back beside it. The `-shm` file is a shared-memory index, never data, and is still never copied.
+- This matters because WAL is not optional here: `internal/db/client.go` sets `journal_mode = WAL`, which is persistent in the database header.
+
+Verified with six new `scripts/openwrt-shell-harness.py` cases driving the real packaged script. Reverting `openwrt/9router-go-backup` gives **11/14**, failing exactly the three WAL assertions (`save carries an uncheckpointed -wal`, `restore drops the replaced database's -wal and -shm`, `restore brings a saved -wal back`); the branch gives **14/14**.
+
+The harness `uci` stub learned to resolve `<config>.<section>.<option>` for configs other than `firewall`, which is what lets the backup script's `uci get 9router-go.main.data_dir` reach the temp data dir instead of `/opt/9router`.
+
+### Fixed
+
+- **`requestDetails` rows no longer store a pasted credential in the clear.**
+  The Recent Requests tab writes the whole conversation to disk, so a provider
+  key or `Authorization` header a client pasted into a prompt was retained
+  verbatim and outlived every retention window — the debt register's DATA-01
+  said so: retention bounds how long a secret lives, not whether it is written
+  at all. Both the success and the failure payload are now masked through the
+  guardrails `secrets` detector set before the marshal, so a stored row reads
+  `Deploy with this key: [REDACTED] and nothing else.`
+- The mask runs on storage only, and is always on. It is not the operator's
+  outbound guardrail policy — that decides what may leave the gateway, this
+  decides what the gateway keeps about itself — so there is nothing to
+  configure and nothing an operator can turn off by accident. The detector set
+  fires only on shapes only a live credential carries (a provider key prefix,
+  or a label that names the field), so code, diffs and logs in the same payload
+  survive unchanged; a request with no credential is byte-identical to before.
+- The mask is wired to the write gate, not to the request: `shouldLogRequestDetail`
+  is evaluated first on both the success and the failure path, and the scan is
+  skipped entirely when no row will be written (observability `off`, or
+  `errors_only` on a success). A stored row is byte-identical to before; the
+  no-write case simply no longer pays for it (~27µs/request measured on a
+  1-vCPU target).
+- Provenance: DATA-01 in `TECHNICAL_DEBT.md`, plus the ROADMAP's
+  "Secret/PII redaction: explicit detection rules with safe defaults" feature.
+  Depends on the `secrets` detector set; if that set is not in this build the
+  mask is a no-op and rows are stored as before.
+
+Verification: `go test -tags=integration -count=1 -timeout 20m
+./internal/integration/` — `TestRequestDetailsMaskPastedCredentials` posts a
+completion whose prompt carries a pasted key and reads the raw stored JSON back
+out of SQLite: the key is gone, the mask is present, and the model, the prompt
+text and the endpoint still are. `TestFailedRequestDetailsMaskPastedCredentials`
+does the same on the failure row. Both fail on this branch's parent, where the
+payload is stored verbatim.
+
+### Added
+
+- **A `secrets` guardrail detector set.** The guardrail engine carried `pii`
+  and `injection`; a credential in a request — a pasted provider key, a
+  forwarded `Authorization` header, a `client_secret` in a config snippet —
+  matched neither, so an operator could not ask for it to be masked. `secrets`
+  is a third selectable set with ten detectors: OpenAI/Anthropic/OpenRouter
+  keys, Google API keys, Hugging Face tokens, GitHub tokens, Slack tokens, AWS
+  access key ids, bearer tokens, and labelled credential assignments
+  (`api_key`, `client_secret`, `access_token`, `password`, …).
+- **Labelled matches are masked around the label, not over it.** A new optional
+  `redact` field on a detector keeps the introducing label — a masked header
+  still reads `Authorization: Bearer [REDACTED]`, a masked JSON field still
+  reads `"client_secret": "[REDACTED]"` — so a rewritten prompt still says which
+  setting lost its value. A detector without `redact` keeps the flat
+  `[REDACTED]` the PII set uses.
+- Every pattern is anchored on something only a live credential carries: a
+  provider's own key prefix, or a label that names the field. The same
+  discipline the PII set follows, for the same reason — a bare 20-character
+  token fires on every base64 blob in a diff, and a detector switched off after
+  one false positive protects nothing. Env placeholders
+  (`api_key = ${OPENAI_API_KEY}`), `os.Getenv(...)` reads, short placeholder
+  values, and prose naming the field are all clean.
+
+Verification: `go test -count=1 ./internal/guardrails/ ./internal/handlers/dashboard/`
+passes. `TestSecretDetectorsFire` drives the engine per credential shape;
+`TestSecretDetectorsLeaveCodeClean` is the false-positive guard, and
+`TestSecretMaskKeepsTheLabel` pins the label-preserving rewrite. The same
+suite, copied onto a pristine `origin/main` worktree, fails every positive
+case (`no anthropic_key finding …`, `mask action did not mutate`) because the
+set does not exist there. Dashboard `validateGuardrailConfig` accepts
+`{"detectors":["secrets"]}` and still rejects an unknown name. The Security
+panel lists the new set, so a policy can be saved from the UI; no other
+behaviour moves.
+
+### OpenWrt: set the dashboard password at install time, and correct the size figures
+
+The package shipped no way to set the dashboard password, so a fresh install
+refused a LAN login until the password was changed from the router itself. That
+guard is right — a router sold with a known password is a router anyone on the
+LAN can reconfigure — but it left an operator with only the web UI stuck until
+they had a shell.
+
+`initial_password` (new UCI option, LuCI field with password masking) is exported
+as `INITIAL_PASSWORD`, which is the switch the gateway already reads. Empty
+exports nothing, so the existing behaviour is unchanged for anyone who does not
+set it.
+
+The value is plain text in `/etc/config/9router-go`, mode `0644`, as every UCI
+file is. That file already carries `jwt_secret`, which is enough to forge a
+session, so the option does not widen the exposure — but the documentation says
+so and tells the operator to change the password from the dashboard (which
+stores a bcrypt hash) and clear the option afterwards.
+
+**Size figures were stale.** Measured against the 1.9.17 release binary, not
+estimated: the binary is 49.8 MB and `Installed-Size` is 51046 KiB; the `.ipk` is
+20.7 MB compressed, not the "~18 MB" the page claimed. The 4.6 MB dashboard
+figure is unchanged and still holds. The measurements come from the built package
+(`go run ./tools/ipkbuild` against the release binary), not from a rebuild of the
+bundle.
+
+Two new shell-harness cases: a set password becomes `env INITIAL_PASSWORD=…`, an
+empty one exports nothing. Reverting `openwrt/9router-go.init` fails the first
+(9/10), so it is not passing vacuously. The harness block defines its own
+`procd_set_param` recorder and shares no line with the resource-limit cases, so
+the two changes merge without a conflict.
+
+Reviewer follow-up (PR #1539):
+
+- **The harness did not cover special characters in the value.** Its own two
+  cases passed `s3cret-pass` and an empty string, so a password carrying a
+  space, a single quote or a `$` was never asserted. The block now routes the
+  injected option through a `shquote` helper and covers `s3cret-pass`,
+  `has space`, `has'single`, `has$dollar` and `has"quote`, each asserted to
+  reach `INITIAL_PASSWORD` byte-exact. An empty value still exports nothing
+  and does not abort the start. Reverting `openwrt/9router-go.init` gives
+  **10/15**, failing exactly the five set-password cases.
+- **LuCI before/after captures attached** (see
+  `screenshots/openwrt-luci-password-{before,after}.png` and the PR body). Both sides
+  were rendered from the real LuCI Lua CBI renderer on an OpenWrt 21.02.7
+  x86-64 rootfs with `luci-compat` and `uhttpd-mod-lua` installed and the app
+  files copied from the tree under test; the before side is the pre-PR tree
+  (`33afbf4c`), the after side is the PR head, same UCI config and viewport.
+  `Dashboard password` renders between `Self-update` and `Health check` with
+  masking and the `change on first login` placeholder; `o.password = true` is
+  confirmed by the rendered input's own `type="password"`.
+
+### OpenWrt: bound the gateway's memory and file descriptors
+
+Two new UCI options, both `0` meaning "leave the system default":
+
+- `mem_limit` (MiB) is exported as `GOMEMLIMIT`, Go's soft heap ceiling. On a
+  128 MB router an unbounded gateway is not the only casualty of the OOM killer —
+  it takes `sshd` or the kernel mid-flash with it.
+- `nofile_limit` (default 4096) raises `RLIMIT_NOFILE` through
+  `procd_set_param limits`. Every proxied stream holds a client socket and an
+  upstream socket, so the default 1024 is reached well before the box is busy.
+
+Neither is an `RLIMIT_AS`. Go reserves a large virtual address space up front, so
+an address-space limit aborts the process at start-up while the real heap is
+still small: the limit meant to protect the gateway would be what kills it.
+`GOMEMLIMIT` is the mechanism Go provides for exactly this and needs no code
+change, since the runtime reads it from the environment.
+
+Both values pass a numeric guard before use (`case … *[!0-9]*`), because a
+malformed `GOMEMLIMIT` is a fatal start-up error in Go rather than a warning, and
+a service that refuses to start is worse than one without a ceiling.
+
+The `limits` value is written as `<n> <n>` (soft and hard). procd leaves
+`rlim_max` at the inherited value when only one number is given, so raising just
+the soft limit above it fails with `EINVAL` and nothing is raised at all.
+
+Verified by five new `scripts/openwrt-shell-harness.py` cases: a set limit
+becomes `env GOMEMLIMIT=64MiB` and `limits nofile=4096 4096`; `0` and a
+non-numeric value emit neither; a malformed value does not abort the start.
+Reverting `openwrt/9router-go.init` makes the first two fail (11/13), so the
+cases are not passing vacuously.
+
+Reviewer follow-up (PR #1538):
+
+- The numeric guard did not catch an oversized digit string. `case … *[!0-9]*`
+  only rejects non-digits; `9000000000000` passed `-gt 0` and reached the Go
+  runtime, which throws `fatal error: malformed GOMEMLIMIT` on a value too
+  large to parse — exactly the fatal start-up the guard was supposed to stop.
+  Both limits are now clamped to `1048576` and the change is logged. Verified
+  by four new harness cases: `9999999999999999` and `9000000000000` arrive at
+  procd as `1048576`; `1048576` passes through unchanged; oversized values do
+  not abort the start. Reverting the init makes the three clamp cases fail
+  (15/18).
+- The LuCI form is unchanged by this round, but a before/after capture of the
+  page is attached (see `screenshots/openwrt-luci-{before,after}.png`). Both
+  sides were rendered from the real LuCI Lua CBI renderer on an OpenWrt
+  21.02.7 x86-64 rootfs with `luci-compat` and `uhttpd-mod-lua` installed and
+  the app files copied from the PR tree; the after side is at HEAD, the before
+  side is the pre-PR tree (`33afbf4c`), same UCI config, same viewport.
+  `Memory limit (MiB)` and `Open file limit` render between `Open LAN firewall`
+  and `Log level`, both visible in a 1280×1500 window.
+- The `nofile_limit` upgrade behaviour is now spelled out in `docs/OPENWRT.md`:
+  an existing install picks up the packaged default of `4096` on its first
+  restart after `opkg upgrade`; setting the option to `0` restores the system
+  default.
+
+### Dashboard: split the API client by domain
+
+`web/src/api/client.ts` was 3390 lines. It is now a barrel that re-exports every type and runtime helper and composes the same `api` object from endpoint modules, so no import path and no call site changed.
+
+- `runtime.ts` — auth, error handling, `request`, `normalizeConnection`.
+- `types.ts` — the request/response type catalog, kept whole.
+- `endpoints/*.ts` — 14 domain groups (connections, nodes, combos, keys, models, settings, oauth, usage, tunnel, headroom, pools, cli, auth, jailbreak).
+
+No request path, payload, response handling or route changed: the `api` object exposes the same 226 methods before and after. Verified with `bun run build`, `bun test src scripts`, `make vet-svelte`, and a method-set diff of the composed object.
+
+### Media handlers: split by endpoint family, and check the closes they now own
+
+`internal/handlers/media/media.go` was 2445 lines owning several distinct endpoint families. Each now lives in its own file in the same package, with the same contracts: `media_embeddings.go`, `media_audio.go`, `media_systemone.go`, `media_image_video.go`, `media_web.go`, `media_forward.go`, `media_forward_conn.go`, and `media.go` for the handler struct, connection selection and the JSON media lane.
+
+The split made every line in those files new to the lint ratchet, which surfaced unchecked returns that had been hiding in one long file:
+
+- `defer r.Body.Close()` / `defer resp.Body.Close()` → `defer func() { _ = r.Body.Close() }()` across the moved handlers, and `_ = resp.Body.Close()` for the non-deferred close in the upstream-error branch.
+- `io.Copy(w, resp.Body)` in `media_forward.go` now records a mid-stream failure instead of dropping it: the status line is already on the wire, so the only thing left to do is log it.
+- `UpdateConnectionLastUsed` is written as an explicit best-effort call, so a bookkeeping failure cannot turn a served 200 into an error.
+- `err == io.EOF` → `errors.Is(err, io.EOF)` in the multipart rewrite.
+
+Verified with `golangci-lint run --new-from-rev=origin/main ./internal/handlers/media/...` (0 issues) and `go test ./internal/handlers/media/`.
+
+### Fixes
+- **proxy**: Recognize "no longer available" model retirement banners in HTTP 200 streams to trigger failover instead of infinite client retry loops.
+
+### Changed
+
+- **Refactor only, no behaviour change:** the error-classification detectors were split out of their original file into `errorclassify_detect.go` as part of the oversized-file plan. The rules, their order and the classification results are unchanged. Refs #1516.
+
+### feat(providers): add Autoclaw provider with OAuth login
+
+Adds `autoclaw` (alias `au`) as an OAuth-only provider serving Zhipu AutoClaw's
+GLM models via its native desktop protocol at `https://autoglm-api.autoglm.ai`.
+The six catalog ids come from the installed AutoClaw 2.6.1 model feed:
+`zai_auto`, `zai_auto-fast`, `zai_glm-x-preview` (GLM-5.4), `zaicoding_glm-5.3`,
+`zai_glm-5.3-flash`, and `zai_glm-5.3-flashx-legal`.
+
+**OAuth login, no API key field.** The dashboard offers an OAuth login for this
+provider (the same surface zcode uses), backed by the desktop client's own
+Z.ai flow: `POST /userapi/overseasv1/zai-oauth-url` returns the `chat.z.ai`
+authorization URL, and `POST /userapi/overseasv1/zai-oauth-login` exchanges
+`{code,state,navigate_uri}` for `{user_id,access_token,refresh_token}`. The
+handler stores one connection carrying the refresh token and device id; no
+credential is pasted by hand. The app id (`100003`), client version (`2.6.1`),
+and signing key (`KNc.appKey` from build 2.6.1) are client identifiers captured
+from the bundle and live in the code — the upstream client signs every model
+request with them, so an OAuth token alone cannot be used without them.
+
+**Token rotation.** The access token is refreshed via `/userapi/v1/refresh`
+(`internal/proxy/oauth/autoclaw.go`), lazily on the request path and
+dedup-cached for 10s. The background OAuth refresher does not select these rows
+(it picks `authType: oauth` rows with `refreshToken` + `expiresAt`, while an
+Autoclaw row keeps its durable credential in `apiKey`), so an idle connection
+is re-rotated on its next request. The desktop client requires a fresh
+`refresh_token` on every rotation, which this refresher enforces; a business
+code `400002` falls back to `/userapi/v1/agent-refresh` as the client does.
+The rotated pair is persisted back to the connection by the chat handler via
+the executor's `PersistCredentials` callback, so the next request after the
+dedup cache expires does not replay an already-consumed token.
+
+**Connection identity.** The OAuth login response carries only `user_id`.
+After the exchange the handler calls `/userapi/v1/user-profile` (same signed
+identity-gateway envelope, token in `Authorization`) and labels the connection
+with the account email; the email is also stored in the connection data.
+
+**OAuth loopback.** chat.z.ai accepts only the redirect URI registered for the
+AutoClaw OAuth client, `http://localhost:18432/auth/callback-zai`. The gateway
+binds that loopback during login and relays the callback into the dashboard's
+`/api/oauth/callback-result` poller. The Aliyun captcha SDK runs in the browser
+(silent risk-based or visible slider) and the resulting proof is forwarded as
+`ali_captcha_verify_param`; without it `zai-oauth-url` answers the misleading
+`631002` "version unsupported".
+
+
+**Wire contract.** The header set mirrors a request captured from AutoClaw
+2.6.1 with a local MITM proxy: `X-Authorization` (not `Authorization`),
+`X-Agent-Id: main`, `user-agent: node`, `x-return-billing: true`,
+`x_trace_id: autoclaw-desktop`, `accept: application/json`, the MD5 envelope
+(`x-auth-sign = md5("100003&<ts>&<app_key>")`), and the rest of the captured
+desktop headers. The token already carries the `Bearer ` prefix upstream, so
+the executor does not add a second one.
+
+**Body shape (MITM-verified).** The managed gateway rejects a bare OpenAI body
+with an empty 406. A capture of a real AutoClaw 2.6.1 chat showed the required
+shape: `stream: true`, `stream_options.include_usage: true`, `store: false`,
+`max_completion_tokens`, `reasoning_effort: "max"`, and — critically — a leading
+`system` message carrying AutoClaw's exact 7.5 KB system prompt. A minimal
+generic system prompt is rejected too; upstream validates the prompt itself.
+`autoclawBody` normalises every request to that shape and the captured prompt
+lives in `autoclaw_system_const.go`. Caller-supplied values win: `max_tokens`
+is remapped to `max_completion_tokens`, and the desktop prompt is always
+prepended as the FIRST system message even when the caller supplies its own
+(OpenCode's title-generation prompt otherwise answers 406 with
+`data: \n\ndata: [DONE]`); the client's system prompt is kept as the next
+message. The upstream is SSE-only, so a non-stream client's request is still
+streamed upstream and folded into one `chat.completion` with `sseToOpenAIJSON`
+before being labelled JSON; an SSE body with no completion chunk answers 502
+(`NoCompletionInStream`).
+
+The model rides in `X-Request-Model` (not the body). A 401 triggers one forced
+refresh + retry through `proxy.SendOnce`; any non-200 surviving the retry
+surfaces as an `*UpstreamError` so failover sees the real status. The relay is
+per-chunk flushed (`proxy.SSECopy`).
+
+
+**Usage metrics.** The stream path relays upstream SSE with `proxy.SSECopy`;
+that helper does not record token usage by itself, so the dashboard's Speed,
+Completion and Cached columns stayed at 0 even though AutoClaw's final chunk
+carried a full `usage` object. `ForwardAutoclaw` now feeds each SSE chunk to
+`captureUsageFromSSEChunk` in the TTFT callback and stores the result in the
+request context, the same path the generic OpenAI executor uses. A live stream
+request then logged `prompt_tokens:1957, completion_tokens:2, cached_tokens:1792`
+instead of all zeroes.
+
+**Verification (offline, no credentials).**
+- `internal/handlers/oauth/autoclaw_test.go` — authorize round-trip against an
+  httptest fake; pins the `zai-oauth-url` request and the returned auth URL.
+- `TestAutoclawCaptchaConfigProofAndRedirectURI` pins the captcha config
+  endpoint, proof forwarding, and the registered loopback redirect URI.
+- `TestAutoclawUserEmail` pins the post-login profile call that labels the
+  connection with the account email.
+- `internal/proxy/oauth/autoclaw_test.go` — refresh round-trip, agent-refresh
+  fallback on `400002`, and rejection of a response without a rotated
+  `refresh_token`.
+- `internal/proxy/executor/autoclaw_test.go` — signer determinism, body stream
+  flag, `X-Request-Model` from the body, 401 retry on the overridable base URL,
+  non-stream SSE fold, per-chunk flush, and connection `data.baseUrl` honoured
+  for both refresh and chat, and persistence of the rotated refresh token
+  through `PersistCredentials`.
+- `internal/integration/autoclaw_live_test.go` — live end-to-end through the
+  real router and database with a fake upstream that rotates the refresh token
+  and serves SSE; pins signed headers, the model header, the refresh body, and
+  a parseable `chat.completion` at status 200.
+- `internal/providers/catalog_sweep_test.go` — all six ids pinned to the 1M
+  context window verified from the app's catalog snapshot.
+- `web/e2e/autoclawProviderModels.test.ts` — the dashboard renders all six
+  models and the catalog exposes `autoclaw` as OAuth-only (`authModes: [oauth]`).
+
+**Live verification.** With a real OAuth connection and the running gateway,
+`POST /api/models/test {"model":"autoclaw/zai_auto","kind":"llm"}` went from
+`{"status":406}` to `{"ok":true,"status":200}` after the body-shape fix. The
+system prompt and required fields were recovered from a local MITM capture of
+the desktop client; the capture and credentials were deleted afterwards.
+
+
+**Provider logo.** `web/public/providers/autoclaw.png` is the official AutoClaw
+app icon extracted from AutoClaw 2.6.1 (white glyph on dark rounded square),
+replacing the initial "AC" placeholder. The Svelte bundle was rebuilt so the
+embedded `web/dist` carries the corrected icon.
+
+**Capability source (REA-verified).** The six ids, names, and limits come from
+the installed AutoClaw 2.6.1 client's model-catalog snapshot, read statically
+via REA. Every entry reports `contextWindow: 1048576`; `maxTokens` is 131072
+(`zai_auto`, `zai_glm-5.3-flash`), 393216 (`zai_auto-fast`), or 307200 (the
+three GLM-5.3 entries). The signing scheme was verified against the app bundle:
+`md5(appId&ts&appKey)` with `appId = 100003` and the refresh body
+`{refresh_token, source_id:"autoclaw", device_id}`.
+
+**Maintenance note.** `APP_ID`, `X-Version`, and the signing key are captured
+from desktop client build 2.6.1. If AutoClaw bumps the build, the constants
+must be re-dumped. `X-Tm: win` is the working fallback; some accounts refuse
+`linux`.
+
 ## [v1.9.18-exp.1] - 2026-11-27
 
 ### test(openwrt): boot both 18.06.9 and 23.05.5 in the VM job
