@@ -64,6 +64,14 @@ async function openTool(name: string) {
   await card(name).click()
   const dialog = page.locator('.fixed.inset-0')
   await dialog.waitFor({ timeout: 10_000 })
+  // Pi is a `settings` card, so the dialog opens on the Configuration Editor
+  // tab and the pasteable snippet lives one tab over. Cards that still open on
+  // the snippet have no such button, so this is a no-op for them.
+  const manualTab = dialog.getByRole('button', { name: 'Manual Shell Setup' })
+  if (await manualTab.isVisible()) {
+    await manualTab.click()
+    await dialog.getByText('Manual Setup Instructions').waitFor({ timeout: 10_000 })
+  }
   return dialog
 }
 
