@@ -44,7 +44,7 @@ func (s *autoclawLoopbackServer) start() error {
 	}
 	s.mu.Unlock()
 
-	ln, err := net.Listen("tcp", net.JoinHostPort(autoclawLoopbackHost, strconv.Itoa(autoclawLoopbackPort)))
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", net.JoinHostPort(autoclawLoopbackHost, strconv.Itoa(autoclawLoopbackPort)))
 	if err != nil {
 		return err
 	}
