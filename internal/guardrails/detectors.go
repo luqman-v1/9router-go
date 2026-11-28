@@ -90,7 +90,17 @@ var injectionDetectors = []detector{
 // labelled forms keep their label when masked (redactKeepLabel) so a rewritten
 // prompt still says which setting lost its value.
 var secretDetectors = []detector{
-	{name: "openai_key", re: openAIKeyRe, entity: "OPENAI_API_KEY", severity: SeverityHigh},
+	{
+		name: "openai_key", re: openAIKeyRe, entity: "OPENAI_API_KEY", severity: SeverityHigh,
+		// The generic sk- pattern also matches Anthropic (sk-ant-) and
+		// OpenRouter (sk-or-v1-) keys. Each of those has its own detector,
+		// and without this gate one key yields two findings with the
+		// generic one claiming the audit attribution — the provider-specific
+		// rule then reads as dead weight.
+		validate: func(match string) bool {
+			return !strings.HasPrefix(match, "sk-ant-") && !strings.HasPrefix(match, "sk-or-v1-")
+		},
+	},
 	{name: "anthropic_key", re: anthropicKeyRe, entity: "ANTHROPIC_API_KEY", severity: SeverityHigh},
 	{name: "openrouter_key", re: openRouterKeyRe, entity: "OPENROUTER_API_KEY", severity: SeverityHigh},
 	{name: "google_api_key", re: googleAPIKeyRe, entity: "GOOGLE_API_KEY", severity: SeverityHigh},
@@ -161,14 +171,18 @@ var (
 
 	// bearerTokenRe keeps the scheme so a masked header still reads as a
 	// header. Only a 16+ character credential behind the scheme is a match;
-	// "Bearer abc" in prose is not.
-	bearerTokenRe = regexp.MustCompile(`(?i)(\bbearer\s+)[A-Za-z0-9._~+/-]{16,}`)
+	// "Bearer abc" in prose is not. Trailing = padding is part of the match:
+	// a base64 token's padding is credential bytes, and a mask that stops
+	// before it writes the padding into the forwarded prompt.
+	bearerTokenRe = regexp.MustCompile(`(?i)(\bbearer\s+)[A-Za-z0-9._~+/-]{16,}={0,2}`)
 	// labelledSecretRe matches a key/value assignment whose key names a
 	// credential field. Group 1 is the label through the separator; group 2 is
 	// the value, which is what redactKeepLabel masks. The value class omits
 	// quotes, braces and $ so an env placeholder (${OPENAI_API_KEY}) or a
-	// code expression (os.Getenv) never reaches the {12,} length gate.
-	labelledSecretRe = regexp.MustCompile(`(?i)\b((?:api[_-]?key|apikey|secret[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?token|password|passwd)\s*["']?\s*[:=]\s*["']?)([A-Za-z0-9+/._-]{12,})`)
+	// code expression (os.Getenv) never reaches the {12,} length gate. Trailing
+	// = padding is admitted for the same reason as bearerTokenRe: the padding
+	// is part of the credential, and an unmasked tail defeats the mask.
+	labelledSecretRe = regexp.MustCompile(`(?i)\b((?:api[_-]?key|apikey|secret[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?token|password|passwd)\s*["']?\s*[:=]\s*["']?)([A-Za-z0-9+/._-]{12,}={0,2})`)
 )
 
 // redactKeepLabel masks only a detector match's value, keeping the label that

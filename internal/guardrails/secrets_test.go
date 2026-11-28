@@ -29,7 +29,7 @@ func TestSecretDetectorsFire(t *testing.T) {
 		{
 			name:     "openrouter key",
 			text:     "sk-or-" + "v1-0123456789abcdef0123456789abcdef",
-			detector: "openai_key",
+			detector: "openrouter_key",
 		},
 		{
 			name:     "google api key",
@@ -173,6 +173,104 @@ func TestSecretMaskKeepsTheLabel(t *testing.T) {
 	}
 	if !strings.Contains(d.Mutated, "grant_type") {
 		t.Errorf("mutated dropped a neighbouring field: %q", d.Mutated)
+	}
+
+	// Padding is credential bytes. A base64 token's trailing = must fall
+	// inside the mask, or the forwarded prompt keeps part of the value.
+	paddedBearer := "Authorization: Bearer " + "abcdefghijklmnopqr" + "=="
+	d = engine.Scan(paddedBearer)
+	if !d.WasMutated() {
+		t.Fatalf("mask action did not mutate %q; findings: %+v", paddedBearer, d.Findings)
+	}
+	if strings.HasSuffix(d.Mutated, "==") {
+		t.Errorf("mask left the padding after it: %q", d.Mutated)
+	}
+	if !strings.HasSuffix(d.Mutated, redactMask) {
+		t.Errorf("masked header should end at the mask: %q", d.Mutated)
+	}
+
+	paddedSecret := "s3cr3t-" + "value-1234567890"
+	paddedAssignment := `{"client_secret":"` + paddedSecret + `==","grant_type":"client_credentials"}`
+	d = engine.Scan(paddedAssignment)
+	if !d.WasMutated() {
+		t.Fatalf("mask action did not mutate %q; findings: %+v", paddedAssignment, d.Findings)
+	}
+	if strings.Contains(d.Mutated, paddedSecret) {
+		t.Errorf("mutated still carries the secret: %q", d.Mutated)
+	}
+	if !strings.Contains(d.Mutated, redactMask+`"`) {
+		t.Errorf("masked assignment should close right after the mask: %q", d.Mutated)
+	}
+}
+
+// TestSecretAttributionIsExclusive: one key must be one finding. The generic
+// sk- pattern also matches Anthropic and OpenRouter keys, so without the
+// exclusivity gate both fire and the generic one claims the attribution the
+// provider-specific rule earned.
+func TestSecretAttributionIsExclusive(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"anthropic key", "sk-ant-" + "api03-1234567890abcdefghijklmnopqrstuvwx", "anthropic_key"},
+		{"openrouter key", "sk-or-" + "v1-0123456789abcdef0123456789abcdef", "openrouter_key"},
+		{"plain openai key", "sk-" + "proj1234567890abcdefghijklmnop", "openai_key"},
+	}
+
+	engine := NewEngine([]string{"secrets"}, ActionBlock)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := engine.Scan(tt.text)
+			if len(d.Findings) != 1 {
+				t.Fatalf("findings = %+v, want exactly one %s", d.Findings, tt.want)
+			}
+			if d.Findings[0].Detector != tt.want {
+				t.Errorf("detector = %q, want %q", d.Findings[0].Detector, tt.want)
+			}
+		})
+	}
+}
+
+// TestScanJSONMasksLabelledSecretInMapKey is the path that is actually sent
+// upstream: the middleware walks the decoded JSON, so a map value arrives at
+// the detector without its key. Without key context the labelled detector
+// never fires and the credential goes out unmasked.
+func TestScanJSONMasksLabelledSecretInMapKey(t *testing.T) {
+	engine := NewEngine([]string{"secrets"}, ActionMask)
+	secret := "s3cr3t-" + "value-1234567890"
+	payload := map[string]any{
+		"model":         "claude-sonnet",
+		"client_secret": secret,
+		"nested":        map[string]any{"api_key": secret},
+	}
+
+	scanned, d := engine.ScanJSON(payload)
+	if !d.WasMutated() {
+		t.Fatalf("structured payload was not masked: %+v", d.Findings)
+	}
+	out, ok := scanned.(map[string]any)
+	if !ok {
+		t.Fatalf("scanned payload changed shape: %T", scanned)
+	}
+	for key, want := range map[string]string{"client_secret": redactMask, "nested": redactMask} {
+		value, _ := out[key].(string)
+		if value == "" {
+			nested, _ := out[key].(map[string]any)
+			value, _ = nested["api_key"].(string)
+		}
+		if value == "" {
+			t.Fatalf("%s lost its value: %v", key, out[key])
+		}
+		if strings.Contains(value, secret) {
+			t.Errorf("%s still carries the secret: %q", key, value)
+		}
+		if !strings.Contains(value, want) {
+			t.Errorf("%s was not masked: %q", key, value)
+		}
+	}
+	if out["model"] != "claude-sonnet" {
+		t.Errorf("unrelated field was rewritten: %v", out["model"])
 	}
 }
 

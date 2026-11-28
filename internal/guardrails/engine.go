@@ -145,6 +145,33 @@ func (e *Engine) ScanJSON(payload any) (any, *Decision) {
 			return t
 		case map[string]any:
 			for k, val := range t {
+				// A string value is scanned with its key in front of it: the
+				// labelled detector needs "client_secret" to be in the scanned
+				// text to fire, and a structured body presents the value alone.
+				// Findings are rebased onto the value; a finding that starts
+				// inside the key (the labelled one) keeps its audit entry with
+				// a zeroed start rather than being dropped.
+				if s, ok := val.(string); ok {
+					prefix := len(k) + len(": ")
+					d := e.Scan(k + ": " + s)
+					worst = StrictestAction(worst, d.Action)
+					for _, f := range d.Findings {
+						f.Start -= prefix
+						f.End -= prefix
+						if f.Start < 0 {
+							f.Start = 0
+						}
+						if f.End <= 0 {
+							continue
+						}
+						all = append(all, f)
+					}
+					if d.WasMutated() {
+						mutated = true
+						t[k] = d.Mutated[prefix:]
+					}
+					continue
+				}
 				t[k] = walk(val)
 			}
 			return t
