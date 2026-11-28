@@ -1,0 +1,8 @@
+# File-size audit exemptions (review-signal only, not a hard gate).
+# Format: <path-or-glob> <TAB or 2+ spaces> <reason>
+# Keep reasons factual. Confirm ownership before editing exempt files.
+
+web/src/lib/models.ts	auto-generated catalog data
+internal/providers/provider_registry.go	generated provider metadata (DO NOT EDIT)
+internal/providers/registry_models.go	large static provider model catalog/data
+tools/sitegen/wiki_template.go	template/data blob
