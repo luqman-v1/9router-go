@@ -185,6 +185,41 @@ func TestInboundMaskRewritesBeforeDispatch(t *testing.T) {
 	}
 }
 
+// TestInboundMaskRewritesLabelledSecretInJSONKey covers the structured path
+// the middleware actually walks: a map value reaches the detector without its
+// key, so a labelled credential must be masked with the key in scope, not
+// forwarded as-is.
+func TestInboundMaskRewritesLabelledSecretInJSONKey(t *testing.T) {
+	store := jsonStore(`{"detectors":["secrets"],"action":"mask"}`)
+	secret := "s3cr3t-" + "value-1234567890"
+	body := `{"model":"claude-sonnet","client_secret":"` + secret + `"}`
+
+	status, seen, audits := runMiddleware(t, store, body)
+
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if audits != 1 {
+		t.Errorf("audited %d decisions, want 1", audits)
+	}
+	if strings.Contains(seen, secret) {
+		t.Errorf("dispatched body still carries the secret: %s", seen)
+	}
+	if !strings.Contains(seen, "[REDACTED]") {
+		t.Errorf("dispatched body was not masked: %s", seen)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(seen), &decoded); err != nil {
+		t.Fatalf("rewritten body is not valid JSON: %v", err)
+	}
+	if decoded["model"] != "claude-sonnet" {
+		t.Errorf("rewritten body lost the model: %v", decoded)
+	}
+	if decoded["client_secret"] == secret {
+		t.Errorf("client_secret survived unmasked: %v", decoded["client_secret"])
+	}
+}
+
 // TestInboundSkipsNonJSONBody proves a body the scanner cannot walk is passed
 // through untouched rather than rejected — the guardrails tap must not become
 // the thing that breaks multipart uploads or proxy relays.
