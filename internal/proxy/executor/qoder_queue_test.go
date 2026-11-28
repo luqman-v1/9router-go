@@ -271,12 +271,34 @@ func TestQoderQueueFinish(t *testing.T) {
 }
 
 func TestQoderQueueSays(t *testing.T) {
-	st := &qoderQueueStatus{IsQueued: boolPtr(false), ServiceAvailable: boolPtr(false), QueueType: "p3", QueueCount: ptrFloat(0), RetryAfterSec: ptrFloat(30), WaitTime: ptrFloat(30), ModelKey: "auto"}
-	s := qoderQueueSays(st)
-	for _, k := range []string{"isQueued", "serviceAvailable", "queueType", "queueCount", "retryAfterSeconds", "waitTime", "modelKey"} {
-		if !strings.Contains(s, k) {
-			t.Errorf("missing %s in %s", k, s)
-		}
+	tests := []struct {
+		name string
+		in   any
+		want []string
+	}{
+		{
+			name: "status",
+			in:   &qoderQueueStatus{IsQueued: boolPtr(false), ServiceAvailable: boolPtr(false), QueueType: "p3", QueueCount: ptrFloat(0), RetryAfterSec: ptrFloat(30), WaitTime: ptrFloat(30), ModelKey: "auto"},
+			want: []string{"isQueued false", "serviceAvailable false", "queueType p3", "queueCount 0", "retryAfterSeconds 30", "waitTime 30", "modelKey auto"},
+		},
+		{
+			name: "info",
+			in:   &qoderQueueInfo{IsQueued: boolPtr(false), ServiceAvailable: boolPtr(false), QueueType: "p3", QueueCount: ptrFloat(0), RetryAfterSec: ptrFloat(30), WaitTime: ptrFloat(30), ModelKey: "auto"},
+			want: []string{"isQueued false", "serviceAvailable false", "queueType p3", "queueCount 0", "retryAfterSeconds 30", "waitTime 30", "modelKey auto"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := qoderQueueSays(tt.in)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in %s", want, got)
+				}
+			}
+			if strings.Contains(got, "0x") {
+				t.Errorf("rendered pointer address in %s", got)
+			}
+		})
 	}
 	if qoderQueueSays(nil) != "nothing of the queue" {
 		t.Error("nil rendering")

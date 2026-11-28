@@ -546,12 +546,12 @@ func qoderQueueSays(st any) string {
 			return "nothing of the queue"
 		}
 		obj = map[string]any{
-			"isQueued":          v.IsQueued,
-			"serviceAvailable":  v.ServiceAvailable,
+			"isQueued":          qoderQueueBool(v.IsQueued),
+			"serviceAvailable":  qoderQueueBool(v.ServiceAvailable),
 			"queueType":         v.QueueType,
-			"queueCount":        v.QueueCount,
-			"retryAfterSeconds": v.RetryAfterSec,
-			"waitTime":          v.WaitTime,
+			"queueCount":        qoderQueueNumber(v.QueueCount),
+			"retryAfterSeconds": qoderQueueNumber(v.RetryAfterSec),
+			"waitTime":          qoderQueueNumber(v.WaitTime),
 			"modelKey":          v.ModelKey,
 		}
 	case *qoderQueueInfo:
@@ -559,12 +559,12 @@ func qoderQueueSays(st any) string {
 			return "nothing of the queue"
 		}
 		obj = map[string]any{
-			"isQueued":          v.IsQueued,
-			"serviceAvailable":  v.ServiceAvailable,
+			"isQueued":          qoderQueueBool(v.IsQueued),
+			"serviceAvailable":  qoderQueueBool(v.ServiceAvailable),
 			"queueType":         v.QueueType,
-			"queueCount":        v.QueueCount,
-			"retryAfterSeconds": v.RetryAfterSec,
-			"waitTime":          v.WaitTime,
+			"queueCount":        qoderQueueNumber(v.QueueCount),
+			"retryAfterSeconds": qoderQueueNumber(v.RetryAfterSec),
+			"waitTime":          qoderQueueNumber(v.WaitTime),
 			"subCode":           v.SubCode,
 			"modelKey":          v.ModelKey,
 		}
@@ -590,4 +590,22 @@ func qoderQueueSays(st any) string {
 		return "nothing of the queue"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// qoderQueueBool renders a *bool as a printable string (or "" when nil),
+// so qoderQueueSays never formats a pointer address.
+func qoderQueueBool(p *bool) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatBool(*p)
+}
+
+// qoderQueueNumber renders a *float64 as a printable string (or "" when nil),
+// so qoderQueueSays never formats a pointer address.
+func qoderQueueNumber(p *float64) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*p, 'f', -1, 64)
 }
