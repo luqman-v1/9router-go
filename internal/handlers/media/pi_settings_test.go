@@ -274,9 +274,6 @@ func TestPiSettingsPostCaps(t *testing.T) {
 		if _, ok := tlm["bogus"]; ok {
 			t.Errorf("bogus level not dropped: %v", tlm)
 		}
-		if _, ok := tlm["high"]; ok && tlm["high"] != nil {
-			// high was invalid (object) and should be dropped
-		}
 		if _, ok := tlm["high"]; ok {
 			t.Errorf("invalid high level not dropped: %v", tlm)
 		}
