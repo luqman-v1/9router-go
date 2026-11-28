@@ -395,8 +395,8 @@ func TestForwardOpencode_HarnessBodyIsCanonicalizedForTheGate(t *testing.T) {
 		t.Fatal("upstream received no body")
 	}
 	tools, _ := sent["tools"].([]any)
-	if len(tools) != 14 {
-		t.Fatalf("want the 2 caller tools plus the 12 built-in placeholders, got %d: %s", len(tools), sentRaw)
+	if len(tools) != 15 {
+		t.Fatalf("want the 2 caller tools plus the 13 built-in placeholders, got %d: %s", len(tools), sentRaw)
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {

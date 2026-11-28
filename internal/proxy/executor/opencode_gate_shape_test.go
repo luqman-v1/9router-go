@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// The v2 gate declares 12 built-in tools on an agent turn.
-const openCodeBuiltinToolCount = 12
+// The v2 gate declares 13 built-in tools on an agent turn (CLI v2.3.2).
+const openCodeBuiltinToolCount = 13
 
 const openCodeTitleNoteText = "The Code Mode and tool-catalog instructions above do not apply to this session. No tools are available; answer directly."
 

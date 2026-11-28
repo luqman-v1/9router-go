@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsOpenCodeTitleRequest(t *testing.T) {
@@ -116,7 +117,7 @@ func TestShapeOpenCodeV2TitleRequest_KeepsPromptDropsTools(t *testing.T) {
 	}
 	first, _ := messages[0].(map[string]any)
 	system, _ := first["content"].(string)
-	if !strings.HasPrefix(system, openCodeHarnessSystem) {
+	if harness := renderOpenCodeHarness(time.Now(), "", openCodeHarnessProviderID, "m", openCodeFreePersona); !strings.HasPrefix(system, harness) {
 		t.Errorf("shaped system prompt must start with the harness preamble")
 	}
 	if !strings.Contains(system, openCodeTitleNote) {
@@ -126,7 +127,7 @@ func TestShapeOpenCodeV2TitleRequest_KeepsPromptDropsTools(t *testing.T) {
 		t.Errorf("a title request must not describe caller tools")
 	}
 
-	// The 12 agent built-ins must not be installed. The caller's own `tools`
+	// The agent built-ins must not be installed. The caller's own `tools`
 	// is left exactly as it arrived — this path never invents declarations.
 	tools, _ := request["tools"].([]any)
 	if len(tools) != 1 {
@@ -166,7 +167,7 @@ func TestShapeOpenCodeV2TitleRequest_DiffersFromAgentShaping(t *testing.T) {
 	agentMsgs, _ := agentReq["messages"].([]any)
 	agentFirst, _ := agentMsgs[0].(map[string]any)
 	system, _ := agentFirst["content"].(string)
-	if !strings.HasPrefix(system, openCodeHarnessPrefix()) {
+	if harness := renderOpenCodeHarness(time.Now(), "", openCodeHarnessProviderID, "m", openCodeFreePersona); !strings.HasPrefix(system, openCodeHarnessPrefix(harness)) {
 		t.Errorf("agent shaping must also keep the harness preamble")
 	}
 	if strings.Contains(system, "# Code Mode") {

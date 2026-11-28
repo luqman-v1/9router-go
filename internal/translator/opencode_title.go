@@ -3,6 +3,7 @@ package translator
 import (
 	json "encoding/json/v2"
 	"strings"
+	"time"
 )
 
 // OpenCode 1.x/2.x fires tool-less title-generation requests: a short
@@ -216,13 +217,8 @@ func ShapeOpenCodeV2TitleRequest(body []byte, flat bool) []byte {
 	}
 	claude := isOpenCodeClaudeShapedRequest(request)
 	suffix := "\n\n" + openCodeTitleNote
-	// Carry the session's real model, same as the agent path: the harness
-	// preamble's "# Your Model" is a fixed capture, and a title request should
-	// not report a model that is not the one answering.
-	if identityNote := openCodeModelIdentityNote(request); identityNote != "" {
-		suffix += "\n\n" + identityNote
-	}
-	injectOpenCodeHarnessSuffix(request, flat, claude, suffix)
+	harness := renderOpenCodeHarness(time.Now(), "", openCodeHarnessProviderID, openCodeHarnessModel(request), openCodeFreePersona)
+	injectOpenCodeHarnessSuffix(request, flat, claude, harness, suffix)
 	out, err := json.Marshal(request, json.Deterministic(true))
 	if err != nil {
 		return body

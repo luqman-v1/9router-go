@@ -469,8 +469,8 @@ func TestZenShapedBodyFollowsTheDestinationGate(t *testing.T) {
 		if !names["Bash"] {
 			t.Errorf("a caller tool must stay declared so the model emits its real name, got %v", names)
 		}
-		if len(raw) != 13 {
-			t.Errorf("a free request must declare the caller tool plus the 12 built-in placeholders, got %d", len(raw))
+		if len(raw) != 14 {
+			t.Errorf("a free request must declare the caller tool plus the 13 built-in placeholders, got %d", len(raw))
 		}
 		system, _ := payload["messages"].([]any)[0].(map[string]any)["content"].(string)
 		if !strings.Contains(system, "inert placeholders") {
@@ -587,8 +587,8 @@ func TestForwardZenMessages_FreeLaneTakesTheStealthForwarder(t *testing.T) {
 		t.Errorf("Code Mode section must be stripped, got %.80s", system)
 	}
 	tools, _ := probe.body["tools"].([]any)
-	if len(tools) != 12 {
-		t.Errorf("the messages lane must declare exactly the 12 built-in placeholders, got %d", len(tools))
+	if len(tools) != 13 {
+		t.Errorf("the messages lane must declare exactly the 13 built-in placeholders, got %d", len(tools))
 	}
 	for _, tool := range tools {
 		tm, _ := tool.(map[string]any)

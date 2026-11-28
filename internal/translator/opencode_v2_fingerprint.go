@@ -3,6 +3,7 @@ package translator
 import (
 	json "encoding/json/v2"
 	"strings"
+	"time"
 )
 
 // ConcealOpenCodeV2FingerprintTools shapes a request for the OpenCode v2
@@ -49,7 +50,8 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 	claude := isOpenCodeClaudeShapedRequest(request)
 	origSystem := opencodeSystemString(request)
 	installCallerToolsWithInertBuiltins(request, flat, claude)
-	injectStrippedHarnessSystem(request, flat, claude, origSystem, openCodeModelIdentityNote(request))
+	harness := renderOpenCodeHarness(time.Now(), "", openCodeHarnessProviderID, openCodeHarnessModel(request), openCodeFreePersona)
+	injectStrippedHarnessSystem(request, flat, claude, origSystem, harness)
 	if flat {
 		// Prior-turn function_call items with no name fail the Responses
 		// validator; a harness history can carry one.
@@ -70,6 +72,7 @@ func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice b
 // declaration order.
 var openCodeGenuineToolNames = []string{
 	"edit",
+	"experimental_image_generate",
 	"glob",
 	"grep",
 	"question",
@@ -233,47 +236,28 @@ func ensureOpencodeToolSchema(tool any, flat, claude bool) any {
 	return tool
 }
 
-// openCodeModelIdentityNote overrides the harness preamble's static "Your
-// Model" block with the model the client actually selected. The preamble is a
-// verbatim CLI capture (see opencode_free_harness.go) and the inference gate
-// fingerprints its bytes, so it cannot be edited; a correction appended after
-// it is accepted and stops the model from reporting GLM-5.3-Flash Free for
-// every free-tier id.
-func openCodeModelIdentityNote(request map[string]any) string {
-	model, _ := request["model"].(string)
-	if model == "" {
-		return ""
-	}
-	return "# Your Model (this session)\n" +
-		"The '# Your Model' block in the harness above is a fixed capture used by the inference gate and does not describe this request.\n" +
-		"Your actual model for this session is: " + model
-}
-
-// openCodeHarnessPrefix is the part of the harness preamble that a stripped
+// openCodeHarnessPrefix is the part of a rendered harness that a stripped
 // system prompt keeps byte-exact: everything before the first section whose
 // instructions assume the built-in tools are the ones to call.
-func openCodeHarnessPrefix() string {
-	cut := len(openCodeHarnessSystem)
+func openCodeHarnessPrefix(harness string) string {
+	cut := len(harness)
 	for _, marker := range openCodeStrippedMarkers {
-		if i := strings.Index(openCodeHarnessSystem, marker); i >= 0 && i < cut {
+		if i := strings.Index(harness, marker); i >= 0 && i < cut {
 			cut = i
 		}
 	}
-	return openCodeHarnessSystem[:cut]
+	return harness[:cut]
 }
 
-// injectStrippedHarnessSystem sets the system prompt to the harness preamble
+// injectStrippedHarnessSystem sets the system prompt to the rendered harness
 // minus its Code Mode section (which instructs the model to route all tool
 // use through the built-ins — inert placeholders here), followed by the
-// caller's own system text, the direct-call note and the model identity note.
-func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, origSystem, identityNote string) {
-	preamble := strings.TrimRight(stripOpencodeCodeMode(openCodeHarnessSystem), " \t\r\n")
+// caller's own system text and the direct-call note.
+func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, origSystem, harness string) {
+	preamble := strings.TrimRight(stripOpencodeCodeMode(harness), " \t\r\n")
 	suffix := "\n\n" + opencodeDirectCallNote
 	if strings.TrimSpace(origSystem) != "" {
 		suffix = "\n\n" + origSystem + suffix
-	}
-	if identityNote != "" {
-		suffix += "\n\n" + identityNote
 	}
 	replacePreambleSuffix(request, flat, claude, preamble, suffix)
 }
@@ -283,8 +267,8 @@ func injectStrippedHarnessSystem(request map[string]any, flat, claude bool, orig
 // gate fingerprints it, and a request without it is refused regardless of
 // lane. It is what a title request and an agent turn share; they differ only
 // in suffix.
-func injectOpenCodeHarnessSuffix(request map[string]any, flat, claude bool, suffix string) {
-	injectPreambleSuffix(request, flat, claude, openCodeHarnessSystem, suffix)
+func injectOpenCodeHarnessSuffix(request map[string]any, flat, claude bool, harness, suffix string) {
+	injectPreambleSuffix(request, flat, claude, harness, suffix)
 }
 
 // replacePreambleSuffix sets the system prompt to preamble+suffix, discarding
@@ -524,13 +508,11 @@ func opencodeSystemString(request map[string]any) string {
 }
 
 // openCodeStrippedMarkers are the preamble passages that only make sense when
-// the built-ins are the live tool set: the tool-preference bullets, the Code
-// Mode section and the worktree guidance after it.
+// the built-ins are the live tool set: the Code Mode section and the worktree
+// guidance after it. The harness bullets are deliberately absent: they are
+// part of every genuine CLI prompt, and removing them made the prefix diverge
+// from a real request at the third bullet.
 var openCodeStrippedMarkers = []string{
-	"- Prefer dedicated tools over shell",
-	"- Use the write tool",
-	"- Use the edit tool",
-	"- Prefer parallelizing",
 	"# Code Mode",
 	"When you create a worktree",
 }
@@ -544,19 +526,7 @@ func stripOpencodeCodeMode(sys string) string {
 	if i := strings.Index(sys, "When you create a worktree"); i >= 0 {
 		sys = sys[:i]
 	}
-	lines := strings.Split(sys, "\n")
-	out := lines[:0]
-	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "- Prefer dedicated tools over shell") ||
-			strings.HasPrefix(t, "- Use the write tool") ||
-			strings.HasPrefix(t, "- Use the edit tool") ||
-			strings.HasPrefix(t, "- Prefer parallelizing") {
-			continue
-		}
-		out = append(out, ln)
-	}
-	return strings.TrimRight(strings.Join(out, "\n"), " 	\r\n") + "\n"
+	return strings.TrimRight(sys, " \t\r\n") + "\n"
 }
 
 const opencodeDirectCallNote = "# Session tools\n" +
