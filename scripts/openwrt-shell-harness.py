@@ -306,6 +306,10 @@ def main():
               '    elif [ -f "' + sh_path(running_flag) + '" ]; then echo running; else echo "not running"; fi ;;\n'
               '  restart) echo x >> "' + sh_path(restart_log) + '" ;;\n'
               "esac\n")
+        # The health-check cron entry lives in /etc/crontabs/root; pointing the
+        # scripts at a temp directory is what lets a case assert the file.
+        crontab_dir = os.path.join(tmp, "crontabs")
+        os.makedirs(crontab_dir, exist_ok=True)
         firewall_cfg = os.path.join(tmp, "firewall")
         write(firewall_cfg, "config defaults\n\toption input 'REJECT'\n", 0o644)
 
@@ -339,11 +343,12 @@ def main():
             text = text.replace("/etc/config/firewall", sh_path(firewall_cfg))
             text = re.sub(r"/etc/init\.d/firewall\s+reload", "true", text)
             text = re.sub(r"/etc/init\.d/cron\s+restart", "true", text)
+            text = text.replace("/etc/crontabs", sh_path(crontab_dir))
             text = text.replace("/etc/init.d/9router-go", sh_path(initd_stub))
             return text
 
-        def start(open_lan, port, mem_limit=0, nofile_limit=4096):
-            injected = (
+        def _injected(port, open_lan, mem_limit=0, nofile_limit=4096):
+            return (
                 "CFG_enabled=1\n"
                 "CFG_port=%s\n"
                 "CFG_host=''\n"
@@ -356,6 +361,9 @@ def main():
                 "CFG_mem_limit=%s\n"
                 "CFG_nofile_limit=%s\n" % (port, data_dir, open_lan, mem_limit, nofile_limit)
             )
+
+        def start(open_lan, port, mem_limit=0, nofile_limit=4096):
+            injected = _injected(port, open_lan, mem_limit, nofile_limit)
             path = os.path.join(tmp, "start.sh")
             write(path, prelude + injected + retarget(body) + "\nstart_service\n")
             procd_log = os.path.join(tmp, "procd.log")
@@ -470,6 +478,48 @@ def main():
         run([sh, hc_path], env2)
         case("a healthy probe clears the counter", not os.path.exists(counter),
              "counter file still present")
+        # 7a. the init script owns the health-check cron entry.
+        # postinst and prerm used to rewrite /etc/crontabs/root themselves, so
+        # the same job existed three times with different idempotency: the
+        # copies rewrote the file and restarted cron on every install, while
+        # cron_sync compared first and skipped the flash write. They now call
+        # `sync_cron <0|1>` here, which only works if the command is declared
+        # (rc.common drops an unknown action to `help`) — so both the surface
+        # and the behaviour are asserted.
+        crontab = os.path.join(crontab_dir, "root")
+        write(crontab, "*/5 * * * * /usr/bin/operator-job\n", 0o644)
+
+        def init_command(action, *args):
+            # Dispatch the way rc.common does, not by calling the function
+            # directly: rc.common sets `initscript=$1; action=$2; shift 2`,
+            # then calls `$action "$@"`, so the command name is shifted away
+            # and the requested state lands in $1. The dummy initscript name
+            # and the shift reproduce that here; without them a `sync_cron`
+            # that reads `$2` would see the state and pass for the wrong
+            # reason, which is exactly the bug this case exists to catch.
+            path = os.path.join(tmp, "cmd.sh")
+            write(path, prelude + _injected("20130", 1) + retarget(body)
+                  + '\ninitscript="$1"\naction="$2"\nshift 2\n"$action" "$@"\n')
+            return run([sh, path, "9router-go", action] + list(args), env, cwd=tmp)
+
+        init_command("sync_cron", "1")
+        lines = [l for l in open(crontab) if "9router-go-healthcheck" in l]
+        case("sync_cron 1 installs exactly one probe line", len(lines) == 1,
+             "lines: %r" % (lines,))
+        init_command("sync_cron", "1")
+        lines = [l for l in open(crontab) if "9router-go-healthcheck" in l]
+        case("sync_cron 1 is idempotent", len(lines) == 1, "lines: %r" % (lines,))
+        case("sync_cron keeps the operator's own cron jobs",
+             "operator-job" in open(crontab).read(), "operator job lost")
+        installed = sum(1 for l in open(crontab) if "9router-go-healthcheck" in l)
+        init_command("sync_cron", "0")
+        case("sync_cron 0 removes the probe line",
+             installed == 1 and "9router-go-healthcheck" not in open(crontab).read(),
+             "installed=%d, remaining=%r" % (
+                 installed, [l for l in open(crontab) if "9router-go-healthcheck" in l]))
+        case("sync_cron is declared in EXTRA_COMMANDS",
+             "EXTRA_COMMANDS" in body and "sync_cron" in body.split("EXTRA_COMMANDS")[1][:80],
+             "rc.common would drop sync_cron to help")
         # 7b. a deliberately stopped service is not a failure. backup stops
         # the gateway to copy the database; counting that as a failed probe
         # could reach the threshold and restart it mid-copy.
