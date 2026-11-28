@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"strings"
 	"testing"
+	"time"
 )
 
 func opencodeGenuineToolDescription(name string) any {
@@ -260,14 +261,12 @@ func TestConcealOpenCodeV2ModelIdentity(t *testing.T) {
 			out, _ := ConcealOpenCodeV2FingerprintTools([]byte(tt.body), tt.flat, false)
 			m := decodeShaped(t, out)
 			system := tt.read(t, m)
-			if !strings.HasPrefix(system, openCodeHarnessPrefix()) {
+			harness := renderOpenCodeHarness(time.Now(), "", openCodeHarnessProviderID, model, openCodeFreePersona)
+			if !strings.HasPrefix(system, openCodeHarnessPrefix(harness)) {
 				t.Fatal("harness preamble must stay byte-exact at the start")
 			}
-			if !strings.HasSuffix(system, "Your actual model for this session is: "+model) {
-				t.Fatalf("identity suffix missing or wrong: %.200s", system[len(system)-min(len(system), 200):])
-			}
-			if strings.Index(system, "Your actual model for this session") <= strings.Index(system, openCodeHarnessPrefix()) {
-				t.Fatal("identity suffix must follow the preamble, not replace it")
+			if !strings.Contains(system, "# Your Model\n- Name: "+model+"\n- Provider ID: opencode\n- Model ID: "+model) {
+				t.Fatalf("the harness must name the requested model, got: %.300s", system)
 			}
 		})
 	}

@@ -348,12 +348,13 @@ func TestE2E_Opencode_SpaceBunny_ChatCompletions_Shape(t *testing.T) {
 			t.Errorf("expected model 'space-bunny-free', got %v", parsed["model"])
 		}
 		// Tools must have .function wrapper (Chat Completions format) and be
-		// exactly the 12 genuine built-ins the inference gate accepts — any
+		// exactly the genuine built-ins the inference gate accepts — any
 		// caller-named or edited declaration is rejected (measured live
-		// 2026-10-25, internal/translator/opencode_free_harness.go).
+		// 2026-10-25, internal/translator/opencode_free_harness.go). The set is
+		// the 13 the shipped CLI v2.3.2 declares.
 		tools, ok := parsed["tools"].([]any)
-		if !ok || len(tools) != 12 {
-			t.Fatalf("expected the 12 genuine built-in tools, got %d", len(tools))
+		if !ok || len(tools) != 13 {
+			t.Fatalf("expected the 13 genuine built-in tools, got %d", len(tools))
 		}
 		gotNames := map[string]bool{}
 		for _, tool := range tools {
