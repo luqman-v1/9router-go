@@ -64,7 +64,8 @@ func TestImportApiKeyCreatesHashedRow(t *testing.T) {
 
 func TestImportApiKeyIsIdempotent(t *testing.T) {
 	r := openEphemeralSchemaDB(t)
-	params := ImportApiKeyParams{Key: importTestKey, Name: "Imported"}
+	id := uuid.NewString()
+	params := ImportApiKeyParams{ID: id, Key: importTestKey, Name: "Imported"}
 
 	first, err := r.ImportApiKey(context.Background(), params)
 	if err != nil {
@@ -196,43 +197,30 @@ func TestImportApiKeyConflictLeavesNoRowBehind(t *testing.T) {
 	}
 }
 
-// TestImportApiKeySameSecretNewIDIsIdempotent pins the replay shape a scripted
-// import actually produces: the body carries no id, so the second call mints a
-// fresh one and the secret is what has to resolve. It returns the original row
-// rather than a conflict or a second row.
-func TestImportApiKeySameSecretNewIDIsIdempotent(t *testing.T) {
+// TestImportApiKeySameSecretNoIDIsConflict pins the OmniRoute parity rule
+// (Issue #1557): a duplicate secret without a matching id is always a
+// conflict, never a silent redirect to the existing row. Idempotent replay
+// requires the caller to supply the same explicit id.
+func TestImportApiKeySameSecretNoIDIsConflict(t *testing.T) {
 	r := openEphemeralSchemaDB(t)
-	first, err := r.ImportApiKey(context.Background(), ImportApiKeyParams{
-		Key:  importTestKey,
-		Name: "Imported",
-	})
-	if err != nil {
-		t.Fatalf("first ImportApiKey: %v", err)
-	}
+	first := mustImport(t, r, importTestKey)
 
-	second, err := r.ImportApiKey(context.Background(), ImportApiKeyParams{
+	_, err := r.ImportApiKey(context.Background(), ImportApiKeyParams{
 		Key:  importTestKey,
 		Name: "Renamed by the replay",
 	})
-	if err != nil {
-		t.Fatalf("second ImportApiKey: %v", err)
+	if !errors.Is(err, ErrApiKeyImportConflict) {
+		t.Fatalf("ImportApiKey error = %v, want ErrApiKeyImportConflict", err)
 	}
-	if second.Created {
-		t.Fatal("replay without an id reported Created = true")
-	}
-	if second.Key.ID != first.Key.ID {
-		t.Fatalf("replay returned id %s, want the original %s", second.Key.ID, first.Key.ID)
-	}
-	// The name the replay carried must not overwrite the stored row.
-	if second.Key.Name == nil || *second.Key.Name != "Imported" {
-		t.Fatalf("replay overwrote the stored name: %v", second.Key.Name)
+	if got := mustGetKey(t, r, first.Key.ID); got == nil {
+		t.Fatal("conflict removed the original row")
 	}
 	keys, err := r.GetApiKeys()
 	if err != nil {
 		t.Fatalf("GetApiKeys: %v", err)
 	}
 	if len(keys) != 1 {
-		t.Fatalf("replay left %d rows, want 1", len(keys))
+		t.Fatalf("conflict left %d rows, want 1", len(keys))
 	}
 }
 

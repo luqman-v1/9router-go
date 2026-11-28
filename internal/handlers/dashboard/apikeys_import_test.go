@@ -34,7 +34,8 @@ func TestHandleImportApiKeyCreatesThenReplays(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	body := map[string]any{"key": importHandlerKey, "name": "Imported"}
+	id := "550e8400-e29b-41d4-a716-446655440000"
+	body := map[string]any{"id": id, "key": importHandlerKey, "name": "Imported"}
 	first := postImport(t, router, body)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first import = %d, want 201 (body: %s)", first.Code, first.Body.String())
@@ -135,13 +136,13 @@ func TestHandleImportApiKeyConflictKeepsStoredSecret(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	if rec := postImport(t, router, map[string]any{"key": importHandlerKey}); rec.Code != http.StatusCreated {
+	seedID := "550e8400-e29b-41d4-a716-446655440001"
+	if rec := postImport(t, router, map[string]any{"id": seedID, "key": importHandlerKey}); rec.Code != http.StatusCreated {
 		t.Fatalf("seed import = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
 	}
-	seeded := decodeImport(t, postImport(t, router, map[string]any{"key": importHandlerKey}))
 
 	rec := postImport(t, router, map[string]any{
-		"id":  seeded["id"],
+		"id":  seedID,
 		"key": "sk-handlerimport-0123456789zzzzzz",
 	})
 	if rec.Code != http.StatusConflict {
@@ -149,8 +150,35 @@ func TestHandleImportApiKeyConflictKeepsStoredSecret(t *testing.T) {
 	}
 
 	row := listKeys(t, router)
-	if got, _ := row["id"].(string); got != seeded["id"] {
-		t.Errorf("stored id = %q, want %q", got, seeded["id"])
+	if got, _ := row["id"].(string); got != seedID {
+		t.Errorf("stored id = %q, want %q", got, seedID)
+	}
+}
+
+// TestHandleImportApiKeyDuplicateSecretNoIDIsConflict pins the OmniRoute
+// parity rule (Issue #1557): a duplicate secret without a matching id is
+// always a conflict, never a silent 200 redirect to the existing row.
+func TestHandleImportApiKeyDuplicateSecretNoIDIsConflict(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	seedID := "550e8400-e29b-41d4-a716-446655440002"
+	if rec := postImport(t, router, map[string]any{"id": seedID, "key": importHandlerKey}); rec.Code != http.StatusCreated {
+		t.Fatalf("seed import = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	rec := postImport(t, router, map[string]any{"key": importHandlerKey})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate secret without id = %d, want 409 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	keys, err := repo.GetApiKeys()
+	if err != nil {
+		t.Fatalf("GetApiKeys: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("conflict left %d rows, want 1", len(keys))
 	}
 }
 

@@ -39,7 +39,8 @@ var apiKeyImportPattern = regexp.MustCompile(`^sk-[A-Za-z0-9_-]{29,253}$`)
 const reservedApiKeyEnv = "9ROUTER_API_KEY"
 
 // ImportApiKeyParams is one import request. ID is optional: an empty one mints
-// a UUID, which is what makes a retry with the same body idempotent.
+// a UUID. Supplying the same id with the same key is the idempotent retry
+// (200 OK); a duplicate secret without a matching id is always a conflict.
 type ImportApiKeyParams struct {
 	ID            string
 	Key           string
@@ -49,8 +50,8 @@ type ImportApiKeyParams struct {
 }
 
 // ImportApiKeyResult reports whether this call created the row. Created is
-// false when the id already resolved to the same key, which is the
-// idempotent-retry answer rather than an error.
+// false when an explicit id resolved to the row holding that same key, which
+// is the idempotent-retry answer rather than an error.
 type ImportApiKeyResult struct {
 	Created bool
 	Key     *models.APIKey
@@ -60,7 +61,8 @@ type ImportApiKeyResult struct {
 //
 // The contract an importer needs is "apply this key, and applying it twice
 // changes nothing": a row that already holds the id is returned untouched when
-// the supplied secret is the one it holds, and refused when it is not. The
+// the supplied secret is the one it holds, and refused when it is not. A
+// duplicate secret without a matching id is always a conflict (409). The
 // secret is checked against the row's argon2id verifier, its plaintext column
 // and its lookup hash; the stored hash columns are never rewritten.
 func (r *Repo) ImportApiKey(ctx context.Context, p ImportApiKeyParams) (ImportApiKeyResult, error) {
@@ -120,21 +122,17 @@ func (r *Repo) importApiKeyTx(ctx context.Context, tx *sql.Tx, id string, p Impo
 		return ImportApiKeyResult{}, nil, fmt.Errorf("import api key %s: read by id: %w", id, err)
 	}
 
-	// The secret decides next. A body replayed without its id mints a fresh one
-	// above, so the secret is what makes that retry idempotent: the row that
-	// already holds it is returned untouched. A caller that supplied an explicit
-	// id is asking for that id, so the same secret under a different id is a
-	// duplicate it must resolve, not a silent redirect (OmniRoute answers 409
-	// for a duplicate secret).
+	// The secret decides next. A row that already holds the secret is a
+	// duplicate: the caller must resolve it, not get a silent redirect to the
+	// other row. The only idempotent-replay answer is the id path above, where
+	// an explicit id matched the row holding that same secret (OmniRoute
+	// apiKeyImport.ts answers 409 for a duplicate secret; Issue #1557).
 	secretID, err := importLookupSecret(ctx, tx, p.Key)
 	if err != nil {
 		return ImportApiKeyResult{}, nil, err
 	}
 	if secretID != "" {
-		if p.ID != "" && secretID != p.ID {
-			return ImportApiKeyResult{}, nil, fmt.Errorf("import api key: %w: key already belongs to %s", ErrApiKeyImportConflict, secretID)
-		}
-		return r.importExisting(ctx, tx, secretID)
+		return ImportApiKeyResult{}, nil, fmt.Errorf("import api key: %w: key already belongs to %s", ErrApiKeyImportConflict, secretID)
 	}
 
 	stored, err := r.importInsertRow(ctx, tx, id, p)

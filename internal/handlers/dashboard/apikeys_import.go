@@ -79,7 +79,7 @@ func (h *DashboardHandler) HandleImportApiKey(w http.ResponseWriter, r *http.Req
 		return
 	case err != nil:
 		log.Error("apikeys", "import: store key failed", "error", err)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to import api key")
 		return
 	}
 
@@ -87,26 +87,31 @@ func (h *DashboardHandler) HandleImportApiKey(w http.ResponseWriter, r *http.Req
 	if result.Created {
 		status = http.StatusCreated
 	}
-	handlerutil.WriteJSON(w, status, importApiKeyResponse(result))
+	allowed, _ := h.Repo.GetAllowedModels(result.Key.ID)
+	if allowed == nil {
+		allowed = []string{}
+	}
+	handlerutil.WriteJSON(w, status, importApiKeyResponse(result, allowed))
 }
 
 // importApiKeyResponse renders the stored row with the columns an importer
 // needs and nothing else. keyHash and lookupHash are deliberately absent: the
 // first is a verifier and the second an index, and neither is a value a client
 // has any use for.
-func importApiKeyResponse(result db.ImportApiKeyResult) map[string]any {
+func importApiKeyResponse(result db.ImportApiKeyResult, allowedModels []string) map[string]any {
 	k := result.Key
 	if k == nil {
 		return map[string]any{"status": "ok", "created": result.Created}
 	}
 	return map[string]any{
-		"status":    "ok",
-		"created":   result.Created,
-		"id":        k.ID,
-		"key":       apiKeyDisplay(k),
-		"name":      k.Name,
-		"machineId": k.MachineID,
-		"isActive":  k.IsActive,
-		"createdAt": k.CreatedAt,
+		"status":        "ok",
+		"created":       result.Created,
+		"id":            k.ID,
+		"key":           apiKeyDisplay(k),
+		"name":          k.Name,
+		"machineId":     k.MachineID,
+		"allowedModels": allowedModels,
+		"isActive":      k.IsActive,
+		"createdAt":     k.CreatedAt,
 	}
 }
