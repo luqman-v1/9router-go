@@ -339,9 +339,12 @@ func TestHandleGetConnectionModels_Claude(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	// The models array is []map[string]any since the live catalogues gained
+	// the capability enrichment (contextLength/isVL/isReasoning/thinking_levels):
+	// a map[string]string decode cannot hold those non-string values.
 	var out struct {
-		Provider string              `json:"provider"`
-		Models   []map[string]string `json:"models"`
+		Provider string           `json:"provider"`
+		Models   []map[string]any `json:"models"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -388,9 +391,11 @@ func TestHandleGetConnectionModels_Anthropic(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	// []map[string]any, not []map[string]string: the capability enrichment
+	// adds non-string values (contextLength, isVL, thinking_levels).
 	var out struct {
-		Provider string              `json:"provider"`
-		Models   []map[string]string `json:"models"`
+		Provider string           `json:"provider"`
+		Models   []map[string]any `json:"models"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)

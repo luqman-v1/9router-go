@@ -3,6 +3,71 @@ import { getModelCaps, getModelKind, getModelsByProviderId, PROVIDER_ID_TO_ALIAS
 import { PROVIDER_CATALOG, isChatProvider } from '../../lib/providers'
 import { parseSearchQuery, matchesSearch } from '../../lib/modelSearchFilter'
 
+/**
+ * Providers whose model list the picker reads live from the gateway instead of
+ * the static registry bundle. These are the CLI-tool providers (claude, zed,
+ * cursor, cline/clinepass, commandcode): their catalogues change upstream on a
+ * cadence the snapshot cannot follow, and the backend already serves the live
+ * list with the capability block resolved (GET /api/providers/{id}/models).
+ */
+export const LIVE_CATALOG_PROVIDERS = [
+  'cursor',
+  'cline',
+  'clinepass',
+  'zed',
+  'claude',
+  'commandcode',
+] as const
+
+export type LiveCatalogProvider = (typeof LIVE_CATALOG_PROVIDERS)[number]
+
+/** One live catalogue entry, in the shape the gateway serves it. */
+export interface LiveCatalogEntry {
+  id?: string
+  slug?: string
+  model?: string
+  name?: string
+  contextLength?: number
+  maxOutput?: number
+  isVL?: boolean
+  isReasoning?: boolean
+  thinking_levels?: string[]
+}
+
+/** Reads a live entry's id under the three spellings the feeds use. */
+function liveEntryId(entry: unknown): string {
+  if (typeof entry === 'string') return entry
+  if (!entry || typeof entry !== 'object') return ''
+  const obj = entry as LiveCatalogEntry
+  return obj.id || obj.slug || obj.model || ''
+}
+
+/** Live entries of one provider as chat models, or null when it has none. */
+function liveEntries(providerId: string, liveModels: PickerExtras['liveModels']): unknown[] | null {
+  const entries = liveModels?.[providerId]
+  if (!Array.isArray(entries) || entries.length === 0) return null
+  return entries.filter((m) => isChatModel(m))
+}
+
+/**
+ * liveModelCaps turns a live catalogue entry into the picker's caps block.
+ * The backend resolves the capability tables, so the entry states its own
+ * numbers; the id heuristics are only the fallback for an entry that predates
+ * the enrichment.
+ */
+export function liveModelCaps(model: LiveCatalogEntry): PickerModel['caps'] {
+  const id = model.id || model.slug || model.model || ''
+  const fallback = getModelCaps(id)
+  return {
+    vision: model.isVL ?? fallback.vision,
+    audioInput: fallback.audioInput,
+    reasoning: model.isReasoning ?? fallback.reasoning,
+    ...(model.contextLength ? { contextWindow: model.contextLength } : {}),
+    ...(model.maxOutput ? { maxOutput: model.maxOutput } : {}),
+    ...(model.thinking_levels?.length ? { thinking_levels: model.thinking_levels } : {}),
+  }
+}
+
 const MEDIA_KINDS: Record<string, true> = {
   image: true,
   tts: true,
@@ -24,7 +89,17 @@ export interface PickerModel {
   id: string
   name: string
   value: string
-  caps: { vision: boolean; audioInput: boolean; reasoning: boolean }
+  caps: {
+    vision: boolean
+    audioInput?: boolean
+    reasoning: boolean
+    /** Declared context window, when the catalogue states one. */
+    contextWindow?: number
+    /** Declared output ceiling, when the catalogue states one. */
+    maxOutput?: number
+    /** Thinking levels the model accepts, when it reasons. */
+    thinking_levels?: string[]
+  }
   /** True when the gateway confirmed this model is gone upstream. */
   deprecated?: boolean
 }
@@ -42,6 +117,13 @@ export interface PickerExtras {
   disabledModels?: Record<string, string[]>
   /** Deprecations keyed "<provider>/<model>", from /api/models/deprecations. */
   deprecations?: Record<string, unknown>
+  /**
+   * Live catalogues keyed by provider id, from GET /api/providers/{id}/models.
+   * A provider present here is listed from its live entries; one absent falls
+   * back to the static bundle, so a failed fetch degrades instead of emptying
+   * the group.
+   */
+  liveModels?: Record<string, unknown[]>
 }
 export function resolveModelPickerGroups(
   connections: ProviderConnection[] = [],
@@ -76,9 +158,14 @@ export function resolveModelPickerGroups(
       continue
     }
     const alias = catItem.alias || PROVIDER_ID_TO_ALIAS[catItem.id] || catItem.id
-    const rawModels = getModelsByProviderId(catItem.id)
-    const hardcodedIds = new Set((rawModels || []).map((m) => m.id))
-    const hasHardcoded = (rawModels || []).length > 0
+    // A provider the picker fetched live is listed from that catalogue; the
+    // static bundle is the fallback for a provider whose fetch failed.
+    const live = liveEntries(catItem.id, extras.liveModels)
+    const rawModels = live ? [] : getModelsByProviderId(catItem.id)
+    const hardcodedIds = new Set(
+      live ? live.map(liveEntryId).filter(Boolean) : (rawModels || []).map((m) => m.id)
+    )
+    const hasHardcoded = live ? live.length > 0 : (rawModels || []).length > 0
 
     // Upstream parity (ModelSelectModal.js): custom models registered via
     // /api/models/custom for this provider (only aliasName === modelId shown
@@ -103,7 +190,7 @@ export function resolveModelPickerGroups(
         !hardcodedIds.has(fullModel.replace(`${alias}/`, ''))
     )
 
-    if ((!rawModels || rawModels.length === 0) && customs.length === 0 && aliasEntries.length === 0) {
+    if (!hasHardcoded && customs.length === 0 && aliasEntries.length === 0) {
       continue
     }
 
@@ -116,6 +203,20 @@ export function resolveModelPickerGroups(
     const isDeprecated = (modelId: string) =>
       Boolean(extras.deprecations?.[`${catItem.id.toLowerCase()}/${modelId.toLowerCase()}`])
 
+
+    for (const m of live || []) {
+      const id = liveEntryId(m)
+      if (!id || seenModelIds.has(id)) continue
+      seenModelIds.add(id)
+      const entry = (m && typeof m === 'object' ? m : { id }) as LiveCatalogEntry
+      models.push({
+        id,
+        name: entry.name || id,
+        value: `${alias}/${id}`,
+        caps: liveModelCaps(entry),
+        deprecated: isDeprecated(id),
+      })
+    }
 
     for (const m of rawModels || []) {
       if (!m.id || seenModelIds.has(m.id) || !isChatModel(m)) continue

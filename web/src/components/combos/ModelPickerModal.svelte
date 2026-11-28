@@ -9,6 +9,7 @@
   import ModelPill from './ModelPill.svelte'
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import {
+    LIVE_CATALOG_PROVIDERS,
     resolveFilteredCombos,
     resolveFilteredGroups,
     resolveModelPickerGroups,
@@ -53,6 +54,35 @@
     onClose,
   }: Props = $props()
 
+  /**
+   * Live catalogues for the CLI-tool providers, keyed by provider id. These
+   * change upstream faster than the static bundle, so the picker reads them
+   * from the gateway (which resolves the capability block server-side).
+   */
+  let liveModels = $state<Record<string, unknown[]>>({})
+
+  // One request per connected live-catalog provider, in one batch. A failed
+  // fetch leaves that provider on the static bundle instead of emptying it.
+  $effect(() => {
+    if (!isOpen) return
+    const ids = new Set(connections.map((c) => c.provider).filter(Boolean))
+    const wanted = LIVE_CATALOG_PROVIDERS.filter((id) => ids.has(id))
+    if (wanted.length === 0) return
+    void Promise.all(
+      wanted.map(async (id) => {
+        const conn = connections.find((c) => c.provider === id)
+        if (!conn) return null
+        const res = await api.getConnectionModels(conn.id).catch(() => null)
+        return [id, res?.models ?? []] as const
+      })
+    ).then((rows) => {
+      const next: Record<string, unknown[]> = {}
+      for (const row of rows) {
+        if (row && row[1].length > 0) next[row[0]] = row[1]
+      }
+      liveModels = next
+    })
+  })
   let searchQuery = $state('')
   let parsedQuery = $derived(parseSearchQuery(searchQuery))
   let fetchedExtras = $state<ResolvedPickerExtras>(cachedPickerExtras ?? EMPTY_PICKER_EXTRAS)
@@ -85,6 +115,7 @@
       customModels: customModels ?? fetchedExtras.customModels,
       disabledModels: disabledModels ?? fetchedExtras.disabledModels,
       deprecations: deprecations ?? fetchedExtras.deprecations,
+      liveModels,
     })
   )
   let filteredCombos = $derived(

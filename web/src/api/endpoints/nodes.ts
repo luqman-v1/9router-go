@@ -73,11 +73,36 @@ const nodesEndpoints = {
       `/api/provider-nodes/${encodeURIComponent(id)}/quota/reset`,
       { method: 'POST' }
     ),
-  /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
+  /**
+   * List models from a connection's upstream (upstream GET
+   * /api/providers/[id]/models). Live catalogues carry the server-resolved
+   * capability block (`contextLength`, `isVL`, `isReasoning`,
+   * `thinking_levels`); compatible nodes answer with their own field names,
+   * so the entry type stays open.
+   */
   getConnectionModels: (connectionId: string) =>
-    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string; context_length?: number; contextLength?: number; max_completion_tokens?: number; maxOutputTokens?: number; capabilities?: { vision?: boolean; reasoning?: boolean } } | string> }>(
-      `/api/providers/${encodeURIComponent(connectionId)}/models`,
-    ),
+    request<{
+      provider: string
+      connectionId: string
+      models: Array<
+        | string
+        | {
+            id?: string
+            slug?: string
+            name?: string
+            model?: string
+            context_length?: number
+            contextLength?: number
+            max_completion_tokens?: number
+            maxOutputTokens?: number
+            maxOutput?: number
+            isVL?: boolean
+            isReasoning?: boolean
+            thinking_levels?: string[]
+            capabilities?: { vision?: boolean; reasoning?: boolean }
+          }
+      >
+    }>(`/api/providers/${encodeURIComponent(connectionId)}/models`),
 }
 
 export default nodesEndpoints
