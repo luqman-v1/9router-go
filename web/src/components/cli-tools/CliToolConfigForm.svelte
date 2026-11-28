@@ -197,6 +197,7 @@
     try {
       const payload: CliToolSettingsApplyPayload = {
         baseUrl: url,
+        model: model.trim(),
       }
       if (toolId === 'pi' && piModels.length > 0) {
         payload.models = piModels

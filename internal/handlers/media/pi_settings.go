@@ -461,15 +461,6 @@ func piSanitizeThinkingLevelMap(v any) any {
 	return clean
 }
 
-func piModelEntry(id, name string, contextWindow, maxTokens int) map[string]any {
-	return map[string]any{
-		"id":            id,
-		"name":          name,
-		"contextWindow": contextWindow,
-		"maxTokens":     maxTokens,
-	}
-}
-
 // piIntOr reads a JSON number, falling back when absent or not a number.
 func piIntOr(v any, fallback int) int {
 	if n, ok := v.(int64); ok {
