@@ -23,13 +23,13 @@ func imageOnlyRequest(url string) *translator.OpenAIRequest {
 // every image-only prompt collapsed onto one entry and served another user's
 // image response.
 func TestBuildCacheKey_SeparatesNonTextContent(t *testing.T) {
-	a := BuildCacheKey("", imageOnlyRequest("data:image/png;base64,AAAAAAAA"))
-	b := BuildCacheKey("", imageOnlyRequest("data:image/png;base64,BBBBBBBB"))
+	a := BuildCacheKey("", imageOnlyRequest("data:image/png;base64,AAAAAAAA"), nil)
+	b := BuildCacheKey("", imageOnlyRequest("data:image/png;base64,BBBBBBBB"), nil)
 
 	if a == b {
 		t.Fatal("different image payloads produced the same cache key")
 	}
-	if a != BuildCacheKey("", imageOnlyRequest("data:image/png;base64,AAAAAAAA")) {
+	if a != BuildCacheKey("", imageOnlyRequest("data:image/png;base64,AAAAAAAA"), nil) {
 		t.Fatal("cache key is not deterministic for identical input")
 	}
 }
@@ -46,7 +46,7 @@ func TestBuildCacheKey_SeparatesFilePayloads(t *testing.T) {
 		}
 	}
 
-	if BuildCacheKey("", withFile("AAA")) == BuildCacheKey("", withFile("BBB")) {
+	if BuildCacheKey("", withFile("AAA"), nil) == BuildCacheKey("", withFile("BBB"), nil) {
 		t.Fatal("different file payloads produced the same cache key")
 	}
 }
@@ -65,7 +65,7 @@ func TestBuildCacheKey_SeparatesUntypedImagePayloads(t *testing.T) {
 		}
 	}
 
-	if BuildCacheKey("", build("data:image/png;base64,AAAAAAAA")) == BuildCacheKey("", build("data:image/png;base64,BBBBBBBB")) {
+	if BuildCacheKey("", build("data:image/png;base64,AAAAAAAA"), nil) == BuildCacheKey("", build("data:image/png;base64,BBBBBBBB"), nil) {
 		t.Fatal("untyped content: different image payloads produced the same cache key")
 	}
 }
@@ -97,7 +97,7 @@ func TestBuildCacheKey_SeparatesResponseShapingParameters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if BuildCacheKey("", tt.a) == BuildCacheKey("", tt.b) {
+			if BuildCacheKey("", tt.a, nil) == BuildCacheKey("", tt.b, nil) {
 				t.Fatal("requests that produce different completions share a cache key")
 			}
 		})
@@ -108,7 +108,7 @@ func TestBuildCacheKey_SeparatesResponseShapingParameters(t *testing.T) {
 		r.MaxCompletionTokens = &v
 		return r
 	}
-	if BuildCacheKey("", maxCompletion(16)) == BuildCacheKey("", maxCompletion(4096)) {
+	if BuildCacheKey("", maxCompletion(16), nil) == BuildCacheKey("", maxCompletion(4096), nil) {
 		t.Error("max_completion_tokens does not reach the cache key")
 	}
 
@@ -117,7 +117,7 @@ func TestBuildCacheKey_SeparatesResponseShapingParameters(t *testing.T) {
 		r.ReasoningEffort = e
 		return r
 	}
-	if BuildCacheKey("", effort("low")) == BuildCacheKey("", effort("high")) {
+	if BuildCacheKey("", effort("low"), nil) == BuildCacheKey("", effort("high"), nil) {
 		t.Error("reasoning_effort does not reach the cache key")
 	}
 
@@ -126,14 +126,18 @@ func TestBuildCacheKey_SeparatesResponseShapingParameters(t *testing.T) {
 		r.ParallelToolCalls = &v
 		return r
 	}
-	if BuildCacheKey("", parallel(true)) == BuildCacheKey("", parallel(false)) {
+	if BuildCacheKey("", parallel(true), nil) == BuildCacheKey("", parallel(false), nil) {
 		t.Error("parallel_tool_calls does not reach the cache key")
 	}
 
 	// A request that changes nothing must keep producing the same key, or the
 	// cache would never hit.
-	if BuildCacheKey("", base()) != BuildCacheKey("", base()) {
-		t.Error("cache key is not stable for identical requests")
+	stable := BuildCacheKey("", base(), nil)
+	for range 10 {
+		if BuildCacheKey("", base(), nil) != stable {
+			t.Error("cache key is not stable for identical requests")
+			break
+		}
 	}
 }
 
@@ -184,5 +188,29 @@ func TestParseStoredAt_ReadsBothFormats(t *testing.T) {
 
 	if _, ok := parseStoredAt("not a timestamp"); ok {
 		t.Fatal("expected a garbage storedAt to be rejected")
+	}
+}
+
+// The provider-routing steer is a 9router-go client hint that decides which
+// providers may answer, so it must reach the semantic key too: without it a
+// request steered away from a provider would be answered by that provider's
+// stored response.
+func TestBuildCacheKeySeparatesSteer(t *testing.T) {
+	req := &translator.OpenAIRequest{
+		Model:    "gpt-4o",
+		Messages: []translator.OpenAIMessage{{Role: "user", Content: "hello"}},
+	}
+	plain := BuildCacheKey("", req, nil)
+	ignoreDeepseek := BuildCacheKey("", req, []byte(`{"ignore":["deepseek"]}`))
+	ignoreGroq := BuildCacheKey("", req, []byte(`{"ignore":["groq"]}`))
+
+	if plain == ignoreDeepseek || plain == ignoreGroq {
+		t.Error("a steered request shares its semantic key with the unsteered one")
+	}
+	if ignoreDeepseek == ignoreGroq {
+		t.Error("two different steers produced the same semantic key")
+	}
+	if BuildCacheKey("", req, nil) != plain {
+		t.Error("semantic key is not deterministic for a nil steer")
 	}
 }

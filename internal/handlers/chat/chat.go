@@ -65,6 +65,17 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Request-level provider preferences (the OpenRouter-style "provider"
+	// object). Parsed and stripped here, once, so every later stage — cache
+	// keys, resolution, translation, upstream dispatch — sees one body that
+	// no longer carries the client-only field.
+	prefs := parseProviderPreferences(body)
+	body = stripProviderPreferencesField(body)
+	// The steer's canonical bytes: both cache keys fold them in, so a
+	// request steered away from a provider can never be answered by an
+	// entry that provider produced.
+	steer := prefs.canonical()
+
 	// A "(level)" suffix is a request override, not part of the model id: it
 	// comes off the name before the name is resolved against the aliases and
 	// the combos, and the intent it carries travels on the context.
@@ -142,6 +153,13 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// must not depend on the model resolving. resolveModel below is what turns
 	// an unknown model into a 400, and a cached answer for a model that has
 	// since been retired is still the answer this client already paid for.
+	//
+	// The steer rides ctx so both keys below separate steers: a request
+	// steered away from a provider must never be answered by an entry that
+	// provider produced.
+	if len(steer) > 0 {
+		ctx = semanticcache.WithSteer(ctx, steer)
+	}
 	if !reqBody.Stream && h.SemanticCache != nil && h.SemanticCache.Enabled() {
 		var openAIReq translator.OpenAIRequest
 		if err := json.Unmarshal(body, &openAIReq); err == nil {
@@ -174,7 +192,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// whole, and hashing it would mean buffering the response this layer exists
 	// to avoid.
 	if !reqBody.Stream && h.PromptCache != nil && h.SemanticCache != nil && h.SemanticCache.Enabled() {
-		if key, ok := promptcache.HashRequest(reqBody.Model, body); ok {
+		if key, ok := promptcache.HashRequest(reqBody.Model, body, steer); ok {
 			if entry, hit := h.PromptCache.Get(key); hit {
 				w.Header().Set("Content-Type", entry.ContentType)
 				w.Header().Set("X-Cache", "HIT")
@@ -202,7 +220,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	modelInfo, err := h.resolveModel(modelName)
+	modelInfo, err := h.resolveModelWithPrefs(modelName, prefs)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -364,6 +382,12 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request-level provider preferences, same contract as the chat lane:
+	// parsed and stripped before translation so the client-only field never
+	// rides the translated body upstream.
+	prefs := parseProviderPreferences(body)
+	body = stripProviderPreferencesField(body)
+
 	// A "(level)" suffix is a request override, not part of the model id: it
 	// comes off the name before the name is resolved against the aliases and
 	// the combos, and the intent it carries travels on the context.
@@ -394,7 +418,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	modelInfo, err := h.resolveModel(modelName)
+	modelInfo, err := h.resolveModelWithPrefs(modelName, prefs)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())

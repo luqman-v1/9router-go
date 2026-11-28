@@ -341,7 +341,7 @@ func TestPromptCacheServesIdenticalRequest(t *testing.T) {
 	h.PromptCache = promptcache.New(10, time.Minute)
 
 	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
-	key, ok := promptcache.HashRequest("gpt-5", body)
+	key, ok := promptcache.HashRequest("gpt-5", body, nil)
 	if !ok {
 		t.Fatal("HashRequest rejected a valid body")
 	}
@@ -368,7 +368,7 @@ func TestPromptCacheRejectsUnhashable(t *testing.T) {
 		`{"messages":[]}`,
 		`{not json`,
 	} {
-		if _, ok := promptcache.HashRequest("m", []byte(body)); ok {
+		if _, ok := promptcache.HashRequest("m", []byte(body), nil); ok {
 			t.Errorf("HashRequest(%s) = true, want false", body)
 		}
 	}

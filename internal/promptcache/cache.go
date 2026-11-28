@@ -152,7 +152,7 @@ func (c *Cache) maxEntryBytesLocked() int64 {
 // different hashes — for the SAME input about 15% of the time. The cache then
 // missed on requests that should have hit, silently defeating the feature. Raw
 // bytes preserve the client's key order, which is stable for a given client.
-func HashRequest(model string, body []byte) (string, bool) {
+func HashRequest(model string, body, steer []byte) (string, bool) {
 	var raw struct {
 		Messages    jsontext.Value `json:"messages"`
 		System      jsontext.Value `json:"system"`
@@ -192,6 +192,16 @@ func HashRequest(model string, body []byte) (string, bool) {
 	writeField("temperature", raw.Temperature)
 	writeField("top_p", raw.TopP)
 	writeField("max_tokens", raw.MaxTokens)
+	// The provider-routing steer last, only when present: two requests that
+	// differ only in it can be served by different providers, so one exact
+	// key would replay a provider's answer to the client that excluded it.
+	// A steer-less request keeps its historical key.
+	if len(steer) > 0 {
+		h.Write([]byte("steer"))
+		h.Write([]byte{0})
+		h.Write(steer)
+		h.Write([]byte{0})
+	}
 	return hex.EncodeToString(h.Sum(nil)), true
 }
 

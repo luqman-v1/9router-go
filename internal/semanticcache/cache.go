@@ -68,7 +68,8 @@ func (c *Cache) Lookup(ctx context.Context, req *translator.OpenAIRequest) (*Ent
 	}
 
 	sessionID := handlerutil.GetSessionID(ctx)
-	key := BuildCacheKey(sessionID, req)
+	steer := steerFromContext(ctx)
+	key := BuildCacheKey(sessionID, req, steer)
 	if key == "" {
 		c.misses.Add(1)
 		return nil, 0, false
@@ -101,7 +102,7 @@ func (c *Cache) Store(ctx context.Context, req *translator.OpenAIRequest, respon
 	}
 
 	sessionID := handlerutil.GetSessionID(ctx)
-	key := BuildCacheKey(sessionID, req)
+	key := BuildCacheKey(sessionID, req, steerFromContext(ctx))
 	if key == "" {
 		return nil
 	}
