@@ -614,6 +614,7 @@ export interface CliToolSettingsApplyPayload {
   baseUrl: string
   apiKey?: string
   model?: string
+  models?: unknown[]
   tiers?: Record<string, string>
   autoCompactWindow?: string
 }

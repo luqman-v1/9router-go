@@ -49,6 +49,7 @@
     'crush',
     'kilo',
     'cline',
+    'pi',
   ])
   onMount(() => {
     if (typeof window !== 'undefined') {
@@ -437,7 +438,7 @@
       image: '/providers/pi.png',
       color: '#111827',
       description: 'pi coding agent — point ~/.pi/agent/models.json at the 9router-go gateway',
-      configType: 'guide',
+      configType: 'settings',
       instructions: [
         `Add a 9router-go provider to ~/.pi/agent/models.json (Windows: %USERPROFILE%\\.pi\\agent\\models.json):`,
         `{"providers":{"9router":{"baseUrl":"${localOrigin}/v1","api":"openai-completions","apiKey":"${snippetApiKey}","models":[{"id":"kr/claude-sonnet-4.5","name":"9router kr/claude-sonnet-4.5","reasoning":true,"contextWindow":200000,"maxTokens":64000}]}}}`,

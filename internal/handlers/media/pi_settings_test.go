@@ -230,6 +230,91 @@ func TestPiSettingsPost(t *testing.T) {
 	})
 }
 
+func TestPiSettingsPostCaps(t *testing.T) {
+	t.Run("preserves hand-set name when incoming name == id", func(t *testing.T) {
+		piTestHome(t)
+		piWriteConfig(t, filepath.Join(".pi", "agent", "models.json"), `{
+			"providers": {
+				"9router": {"baseUrl":"http://x/v1","models":[{"id":"m1","name":"My Model","contextWindow":200000,"maxTokens":64000}]}
+			}
+		}`)
+		rec := httptest.NewRecorder()
+		body := `{"baseUrl":"http://x","models":[{"id":"m1","name":"m1","contextWindow":200000,"maxTokens":64000}]}`
+		NewPiHandler(nil).HandlePost(rec, httptest.NewRequest(http.MethodPost, "/api/cli-tools/pi-settings", strings.NewReader(body)))
+
+		raw, _ := os.ReadFile(piWrittenPath(t))
+		var config map[string]any
+		json.Unmarshal(raw, &config)
+		models := config["providers"].(map[string]any)["9router"].(map[string]any)["models"].([]any)
+		first := models[0].(map[string]any)
+		if first["name"] != "My Model" {
+			t.Errorf("hand-set name not preserved: %v", first)
+		}
+	})
+
+	t.Run("sanitizes input, reasoning, thinkingLevelMap", func(t *testing.T) {
+		piTestHome(t)
+		body := `{"baseUrl":"http://x","models":[{"id":"m1","input":["text","image","video","text"],"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":"minimal","bogus":1,"high":{"nested":true}}}]}`
+		rec := httptest.NewRecorder()
+		NewPiHandler(nil).HandlePost(rec, httptest.NewRequest(http.MethodPost, "/api/cli-tools/pi-settings", strings.NewReader(body)))
+
+		raw, _ := os.ReadFile(piWrittenPath(t))
+		var config map[string]any
+		json.Unmarshal(raw, &config)
+		models := config["providers"].(map[string]any)["9router"].(map[string]any)["models"].([]any)
+		first := models[0].(map[string]any)
+		inp := first["input"].([]any)
+		if len(inp) != 2 {
+			t.Errorf("input not sanitized: %v", inp)
+		}
+		if first["reasoning"] != true {
+			t.Errorf("reasoning not preserved: %v", first["reasoning"])
+		}
+		tlm := first["thinkingLevelMap"].(map[string]any)
+		if _, ok := tlm["bogus"]; ok {
+			t.Errorf("bogus level not dropped: %v", tlm)
+		}
+		if _, ok := tlm["high"]; ok && tlm["high"] != nil {
+			// high was invalid (object) and should be dropped
+		}
+		if _, ok := tlm["high"]; ok {
+			t.Errorf("invalid high level not dropped: %v", tlm)
+		}
+	})
+
+	t.Run("empty {} thinkingLevelMap is dropped", func(t *testing.T) {
+		piTestHome(t)
+		body := `{"baseUrl":"http://x","models":[{"id":"m1","reasoning":false,"thinkingLevelMap":{}}]}`
+		rec := httptest.NewRecorder()
+		NewPiHandler(nil).HandlePost(rec, httptest.NewRequest(http.MethodPost, "/api/cli-tools/pi-settings", strings.NewReader(body)))
+
+		raw, _ := os.ReadFile(piWrittenPath(t))
+		var config map[string]any
+		json.Unmarshal(raw, &config)
+		models := config["providers"].(map[string]any)["9router"].(map[string]any)["models"].([]any)
+		first := models[0].(map[string]any)
+		if _, ok := first["thinkingLevelMap"]; ok {
+			t.Errorf("empty map not dropped: %v", first)
+		}
+	})
+
+	t.Run("reasoning false drops thinkingLevelMap", func(t *testing.T) {
+		piTestHome(t)
+		body := `{"baseUrl":"http://x","models":[{"id":"m1","reasoning":false,"thinkingLevelMap":{}}]}`
+		rec := httptest.NewRecorder()
+		NewPiHandler(nil).HandlePost(rec, httptest.NewRequest(http.MethodPost, "/api/cli-tools/pi-settings", strings.NewReader(body)))
+
+		raw, _ := os.ReadFile(piWrittenPath(t))
+		var config map[string]any
+		json.Unmarshal(raw, &config)
+		models := config["providers"].(map[string]any)["9router"].(map[string]any)["models"].([]any)
+		first := models[0].(map[string]any)
+		if _, ok := first["thinkingLevelMap"]; ok {
+			t.Errorf("expected thinkingLevelMap dropped, got %v", first["thinkingLevelMap"])
+		}
+	})
+}
+
 func TestPiSettingsDelete(t *testing.T) {
 	t.Run("missing file answers success without writing", func(t *testing.T) {
 		piTestHome(t)

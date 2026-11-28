@@ -133,7 +133,7 @@ export const readPiModels = (cfg: unknown) => {
         thinkingLevels: readThinkingLevels(e?.thinkingLevelMap),
       }
     }
-    return id
+    return typeof id === 'string' ? id : String(id)
   })
 
   return { ids, caps }
