@@ -16,16 +16,15 @@ import (
 	"9router/proxy/internal/proxy/oauth"
 )
 
-// autoclawAppID and autoclawVersion are public identifiers captured from the
-// installed AutoClaw desktop client (v2.6.1: KNc appId "100003" and
-// app.getVersion()). The app id and version identify the client build; they
-// are not secrets. The signing app key comes from the operator's credential,
-// so no vendor secret lives in this tree.
+// Client identifiers captured from the installed AutoClaw desktop client
+// (v2.6.1: KNc appId/appKey and app.getVersion()). They identify the client
+// build; the app key is the constant used for the MD5 request signature.
 const (
-	autoclawAppID    = "100003"
-	autoclawVersion  = "2.6.1"
-	autoclawChatPath = "/autoclaw-proxy/proxy/autoclaw/chat/completions"
-	autoclawBaseURL  = "https://autoglm-api.autoglm.ai"
+	autoclawAppID       = "100003"
+	autoclawVersion     = "2.6.1"
+	autoclawOAuthAppKey = "38d2391985e2369a5fb8227d8e6cd5e5"
+	autoclawChatPath    = "/autoclaw-proxy/proxy/autoclaw/chat/completions"
+	autoclawBaseURL     = "https://autoglm-api.autoglm.ai"
 )
 
 // now returns unix seconds; a test seam so the signer can be frozen.
@@ -64,8 +63,15 @@ func autoclawBase(req *Request) string {
 // does not hit the token endpoint on every turn.
 func ForwardAutoclaw(w http.ResponseWriter, req *Request) error {
 	refreshToken, deviceID, appKey := splitAutoclawCredential(req.APIKey)
+	if refreshToken == "" {
+		return fmt.Errorf("autoclaw: missing refresh token: sign in with OAuth first")
+	}
+	// OAuth connections store refresh_token|device_id|app_key; the app key is
+	// the desktop client's constant (captured from build 2.6.1). A legacy
+	// credential may still supply its own third field, but an empty one now
+	// falls back to the constant instead of rejecting the request.
 	if appKey == "" {
-		return fmt.Errorf("autoclaw: credential must be refresh_token|device_id|app_key: the app key is the desktop client's signing secret and is not shipped with the gateway")
+		appKey = autoclawOAuthAppKey
 	}
 
 	result, err := oauth.Refresh(req.Ctx, &oauth.Params{

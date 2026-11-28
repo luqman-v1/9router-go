@@ -73,4 +73,19 @@ describe('autoclaw provider page', () => {
     const prefixes = new Set(rendered.map((id) => id.slice(0, id.indexOf('/'))))
     expect(prefixes.size).toBe(1)
   })
+
+  test('catalog exposes autoclaw as OAuth-only with no API key mode', async () => {
+    const catalog = await page.evaluate(async () => {
+      const res = await fetch('/api/providers/catalog')
+      return res.json() as Promise<{
+        sections: { providers: { id: string; category: string; authModes?: string[] }[] }[]
+      }>
+    })
+    const autoclaw = catalog.sections
+      .flatMap((s) => s.providers)
+      .find((p) => p.id === 'autoclaw')
+    expect(autoclaw).toBeDefined()
+    expect(autoclaw!.category).toBe('oauth')
+    expect(autoclaw!.authModes).toEqual(['oauth'])
+  })
 })

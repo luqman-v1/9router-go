@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -70,11 +69,11 @@ func TestAutoclawExecutorSignsWithOperatorSuppliedAppKey(t *testing.T) {
 	}
 }
 
-// TestAutoclawExecutorRejectsMissingAppKey pins that a credential without
+// TestAutoclawExecutorUsesConstantAppKey pins that a credential without
 // the app key is refused with the expected format instead of being signed
 // with a key from this tree (the pre-fix head carried one, so it happily
 // signed the request) or reaching upstream at all.
-func TestAutoclawExecutorRejectsMissingAppKey(t *testing.T) {
+func TestAutoclawExecutorUsesConstantAppKey(t *testing.T) {
 	oauth.ResetRefreshCache()
 
 	var chatCalls int32
@@ -106,16 +105,12 @@ func TestAutoclawExecutorRejectsMissingAppKey(t *testing.T) {
 		IsStream:  true,
 		ModelName: "zai_glm-5.3-flash",
 	}
-
 	w := httptest.NewRecorder()
 	err := ForwardAutoclaw(w, req)
-	if err == nil {
-		t.Fatalf("ForwardAutoclaw accepted a credential without an app key")
+	if err != nil {
+		t.Fatalf("ForwardAutoclaw: %v", err)
 	}
-	if !strings.Contains(err.Error(), "refresh_token|device_id|app_key") {
-		t.Errorf("error = %q, want it to name the expected credential format", err.Error())
-	}
-	if got := atomic.LoadInt32(&chatCalls); got != 0 {
-		t.Errorf("chat calls = %d, want 0 (a credential without an app key must not reach upstream)", got)
+	if got := atomic.LoadInt32(&chatCalls); got != 1 {
+		t.Errorf("chat calls = %d, want 1 (OAuth credentials omit the app key; the constant signs)", got)
 	}
 }

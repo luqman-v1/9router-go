@@ -152,7 +152,7 @@
   let isOAuth = $derived(selectedCatalogItem?.category === 'oauth')
   let isClineOAuth = $derived(providerId === 'cline' || providerId === 'clinepass')
   let isPKCEOAuth = $derived(providerId === 'claude' || providerId === 'codex' || providerId === 'xai' || providerId === 'gitlab')
-  let isAuthCodeOAuth = $derived(providerId === 'gemini-cli' || providerId === 'iflow')
+  let isAuthCodeOAuth = $derived(providerId === 'gemini-cli' || providerId === 'iflow' || providerId === 'autoclaw')
   let isCustomOAuth = $derived(providerId === 'trae' || providerId === 'windsurf' || providerId === 'zed')
   // Upstream parity: providers with authModes ["apikey","oauth"] offer both an
   // OAuth login and a manual API Key button (data-driven, category-independent
@@ -811,6 +811,7 @@
   let pkceCodeVerifier = $state('')
   let pkceState = $state('')
   let pkceRedirectUri = $state('')
+  let autoclawDeviceId = $state('')
   let gitlabBaseUrl = $state('')
   let gitlabClientId = $state('')
   let gitlabClientSecret = $state('')
@@ -2101,12 +2102,14 @@
   async function openAuthCodeOAuth() {
     oauthError = null
     callbackInput = ''
-    copiedAuthUrl = false
     try {
-      const res = await api.authcodeAuthorize(providerId, dashboardCallback())
+      const res = providerId === 'autoclaw'
+        ? await api.autoclawAuthorize(dashboardCallback())
+        : await api.authcodeAuthorize(providerId, dashboardCallback())
       oauthAuthUrl = res.url || res.authUrl
       pkceState = res.state || ''
       pkceRedirectUri = res.redirectUri || ''
+      autoclawDeviceId = typeof (res as unknown as { deviceId?: unknown }).deviceId === 'string' ? (res as unknown as { deviceId: string }).deviceId : ''
       pkceCodeVerifier = ''
       rememberPending({ state: pkceState, redirectUri: pkceRedirectUri, extra: { state: pkceState } })
       showOAuthModal = true
@@ -2615,6 +2618,25 @@
             baseUrl: providerId === 'gitlab' ? gitlabBaseUrl.trim() || undefined : undefined,
             clientId: providerId === 'gitlab' ? gitlabClientId.trim() || undefined : undefined,
             clientSecret: providerId === 'gitlab' ? gitlabClientSecret.trim() || undefined : undefined,
+          })
+          if (!res || (res as { error?: string })?.error || (res as { status?: string })?.status === 'error') {
+            oauthError = (res as { error?: string })?.error || 'Authorization failed'
+          } else {
+            showOAuthModal = false
+            onRefresh()
+          }
+        } catch (err) {
+          oauthError = err instanceof Error ? err.message : String(err)
+        }
+        return
+      }
+      if (providerId === 'autoclaw') {
+        try {
+          const res = await api.autoclawExchange({
+            code,
+            redirectUri: redirectUri || pkceRedirectUri || undefined,
+            state: pkceState || undefined,
+            deviceId: autoclawDeviceId || undefined,
           })
           if (!res || (res as { error?: string })?.error || (res as { status?: string })?.status === 'error') {
             oauthError = (res as { error?: string })?.error || 'Authorization failed'
