@@ -3,6 +3,7 @@ package dashboard
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -343,5 +344,131 @@ func TestSettingAnExternalLogoDoesNotRemoveTheFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(os.Getenv("DATA_DIR"), "uploads", "logo.png")); err != nil {
 		t.Error("switching to an external URL deleted the uploaded file")
+	}
+}
+
+type logoUploadCountingBody struct {
+	r         io.Reader
+	readBytes int64
+}
+
+func (b *logoUploadCountingBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.readBytes += int64(n)
+	return n, err
+}
+
+func (b *logoUploadCountingBody) Close() error { return nil }
+
+type logoUploadRepeatByte byte
+
+func (r logoUploadRepeatByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
+
+func TestUploadLogoPreservesExistingAssetWhenSettingsSaveFails(t *testing.T) {
+	t.Run("nil repo returns 500 without panicking", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("nil Repo panicked: %v", r)
+			}
+		}()
+		t.Setenv("DATA_DIR", t.TempDir())
+		rec := httptest.NewRecorder()
+		(&DashboardHandler{}).HandleUploadLogo(rec, uploadLogoRequest(t, "brand.png", "\x89PNG\r\n\x1a\nbytes"))
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("preserves working logo on disk when settings write fails", func(t *testing.T) {
+		repo, cleanup := setupSettingsTestDB(t)
+		defer cleanup()
+		router := setupTestRouter(repo)
+
+		const initialLogo = "\x89PNG\r\n\x1a\noriginal-logo"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, uploadLogoRequest(t, "initial.png", initialLogo))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("initial upload status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+
+		// Force UpdateSettingsRaw to fail on subsequent uploads.
+		_ = repo.RawDB().Close()
+
+		recSVG := httptest.NewRecorder()
+		router.ServeHTTP(recSVG, uploadLogoRequest(t, "replacement.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>"))
+		if recSVG.Code != http.StatusInternalServerError {
+			t.Fatalf("svg replacement status = %d, want 500: %s", recSVG.Code, recSVG.Body.String())
+		}
+
+		recPNG := httptest.NewRecorder()
+		router.ServeHTTP(recPNG, uploadLogoRequest(t, "replacement.png", "\x89PNG\r\n\x1a\ncorrupted-partial"))
+		if recPNG.Code != http.StatusInternalServerError {
+			t.Fatalf("png replacement status = %d, want 500: %s", recPNG.Code, recPNG.Body.String())
+		}
+
+		pngPath := filepath.Join(os.Getenv("DATA_DIR"), "uploads", "logo.png")
+		gotBytes, err := os.ReadFile(pngPath)
+		if err != nil {
+			t.Fatalf("existing logo.png was deleted on failed save: %v", err)
+		}
+		if string(gotBytes) != initialLogo {
+			t.Fatalf("existing logo.png was corrupted on failed save: got %q, want %q", string(gotBytes), initialLogo)
+		}
+	})
+}
+
+func TestUploadLogoCapsOversizedMultipartStream(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	const boundary = "logoBoundary123"
+	prefix := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"huge.png\"\r\nContent-Type: image/png\r\n\r\n\x89PNG\r\n\x1a\n"
+	suffix := "\r\n--" + boundary + "--\r\n"
+
+	stream := io.MultiReader(
+		strings.NewReader(prefix),
+		io.LimitReader(logoUploadRepeatByte('A'), 6<<20),
+		strings.NewReader(suffix),
+	)
+	counted := &logoUploadCountingBody{r: stream}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/logo", counted)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if counted.readBytes > 3<<20 {
+		t.Fatalf("read %d bytes from multipart upload stream, exceeds 3 MiB cap (%d)", counted.readBytes, 3<<20)
+	}
+}
+
+func TestServeUploadSandboxesSVGResponse(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, uploadLogoRequest(t, "brand.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	serveRec := httptest.NewRecorder()
+	router.ServeHTTP(serveRec, httptest.NewRequest(http.MethodGet, "/uploads/logo.svg", nil))
+	if serveRec.Code != http.StatusOK {
+		t.Fatalf("serve status = %d, want 200", serveRec.Code)
+	}
+	csp := serveRec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "sandbox") {
+		t.Fatalf("expected Content-Security-Policy sandbox header on SVG response, got %q", csp)
 	}
 }

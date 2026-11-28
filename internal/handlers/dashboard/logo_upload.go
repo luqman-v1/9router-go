@@ -23,6 +23,9 @@ const (
 	// near this size is not a logo, and an unbounded write into the operator's
 	// data dir is what the cap exists to prevent.
 	logoMaxBytes = 2 << 20
+	// logoMaxRequestBytes bounds the total multipart request body so an
+	// oversized upload fails before spilling tens of megabytes to temp files.
+	logoMaxRequestBytes = logoMaxBytes + (256 << 10)
 	// logoUploadMemory is the in-memory portion ParseMultipartForm buffers
 	// before spilling to disk. The logo itself is far smaller; this only
 	// bounds the form scaffolding.
@@ -74,6 +77,11 @@ func logoFileName(ext string) string {
 // not: the client's filename is never used as a path component, so a filename
 // carrying "../" cannot escape the uploads directory.
 func (h *DashboardHandler) HandleUploadLogo(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Repo == nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "settings repository unavailable")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, logoMaxRequestBytes)
 	if err := r.ParseMultipartForm(logoUploadMemory); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse multipart form: "+err.Error())
 		return
@@ -107,37 +115,27 @@ func (h *DashboardHandler) HandleUploadLogo(w http.ResponseWriter, r *http.Reque
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to prepare the upload directory: "+err.Error())
 		return
 	}
-	// A previous upload may have left a different extension behind, so the old
-	// asset is removed before the new one is written: the slot holds one logo,
-	// and a leftover logo.svg next to a new logo.png would be served by a URL
-	// the operator no longer chose.
-	for staleExt := range logoExtensions {
-		if staleExt == ext {
-			continue
-		}
-		_ = os.Remove(filepath.Join(dir, logoFileName(staleExt)))
-	}
 
-	// The size cap is enforced on the bytes actually read rather than on the
-	// client's declared Content-Length: a request that understates its size
-	// must not be able to write past the cap.
+	// Stage in a temporary file and persist the settings update before replacing
+	// the live asset so a failed write or DB error leaves the existing logo intact.
 	limited := io.LimitReader(file, logoMaxBytes+1)
-	dst, err := os.Create(filepath.Join(dir, logoFileName(ext)))
+	tmp, err := os.CreateTemp(dir, ".logo-upload-*")
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to create the logo file: "+err.Error())
 		return
 	}
+	tmpName := tmp.Name()
 	written, copyErr := func() (int64, error) {
-		defer func() { _ = dst.Close() }()
-		return io.Copy(dst, limited)
+		defer func() { _ = tmp.Close() }()
+		return io.Copy(tmp, limited)
 	}()
 	if copyErr != nil {
-		_ = os.Remove(filepath.Join(dir, logoFileName(ext)))
+		_ = os.Remove(tmpName)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to write the logo file: "+copyErr.Error())
 		return
 	}
 	if written > logoMaxBytes {
-		_ = os.Remove(filepath.Join(dir, logoFileName(ext)))
+		_ = os.Remove(tmpName)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "logo must be 2 MB or smaller")
 		return
 	}
@@ -145,9 +143,20 @@ func (h *DashboardHandler) HandleUploadLogo(w http.ResponseWriter, r *http.Reque
 	logoURL := "/" + uploadsDirName + "/" + logoFileName(ext)
 	updates := map[string]any{appLogoUrlSettingKey: logoURL}
 	if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
-		_ = os.Remove(filepath.Join(dir, logoFileName(ext)))
+		_ = os.Remove(tmpName)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to save the logo setting: "+err.Error())
 		return
+	}
+	if err := os.Rename(tmpName, filepath.Join(dir, logoFileName(ext))); err != nil {
+		_ = os.Remove(tmpName)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to finalize the logo file: "+err.Error())
+		return
+	}
+	for staleExt := range logoExtensions {
+		if staleExt == ext {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, logoFileName(staleExt)))
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
@@ -267,5 +276,8 @@ func (h *DashboardHandler) HandleServeUploads(w http.ResponseWriter, r *http.Req
 	// re-fetch on every navigation.
 	w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if mediaType == "image/svg+xml" {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	}
 	http.ServeContent(w, r, name, stat.ModTime(), f)
 }
