@@ -143,7 +143,6 @@ func (h *OAuthHandler) HandleClineExchange(w http.ResponseWriter, r *http.Reques
 
 	connID := provider + "-" + shortHash(accessToken)
 
-	now := currentTimestamp()
 	dataMap := map[string]any{
 		"apiKey":      accessToken,
 		"accessToken": accessToken,
@@ -166,27 +165,21 @@ func (h *OAuthHandler) HandleClineExchange(w http.ResponseWriter, r *http.Reques
 	}
 
 	if h.Repo != nil && h.Repo.RawDB() != nil {
-		var existing string
-		err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&existing)
-		if err == nil && existing != "" {
+		existing, getErr := h.Repo.GetProviderConnectionByID(connID)
+		if getErr == nil && existing != nil {
 			if refreshToken == "" {
 				var old map[string]any
-				if jerr := json.Unmarshal([]byte(existing), &old); jerr == nil {
+				if jerr := json.Unmarshal([]byte(existing.Data), &old); jerr == nil {
 					if rt, ok := old["refreshToken"].(string); ok && rt != "" {
 						dataMap["refreshToken"] = rt
 					}
 				}
 				dataBytes, _ = json.Marshal(dataMap)
 			}
-			_, err = h.Repo.RawDB().Exec(
-				"UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?",
-				connName, string(dataBytes), now, connID,
-			)
+			err = h.Repo.ReplaceProviderConnectionPayload(r.Context(), connID, connName, string(dataBytes))
 		} else {
-			_, err = h.Repo.RawDB().Exec(
-				"INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, 1, ?, ?, ?)",
-				connID, provider, connName, string(dataBytes), now, now,
-			)
+			priority := h.Repo.ResolveDefaultPriority(r.Context(), provider)
+			err = h.Repo.CreateProviderConnectionFull(r.Context(), connID, provider, "oauth", connName, &priority, string(dataBytes))
 		}
 		if err != nil {
 			log.Error("oauth", "save cline connection failed", "conn", connID, "error", err)
